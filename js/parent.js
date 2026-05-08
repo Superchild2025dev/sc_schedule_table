@@ -1,0 +1,857 @@
+/* ════════════════════════════════════════════════════════════════
+ * 학부모 페이지
+ * - 인증: 아이 이름 + 전화번호 뒷 4자리 → STUDENTS 매칭
+ * - 기능: 결석 마크 토글, 보강 요청
+ * - Firebase 실시간 동기화
+ * ════════════════════════════════════════════════════════════════ */
+
+/* ── Firebase 설정 (메인 앱과 동일) ── */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyArHQQfHnVreH8gVamyl1e5IqUDfXUJ5F8",
+  authDomain: "scswimming-schedule.firebaseapp.com",
+  databaseURL: "https://scswimming-schedule-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "scswimming-schedule",
+  storageBucket: "scswimming-schedule.firebasestorage.app",
+  messagingSenderId: "45509278949",
+  appId: "1:45509278949:web:f16989a9c416f06e25e80c"
+};
+
+let _fb=null, _fbReady=false;
+let STUDENTS=[], INST_MAP={}, MARK_MAP={}, CLOSED_LIST=[], SCHEDULE_PERIODS=[], HYUWON_MAP={}, RESERVE_MAP={}, REQUESTS={};
+
+/* [v118] 지점 선택 (가경점/용암점) — 메인 앱과 동일 */
+const SELECTED_BRANCH_KEY='selected_branch';
+let _selectedBranch=null;
+try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
+function getBranchInfo(){
+  if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam'};
+  if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule'};
+  return null;
+}
+function selectBranch(branch){
+  if(branch!=='gagyeong' && branch!=='yongam') return;
+  try{ localStorage.setItem(SELECTED_BRANCH_KEY, branch); }catch(e){}
+  location.reload();
+}
+function openBranchModal(){
+  const m=document.getElementById('branch-modal');
+  if(m) m.classList.add('show');
+}
+function closeBranchModal(){
+  const m=document.getElementById('branch-modal');
+  if(m) m.classList.remove('show');
+}
+let _currentStudents=[];  // 로그인된 학생 그룹 (같은 이름+같은 전화번호)
+// 하위 호환: 첫 학생을 _currentStudent로도 노출
+let _currentStudent=null;
+
+// 기본 수업 기간 (Firebase에 swim_periods가 없을 때 fallback)
+const _DEFAULT_PERIODS=[
+  {month:2, start:'2026-02-02',end:'2026-03-04'},
+  {month:3, start:'2026-03-05',end:'2026-04-01'},
+  {month:4, start:'2026-04-02',end:'2026-04-29'},
+  {month:5, start:'2026-05-06',end:'2026-06-02'},
+  {month:6, start:'2026-06-03',end:'2026-06-30'},
+  {month:7, start:'2026-07-06',end:'2026-08-01'},
+  {month:8, start:'2026-08-03',end:'2026-08-29'},
+  {month:9, start:'2026-08-31',end:'2026-10-02'},
+  {month:10,start:'2026-10-05',end:'2026-10-31'},
+  {month:11,start:'2026-11-02',end:'2026-11-28'},
+  {month:12,start:'2026-11-30',end:'2026-12-26'},
+];
+
+/* ── 데이터 로드 ── */
+function initFirebase(){
+  const branch = getBranchInfo();
+  if(!branch){
+    // 지점 미선택 → 모달 띄우고 init 중단
+    openBranchModal();
+    return;
+  }
+  try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _fb=firebase.database().ref(branch.fbPath);
+    _fbReady=true;
+    // 헤더 타이틀에 지점명 반영
+    const brand=document.getElementById('parent-brand');
+    if(brand) brand.textContent=(branch.id==='yongam'?'용암':'가경')+' 수영장';
+  }catch(e){
+    console.error('Firebase 초기화 실패:',e);
+    toast('연결 실패','err');
+  }
+}
+
+function loadAllData(){
+  return new Promise((resolve,reject)=>{
+    if(!_fbReady){reject('not ready');return;}
+    _fb.once('value').then(snap=>{
+      const data=snap.val()||{};
+      STUDENTS=parseJSON(data.swim_students,[]);
+      INST_MAP=parseJSON(data.swim_inst,{});
+      MARK_MAP=parseJSON(data.swim_mark,{});
+      CLOSED_LIST=parseJSON(data.swim_closed,[]);
+      const parsedPeriods=parseJSON(data.swim_periods,null);
+      SCHEDULE_PERIODS=(parsedPeriods&&Array.isArray(parsedPeriods)&&parsedPeriods.length)
+        ? parsedPeriods
+        : JSON.parse(JSON.stringify(_DEFAULT_PERIODS));
+      HYUWON_MAP=parseJSON(data.swim_hyuwon,{});
+      RESERVE_MAP=parseJSON(data.swim_reserve,{});
+      REQUESTS=parseJSON(data.swim_requests,{});
+      resolve();
+    }).catch(reject);
+  });
+}
+
+function parseJSON(v,def){
+  if(!v) return def;
+  try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
+}
+
+/* ── 실시간 sync ── */
+function subscribeChanges(){
+  if(!_fbReady) return;
+  _fb.on('child_changed',snap=>{
+    const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
+    if(snap.key==='swim_mark') MARK_MAP=parseJSON(asStr,{});
+    else if(snap.key==='swim_students') STUDENTS=parseJSON(asStr,[]);
+    else if(snap.key==='swim_reserve') RESERVE_MAP=parseJSON(asStr,{});
+    else if(snap.key==='swim_closed') CLOSED_LIST=parseJSON(asStr,[]);
+    else if(snap.key==='swim_hyuwon') HYUWON_MAP=parseJSON(asStr,{});
+    else if(snap.key==='swim_requests') REQUESTS=parseJSON(asStr,{});
+    // 대시보드 재렌더
+    if(_currentStudent) renderDashboard();
+  });
+}
+
+/* ── Firebase 저장 ── */
+function saveMark(){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP));
+}
+function saveReserve(){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_reserve').set(JSON.stringify(RESERVE_MAP));
+}
+function saveRequests(){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_requests').set(JSON.stringify(REQUESTS));
+}
+function makeReqId(){ return 'r_'+Date.now()+'_'+Math.random().toString(36).slice(2,6); }
+
+/* ════════════════════════════════════════════════════════════════
+ * 인증
+ * ════════════════════════════════════════════════════════════════ */
+function findStudents(name, phoneLast4){
+  const nm=name.trim();
+  const p4=phoneLast4.trim();
+  if(!nm||!p4) return [];
+  return STUDENTS.filter(s=>{
+    if(s.n!==nm) return false;
+    if(!s.p) return false;
+    const digits=s.p.replace(/\D/g,'');
+    return digits.slice(-4)===p4;
+  });
+}
+
+// 같은 이름+같은 전체 전화번호 → 한 사람(그룹)으로 묶기
+function groupByIdentity(students){
+  const groups={};  // key: name|fullPhone → [student, ...]
+  students.forEach(s=>{
+    const k=s.n+'|'+(s.p||'');
+    if(!groups[k]) groups[k]=[];
+    groups[k].push(s);
+  });
+  return Object.values(groups);
+}
+
+function handleLogin(){
+  const name=document.getElementById('login-name').value;
+  const phone=document.getElementById('login-phone').value;
+  const errEl=document.getElementById('login-error');
+  errEl.style.display='none';
+
+  if(!name.trim()||!phone.trim()){
+    errEl.textContent='이름과 전화번호 뒷 4자리를 입력해주세요';
+    errEl.style.display='block';return;
+  }
+  if(!/^\d{4}$/.test(phone.trim())){
+    errEl.textContent='전화번호 뒷 4자리(숫자 4자)를 입력해주세요';
+    errEl.style.display='block';return;
+  }
+  const matched=findStudents(name,phone);
+  if(matched.length===0){
+    errEl.textContent='일치하는 정보가 없습니다. 이름 또는 전화번호를 확인해주세요';
+    errEl.style.display='block';return;
+  }
+  // 같은 이름+같은 전체 전화번호 그룹화
+  const groups=groupByIdentity(matched);
+  if(groups.length===1){
+    // 한 사람 (여러 수업 가능) → 바로 로그인
+    loginAs(groups[0]);
+  } else {
+    // 여러 사람 (동명이인, 다른 전화번호) → 선택
+    showStudentSelector(groups);
+  }
+}
+
+function showStudentSelector(groups){
+  const container=document.getElementById('student-choices');
+  container.innerHTML='';
+  groups.forEach(grp=>{
+    const s=grp[0];
+    const div=document.createElement('div');
+    div.className='choice-item';
+    const slotCount=grp.length;
+    const classList=grp.map(x=>`${x.d} ${x.t} ${x.l}레인`).join(' · ');
+    div.innerHTML=`<div class="cname">${esc(s.n)}${s.a?'('+s.a+'살)':''}${slotCount>1?` · ${slotCount}개 수업`:''}</div>
+                   <div class="cinfo">${esc(classList)}</div>`;
+    div.onclick=()=>loginAs(grp);
+    container.appendChild(div);
+  });
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('select-screen').style.display='flex';
+}
+
+function loginAs(students){
+  // students: 배열 (같은 학생의 모든 슬롯)
+  if(!Array.isArray(students)) students=[students];
+  _currentStudents=students;
+  _currentStudent=students[0];  // 하위 호환
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('select-screen').style.display='none';
+  document.getElementById('dashboard').style.display='flex';
+  // 세션 저장 (모든 슬롯 키)
+  try{
+    const keys=students.map(s=>s.t+'/'+s.d+'/'+s.l+'/'+s.r).join(',');
+    sessionStorage.setItem('parent_stu_keys', keys);
+  }catch(e){}
+  renderDashboard();
+}
+
+function logout(){
+  _currentStudents=[];
+  _currentStudent=null;
+  try{
+    sessionStorage.removeItem('parent_stu_keys');
+    sessionStorage.removeItem('parent_stu_key');  // 이전 버전 호환
+  }catch(e){}
+  document.getElementById('dashboard').style.display='none';
+  document.getElementById('select-screen').style.display='none';
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('login-name').value='';
+  document.getElementById('login-phone').value='';
+  document.getElementById('login-error').style.display='none';
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 대시보드 (다중 슬롯 지원)
+ * ════════════════════════════════════════════════════════════════ */
+function renderDashboard(){
+  if(!_currentStudents.length) return;
+
+  // 최신 데이터 동기화 — 모든 슬롯에 학생이 살아있는지 확인
+  const fresh=[];
+  for(const s of _currentStudents){
+    const found=STUDENTS.find(x=>x.t===s.t&&x.d===s.d&&x.l===s.l&&x.r===s.r);
+    if(found) fresh.push(found);
+  }
+  if(!fresh.length){
+    alert('등록 정보가 삭제되었습니다. 다시 로그인해주세요.');
+    logout();return;
+  }
+  _currentStudents=fresh;
+  _currentStudent=fresh[0];
+
+  const s=fresh[0];
+  // 헤더
+  document.getElementById('child-display').textContent=s.n+(s.a?'('+s.a+'살)':'');
+  const slotCount=fresh.length;
+  document.getElementById('class-info').textContent=
+    slotCount===1
+      ? `${s.d}요일 ${s.t} · ${s.l}레인 · ${instNameOf(s)} 선생님`
+      : `총 ${slotCount}개 수업 · ${s.p?esc(s.p):''}`;
+
+  // 이번달/다음달 수업일
+  const curPi=getCurrentPeriod();
+  const curP=SCHEDULE_PERIODS[curPi];
+  const nxtP=SCHEDULE_PERIODS[curPi+1]||null;
+
+  document.getElementById('period-label').textContent=curP?`${curP.month}월 수업`:'이번달 수업';
+  document.getElementById('date-list').innerHTML=renderMultiSlots(fresh, curP);
+
+  if(nxtP){
+    document.getElementById('next-period-label').textContent=`${nxtP.month}월 수업`;
+    document.getElementById('next-date-list').innerHTML=renderMultiSlots(fresh, nxtP);
+    document.getElementById('next-period-wrap').style.display='block';
+  } else {
+    document.getElementById('next-period-wrap').style.display='none';
+  }
+}
+
+function instNameOf(s){
+  const inst=INST_MAP[s.t+'/'+s.d+'/'+s.l];
+  return inst?.n||'미정';
+}
+
+function renderMultiSlots(students, period){
+  if(!period) return '<div style="padding:20px;text-align:center;color:#9CA3AF">수업일 없음</div>';
+  if(students.length===1){
+    const s=students[0];
+    const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
+    return renderDateList(slotKey,period,s.d);
+  }
+  // 여러 슬롯: 섹션별로 렌더
+  return students.map(s=>{
+    const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
+    const inst=instNameOf(s);
+    return `<div class="slot-section">
+      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${s.l}레인 · ${esc(inst)} 선생님</div>
+      <div class="slot-dates">${renderDateList(slotKey,period,s.d)}</div>
+    </div>`;
+  }).join('');
+}
+
+function getCurrentPeriod(){
+  const todayStr=toDateStr(new Date());
+  for(let i=SCHEDULE_PERIODS.length-1;i>=0;i--){
+    if(todayStr>=SCHEDULE_PERIODS[i].start) return i;
+  }
+  return 0;
+}
+
+function getClassDatesForDay(period,day){
+  if(!period) return [];
+  const DAY_INDEX={'월':1,'화':2,'수':3,'목':4,'금':5,'토':6,'일':0};
+  const targetDow=DAY_INDEX[day];
+  if(targetDow===undefined) return [];
+  const dates=[];
+  const start=new Date(period.start);
+  const end=new Date(period.end);
+  const cur=new Date(start);
+  while(cur<=end){
+    if(cur.getDay()===targetDow){
+      const ds=toDateStr(cur);
+      dates.push({ds, closed:isClosedDate(ds)});
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+  return dates;
+}
+
+function isClosedDate(ds){
+  for(const entry of CLOSED_LIST){
+    const s=entry.start, e=entry.end||entry.start;
+    if(ds>=s&&ds<=e) return entry.type||'휴관';
+  }
+  return null;
+}
+
+function renderDateList(slotKey,period,day){
+  const dates=getClassDatesForDay(period,day);
+  if(!dates.length) return '<div style="padding:20px;text-align:center;color:#9CA3AF">수업일 없음</div>';
+  const todayStr=toDateStr(new Date());
+
+  return dates.map(d=>{
+    const ds=d.ds;
+    const isPast=ds<todayStr;
+    const isToday=ds===todayStr;
+    const closedLabel=d.closed;
+    const markKey=slotKey+'/'+ds;
+    const mark=MARK_MAP[markKey];
+
+    // 휴원 체크
+    const hy=HYUWON_MAP[slotKey];
+    const isHyuwon=hy&&hy.dates&&hy.dates.includes(ds);
+
+    let cls='date-item';
+    if(isPast) cls+=' past';
+    if(isToday) cls+=' today';
+    if(closedLabel) cls+=' closed';
+    if(isHyuwon) cls+=' hyuwon';
+    if(mark?.type==='absent') cls+=' absent';
+    if(mark?.type==='bogang'||(mark?.type==='absent'&&mark.sub?.type==='bogang')) cls+=' bogang';
+
+    const [y,m,dd]=ds.split('-');
+    const dowNames=['일','월','화','수','목','금','토'];
+    const dow=dowNames[new Date(ds).getDay()];
+    const dateStr=`${parseInt(m)}/${parseInt(dd)} (${dow})`;
+
+    let status='';
+    if(closedLabel) status=`🚫 ${closedLabel}`;
+    else if(isHyuwon) status='🏥 휴원';
+    else if(isToday) status='📍 오늘';
+    else if(isPast) status='지난 수업';
+    else status='수업 예정';
+
+    if(mark?.type==='absent'){
+      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강: '+esc(mark.sub.n||'');
+      else status='❌ 결석';
+    } else if(mark?.type==='bogang'){
+      status='🟣 보강: '+esc(mark.n||'');
+    }
+
+    // 대기 중인 요청 체크
+    const selfSlot=slotKey;
+    let pendingCancel=false;     // 결석 취소 대기 중
+    let pendingBogangCount=0;    // 이 날짜에 학부모가 신청한 보강 개수
+    for(const req of Object.values(REQUESTS)){
+      if(req.target?.ds!==ds) continue;
+      if(req.type==='absent-cancel' && req.parent?.studentSlotKey===selfSlot){
+        pendingCancel=true;
+      }
+      if(req.type==='bogang' && req.parent?.studentSlotKey===selfSlot){
+        pendingBogangCount++;
+      }
+    }
+
+    // 보강 대기 상태 표시
+    if(pendingBogangCount>0){
+      status=`⏳ 보강 ${pendingBogangCount}개 승인 대기`;
+    } else if(pendingCancel){
+      status='⏳ 결석 취소 승인 대기';
+    }
+
+    // 버튼: 미래 수업일만 조작 가능, 휴관일/휴원일 제외
+    let actions='';
+    if(!isPast && !closedLabel && !isHyuwon){
+      const absentOn=mark?.type==='absent';
+      if(absentOn){
+        if(pendingCancel){
+          actions=`<span style="font-size:10px;color:#F59E0B;font-weight:700">⏳ 승인 대기</span>`;
+        } else {
+          actions=`<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>`;
+        }
+      } else {
+        actions=`
+          <button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석</button>
+          <button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청</button>
+        `;
+      }
+    }
+
+    return `<div class="${cls}">
+      <div>
+        <div class="dstr">${dateStr}</div>
+        <div class="dstatus">${status}</div>
+      </div>
+      <div class="dactions">${actions}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 결석 (두 단계 확인 모달)
+ * ════════════════════════════════════════════════════════════════ */
+function openAbsentModal(ds, slotKey){
+  const [y,m,d]=ds.split('-');
+  const dowNames=['일','월','화','수','목','금','토'];
+  const dow=dowNames[new Date(ds).getDay()];
+  // 슬롯 정보 표시
+  const [t,day,l,r]=slotKey.split('/');
+  const slotInfo=`${day}요일 ${t} ${l}레인`;
+  document.getElementById('ab-desc').innerHTML=
+    `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 수업을 결석으로 신청하시겠습니까?`;
+  document.getElementById('ab-submit').dataset.ds=ds;
+  document.getElementById('ab-submit').dataset.slot=slotKey;
+  document.getElementById('ab-form').style.display='block';
+  document.getElementById('ab-success').style.display='none';
+  document.getElementById('absent-modal').style.display='flex';
+}
+function openAbsentCancelModal(ds, slotKey){
+  const [y,m,d]=ds.split('-');
+  const dowNames=['일','월','화','수','목','금','토'];
+  const dow=dowNames[new Date(ds).getDay()];
+  const [t,day,l,r]=slotKey.split('/');
+  const slotInfo=`${day}요일 ${t} ${l}레인`;
+  document.getElementById('ac-desc').innerHTML=
+    `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 취소를 신청하시겠습니까?`;
+  document.getElementById('ac-submit').dataset.ds=ds;
+  document.getElementById('ac-submit').dataset.slot=slotKey;
+  document.getElementById('ac-form').style.display='block';
+  document.getElementById('ac-success').style.display='none';
+  document.getElementById('absent-cancel-modal').style.display='flex';
+}
+function closeAbsentModal(){
+  document.getElementById('absent-modal').style.display='none';
+}
+function closeAbsentCancelModal(){
+  document.getElementById('absent-cancel-modal').style.display='none';
+}
+
+async function submitAbsent(){
+  const ds=document.getElementById('ab-submit').dataset.ds;
+  const slotKey=document.getElementById('ab-submit').dataset.slot;
+  if(!slotKey) return;
+  const markKey=slotKey+'/'+ds;
+  const cur=MARK_MAP[markKey];
+  try{
+    if(cur?.type==='bogang'||cur?.type==='sample'){
+      MARK_MAP[markKey]={type:'absent', sub:cur};
+    } else {
+      MARK_MAP[markKey]={type:'absent'};
+    }
+    await saveMark();
+    document.getElementById('ab-form').style.display='none';
+    document.getElementById('ab-success').style.display='block';
+    renderDashboard();
+  }catch(e){
+    toast('저장 실패','err');
+    console.error(e);
+  }
+}
+
+async function submitAbsentCancel(){
+  const ds=document.getElementById('ac-submit').dataset.ds;
+  const slotKey=document.getElementById('ac-submit').dataset.slot;
+  if(!slotKey) return;
+  // 해당 슬롯 학생 찾기
+  const stu=_currentStudents.find(s=>s.t+'/'+s.d+'/'+s.l+'/'+s.r===slotKey);
+  if(!stu) return;
+  // 기존 대기 요청 있으면 중복 방지
+  for(const req of Object.values(REQUESTS)){
+    if(req.type==='absent-cancel' && req.parent?.studentSlotKey===slotKey && req.target?.ds===ds){
+      toast('이미 취소 신청이 접수되었습니다','err');
+      return;
+    }
+  }
+  const reqId=makeReqId();
+  REQUESTS[reqId]={
+    type:'absent-cancel',
+    status:'pending',
+    parent:{
+      studentSlotKey:slotKey,
+      name:stu.n,
+      age:stu.a||null,
+      phone:stu.p||null,
+    },
+    target:{ t:stu.t, d:stu.d, l:stu.l, r:stu.r, ds },
+    instKey:stu.t+'/'+stu.d+'/'+stu.l,
+    requestedAt:new Date().toISOString(),
+  };
+  try{
+    await saveRequests();
+    document.getElementById('ac-form').style.display='none';
+    document.getElementById('ac-success').style.display='block';
+    renderDashboard();
+  }catch(e){
+    toast('저장 실패','err');
+    console.error(e);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 보강 신청 (날짜 선택 → 가능한 슬롯 다중 선택)
+ * ════════════════════════════════════════════════════════════════ */
+let _bgSelectedSlots=[];  // 배열로 변경 (다중 선택)
+
+let _bgSourceSlotKey=null;  // 보강 요청하는 학생의 원래 슬롯
+
+function openBogangModal(ds, slotKey){
+  _bgSelectedSlots=[];
+  _bgSourceSlotKey=slotKey || (_currentStudent ? _currentStudent.t+'/'+_currentStudent.d+'/'+_currentStudent.l+'/'+_currentStudent.r : null);
+  // 폼/성공 화면 초기화
+  document.getElementById('bg-form').style.display='block';
+  document.getElementById('bg-success').style.display='none';
+
+  const dateSel=document.getElementById('bg-date');
+  dateSel.innerHTML='<option value="">날짜를 선택하세요</option>';
+  const dowNames=['일','월','화','수','목','금','토'];
+  const dates=[];
+  for(let i=0;i<60;i++){
+    const d=new Date();
+    d.setDate(d.getDate()+i);
+    const dateStr=toDateStr(d);
+    if(isClosedDate(dateStr)) continue;
+    const dow=dowNames[d.getDay()];
+    if(dow==='일') continue;
+    dates.push({ds:dateStr, dow, m:d.getMonth()+1, d:d.getDate()});
+  }
+  dates.forEach(x=>{
+    const opt=document.createElement('option');
+    opt.value=x.ds;
+    opt.textContent=`${x.m}/${x.d} (${x.dow})`;
+    if(ds===x.ds) opt.selected=true;
+    dateSel.appendChild(opt);
+  });
+  if(ds) dateSel.value=ds;
+
+  document.getElementById('bg-slot-wrap').style.display='none';
+  document.getElementById('bg-slots').innerHTML='';
+  document.getElementById('bg-sel-count').textContent='';
+  document.getElementById('bg-submit').disabled=true;
+  document.getElementById('bg-submit').textContent='신청';
+  document.getElementById('bogang-modal').style.display='flex';
+
+  dateSel.onchange=()=>refreshBogangSlots(dateSel.value);
+  if(dateSel.value) refreshBogangSlots(dateSel.value);
+}
+
+function closeBogangModal(){
+  document.getElementById('bogang-modal').style.display='none';
+  _bgSelectedSlots=[];
+}
+
+// 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
+function findAvailableSlots(ds){
+  if(!ds) return [];
+  const dowNames=['일','월','화','수','목','금','토'];
+  const day=dowNames[new Date(ds).getDay()];
+  const s=_currentStudent;
+  // 모든 내 슬롯 (여러 수업일 때 모두 제외)
+  const mySlots=_currentStudents.map(x=>x.t+'/'+x.d+'/'+x.l+'/'+x.r);
+
+  // 대기중 요청에서 해당 날짜에 이미 잡힌 슬롯 수집
+  const pendingOccupied=new Set();  // key: 'slotKey/ds'
+  for(const req of Object.values(REQUESTS)){
+    if(req.type!=='bogang') continue;
+    if(req.target?.ds===ds){
+      const k=req.target.t+'/'+req.target.d+'/'+req.target.l+'/'+req.target.r;
+      pendingOccupied.add(k+'/'+ds);
+    }
+  }
+
+  const slotCandidates={};
+  for(const [instKey,inst] of Object.entries(INST_MAP)){
+    const [t,d,l]=instKey.split('/');
+    if(d!==day) continue;
+    if(!inst || !inst.n) continue;
+    const k=t+'/'+day+'/'+l;
+    slotCandidates[k]={instName:inst.n, t, day, lane:parseInt(l)};
+  }
+
+  const available=[];
+  for(const [k,info] of Object.entries(slotCandidates)){
+    const maxRows=5;
+    let freeRow=null;
+    for(let r=1;r<=maxRows;r++){
+      const checkKey=info.t+'/'+info.day+'/'+info.lane+'/'+r;
+      if(STUDENTS.find(x=>x.t===info.t&&x.d===info.day&&x.l===info.lane&&x.r===r)) continue;
+      const mark=MARK_MAP[checkKey+'/'+ds];
+      if(mark?.type==='bogang'||mark?.type==='sample') continue;
+      if(mark?.type==='absent'&&mark.sub) continue;
+      // 이미 대기중인 요청 자리도 제외
+      if(pendingOccupied.has(checkKey+'/'+ds)) continue;
+      freeRow=r;
+      break;
+    }
+    // 본인이 이미 등록된 슬롯은 모두 제외 (여러 수업 중 하나라도 겹치면)
+    const candidateKey=info.t+'/'+info.day+'/'+info.lane+'/'+freeRow;
+    if(freeRow && !mySlots.includes(candidateKey)){
+      available.push({...info, row:freeRow, ds});
+    }
+  }
+  available.sort((a,b)=>{
+    const ta=parseInt(a.t);const tb=parseInt(b.t);
+    if(ta!==tb) return ta-tb;
+    return a.lane-b.lane;
+  });
+  return available;
+}
+
+function refreshBogangSlots(ds){
+  _bgSelectedSlots=[];
+  const slots=findAvailableSlots(ds);
+  const container=document.getElementById('bg-slots');
+  const wrap=document.getElementById('bg-slot-wrap');
+  wrap.style.display='block';
+  if(!slots.length){
+    container.innerHTML='<div class="bg-no-slots">이 날짜에는 가능한 수업이 없습니다.<br>다른 날짜를 선택해주세요.</div>';
+    document.getElementById('bg-sel-count').textContent='';
+    document.getElementById('bg-submit').disabled=true;
+    document.getElementById('bg-submit').textContent='신청';
+    return;
+  }
+  container.innerHTML=slots.map((x,i)=>`
+    <div class="bg-slot-item" data-idx="${i}">
+      <div>
+        <div class="slot-main">${x.day}요일 · ${esc(x.t)}</div>
+        <div class="slot-sub">${x.lane}레인 · ${esc(x.instName)} 선생님</div>
+      </div>
+    </div>
+  `).join('');
+  // 다중 선택
+  container.querySelectorAll('.bg-slot-item').forEach((el,i)=>{
+    el.onclick=()=>{
+      const slot=slots[i];
+      const idx=_bgSelectedSlots.findIndex(s=>s.t===slot.t&&s.day===slot.day&&s.lane===slot.lane&&s.row===slot.row);
+      if(idx>=0){
+        _bgSelectedSlots.splice(idx,1);
+        el.classList.remove('selected');
+      } else {
+        _bgSelectedSlots.push(slot);
+        el.classList.add('selected');
+      }
+      updateBogangSelCount();
+    };
+  });
+  updateBogangSelCount();
+}
+
+function updateBogangSelCount(){
+  const n=_bgSelectedSlots.length;
+  const count=document.getElementById('bg-sel-count');
+  const submit=document.getElementById('bg-submit');
+  if(n===0){
+    count.textContent='';
+    submit.disabled=true;
+    submit.textContent='신청';
+  } else {
+    count.textContent=`선택된 수업: ${n}개`;
+    submit.disabled=false;
+    submit.textContent=`${n}개 신청`;
+  }
+}
+
+async function submitBogang(){
+  const s=_currentStudent;
+  if(!s||!_bgSelectedSlots.length){toast('수업을 선택해주세요','err');return;}
+
+  // REQUESTS에 저장 (즉시 MARK_MAP에 반영 X — 선생님 승인 대기)
+  // 출발 슬롯 (해당 버튼이 속한 수업의 슬롯)
+  const selfSlotKey=_bgSourceSlotKey || (s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+  const now=new Date().toISOString();
+  for(const slot of _bgSelectedSlots){
+    const reqId=makeReqId();
+    REQUESTS[reqId]={
+      type:'bogang',
+      status:'pending',
+      parent:{
+        studentSlotKey:selfSlotKey,
+        name:s.n,
+        age:s.a||null,
+        phone:s.p||null,
+      },
+      target:{
+        t:slot.t, d:slot.day, l:slot.lane, r:slot.row,
+        ds:slot.ds, instName:slot.instName,
+      },
+      instKey:slot.t+'/'+slot.day+'/'+slot.lane,  // 담당 선생님 슬롯 키
+      requestedAt:now,
+    };
+  }
+
+  try{
+    await saveRequests();
+    // 성공 화면 표시
+    document.getElementById('bg-form').style.display='none';
+    document.getElementById('bg-success').style.display='block';
+    document.getElementById('bg-success-msg').innerHTML=
+      `총 <strong>${_bgSelectedSlots.length}개</strong>의 보강을 신청했습니다.<br>각 담당 선생님이 검토 후 승인합니다.`;
+    renderDashboard();
+  }catch(e){
+    toast('신청 실패','err');
+    console.error(e);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 유틸
+ * ════════════════════════════════════════════════════════════════ */
+function toDateStr(d){
+  const y=d.getFullYear();
+  const m=String(d.getMonth()+1).padStart(2,'0');
+  const dd=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function toast(msg,type){
+  const el=document.getElementById('toast');
+  el.textContent=msg;
+  el.className='toast show '+(type||'');
+  clearTimeout(toast._t);
+  toast._t=setTimeout(()=>{el.classList.remove('show');},2400);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 이벤트 바인딩 + 초기화
+ * ════════════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', async ()=>{
+  initFirebase();
+  try{
+    await loadAllData();
+    subscribeChanges();
+  }catch(e){
+    console.error('데이터 로드 실패:',e);
+    toast('연결 실패 — 새로고침 해주세요','err');
+    return;
+  }
+
+  // 세션 복구
+  try{
+    const savedKeys=sessionStorage.getItem('parent_stu_keys');
+    if(savedKeys){
+      const keyList=savedKeys.split(',');
+      const foundList=keyList.map(key=>{
+        const [t,d,l,r]=key.split('/');
+        return STUDENTS.find(s=>s.t===t&&s.d===d&&s.l===parseInt(l)&&s.r===parseInt(r));
+      }).filter(Boolean);
+      if(foundList.length) loginAs(foundList);
+    } else {
+      // 이전 버전 호환
+      const savedKey=sessionStorage.getItem('parent_stu_key');
+      if(savedKey){
+        const [t,d,l,r]=savedKey.split('/');
+        const found=STUDENTS.find(s=>s.t===t&&s.d===d&&s.l===parseInt(l)&&s.r===parseInt(r));
+        if(found){
+          // 같은 이름+전화번호 그룹 전체를 로그인
+          const grouped=STUDENTS.filter(s=>s.n===found.n && s.p===found.p);
+          loginAs(grouped.length?grouped:[found]);
+        }
+      }
+    }
+  }catch(e){}
+
+  // 로그인 버튼
+  document.getElementById('login-btn').addEventListener('click', handleLogin);
+  document.getElementById('login-phone').addEventListener('keydown',e=>{
+    if(e.key==='Enter') handleLogin();
+  });
+  document.getElementById('login-name').addEventListener('keydown',e=>{
+    if(e.key==='Enter') document.getElementById('login-phone').focus();
+  });
+
+  // 학생 선택 → 로그인 돌아가기
+  document.getElementById('back-to-login').addEventListener('click',()=>{
+    document.getElementById('select-screen').style.display='none';
+    document.getElementById('login-screen').style.display='flex';
+  });
+
+  // 로그아웃
+  document.getElementById('logout-btn').addEventListener('click',()=>{
+    if(confirm('로그아웃하시겠습니까?')) logout();
+  });
+
+  // 날짜 액션 (이벤트 위임)
+  document.addEventListener('click',e=>{
+    const btn=e.target.closest('[data-action]');
+    if(!btn) return;
+    const ds=btn.dataset.ds;
+    const slotKey=btn.dataset.slot;
+    const act=btn.dataset.action;
+    if(act==='request-absent') openAbsentModal(ds, slotKey);
+    else if(act==='cancel-absent') openAbsentCancelModal(ds, slotKey);
+    else if(act==='request-bogang') openBogangModal(ds, slotKey);
+  });
+
+  // 결석 모달
+  document.getElementById('ab-cancel').addEventListener('click', closeAbsentModal);
+  document.getElementById('ab-submit').addEventListener('click', submitAbsent);
+  document.getElementById('ab-success-close').addEventListener('click', closeAbsentModal);
+  document.getElementById('absent-modal').addEventListener('click',e=>{
+    if(e.target.id==='absent-modal') closeAbsentModal();
+  });
+  document.getElementById('ac-cancel').addEventListener('click', closeAbsentCancelModal);
+  document.getElementById('ac-submit').addEventListener('click', submitAbsentCancel);
+  document.getElementById('ac-success-close').addEventListener('click', closeAbsentCancelModal);
+  document.getElementById('absent-cancel-modal').addEventListener('click',e=>{
+    if(e.target.id==='absent-cancel-modal') closeAbsentCancelModal();
+  });
+
+  // 보강 모달
+  document.getElementById('bg-cancel').addEventListener('click', closeBogangModal);
+  document.getElementById('bg-submit').addEventListener('click', submitBogang);
+  document.getElementById('bg-success-close').addEventListener('click', closeBogangModal);
+  document.getElementById('bogang-modal').addEventListener('click',e=>{
+    if(e.target.id==='bogang-modal') closeBogangModal();
+  });
+});

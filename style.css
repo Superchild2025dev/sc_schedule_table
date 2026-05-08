@@ -1,0 +1,463 @@
+*{box-sizing:border-box;margin:0;padding:0}
+/* [v118] 시간표 자체 줌 — :root 변수로 관리 */
+:root{
+  --tbl-scale:1;
+  --w-time-col:calc(36px * var(--tbl-scale));
+  --w-num-col:calc(24px * var(--tbl-scale));
+  --w-cell:calc(110px * var(--tbl-scale));
+  --f-base:calc(12px * var(--tbl-scale));
+  --f-day-hdr:calc(14px * var(--tbl-scale));
+  --f-time:calc(13px * var(--tbl-scale));
+  --f-small:calc(10px * var(--tbl-scale));
+}
+body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;font-size:12px}
+
+.appbar{background:#0F9D58;color:#fff;height:48px;display:flex;align-items:center;padding:0 16px;gap:12px;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.tab-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);z-index:9999;display:none;align-items:center;justify-content:center}
+.tab-modal.show{display:flex}
+/* [지점] 첫 화면 / 변경 모달 */
+.branch-modal{position:fixed;inset:0;background:rgba(15,157,88,.92);z-index:99999;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.branch-modal.show{display:flex}
+.branch-modal-box{background:#fff;border-radius:20px;padding:36px 28px;min-width:320px;text-align:center;box-shadow:0 16px 64px rgba(0,0,0,.4)}
+.branch-modal-title{font-size:18px;font-weight:900;margin-bottom:24px;color:#1F2937}
+.branch-modal-btns{display:flex;gap:14px;flex-direction:row;justify-content:center}
+.branch-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:24px 28px;min-width:140px;border:3px solid #E5E7EB;border-radius:16px;background:#fff;cursor:pointer;font-family:inherit;transition:all .15s}
+.branch-btn:hover{border-color:#0F9D58;background:#F0FDF4;transform:translateY(-3px);box-shadow:0 8px 24px rgba(15,157,88,.2)}
+.branch-emoji{font-size:36px}
+.branch-name{font-size:16px;font-weight:900;color:#0F9D58}
+.branch-desc{font-size:11px;color:#6B7280;font-weight:500}
+#branch-switch-btn{background:rgba(255,255,255,.18);border:1px dashed rgba(255,255,255,.5)}
+.tab-modal-box{background:#fff;border-radius:12px;padding:20px;min-width:240px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2)}
+.tab-modal-title{font-size:14px;font-weight:700;margin-bottom:14px;color:#333}
+.tab-modal-btns{display:flex;flex-direction:column;gap:8px}
+.tab-type-btn{padding:12px;border:2px solid #E5E7EB;border-radius:8px;background:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
+.tab-type-btn:hover{border-color:#0F9D58;background:#F0FDF4;color:#0F9D58}
+.tab-close{font-size:10px;margin-left:4px;opacity:.4;cursor:pointer}
+.tab-close:hover{opacity:1;color:#DC2626}
+.tab-arrows{display:inline-flex;gap:1px;margin-left:2px;opacity:.3;font-size:9px}
+.tab-arrows span{cursor:pointer;padding:0 2px}
+.tab-arrows span:hover{opacity:1;color:#0F9D58}
+.appbar h1{font-size:15px;font-weight:900}
+.appbar h1 small{font-weight:400;font-size:11px;opacity:.6;margin-left:8px}
+/* [v118] 시간표 줌 컨트롤 */
+.zoom-ctrl{display:flex;align-items:center;gap:0;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:0;margin-right:4px}
+.zoom-ctrl .zoom-btn{padding:4px 9px;font-size:14px;font-weight:900;border:none;border-radius:0;background:transparent;color:#fff;cursor:pointer;line-height:1;font-family:inherit}
+.zoom-ctrl .zoom-btn:hover{background:rgba(255,255,255,.15)}
+.zoom-pct{font-size:11px;font-weight:700;color:#fff;padding:0 6px;cursor:pointer;min-width:38px;text-align:center;user-select:none}
+.zoom-pct:hover{color:#FCD34D}
+.appbar-r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.hbtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:4px 11px;font-size:11px;color:#fff;cursor:pointer;font-family:inherit}
+.tab-bar{display:flex;gap:0;background:#fff;border-bottom:2px solid #E5E7EB;padding:0 16px;position:sticky;top:48px;z-index:49}
+.tab-btn{padding:8px 20px;font-size:13px;font-weight:700;color:#888;border:none;background:none;cursor:pointer;font-family:inherit;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s}
+.tab-btn:hover{color:#333}
+.tab-btn.active{color:#0F9D58;border-bottom-color:#0F9D58}
+/* 스냅샷 탭 이름은 비활성 일반 탭과 동일하게 (color:#888 / 13px / 700) — 차분하게 표시 */
+.tab-btn.tab-snapshot,.tab-btn.tab-snapshot.active{color:#888;background:none}
+.tab-btn.tab-snapshot.active{border-bottom-color:#888}
+.tab-btn.tab-snapshot:hover{color:#333}
+.tab-snap-icon{font-size:11px;opacity:.8}
+body.is-snapshot{background:#FAF7FF}
+body.is-snapshot .tbl-wrap,body.is-snapshot .sched-tbl{outline:2px solid #C4B5FD;outline-offset:-2px}
+/* [타임머신] 가짜 날짜 모드 — 노란색 외곽선으로 "테스트/읽기 전용" 강조 */
+body.is-timemachine{background:#FFFBEB}
+body.is-timemachine .tbl-wrap,body.is-timemachine .sched-tbl{outline:2px solid #FCD34D;outline-offset:-2px}
+.snap-banner{position:sticky;top:80px;z-index:48;background:#9333EA;color:#fff;text-align:center;padding:6px 12px;font-size:12px;font-weight:700;display:none}
+body.is-snapshot .snap-banner{display:block}
+.tab-add{padding:8px 12px;font-size:16px;font-weight:700;border:none;background:none;cursor:pointer;color:#888;margin-bottom:-2px}
+.tab-add:hover{color:#0F9D58}
+.hbtn:hover{background:rgba(255,255,255,.22)}
+
+.page{padding:12px 10px 20px}
+
+/* ── 테이블 ── */
+/* [v118] 시간표 컨테이너: zoom 대신 max-height 키워서 더 많이 표시 (프레임 크게) */
+.tbl-outer{overflow-x:auto;overflow-y:auto;border-radius:8px;border:2px solid #D1D5DB;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.1);max-height:calc(100vh - 95px);scrollbar-width:thin}
+/* 세로 스크롤바는 보이고, 가로 스크롤바만 숨김 (proxy가 대체) */
+.tbl-outer::-webkit-scrollbar{width:8px;height:0}
+.tbl-outer::-webkit-scrollbar-track{background:#F3F4F6}
+.tbl-outer::-webkit-scrollbar-thumb{background:#9CA3AF;border-radius:4px}
+.tbl-outer::-webkit-scrollbar-thumb:hover{background:#6B7280}
+.tbl-scroll-proxy{
+  /* [v111] 항상 position:fixed — tbl-outer 밖으로 이동하여 드래그 시 피드백 루프 방지 */
+  position:fixed;bottom:0;z-index:48;
+  overflow-x:scroll;overflow-y:hidden;
+  height:18px;
+  background:#E5E7EB;
+  border-top:1px solid #9CA3AF;
+  box-shadow:0 -2px 6px rgba(0,0,0,.12);
+  box-sizing:border-box;
+  display:none; /* updateProxyPosition에서 show */
+  /* [v110] Firefox: 굵은 막대 + 진한 색 */
+  scrollbar-width:auto;
+  scrollbar-color:#374151 #E5E7EB;
+}
+/* [v110] Chromium/Safari: 굵은 thumb */
+.tbl-scroll-proxy::-webkit-scrollbar{height:14px;background:#E5E7EB}
+.tbl-scroll-proxy::-webkit-scrollbar-track{background:#E5E7EB}
+.tbl-scroll-proxy::-webkit-scrollbar-thumb{
+  background:#6B7280;
+  border-radius:7px;
+  border:2px solid #E5E7EB;
+  min-width:60px;
+}
+.tbl-scroll-proxy::-webkit-scrollbar-thumb:hover{background:#374151}
+.tbl-scroll-proxy-inner{height:1px}
+.sched-tbl{border-collapse:collapse;table-layout:fixed;white-space:nowrap}
+.sched-tbl *{font-family:'Noto Sans KR',sans-serif}
+
+/* 요일별 시간/번 */
+.col-time-day{
+  width:var(--w-time-col);min-width:var(--w-time-col);max-width:var(--w-time-col);
+  background:#fff!important;color:#111!important;
+  font-weight:900!important;font-size:var(--f-time)!important;
+  vertical-align:middle;text-align:center;padding:2px!important;
+  border-right:1px solid #D1D5DB!important;
+}
+.col-num-day{
+  width:var(--w-num-col);min-width:var(--w-num-col);max-width:var(--w-num-col);
+  background:#fff!important;color:#333!important;
+  font-weight:700!important;font-size:var(--f-small)!important;
+  border-right:1px solid #333!important;
+  vertical-align:middle;text-align:center;padding:2px!important;
+}
+.col-time-day-hdr{
+  background:#fff!important;color:#111!important;
+  font-weight:700!important;font-size:var(--f-small)!important;
+  text-align:center;padding:3px 2px!important;
+  width:var(--w-time-col);min-width:var(--w-time-col);max-width:var(--w-time-col);
+  border-right:1px solid #D1D5DB!important;
+}
+.col-num-day-hdr{
+  background:#fff!important;color:#333!important;
+  font-weight:700!important;font-size:var(--f-small)!important;
+  border-right:1px solid #333!important;
+  text-align:center;padding:2px!important;
+  width:var(--w-num-col);min-width:var(--w-num-col);max-width:var(--w-num-col);
+}
+
+/* 데이터 컬럼 */
+.sched-tbl th.dc,.sched-tbl td.dc{
+  width:var(--w-cell);min-width:var(--w-cell);max-width:var(--w-cell);
+  overflow:hidden;text-overflow:ellipsis;
+  padding:2px 3px;vertical-align:middle;text-align:center;
+  font-size:var(--f-base);
+}
+
+/* 요일 헤더 */
+.day-hdr-row th{border-bottom:2px solid #D1D5DB}
+.dh{background:#fff;color:#111;font-weight:900;font-size:var(--f-day-hdr);letter-spacing:1px;border-right:2px solid #D1D5DB!important;border-bottom:2px solid #D1D5DB!important;padding:7px 4px!important}
+.dh-today{background:#0F9D58!important;color:#fff!important}
+.dh-closed{position:relative}
+.dh-closed-tag{display:block;font-size:9px;font-weight:700;color:#DC2626;letter-spacing:0}
+
+/* [v95 #11 → v96 #5] 상단 요일/날짜 헤더만 sticky (레인 헤더는 같이 안 따라옴) */
+.sched-tbl thead tr.day-hdr-row th{position:sticky;top:0;background:#fff;z-index:5}
+.sched-tbl thead tr.day-hdr-row .dh-today{background:#0F9D58!important}
+
+/* 레인 헤더 */
+.lh-row th{border-bottom:2px solid #D1D5DB}
+.lh{background:#fff;color:#333;font-weight:700;font-size:10px;border:1px solid #333!important;padding:3px 2px!important}
+
+/* 담임 행 */
+.inst-hdr-row td{border-top:2px solid #333!important;border-bottom:2px solid #333!important;border-right:1px solid #555!important;border-left:1px solid #555!important}
+.inst-lbl{background:#fff!important;color:#333!important;font-size:10px!important;font-weight:700!important}
+
+/* 선생님 색상 */
+/* [v115] 선생님 색상 CSS는 더 이상 하드코딩하지 않음. updateTeacherStyles()가 런타임에 생성. */
+.i-none{background:#F3F4F6!important;color:#9CA3AF!important}
+.inst-cell-kimhs{background:#C7D2FE!important;color:#1E40AF!important;border:1px solid #A5B4FC!important}
+/* 학생 셀 */
+.stu-cell{font-weight:500;font-size:11px;color:#111!important;border:1px solid #333!important;background:#fff!important;text-align:center!important;vertical-align:middle;line-height:1.3;padding:2px 3px!important;overflow:hidden;text-overflow:ellipsis;position:relative}
+.stu-vehicle{background:#FFF88D!important}
+.stu-new{background:#FF0000!important;color:#0000FF!important}
+.stu-enrolled{background:#FF0000!important}
+.stu-enroll-pending{outline:2.5px solid #FF0000!important;outline-offset:-1px}
+.stu-req-pending{outline:2.5px solid #F59E0B!important;outline-offset:-1px}
+.stu-bogang-only{background:#EDE9FE!important}
+
+/* ═══ 출석 모드 색상 ═══ */
+.att-unchecked{background:#fff!important}
+.att-present{background:#FEF08A!important}                 /* 노란색 = 출석 */
+.att-present .att-nm{color:#713F12!important}
+.att-absent{background:#FCA5A5!important}                   /* 빨간색 = 결석 */
+.att-absent .att-nm{color:#7F1D1D!important;text-decoration:line-through}
+.att-bogang{background:#C4B5FD!important}                   /* 보라색 = 보강 */
+.att-bogang .att-nm{color:#4C1D95!important}
+.att-sample{background:#FDBA74!important}                   /* 주황색 = 샘플 */
+.att-sample .att-nm{color:#7C2D12!important}
+.att-hyuwon{background:#BAE6FD!important}                   /* 하늘색 = 휴원 */
+.att-hyuwon .att-nm{color:#0369A1!important;font-style:italic}
+.att-dim{opacity:0.3;filter:grayscale(0.5);cursor:default!important}
+.att-closed-col{opacity:0.3!important;filter:grayscale(0.5);cursor:default!important;background:#F3F4F6!important}
+.att-icon{display:inline-block;width:12px;height:12px;line-height:12px;border-radius:50%;font-size:9px;font-weight:800;margin-right:2px;text-align:center;vertical-align:middle;color:#fff}
+.att-icon-p{background:#EAB308}            /* 출석 아이콘 노랑 */
+.att-icon-a{background:#DC2626}            /* 결석 아이콘 빨강 */
+.att-icon-u{background:#D1D5DB;color:#6B7280}  /* 미체크 아이콘 회색 */
+.att-icon-h{background:#0EA5E9}            /* 휴원 아이콘 파랑 */
+.att-nm{font-weight:600}
+.att-tag{display:inline-block;font-size:8px;font-weight:800;padding:0 3px;border-radius:3px;margin-left:2px;vertical-align:middle;color:#fff}
+.att-tag.tag-bo{background:#7C3AED}
+.att-tag.tag-sa{background:#EA580C}
+.att-sub{display:inline-block;font-size:10px;background:#F9FAFB;border:1px solid #D1D5DB;border-radius:4px;padding:1px 3px;margin-left:2px;cursor:pointer;color:#374151}
+.att-sub:hover{background:#E5E7EB}
+
+/* 반칸 행 (5행 이후 추가 학생용) */
+.half-row > td{height:12px!important;padding:0 3px!important;font-size:9px!important;line-height:1.1!important}
+.half-row .stu-cell{font-size:9px!important;height:12px!important}
+.half-row .att-nm{font-size:9px!important}
+.half-row .att-icon{width:9px;height:9px;line-height:9px;font-size:7px}
+.half-row .att-tag{font-size:7px;padding:0 2px}
+.half-row .col-num-day{font-size:8px!important}
+.half-row .cell-blocked{background:#FAFAFA!important}
+
+/* 출석 모드: 선생님 셀 옆 + 버튼 */
+.att-add-inst{display:inline-block;margin-left:4px;padding:0 5px;font-size:13px;font-weight:900;color:#fff;background:#3B82F6;border-radius:50%;cursor:pointer;line-height:16px;vertical-align:middle;transition:all 0.15s;box-shadow:0 1px 2px rgba(0,0,0,0.15)}
+.att-add-inst:hover{background:#2563EB;transform:scale(1.15)}
+
+/* 2칸 분할 (원생+보강/샘플) */
+.att-split{padding:0!important;background:transparent!important;vertical-align:top!important}
+.att-split .att-row{padding:2px 4px;min-height:16px;display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;font-size:11px;line-height:1.3;box-sizing:border-box;width:100%}
+.att-split .att-row-primary{border-bottom:1px dashed rgba(0,0,0,0.2)}
+.att-split .att-row:hover{filter:brightness(0.95)}
+.att-split .att-nm{font-weight:600}
+.stu-has-note::after{
+  content:'';position:absolute;top:0;right:0;
+  width:0;height:0;
+  border-top:8px solid #333;
+  border-left:8px solid transparent;
+}
+.move-bar{position:fixed;top:48px;left:0;right:0;z-index:100;background:#F59E0B;color:#111;padding:8px 16px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.move-bar button{background:#fff;border:1.5px solid #92400E;color:#92400E;border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.stu-move-src{outline:3px solid #F59E0B!important;outline-offset:-1px}
+.stu-empty{color:#C8D1DA;font-size:9px}
+
+/* 요일 구분선 */
+.day-sep{border-right:1px solid #333!important}
+/* [v118] 오늘 요일의 우측 구분선만 굵은 초록 (시각 강조) */
+.day-sep-today{border-right:3px solid #0F9D58!important}
+
+/* 차단 셀 */
+.cell-blocked,.inst-hdr-row td.cell-blocked{background:#E5E7EB!important;border:none!important;border-top:none!important;border-bottom:none!important;border-left:none!important;border-right:none!important;cursor:default;box-shadow:none!important}
+
+/* 담임 셀 클릭 */
+.inst-clickable{cursor:pointer;transition:filter .1s}
+.inst-clickable:hover{filter:brightness(.92)}
+
+/* 담임 선택 팝업 */
+.inst-popup{
+  position:fixed;z-index:9999;background:#fff;border-radius:10px;
+  box-shadow:0 6px 24px rgba(0,0,0,.15);border:1.5px solid #D1D5DB;
+  padding:10px 12px;min-width:260px;max-height:400px;overflow-y:auto;
+  opacity:0;pointer-events:none;transition:opacity .12s;
+}
+.inst-popup.show{opacity:1;pointer-events:auto}
+.inst-popup-hd{padding:0 0 8px;font-size:11px;font-weight:700;color:#888;border-bottom:1px solid #E5E7EB;display:flex;align-items:center}
+.inst-btn-grid{display:flex;flex-wrap:wrap;gap:4px;padding:8px 0 4px}
+.inst-btn{
+  display:flex;align-items:center;gap:4px;padding:5px 10px;cursor:pointer;
+  font-size:12px;font-weight:700;font-family:inherit;
+  border:1.5px solid #D1D5DB;border-radius:6px;background:#fff;
+}
+.inst-btn:hover{filter:brightness(.93)}
+.inst-btn.active{outline:2px solid #111;outline-offset:-1px}
+.inst-btn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.inst-popup-bottom{display:flex;align-items:center;gap:6px;padding-top:6px;border-top:1px solid #E5E7EB;flex-wrap:wrap}
+.inst-popup-bottom label{font-size:10px;font-weight:600;display:flex;align-items:center;gap:3px;cursor:pointer}
+.inst-btn-clear{margin-left:auto;font-size:10px;font-weight:700;color:#DC2626;border:1px solid #DC2626;border-radius:5px;padding:3px 8px;background:#fff;cursor:pointer;font-family:inherit}
+.inst-btn-clear:hover{background:#FEE2E2}
+.inst-reserve-badge{display:inline-flex;align-items:center;justify-content:center;background:#DC2626;color:#fff;font-size:8px;font-weight:800;min-width:14px;height:14px;border-radius:7px;padding:0 3px;margin-left:2px;vertical-align:middle}
+.inst-cell-wrap{position:relative;display:inline-block}
+.inst-reserve-list{font-size:11px;padding:6px 0;border-top:1px solid #E5E7EB;margin-top:6px}
+.inst-reserve-item{display:flex;align-items:center;gap:6px;padding:3px 0}
+.inst-reserve-item .rname{font-weight:600;flex:1}
+.inst-reserve-item .rphone{color:#888;font-size:10px}
+.inst-reserve-item .rdel{color:#DC2626;cursor:pointer;font-size:10px;opacity:.5}
+.inst-reserve-item .rdel:hover{opacity:1}
+
+/* 학생 셀 클릭 */
+.stu-clickable{cursor:pointer;transition:filter .1s}
+.stu-clickable:hover{filter:brightness(.95)}
+.stu-active{outline:2.5px solid #3B82F6!important;outline-offset:-1px;z-index:1}
+@keyframes flash-red{0%,20%{outline:3px solid #FF0000;outline-offset:-1px}100%{outline:3px solid transparent}}
+.stu-flash{animation:flash-red 2s ease-out}
+
+/* 셀 툴팁 */
+.cell-tip{
+  position:fixed;z-index:9998;background:#fff;color:#333;
+  border-radius:8px;padding:8px 12px;min-width:160px;max-width:240px;
+  box-shadow:0 4px 16px rgba(0,0,0,.15);border:1.5px solid #D1D5DB;
+  font-size:11px;line-height:1.6;pointer-events:none;
+  opacity:0;transition:opacity .15s;
+}
+.cell-tip.show{opacity:1}
+.cell-tip-name{font-size:13px;font-weight:900;color:#111;margin-bottom:4px}
+.cell-tip-row{color:#555}
+.cell-tip-row b{color:#0F9D58}
+
+/* 차량 토글 */
+.sp-vehicle-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.sp-vehicle-toggle{width:36px;height:20px;border-radius:10px;border:none;cursor:pointer;position:relative;transition:background .2s}
+.sp-vehicle-toggle.on{background:#0F9D58}
+.sp-vehicle-toggle.off{background:#D1D5DB}
+.sp-vehicle-toggle::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;transition:left .2s}
+.sp-vehicle-toggle.off::after{left:2px}
+.sp-vehicle-toggle.on::after{left:18px}
+.sp-gender-btn{padding:2px 8px;border-radius:4px;border:1.5px solid #D1D5DB;background:#fff;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit}
+.sp-gender-btn.sel-m{background:#3B82F6;color:#fff;border-color:#3B82F6}
+.sp-gender-btn.sel-f{background:#EC4899;color:#fff;border-color:#EC4899}
+
+/* [v104] 통합 chip 스타일 — 남/여 선택 버튼 */
+.sp-chip-row{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px}
+.sp-chip{
+  display:inline-flex;align-items:center;justify-content:center;
+  height:32px;padding:0 14px;
+  border-radius:8px;
+  border:1.5px solid #D1D5DB;
+  background:#fff;color:#6B7280;
+  font-size:12px;font-weight:700;font-family:inherit;
+  cursor:pointer;white-space:nowrap;
+  transition:all .12s;
+}
+.sp-chip:hover{border-color:#9CA3AF}
+.sp-chip.on{color:#fff}
+.sp-chip.male.on{background:#3B82F6;border-color:#3B82F6}
+.sp-chip.female.on{background:#EC4899;border-color:#EC4899}
+
+/* [v107] 차량/신규 — 라벨 위, 토글 아래 (4열 그리드처럼 정렬) */
+.sp-vt-col{
+  display:inline-flex;flex-direction:column;align-items:center;gap:3px;
+  cursor:pointer;user-select:none;
+}
+.sp-vt-label{font-size:10px;font-weight:700;color:#6B7280;line-height:1;transition:color .15s}
+.sp-vt-col.veh-col.on .sp-vt-label{color:#0F9D58}
+.sp-vt-col.new-col.on .sp-vt-label{color:#DC2626}
+.sp-vt-toggle{
+  width:34px;height:18px;border-radius:9px;border:none;cursor:pointer;
+  position:relative;background:#D1D5DB;transition:background .2s;flex-shrink:0;
+  pointer-events:none; /* 부모 클릭으로 처리 */
+}
+.sp-vt-col.veh-col.on .sp-vt-toggle{background:#0F9D58}
+.sp-vt-col.new-col.on .sp-vt-toggle{background:#DC2626}
+.sp-vt-toggle::after{
+  content:'';position:absolute;width:14px;height:14px;border-radius:50%;
+  background:#fff;top:2px;left:2px;transition:left .2s;
+}
+.sp-vt-col.on .sp-vt-toggle::after{left:18px}
+
+/* 학생 팝업 */
+.stu-popup{
+  position:fixed;z-index:9999;background:#fff;border-radius:10px;
+  box-shadow:0 6px 24px rgba(0,0,0,.15);border:1.5px solid #D1D5DB;
+  padding:0;min-width:460px;max-width:500px;
+  /* [v113] 절대 viewport를 넘지 않도록 — 하단 셀 클릭 시 잘림 방지 */
+  max-height:calc(100vh - 20px);
+  overflow-y:auto;
+  opacity:0;pointer-events:none;transition:opacity .12s;
+}
+.stu-popup.show{opacity:1;pointer-events:auto}
+.stu-popup-hd{font-size:11px;color:#888;font-weight:700;padding:10px 14px 8px;border-bottom:1px solid #E5E7EB;display:flex;align-items:center}
+.stu-popup .fi{margin-top:0}
+.stu-popup-body{display:flex;gap:0}
+.stu-popup-left{flex:1;padding:10px 14px;border-right:1px solid #E5E7EB;min-width:200px}
+.stu-popup-right{flex:1;padding:10px 12px;min-width:230px;max-height:320px;overflow-y:auto}
+.stu-popup-row{display:flex;gap:6px;margin-bottom:6px;align-items:end}
+.stu-popup-actions{display:flex;gap:6px;margin-top:8px}
+.stu-dates-section{margin-top:10px;padding-top:8px;border-top:1.5px solid #E5E7EB}
+.stu-dates-label{font-size:10px;font-weight:700;color:#0F9D58;margin-bottom:4px}
+.stu-dates-row{display:flex;gap:4px;margin-bottom:4px}
+.stu-date-box{
+  flex:1;min-height:28px;border-radius:5px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-size:10px;font-weight:700;cursor:pointer;
+  border:1.5px solid transparent;transition:all .1s;padding:2px 1px;
+}
+.stu-date-box:hover{filter:brightness(.92)}
+.stu-date-box.past{background:#F3F4F6;color:#9CA3AF;border-color:#E5E7EB}
+.stu-date-box.today{background:#0F9D58;color:#fff;border-color:#0B8043}
+.stu-date-box.future{background:#F0FDF4;color:#0F9D58;border-color:#0F9D58}
+.stu-date-box.closed{background:#FEE2E2;color:#DC2626;border-color:#FECACA;text-decoration:line-through;opacity:.6}
+.stu-date-box.selected{outline:2.5px solid #3B82F6;outline-offset:-1px}
+.stu-date-box.retire-set{background:#333!important;color:#fff!important;border-color:#111!important}
+.stu-date-box.retire-set .date-retire-label{display:block}
+.stu-date-box.enroll-set{background:#3B82F6!important;color:#fff!important;border-color:#1D4ED8!important}
+.stu-date-box.enroll-set .date-enroll-label{display:block}
+.stu-date-box.absent-set{background:#FEE2E2!important;color:#DC2626!important;border-color:#EF4444!important}
+.stu-date-box.absent-set .date-absent-label{display:block}
+.stu-date-box.bogang-set{background:#EDE9FE!important;color:#7C3AED!important;border-color:#7C3AED!important}
+.stu-date-box.bogang-set .date-bogang-label{display:block}
+.stu-date-box.sample-set{background:#FEF3C7!important;color:#D97706!important;border-color:#F59E0B!important}
+.stu-date-box.sample-set .date-sample-label{display:block}
+.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:8px;font-weight:800;line-height:1.1;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.date-retire-label{color:#fff}.date-enroll-label{color:#fff}
+.date-absent-label{color:#DC2626}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
+.stu-date-box.hyuwon-set{background:#E0F2FE!important;color:#0369A1!important;border-color:#0EA5E9!important}
+
+/* 셀 이벤트 뱃지 (등원 상단 + 나머지 2x2) */
+.cb-top{
+  display:block;width:100%;
+  padding:0 2px;font-size:8px;font-weight:800;
+  border-radius:2px;text-align:center;
+  white-space:nowrap;
+  line-height:1.5;color:#fff;margin-top:1px;
+}
+.cell-badges{
+  display:flex;flex-wrap:wrap;gap:1px;
+  margin-top:1px;width:100%;
+}
+.cb{
+  flex:1 1 calc(50% - 1px);min-width:0;
+  padding:0 2px;font-size:8px;font-weight:800;
+  border-radius:2px;text-align:center;
+  white-space:nowrap;
+  line-height:1.5;color:#fff;
+}
+.cb-retire{background:#555}
+.cb-enroll{background:#3B82F6}
+.cb-absent{background:#EF4444}
+.cb-bogang{background:#7C3AED}
+.cb-sample{background:#F59E0B;color:#333}
+.cb-hyuwon{background:#0EA5E9}
+.cb-pending-bogang{background:#F59E0B;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite}
+.cb-pending-cancel{background:#EF4444;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite}
+@keyframes pendingPulse{0%,100%{opacity:1}50%{opacity:0.7}}
+
+/* 토스트 */
+.toasts{position:fixed;bottom:16px;right:16px;z-index:999;display:flex;flex-direction:column;gap:5px}
+.toast-item{background:#0F9D58;color:#fff;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;animation:tin .2s ease}
+.toast-item.ok{background:#059669}.toast-item.err{background:#DC2626}
+@keyframes tin{from{transform:translateX(50px);opacity:0}to{transform:none;opacity:1}}
+
+/* 모달 */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;display:flex;align-items:center;justify-content:center}
+.modal{background:#fff;border-radius:12px;width:420px;max-height:80vh;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.2);display:flex;flex-direction:column}
+.modal-hd{padding:13px 17px;border-bottom:1px solid #E5E7EB;font-size:14px;font-weight:900;display:flex;align-items:center;gap:8px}
+.modal-hd-r{margin-left:auto;display:flex;gap:6px}
+.modal-body{padding:16px 17px;overflow-y:auto;flex:1}
+.modal-ft{padding:11px 17px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px}
+.btn{padding:7px 14px;border-radius:7px;font-size:12px;font-weight:700;border:none;cursor:pointer;font-family:inherit}
+.btn-p{background:#0F9D58;color:#fff}
+.btn-p:hover{background:#0B8043}
+.btn-o{background:#fff;border:1.5px solid #D1D5DB;color:#333}
+.btn-o:hover{background:#F3F4F6}
+.btn-d{background:#DC2626;color:#fff;padding:4px 8px;font-size:11px;border-radius:5px}
+.fi{width:100%;padding:7px 11px;border:1.5px solid #D1D9E0;border-radius:7px;font-size:13px;font-family:inherit;margin-top:4px}
+.fi:focus{border-color:#0F9D58;outline:none}
+/* [v95 #1] textarea도 같은 스타일 + 멀티라인 */
+textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
+.fl{font-size:11px;font-weight:700;color:#444;display:block;margin-bottom:2px}
+.closed-list{list-style:none;padding:0;margin:8px 0 0}
+.closed-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #F3F4F6;font-size:12px}
+.closed-item:last-child{border-bottom:none}
+.closed-type{font-size:10px;font-weight:800;border-radius:4px;padding:2px 6px;flex-shrink:0}
+.closed-type.t-range{background:#FEE2E2;color:#DC2626}
+.closed-type.t-single{background:#FEF3C7;color:#92400E}
+.closed-dates{font-weight:600;color:#111;flex:1}
+.closed-memo{font-size:10px;color:#888}
+
+@media print{
+  .appbar{display:none!important}
+  .page{padding:0}
+  .tbl-outer{border-radius:0;border:1px solid #ccc;box-shadow:none}
+  .sched-tbl{font-size:8px}
+  .sched-tbl th.dc,.sched-tbl td.dc{width:90px;min-width:90px;max-width:90px}
+}

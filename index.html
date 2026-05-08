@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>가경 수영장 시간표</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 지점 선택 모달 (첫 방문 / 변경) -->
+<div id="branch-modal" class="branch-modal">
+  <div class="branch-modal-box">
+    <h2 class="branch-modal-title">🏊 지점을 선택하세요</h2>
+    <div class="branch-modal-btns">
+      <button class="branch-btn" onclick="selectBranch('gagyeong')">
+        <span class="branch-emoji">🏢</span>
+        <span class="branch-name">가경점</span>
+        <span class="branch-desc">기존 시간표 (운영 중)</span>
+      </button>
+      <button class="branch-btn" onclick="selectBranch('yongam')">
+        <span class="branch-emoji">🏬</span>
+        <span class="branch-name">용암점</span>
+        <span class="branch-desc">새 시간표</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="appbar">
+  <h1><span id="app-brand">🏊 가경 수영장</span><small id="app-period"></small></h1>
+  <button class="hbtn" id="branch-switch-btn" onclick="openBranchModal()" style="margin-left:8px;font-size:11px" title="지점 변경">⇄ 지점 변경</button>
+  <div class="appbar-r">
+    <!-- [v118] 시간표 줌 컨트롤 -->
+    <div class="zoom-ctrl" title="시간표 크기 조절">
+      <button class="hbtn zoom-btn" onclick="tblZoomOut()" title="축소">−</button>
+      <span id="tbl-zoom-pct" class="zoom-pct" onclick="tblZoomReset()" title="100%로 복원">100%</span>
+      <button class="hbtn zoom-btn" onclick="tblZoomIn()" title="확대">＋</button>
+    </div>
+    <input type="date" id="tm-date" class="hbtn" style="width:130px;color:#fff;background:rgba(255,255,255,.12);font-size:11px" title="타임머신" onchange="setTimeMachine(this.value)">
+    <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
+    <button class="hbtn" id="attendance-toggle-btn" onclick="toggleAttendanceMode()">📋 출석부</button>
+    <button class="hbtn" id="parent-req-btn" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
+    <button class="hbtn" onclick="openRetireHistoryModal()">📋 퇴원기록</button>
+    <button class="hbtn" onclick="openTeacherModal()">👥 선생님 관리</button>
+    <button class="hbtn" onclick="openPeriodModal()">📆 기간 관리</button>
+    <button class="hbtn" onclick="openClosedModal()">📅 휴관일 관리</button>
+    <button class="hbtn" onclick="if(confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')){Object.keys(_dbCache).forEach(k=>dbRemove(k));try{localStorage.clear();}catch(e){}if(_fbReady)_fb.remove();location.reload();}">🔄 초기화</button>
+    <button class="hbtn" onclick="exportExcel()">📥 엑셀</button>
+    <button class="hbtn" onclick="window.print()">🖨️ 인쇄</button>
+  </div>
+</div>
+
+<!-- 출석 모드 바 (toggleAttendanceMode로 활성화) -->
+<div id="attendance-bar" style="display:none;position:sticky;top:0;z-index:100;background:linear-gradient(135deg,#10B981,#059669);color:#fff;padding:10px 16px;display:none;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15);flex-wrap:wrap">
+  <span style="font-size:15px;font-weight:900">📋 출석 체크 모드</span>
+  <button onclick="attWeekShift(-1)" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 10px;border-radius:6px;font-weight:700;cursor:pointer">◀ 이전주</button>
+  <input type="date" id="att-date-input" onchange="setAttendanceDate(this.value)" style="padding:6px 10px;border-radius:6px;border:none;font-size:14px;font-weight:700">
+  <button onclick="attWeekShift(1)" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 10px;border-radius:6px;font-weight:700;cursor:pointer">다음주 ▶</button>
+  <button onclick="setAttToday()" style="background:rgba(255,255,255,0.25);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">오늘</button>
+  <span id="att-bar-date-label" style="font-size:16px;font-weight:900;margin-left:8px;padding:4px 12px;background:#fff;color:#059669;border-radius:8px"></span>
+  <span id="att-bar-stats" style="margin-left:auto;font-size:13px;font-weight:700"></span>
+  <button id="att-edit-btn" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
+  <button onclick="toggleAttendanceMode()" style="background:rgba(0,0,0,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✕ 닫기</button>
+</div>
+
+<!-- 원생 추가 모달 (출석부 + 버튼) -->
+<div id="att-add-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10002;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:22px;min-width:320px;max-width:400px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111">➕ 원생 추가</div>
+    <div id="att-add-sub" style="font-size:11px;color:#6B7280;margin-bottom:14px"></div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">이름</label>
+      <input type="text" id="att-add-name" placeholder="학생 이름" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">나이 (선택)</label>
+      <input type="number" id="att-add-age" placeholder="나이" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+    </div>
+    <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:6px">상태 선택 (클릭 시 저장)</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:8px">
+      <button id="att-add-present" style="padding:10px;font-size:13px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:8px;cursor:pointer">✓ 출석</button>
+      <button id="att-add-absent" style="padding:10px;font-size:13px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:8px;cursor:pointer">✗ 결석</button>
+      <button id="att-add-bogang" style="padding:10px;font-size:13px;font-weight:800;background:#C4B5FD;color:#4C1D95;border:2px solid #7C3AED;border-radius:8px;cursor:pointer">🟪 보강</button>
+      <button id="att-add-sample" style="padding:10px;font-size:13px;font-weight:800;background:#FDBA74;color:#7C2D12;border:2px solid #EA580C;border-radius:8px;cursor:pointer">🟧 샘플</button>
+      <button id="att-add-hyuwon" style="padding:10px;font-size:13px;font-weight:800;background:#BAE6FD;color:#0369A1;border:2px solid #0EA5E9;border-radius:8px;cursor:pointer;grid-column:span 2">🏥 휴원</button>
+    </div>
+    <button id="att-add-cancel" style="width:100%;padding:8px;font-size:12px;background:#F3F4F6;color:#6B7280;border:none;border-radius:8px;cursor:pointer">취소</button>
+  </div>
+</div>
+
+<!-- 학생 편집 모달 (과거 스냅샷 편집 or 일반 편집) -->
+<div id="att-edit-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10001;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:22px;min-width:320px;max-width:380px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111">✏️ 학생 편집</div>
+    <div id="att-edit-sub" style="font-size:11px;color:#6B7280;margin-bottom:14px"></div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">이름</label>
+      <input type="text" id="att-edit-name" placeholder="학생 이름" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+    </div>
+    <div style="margin-bottom:12px">
+      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">나이</label>
+      <input type="number" id="att-edit-age" placeholder="나이" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+    </div>
+    <div style="display:flex;gap:6px">
+      <button id="att-edit-delete" style="padding:10px 14px;font-size:13px;font-weight:700;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:8px;cursor:pointer">삭제</button>
+      <button id="att-edit-cancel" style="padding:10px 14px;font-size:13px;font-weight:700;background:#F3F4F6;color:#6B7280;border:none;border-radius:8px;cursor:pointer;flex:1">취소</button>
+      <button id="att-edit-save" style="padding:10px 14px;font-size:13px;font-weight:800;background:#F59E0B;color:#fff;border:none;border-radius:8px;cursor:pointer;flex:1">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- 출석 체크 모달 (셀 클릭 시 3개 버튼) -->
+<div id="att-cell-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:20px 22px;min-width:280px;max-width:340px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div id="att-modal-title" style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111;text-align:center"></div>
+    <div id="att-modal-sub" style="font-size:11px;color:#6B7280;margin-bottom:16px;text-align:center"></div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button id="att-modal-present" style="padding:12px;font-size:15px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:10px;cursor:pointer">✓ 출석</button>
+      <button id="att-modal-absent" style="padding:12px;font-size:15px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:10px;cursor:pointer">✗ 결석</button>
+      <button id="att-modal-cancel" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#6B7280;border:2px solid #D1D5DB;border-radius:10px;cursor:pointer">○ 취소 (미체크)</button>
+      <button id="att-modal-delete" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
+    </div>
+    <button id="att-modal-close" style="width:100%;margin-top:12px;padding:8px;font-size:12px;background:transparent;color:#9CA3AF;border:none;cursor:pointer">닫기</button>
+  </div>
+</div>
+
+<div id="tab-modal" class="tab-modal">
+  <div class="tab-modal-box">
+    <div class="tab-modal-title">새 탭 만들기</div>
+    <div class="tab-modal-btns">
+      <button class="tab-type-btn" data-new-type="regular">📋 정규시간표</button>
+      <button class="tab-type-btn" data-new-type="bangteuk">🏊 방특시간표</button>
+    </div>
+    <button style="margin-top:12px;border:none;background:none;color:#888;font-size:12px;cursor:pointer;font-family:inherit" onclick="document.getElementById('tab-modal').classList.remove('show')">취소</button>
+  </div>
+</div>
+
+<div id="tab-bar" class="tab-bar"></div>
+<div id="snap-banner" class="snap-banner">📷 스냅샷 — 읽기 전용 (캡처 시점 그대로 고정)</div>
+
+<div class="page">
+  <div id="tab-regular" class="tbl-outer"><div id="tbl"></div></div>
+  <div id="scroll-proxy" class="tbl-scroll-proxy"><div class="tbl-scroll-proxy-inner" id="scroll-proxy-inner"></div></div>
+</div>
+
+<div id="move-bar" class="move-bar" style="display:none">
+  <span id="move-msg"></span>
+  <button onclick="_instSwapMode?cancelInstSwap():cancelMove()">취소</button>
+</div>
+
+<div id="inst-popup" class="inst-popup"></div>
+<div id="stu-popup" class="stu-popup"></div>
+<div id="cell-tip" class="cell-tip"></div>
+
+<!-- [v118] 퇴원 기록 모달 -->
+<div id="retire-history-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeRetireHistoryModal()">
+  <div class="modal" style="max-width:880px;width:95vw">
+    <div class="modal-hd">📋 퇴원 기록
+      <div class="modal-hd-r" style="display:flex;gap:6px;align-items:center">
+        <input id="rh-search" type="search" placeholder="이름/메모 검색" class="fi" style="width:160px;margin:0;padding:4px 8px;font-size:12px" oninput="renderRetireHistoryList()">
+        <select id="rh-sort" class="fi" style="width:130px;margin:0;padding:4px 8px;font-size:12px" onchange="renderRetireHistoryList()">
+          <option value="recent">기록순 (최신)</option>
+          <option value="retired">퇴원일순 (최신)</option>
+          <option value="oldest">기록순 (오래된)</option>
+        </select>
+        <button class="btn btn-o" onclick="exportRetireHistoryCsv()" style="padding:4px 10px;font-size:11px">📥 CSV</button>
+      </div>
+    </div>
+    <div class="modal-body" style="max-height:60vh;overflow:auto">
+      <div id="rh-summary" style="font-size:11px;color:#666;margin-bottom:8px"></div>
+      <div id="rh-list"></div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-o" onclick="closeRetireHistoryModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="teacher-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeTeacherModal()">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-hd">👥 선생님 관리</div>
+    <div class="modal-body">
+      <div id="tm-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+      <button class="btn btn-p" onclick="addTeacher()" style="width:100%;padding:8px">＋ 선생님 추가</button>
+      <div style="margin-top:10px;font-size:10px;color:#888;line-height:1.5">
+        • 이름을 수정하고 Enter/포커스 해제하면 시간표의 모든 셀이 자동으로 업데이트됩니다<br>
+        • 이미 배정된 선생님은 삭제할 수 없어요. 먼저 셀에서 선생님을 해제해주세요
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-o" onclick="closeTeacherModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="closed-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeClosedModal()">
+  <div class="modal">
+    <div class="modal-hd">📅 휴관일/의무보강일 관리
+      <div class="modal-hd-r">
+        <select id="cm-year" class="fi" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderClosedList()"></select>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:6px;margin-bottom:12px">
+        <div style="flex:1">
+          <label class="fl">시작일</label>
+          <input type="date" id="cm-start" class="fi">
+        </div>
+        <div style="flex:1">
+          <label class="fl">종료일 (단일이면 비워두기)</label>
+          <input type="date" id="cm-end" class="fi">
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:12px;align-items:end">
+        <div style="flex:1">
+          <label class="fl">유형</label>
+          <select id="cm-type" class="fi" style="padding:7px 8px">
+            <option value="휴관">휴관</option>
+            <option value="의무보강">의무보강</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label class="fl">메모 (선택)</label>
+          <input id="cm-memo" class="fi" placeholder="예: 설 연휴">
+        </div>
+        <button class="btn btn-p" onclick="addClosedEntry()" style="margin-bottom:0;height:36px">추가</button>
+      </div>
+      <div style="border-top:2px solid #E5E7EB;padding-top:8px">
+        <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px">등록 목록</div>
+        <ul id="cm-list" class="closed-list"></ul>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-o" onclick="closeClosedModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="period-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closePeriodModal()">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-hd">📆 수업 기간 관리
+      <div class="modal-hd-r">
+        <select id="pm-year" class="fi" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderPeriodList()"></select>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:6px;margin-bottom:12px;align-items:end">
+        <div style="width:50px">
+          <label class="fl">월</label>
+          <input type="number" id="pm-month" class="fi" min="1" max="12" placeholder="월" style="padding:7px 4px;text-align:center">
+        </div>
+        <div style="flex:1">
+          <label class="fl">시작일</label>
+          <input type="date" id="pm-start" class="fi">
+        </div>
+        <div style="flex:1">
+          <label class="fl">종료일</label>
+          <input type="date" id="pm-end" class="fi">
+        </div>
+        <button class="btn btn-p" onclick="addPeriodEntry()" style="height:36px">추가</button>
+      </div>
+      <div style="border-top:2px solid #E5E7EB;padding-top:8px">
+        <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px">등록 목록</div>
+        <ul id="pm-list" class="closed-list"></ul>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-o" onclick="closePeriodModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
+<script src="js/core.js"></script>
+<script src="js/tabs.js"></script>
+<script src="js/data.js"></script>
+<script src="js/teachers.js"></script>
+<script src="js/popup-stu.js"></script>
+<script src="js/table.js"></script>
+<script src="js/defaults.js"></script>
+<script src="js/init.js"></script>
+
+</body>
+</html>

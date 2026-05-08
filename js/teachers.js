@@ -1,0 +1,545 @@
+/* ════════════════════════════════════════════════════════════════
+ * SECTION: 담임 선택 팝업
+ * ════════════════════════════════════════════════════════════════ */
+// [v115] TEACHERS는 이제 Firebase에 저장되는 동적 목록
+//   기본값(처음 로드 시): 기존 하드코딩 6명
+const _DEFAULT_TEACHERS=[
+  {n:'김민승',color:'#93C5FD'},
+  {n:'박형진',color:'#86EFAC'},
+  {n:'이수성',color:'#FCD34D'},
+  {n:'김재용',color:'#F9A8D4'},
+  {n:'손용곤',color:'#C4B5FD'},
+  {n:'김형수',color:'#6EE7B7'},
+];
+let TEACHERS = [];
+
+function loadTeachers(){
+  const saved=loadJSON(STORAGE_KEYS.TEACHERS, null);
+  // saved===null → 처음 로드, 기본값 사용
+  // saved===[] → 사용자가 모두 삭제한 상태, 그대로 유지
+  // [지점] 가경점만 디폴트 선생님 시드 사용. 용암점/그 외 지점은 빈 목록으로 시작.
+  const isGagyeong = (typeof getBranchInfo==='function') ? (getBranchInfo()?.id==='gagyeong') : true;
+  TEACHERS = (saved && Array.isArray(saved))
+    ? saved
+    : (isGagyeong ? JSON.parse(JSON.stringify(_DEFAULT_TEACHERS)) : []);
+  updateTeacherStyles();
+}
+function saveTeachers(){
+  saveJSON(STORAGE_KEYS.TEACHERS, TEACHERS);
+  updateTeacherStyles();
+}
+
+// [v115] 선생님 이름을 CSS-safe 클래스명으로 변환
+//   한글/영숫자/언더스코어만 허용, 그 외는 언더스코어로 치환
+function teacherCssClass(name){
+  return 'i-' + String(name||'').replace(/[^a-zA-Z0-9가-힣_]/g,'_');
+}
+
+// [v115] 선생님 색상을 동적 CSS로 주입 — 이름 변경 시 자동 재생성
+function updateTeacherStyles(){
+  let style=document.getElementById('teacher-styles');
+  if(!style){
+    style=document.createElement('style');
+    style.id='teacher-styles';
+    document.head.appendChild(style);
+  }
+  let css='';
+  TEACHERS.forEach(t=>{
+    css += `.${teacherCssClass(t.n)}{background:${t.color}!important;color:#111!important}\n`;
+  });
+  style.textContent=css;
+}
+
+/* [v115] 선생님 관리 모달 */
+function openTeacherModal(){
+  document.getElementById('teacher-modal').style.display='flex';
+  renderTeacherList();
+}
+function closeTeacherModal(){
+  document.getElementById('teacher-modal').style.display='none';
+}
+function renderTeacherList(){
+  const list=document.getElementById('tm-list');
+  if(!list) return;
+  if(TEACHERS.length===0){
+    list.innerHTML='<div style="color:#888;font-size:12px;text-align:center;padding:12px">등록된 선생님이 없습니다</div>';
+    return;
+  }
+  list.innerHTML=TEACHERS.map((t,i)=>`
+    <div class="tm-row" data-idx="${i}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1.5px solid #E5E7EB;border-radius:8px;background:#fff">
+      <input type="color" class="tm-color" value="${t.color}" data-idx="${i}" style="width:32px;height:32px;border:none;border-radius:6px;cursor:pointer;padding:0;background:none">
+      <input type="text" class="tm-name fi" value="${esc(t.n)}" data-idx="${i}" data-orig="${esc(t.n)}" style="flex:1;margin:0;padding:6px 10px;font-size:13px">
+      <button class="btn btn-d tm-del" data-idx="${i}" style="padding:5px 10px;font-size:10px">삭제</button>
+    </div>
+  `).join('');
+
+  // 이벤트 위임
+  list.querySelectorAll('.tm-color').forEach(el=>{
+    el.addEventListener('change',e=>{
+      const idx=parseInt(e.target.dataset.idx);
+      handleTeacherColorChange(idx, e.target.value);
+    });
+  });
+  list.querySelectorAll('.tm-name').forEach(el=>{
+    const commit=()=>{
+      const idx=parseInt(el.dataset.idx);
+      const orig=el.dataset.orig;
+      const nv=el.value.trim();
+      if(!nv || nv===orig){ el.value=orig; return; }
+      handleTeacherNameEdit(idx, orig, nv);
+    };
+    el.addEventListener('blur',commit);
+    el.addEventListener('keydown',e=>{
+      if(e.key==='Enter'){ e.preventDefault(); el.blur(); }
+      if(e.key==='Escape'){ el.value=el.dataset.orig; el.blur(); }
+    });
+  });
+  list.querySelectorAll('.tm-del').forEach(el=>{
+    el.addEventListener('click',e=>{
+      const idx=parseInt(e.target.dataset.idx);
+      handleTeacherDelete(idx);
+    });
+  });
+}
+function addTeacher(){
+  // 중복 안 나는 기본 이름 찾기
+  let i=1, name='선생님'+i;
+  while(TEACHERS.some(t=>t.n===name)){ i++; name='선생님'+i; }
+  // 팔레트 순환해서 기본색 지정
+  const palette=['#93C5FD','#86EFAC','#FCD34D','#F9A8D4','#C4B5FD','#6EE7B7','#FCA5A5','#FDBA74','#A5F3FC','#D8B4FE'];
+  const color=palette[TEACHERS.length % palette.length];
+  TEACHERS.push({n:name, color});
+  saveTeachers();
+  renderTeacherList();
+  // 새로 추가한 행의 이름 input에 포커스 + 전체 선택
+  setTimeout(()=>{
+    const inputs=document.querySelectorAll('#tm-list .tm-name');
+    const last=inputs[inputs.length-1];
+    if(last){ last.focus(); last.select(); }
+  },30);
+}
+function handleTeacherColorChange(idx, newColor){
+  if(!TEACHERS[idx]) return;
+  TEACHERS[idx].color=newColor;
+  saveTeachers();
+  buildTable();
+}
+function handleTeacherNameEdit(idx, oldName, newName){
+  if(!TEACHERS[idx]) return;
+  // 중복 검사
+  if(TEACHERS.some((t,i)=>i!==idx && t.n===newName)){
+    toast('같은 이름의 선생님이 이미 있습니다','err');
+    renderTeacherList(); // 원복
+    return;
+  }
+  TEACHERS[idx].n=newName;
+  // 모든 탭의 INST_MAP에서 oldName → newName 일괄 변경
+  let renameCount=0;
+  // 현재 탭
+  for(const k in INST_MAP){
+    if(INST_MAP[k] && INST_MAP[k].n===oldName){
+      INST_MAP[k].n=newName;
+      renameCount++;
+    }
+  }
+  if(renameCount>0) saveInst();
+  // 다른 탭
+  _tabList.forEach(tab=>{
+    if(tab.id===_activeTab) return; // 현재 탭은 이미 처리
+    const iKey = tab.type==='bangteuk'
+      ? 'swim_bt_'+tab.id+'_inst'
+      : (tab.id==='regular' ? 'swim_inst' : 'swim_inst_'+tab.id);
+    const otherInst = loadJSON(iKey, null);
+    if(!otherInst) return;
+    let changed=false;
+    for(const k in otherInst){
+      if(otherInst[k] && otherInst[k].n===oldName){
+        otherInst[k].n=newName;
+        renameCount++;
+        changed=true;
+      }
+    }
+    if(changed) saveJSON(iKey, otherInst, true);
+  });
+  saveTeachers();
+  renderTeacherList();
+  buildTable();
+  toast(`"${oldName}" → "${newName}" (${renameCount}개 셀 갱신)`,'ok');
+}
+function handleTeacherDelete(idx){
+  const t=TEACHERS[idx];
+  if(!t) return;
+  // 사용 중인지 확인
+  let useCount=0;
+  for(const k in INST_MAP){
+    if(INST_MAP[k] && INST_MAP[k].n===t.n) useCount++;
+  }
+  if(useCount>0){
+    toast(`${t.n} 선생님이 ${useCount}개 셀에 배정되어 삭제 불가`,'err');
+    return;
+  }
+  if(!confirm(`${t.n} 선생님을 삭제하시겠습니까?`)) return;
+  TEACHERS.splice(idx,1);
+  saveTeachers();
+  renderTeacherList();
+  buildTable();
+  toast('삭제 완료','ok');
+}
+
+let _instPopup={el:null,key:null};
+
+function openInstPopup(td,t,day,lane){
+  // 출석부 모드면 담임 팝업 무반응 (+ 버튼만 동작)
+  if(typeof _attendanceMode!=='undefined' && _attendanceMode) return;
+  // 교환 모드 → 목적지로 실행
+  if(_instSwapMode){
+    executeInstSwap(t,day,lane);
+    return;
+  }
+  // 학생 팝업 열려있으면 닫기만
+  if(document.getElementById('stu-popup').classList.contains('show')){
+    closeStuPopup();
+    return;
+  }
+  const popup=document.getElementById('inst-popup');
+  const key=t+'/'+day+'/'+lane;
+
+  // 팝업 열린 상태에서 클릭 → 무조건 닫기
+  if(popup.classList.contains('show')){
+    closeInstPopup();
+    // 같은 셀이면 닫기만
+    if(_instPopup.key===key) return;
+    // 다른 셀이면 닫기만 (다음 클릭에 열림)
+    return;
+  }
+
+  // stu 팝업 열려있으면 닫기
+  closeStuPopup();
+
+  _instPopup.key=key;
+  _instPopup.td=td;
+  _instPopup.t=t;_instPopup.day=day;_instPopup.lane=lane;
+
+  renderInstPopup();
+  popup.classList.add('show');
+
+  // 위치 (show 후에 offsetHeight 계산 가능)
+  const rect=td.getBoundingClientRect();
+  const margin=8;
+  let left=rect.left;
+  let top=rect.bottom+4;
+  const pw=popup.offsetWidth||280;
+  const ph=popup.offsetHeight||200;
+  if(left+pw>window.innerWidth-margin) left=window.innerWidth-pw-margin;
+  if(left<margin) left=margin;
+  // [v118] 아래 부족 → 위 시도 → 좌/우측 (셀 안 가리게) → 폴백 클램프
+  if(top+ph>window.innerHeight-margin){
+    const aboveTop = rect.top - ph - 4;
+    if(aboveTop >= margin){
+      top = aboveTop;
+    } else {
+      const rightSpace = window.innerWidth - rect.right - margin;
+      const leftSpace  = rect.left - margin;
+      if(rightSpace >= pw + 4){
+        left = rect.right + 4;
+        top  = Math.max(margin, Math.min(rect.top, window.innerHeight - ph - margin));
+      } else if(leftSpace >= pw + 4){
+        left = rect.left - pw - 4;
+        top  = Math.max(margin, Math.min(rect.top, window.innerHeight - ph - margin));
+      } else {
+        top = Math.max(margin, window.innerHeight - ph - margin);
+      }
+    }
+  }
+  if(top<margin) top=margin;
+  popup.style.left=left+'px';
+  popup.style.top=top+'px';
+}
+
+function renderInstPopup(){
+  const popup=document.getElementById('inst-popup');
+  const key=_instPopup.key;
+  if(!key) return;
+  const cur=INST_MAP[key]||null;
+
+  let html=`<div class="inst-popup-hd">${_instPopup.day} ${_instPopup.t} ${_instPopup.lane}레인 담임<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeInstPopup()">✕</span></div>`;
+  html+=`<div class="inst-btn-grid">`;
+  TEACHERS.forEach(teacher=>{
+    const isActive=cur&&cur.n===teacher.n;
+    html+=`<button class="inst-btn${isActive?' active':''}" data-name="${teacher.n}" style="background:${teacher.color}">
+      ${teacher.n}
+    </button>`;
+  });
+  html+=`</div>`;
+
+  html+=`<div class="inst-popup-bottom">`;
+  html+=`<label><input type="checkbox" id="ip-lead" ${cur?.lead?'checked':''}> 1번레인</label>`;
+  html+=`<label><input type="checkbox" id="ip-youth" ${cur?.youth?'checked':''}> 유아</label>`;
+  // [v117] 반 분류: 엘/마, 엘리트, 마스터 (셋 중 하나만)
+  const _curCls = (typeof getInstCls==='function') ? getInstCls(cur) : (cur?.elma?'elma':null);
+  html+=`<label><input type="checkbox" id="ip-elma" ${_curCls==='elma'?'checked':''}> 엘/마</label>`;
+  html+=`<label><input type="checkbox" id="ip-elite" ${_curCls==='elite'?'checked':''}> 엘리트</label>`;
+  html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
+  if(cur) html+=`<button class="inst-btn-clear" data-name="__clear__">선생님 삭제</button>`;
+  html+=`</div>`;
+  html+=`<div style="padding:6px 0 2px;border-top:1px solid #E5E7EB;margin-top:6px"><button class="btn btn-o" id="ip-swap" style="width:100%;font-size:11px;padding:5px;color:#F59E0B;border-color:#F59E0B">↔ 위치 교환</button></div>`;
+
+  // 예약 목록
+  const reserves=getReserves(key);
+  html+=`<div class="inst-reserve-list">`;
+  html+=`<div style="font-weight:700;font-size:11px;margin-bottom:4px">예약 (${reserves.length})</div>`;
+  reserves.forEach((r,i)=>{
+    const dateLabel=r.d?`<span style="font-size:9px;color:#0F9D58;margin-left:auto">${parseInt(r.d.split('-')[1])}/${parseInt(r.d.split('-')[2])}</span>`:'';
+    const teacherLabel=r.teacher?`<span style="font-size:9px;color:#3B82F6;margin-left:4px">[${esc(r.teacher)}]</span>`:'';
+    html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}<span class="rdel" data-rdel="${i}">✕</span></div>`;
+    if(r.m) html+=`<div style="font-size:9px;color:#888;padding-left:4px;margin-top:-2px;margin-bottom:2px">📝 ${esc(r.m)}</div>`;
+  });
+  html+=`<div style="display:flex;gap:4px;margin-top:4px">`;
+  const todayVal=toDateStr(getToday());
+  html+=`<input class="fi" id="ip-rname" placeholder="이름" style="width:70px;margin:0;padding:3px 6px;font-size:11px">`;
+  html+=`<input class="fi" id="ip-rphone" placeholder="전화번호" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
+  html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rtoday" checked> 오늘</label>`;
+  html+=`<input class="fi" id="ip-rdate" type="date" value="${todayVal}" style="width:100px;margin:0;padding:3px 4px;font-size:10px;display:none">`;
+  html+=`</div>`;
+  html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
+  html+=`<input class="fi" id="ip-rmemo" placeholder="메모" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
+  html+=`</div>`;
+  // 선생님 지정/무관
+  const teacherOpts=TEACHERS.map(t=>`<option value="${esc(t.n)}">${esc(t.n)}</option>`).join('');
+  html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
+  html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rany" checked> 무관</label>`;
+  html+=`<select class="fi" id="ip-rteacher" style="flex:1;margin:0;padding:3px 4px;font-size:10px;display:none"><option value="">선생님 선택</option>${teacherOpts}</select>`;
+  html+=`<button class="btn btn-p" id="ip-radd" style="padding:3px 8px;font-size:10px">대기 추가</button>`;
+  html+=`</div></div>`;
+
+  popup.innerHTML=html;
+}
+
+let _instBusy=false;
+
+// 이벤트 위임 (팝업 내부)
+document.getElementById('inst-popup').addEventListener('click',function(e){
+  // [스냅샷] 읽기 전용 — 닫기만 허용
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()){
+    if(e.target.closest('#ip-close')){ e.stopPropagation(); closeInstPopup(); return; }
+    return;
+  }
+  // 예약 삭제
+  const rdel=e.target.closest('[data-rdel]');
+  if(rdel){
+    e.stopPropagation();
+    removeReserve(_instPopup.key,parseInt(rdel.dataset.rdel));
+    renderInstPopup();buildTable();
+    return;
+  }
+  // 위치 교환
+  if(e.target.closest('#ip-swap')){
+    e.stopPropagation();
+    startInstSwap();
+    return;
+  }
+  // 무관 체크박스 토글 → 선생님 선택 표시/숨김
+  if(e.target.closest('#ip-rany')){
+    const sel=document.getElementById('ip-rteacher');
+    if(sel) sel.style.display=document.getElementById('ip-rany').checked?'none':'';
+    return;
+  }
+  // 예약 추가
+  if(e.target.closest('#ip-radd')){
+    e.stopPropagation();
+    const n=document.getElementById('ip-rname')?.value.trim();
+    if(!n){toast('이름을 입력하세요','err');return;}
+    const p=document.getElementById('ip-rphone')?.value.trim()||'';
+    const m=document.getElementById('ip-rmemo')?.value.trim()||'';
+    const isToday=document.getElementById('ip-rtoday')?.checked;
+    const d=isToday?toDateStr(getToday()):(document.getElementById('ip-rdate')?.value||toDateStr(getToday()));
+    const isAny=document.getElementById('ip-rany')?.checked;
+    const teacher=isAny?'':(document.getElementById('ip-rteacher')?.value||'');
+    addReserve(_instPopup.key,n,p,m,d,teacher);
+    renderInstPopup();buildTable();
+    setTimeout(()=>document.getElementById('ip-rname')?.focus(),50);
+    return;
+  }
+  const btn=e.target.closest('.inst-btn,.inst-btn-clear');
+  if(!btn) return;
+  e.stopPropagation();
+
+  const key=_instPopup.key;
+  if(!key) return;
+  const name=btn.dataset.name;
+  const cur=INST_MAP[key]||null;
+
+  if(name==='__clear__'){
+    delete INST_MAP[key];saveInst();
+    closeInstPopup();
+    buildTable();
+    return;
+  } else if(cur&&cur.n===name){
+    delete INST_MAP[key];
+  } else {
+    // [v117] 선생님 변경 시 기존 cls(엘/마/엘리트/마스터) 보존
+    const oldCls=getInstCls(cur);
+    const obj={n:name};
+    if(oldCls) obj.cls=oldCls;
+    INST_MAP[key]=obj;
+  }
+  saveInst();
+  _instBusy=true;
+  buildTable();
+  renderInstPopup();
+  setTimeout(()=>{_instBusy=false;},50);
+});
+
+document.getElementById('inst-popup').addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&(e.target.id==='ip-rname'||e.target.id==='ip-rphone'||e.target.id==='ip-rmemo'||e.target.id==='ip-rdate')){
+    e.preventDefault();
+    document.getElementById('ip-radd')?.click();
+  }
+});
+
+document.getElementById('inst-popup').addEventListener('change',function(e){
+  if(e.target.id==='ip-rtoday'){
+    const datePicker=document.getElementById('ip-rdate');
+    if(datePicker){
+      datePicker.style.display=e.target.checked?'none':'';
+      if(e.target.checked) datePicker.value=toDateStr(getToday());
+    }
+    return;
+  }
+  if(!e.target.matches('#ip-lead,#ip-youth,#ip-elma,#ip-elite,#ip-master')) return;
+  const key=_instPopup.key;
+  if(!key||!INST_MAP[key]) return;
+  const flag=e.target.id.replace('ip-','');
+  // [v117] elma/elite/master는 셋 중 하나만 (XOR). cls 필드로 통합 저장.
+  if(flag==='elma'||flag==='elite'||flag==='master'){
+    if(e.target.checked){
+      INST_MAP[key].cls=flag;
+      delete INST_MAP[key].elma; // 구버전 필드 제거 (마이그레이션)
+    } else {
+      // 같은 cls 해제 시에만 cls 제거
+      if(INST_MAP[key].cls===flag) delete INST_MAP[key].cls;
+      delete INST_MAP[key].elma;
+    }
+  } else {
+    if(e.target.checked) INST_MAP[key][flag]=true;
+    else delete INST_MAP[key][flag];
+  }
+  saveInst();
+  _instBusy=true;
+  buildTable();
+  renderInstPopup();
+  setTimeout(()=>{_instBusy=false;},50);
+});
+
+/* ──── 담임 위치 교환 모드 ──── */
+let _instSwapMode=null; // {srcT, srcDay, srcLane, label}
+
+function startInstSwap(){
+  const {t,day,lane}=_instPopup;
+  const inst=getInst(t,day,lane);
+  const label=inst?instDisplay(inst):(t+'/'+day+'/'+lane+'레인');
+  _instSwapMode={srcT:t, srcDay:day, srcLane:lane, label};
+  closeInstPopup();
+  document.getElementById('move-bar').style.display='flex';
+  document.getElementById('move-msg').textContent=
+    `↔ ${label} (${day} ${t} ${lane}레인) 위치 교환 — 목적지 담임 셀을 클릭하세요`;
+  buildTable();
+}
+
+function cancelInstSwap(){
+  _instSwapMode=null;
+  document.getElementById('move-bar').style.display='none';
+  buildTable();
+}
+
+function executeInstSwap(dstT,dstDay,dstLane){
+  if(!_instSwapMode) return;
+  const {srcT,srcDay,srcLane}=_instSwapMode;
+  if(srcT===dstT&&srcDay===dstDay&&srcLane===dstLane){cancelInstSwap();return;}
+
+  pushUndo();
+  const maxRows=Math.max(getTimeRows(srcT),getTimeRows(dstT));
+
+  // 1) INST_MAP 교환
+  const srcIK=srcT+'/'+srcDay+'/'+srcLane;
+  const dstIK=dstT+'/'+dstDay+'/'+dstLane;
+  const tmpInst=INST_MAP[srcIK];
+  if(INST_MAP[dstIK]) INST_MAP[srcIK]=INST_MAP[dstIK]; else delete INST_MAP[srcIK];
+  if(tmpInst) INST_MAP[dstIK]=tmpInst; else delete INST_MAP[dstIK];
+
+  // 2) RESERVE_MAP 교환
+  const tmpRes=RESERVE_MAP[srcIK];
+  if(RESERVE_MAP[dstIK]) RESERVE_MAP[srcIK]=RESERVE_MAP[dstIK]; else delete RESERVE_MAP[srcIK];
+  if(tmpRes) RESERVE_MAP[dstIK]=tmpRes; else delete RESERVE_MAP[dstIK];
+
+  // 3) 행별 데이터 교환 (학생, 퇴원, 등원, 비활성화, 마크)
+  for(let r=1;r<=maxRows;r++){
+    const srcSK=srcT+'/'+srcDay+'/'+srcLane+'/'+r;
+    const dstSK=dstT+'/'+dstDay+'/'+dstLane+'/'+r;
+
+    // 학생 교환
+    const srcIdx=STUDENTS.findIndex(s=>s.t===srcT&&s.d===srcDay&&s.l===srcLane&&s.r===r);
+    const dstIdx=STUDENTS.findIndex(s=>s.t===dstT&&s.d===dstDay&&s.l===dstLane&&s.r===r);
+    if(srcIdx>=0&&dstIdx>=0){
+      // 둘 다 있음 — 위치 정보만 교환
+      Object.assign(STUDENTS[srcIdx],{t:dstT,d:dstDay,l:dstLane});
+      Object.assign(STUDENTS[dstIdx],{t:srcT,d:srcDay,l:srcLane});
+    } else if(srcIdx>=0){
+      Object.assign(STUDENTS[srcIdx],{t:dstT,d:dstDay,l:dstLane});
+    } else if(dstIdx>=0){
+      Object.assign(STUDENTS[dstIdx],{t:srcT,d:srcDay,l:srcLane});
+    }
+
+    // RETIRE_MAP 교환
+    const tmpRet=RETIRE_MAP[srcSK];
+    if(RETIRE_MAP[dstSK]) RETIRE_MAP[srcSK]=RETIRE_MAP[dstSK]; else delete RETIRE_MAP[srcSK];
+    if(tmpRet) RETIRE_MAP[dstSK]=tmpRet; else delete RETIRE_MAP[dstSK];
+
+    // ENROLL_MAP 교환
+    const tmpEnr=ENROLL_MAP[srcSK];
+    if(ENROLL_MAP[dstSK]) ENROLL_MAP[srcSK]=ENROLL_MAP[dstSK]; else delete ENROLL_MAP[srcSK];
+    if(tmpEnr) ENROLL_MAP[dstSK]=tmpEnr; else delete ENROLL_MAP[dstSK];
+
+    // DISABLED_MAP 교환
+    const tmpDis=DISABLED_MAP[srcSK];
+    if(DISABLED_MAP[dstSK]) DISABLED_MAP[srcSK]=DISABLED_MAP[dstSK]; else delete DISABLED_MAP[srcSK];
+    if(tmpDis) DISABLED_MAP[dstSK]=tmpDis; else delete DISABLED_MAP[dstSK];
+
+    // MARK_MAP 교환 (날짜별 키가 여러 개)
+    const srcMarks={}, dstMarks={};
+    for(const mk of Object.keys(MARK_MAP)){
+      if(mk.startsWith(srcSK+'/')){ srcMarks[mk.slice(srcSK.length+1)]=MARK_MAP[mk]; delete MARK_MAP[mk]; }
+      if(mk.startsWith(dstSK+'/')){ dstMarks[mk.slice(dstSK.length+1)]=MARK_MAP[mk]; delete MARK_MAP[mk]; }
+    }
+    for(const [ds,v] of Object.entries(dstMarks)) MARK_MAP[srcSK+'/'+ds]=v;
+    for(const [ds,v] of Object.entries(srcMarks)) MARK_MAP[dstSK+'/'+ds]=v;
+  }
+
+  // 저장
+  saveStudents();rebuildStuIdx();saveInst();
+  saveRetire();saveEnroll();saveDisabled();saveMark();saveReserve();
+
+  _instSwapMode=null;
+  document.getElementById('move-bar').style.display='none';
+  buildTable();
+  toast('위치 교환 완료','ok');
+}
+
+function closeInstPopup(){
+  document.getElementById('inst-popup').classList.remove('show');
+  _instPopup.key=null;
+  if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
+}
+
+document.addEventListener('click',e=>{
+  if(_instBusy) return;
+  if(Date.now()-_tabFocusTime<300) return;
+  const popup=document.getElementById('inst-popup');
+  if(!popup.classList.contains('show')) return;
+  if(popup.contains(e.target)) return;
+  if(e.target.closest('.inst-clickable')) return;
+  // [v95 #7] mousedown이 팝업 안에서 시작됐으면 닫지 않음 (드래그-아웃 보호)
+  if(_mouseDownTarget && popup.contains(_mouseDownTarget)) return;
+  closeInstPopup();
+});
+

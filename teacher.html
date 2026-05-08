@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>가경 수영장 - 선생님 승인 페이지</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="parent.css">
+<link rel="stylesheet" href="teacher.css">
+</head>
+<body>
+
+<!-- [v118] 지점 선택 모달 -->
+<div id="branch-modal" class="branch-modal">
+  <div class="branch-modal-box">
+    <h2 class="branch-modal-title">🏊 지점을 선택하세요</h2>
+    <div class="branch-modal-btns">
+      <button class="branch-btn" onclick="selectBranch('gagyeong')">
+        <span class="branch-emoji">🏢</span>
+        <span class="branch-name">가경점</span>
+      </button>
+      <button class="branch-btn" onclick="selectBranch('yongam')">
+        <span class="branch-emoji">🏬</span>
+        <span class="branch-name">용암점</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- 선생님 선택 화면 -->
+<div id="teacher-select-screen" class="screen">
+  <div class="login-box">
+    <div class="logo">🏫</div>
+    <h1>가경 수영장</h1>
+    <p class="subtitle">선생님 승인 페이지</p>
+    <div style="text-align:center;margin-bottom:8px">
+      <button onclick="openBranchModal()" style="background:transparent;border:1px dashed #9CA3AF;color:#6B7280;padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">⇄ 지점 변경</button>
+    </div>
+    <div class="form-group">
+      <label>담당 선생님 선택</label>
+      <select id="teacher-pick" class="bg-select">
+        <option value="">선택하세요</option>
+      </select>
+    </div>
+    <button id="teacher-enter" class="btn-primary">입장</button>
+    <button id="teacher-all" class="btn-secondary">전체 보기 (관리자)</button>
+  </div>
+</div>
+
+<!-- 대시보드 -->
+<div id="teacher-dashboard" class="screen" style="display:none">
+  <div class="dashboard-header">
+    <div class="hdr-left">
+      <div class="child-name" id="teacher-display"></div>
+      <div class="child-info" id="teacher-stats"></div>
+    </div>
+    <button id="teacher-logout" class="btn-icon">🚪</button>
+  </div>
+
+  <div class="container">
+    <div class="tab-row">
+      <button class="tab-btn active" data-tab="bogang">보강 신청 <span id="cnt-bogang" class="cnt-badge">0</span></button>
+      <button class="tab-btn" data-tab="cancel">결석 취소 <span id="cnt-cancel" class="cnt-badge">0</span></button>
+      <button class="tab-btn" data-tab="attendance">📋 출석</button>
+    </div>
+
+    <div id="bogang-list" class="req-list"></div>
+    <div id="cancel-list" class="req-list" style="display:none"></div>
+
+    <div id="attendance-panel" style="display:none">
+      <div class="att-hdr">
+        <button id="att-week-prev" class="btn-secondary" style="padding:8px 12px;font-size:12px;width:auto">◀ 이전주</button>
+        <span id="att-week-label" style="font-size:14px;font-weight:800;color:#111"></span>
+        <button id="att-week-next" class="btn-secondary" style="padding:8px 12px;font-size:12px;width:auto">다음주 ▶</button>
+        <button id="att-week-today" class="btn-primary" style="padding:8px 12px;font-size:12px;width:auto">오늘</button>
+        <button id="att-save-all" class="btn-primary" style="padding:8px 14px;font-size:12px;width:auto;background:#10B981;margin-left:auto">✓ 오늘 모두 출석</button>
+      </div>
+      <div id="att-stats" class="att-stats"></div>
+      <div id="att-tt-view"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 토스트 -->
+<div id="toast" class="toast"></div>
+
+<script src="js/teacher.js"></script>
+</body>
+</html>

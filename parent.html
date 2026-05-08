@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>가경 수영장 - 학부모 페이지</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="parent.css">
+</head>
+<body>
+
+<!-- [v118] 지점 선택 모달 -->
+<div id="branch-modal" class="branch-modal">
+  <div class="branch-modal-box">
+    <h2 class="branch-modal-title">🏊 지점을 선택하세요</h2>
+    <div class="branch-modal-btns">
+      <button class="branch-btn" onclick="selectBranch('gagyeong')">
+        <span class="branch-emoji">🏢</span>
+        <span class="branch-name">가경점</span>
+      </button>
+      <button class="branch-btn" onclick="selectBranch('yongam')">
+        <span class="branch-emoji">🏬</span>
+        <span class="branch-name">용암점</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- 로그인 화면 -->
+<div id="login-screen" class="screen">
+  <div class="login-box">
+    <div class="logo">🏊</div>
+    <h1 id="parent-brand">가경 수영장</h1>
+    <p class="subtitle">학부모 예약 페이지</p>
+    <div style="text-align:center;margin-bottom:8px">
+      <button onclick="openBranchModal()" style="background:transparent;border:1px dashed #9CA3AF;color:#6B7280;padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">⇄ 지점 변경</button>
+    </div>
+
+    <div class="form-group">
+      <label>아이 이름</label>
+      <input type="text" id="login-name" placeholder="예: 홍길동" autocomplete="off">
+    </div>
+
+    <div class="form-group">
+      <label>어머님 전화번호 뒷 4자리</label>
+      <input type="tel" id="login-phone" placeholder="예: 1234" maxlength="4" autocomplete="off" inputmode="numeric">
+    </div>
+
+    <button id="login-btn" class="btn-primary">로그인</button>
+
+    <div id="login-error" class="error-msg" style="display:none"></div>
+  </div>
+</div>
+
+<!-- 학생 선택 화면 (동명이인일 때) -->
+<div id="select-screen" class="screen" style="display:none">
+  <div class="login-box">
+    <div class="logo">👋</div>
+    <h2>어떤 수업인가요?</h2>
+    <p class="subtitle">여러 수업에 등록된 경우 선택해주세요</p>
+    <div id="student-choices"></div>
+    <button id="back-to-login" class="btn-secondary">다시 로그인</button>
+  </div>
+</div>
+
+<!-- 대시보드 -->
+<div id="dashboard" class="screen" style="display:none">
+  <div class="dashboard-header">
+    <div class="hdr-left">
+      <div class="child-name" id="child-display"></div>
+      <div class="child-info" id="class-info"></div>
+    </div>
+    <button id="logout-btn" class="btn-icon">🚪</button>
+  </div>
+
+  <div class="container">
+    <div class="period-section">
+      <h3 id="period-label"></h3>
+      <div id="date-list" class="date-list"></div>
+    </div>
+
+    <div class="period-section" id="next-period-wrap" style="display:none">
+      <h3 id="next-period-label"></h3>
+      <div id="next-date-list" class="date-list"></div>
+    </div>
+
+    <div class="info-box">
+      <p><strong>📞 문의</strong></p>
+      <p>보강이 필요하면 "보강 신청" 버튼을 눌러주세요.</p>
+      <p>담당 선생님이 확인 후 날짜를 잡아드립니다.</p>
+    </div>
+  </div>
+</div>
+
+<!-- 결석 확인 모달 -->
+<div id="absent-modal" class="modal" style="display:none">
+  <div class="modal-content">
+    <div id="ab-form">
+      <h3>❌ 결석 신청</h3>
+      <p class="modal-desc" id="ab-desc"></p>
+      <p style="font-size:11px;color:#6B7280;margin-top:8px">결석 취소는 선생님 승인이 필요합니다.</p>
+      <div class="modal-actions">
+        <button id="ab-cancel" class="btn-secondary">취소</button>
+        <button id="ab-submit" class="btn-primary" style="background:#EF4444">결석 신청</button>
+      </div>
+    </div>
+    <div id="ab-success" style="display:none;text-align:center;padding:20px 10px">
+      <div style="font-size:48px;margin-bottom:8px">✅</div>
+      <h3 style="color:#10B981;margin-bottom:8px">결석 처리 완료</h3>
+      <p style="font-size:13px;color:#374151">시간표에 반영되었습니다.</p>
+      <button id="ab-success-close" class="btn-primary" style="margin-top:14px">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 결석 취소 요청 모달 -->
+<div id="absent-cancel-modal" class="modal" style="display:none">
+  <div class="modal-content">
+    <div id="ac-form">
+      <h3>✓ 결석 취소 신청</h3>
+      <p class="modal-desc" id="ac-desc"></p>
+      <p style="font-size:11px;color:#6B7280;margin-top:8px">선생님이 확인 후 승인하면 결석이 취소됩니다.</p>
+      <div class="modal-actions">
+        <button id="ac-cancel" class="btn-secondary">취소</button>
+        <button id="ac-submit" class="btn-primary">취소 신청</button>
+      </div>
+    </div>
+    <div id="ac-success" style="display:none;text-align:center;padding:20px 10px">
+      <div style="font-size:48px;margin-bottom:8px">✅</div>
+      <h3 style="color:#10B981;margin-bottom:8px">취소 신청 완료</h3>
+      <p style="font-size:13px;color:#374151">선생님 승인을 기다리고 있습니다.</p>
+      <button id="ac-success-close" class="btn-primary" style="margin-top:14px">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 보강 신청 모달 -->
+<div id="bogang-modal" class="modal" style="display:none">
+  <div class="modal-content" style="max-width:420px">
+    <div id="bg-form">
+      <h3>📅 보강 신청</h3>
+      <p class="modal-desc">원하는 날짜를 선택한 후 가능한 수업을 여러 개 고를 수 있습니다.<br>선생님이 확인 후 확정해드립니다.</p>
+
+      <div class="form-group">
+        <label>1️⃣ 보강 날짜 선택</label>
+        <select id="bg-date" class="bg-select">
+          <option value="">날짜를 선택하세요</option>
+        </select>
+      </div>
+
+      <div id="bg-slot-wrap" style="display:none">
+        <label style="display:block;font-size:11px;font-weight:700;color:#374151;margin-bottom:4px">2️⃣ 가능한 수업 선택 (여러 개 가능)</label>
+        <div id="bg-slots" class="bg-slots"></div>
+        <div id="bg-sel-count" style="font-size:11px;color:#7C3AED;font-weight:700;text-align:right;margin-bottom:6px"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="bg-cancel" class="btn-secondary">취소</button>
+        <button id="bg-submit" class="btn-primary" disabled>신청</button>
+      </div>
+    </div>
+
+    <div id="bg-success" style="display:none;text-align:center;padding:20px 10px">
+      <div style="font-size:48px;margin-bottom:8px">✅</div>
+      <h3 style="color:#10B981;margin-bottom:8px">신청 완료</h3>
+      <p id="bg-success-msg" style="font-size:13px;color:#374151;line-height:1.6"></p>
+      <p style="font-size:11px;color:#6B7280;margin-top:12px">선생님이 확인 후 승인하면 시간표에 반영됩니다.<br>승인/거절 결과는 홈 화면에서 확인하실 수 있습니다.</p>
+      <button id="bg-success-close" class="btn-primary" style="margin-top:14px">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 토스트 -->
+<div id="toast" class="toast"></div>
+
+<script src="js/parent.js"></script>
+</body>
+</html>
