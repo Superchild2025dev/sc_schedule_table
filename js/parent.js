@@ -97,6 +97,8 @@ function loadAllData(){
       HYUWON_MAP=parseJSON(data.swim_hyuwon,{});
       RESERVE_MAP=parseJSON(data.swim_reserve,{});
       REQUESTS=parseJSON(data.swim_requests,{});
+      // [v118] 테스트용 학생 드롭다운 채우기
+      try{ _populateTestStuPicker?.(); }catch(e){}
       resolve();
     }).catch(reject);
   });
@@ -210,6 +212,26 @@ function showStudentSelector(groups){
   });
   document.getElementById('login-screen').style.display='none';
   document.getElementById('select-screen').style.display='flex';
+}
+
+// [v118] 테스트 학생 선택 드롭다운 채우기
+function _populateTestStuPicker(){
+  const sel = document.getElementById('test-stu-pick');
+  if(!sel || !STUDENTS?.length) return;
+  // 이름 + 전화번호 조합으로 그룹핑 (중복 제거 — 같은 학생 한 번만)
+  const seen = new Set();
+  const opts = [];
+  STUDENTS.forEach(s => {
+    const key = s.n + '|' + (s.p||'');
+    if(seen.has(key)) return;
+    seen.add(key);
+    const slotKey = s.t+'/'+s.d+'/'+s.l+'/'+s.r;
+    const phone = s.p ? ' · ' + s.p.slice(-4) : '';
+    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d} ${s.l}레인` });
+  });
+  opts.sort((a,b) => a.label.localeCompare(b.label));
+  sel.innerHTML = '<option value="">학생 선택 (' + opts.length + '명)</option>' +
+    opts.map(o => `<option value="${o.slotKey}">${o.label.replace(/</g,'&lt;')}</option>`).join('');
 }
 
 function loginAs(students){
@@ -808,6 +830,19 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   });
   document.getElementById('login-name').addEventListener('keydown',e=>{
     if(e.key==='Enter') document.getElementById('login-phone').focus();
+  });
+
+  // [v118] 테스트용: 학생 직접 선택 메뉴
+  _populateTestStuPicker();
+  document.getElementById('test-stu-enter')?.addEventListener('click', () => {
+    const sel = document.getElementById('test-stu-pick');
+    const slotKey = sel?.value;
+    if(!slotKey) { toast('학생을 선택해주세요','err'); return; }
+    // 같은 이름+전화번호의 모든 슬롯 (loginAs 동작 흉내)
+    const target = STUDENTS.find(s => s.t+'/'+s.d+'/'+s.l+'/'+s.r === slotKey);
+    if(!target) { toast('학생 못 찾음','err'); return; }
+    const sameStudents = STUDENTS.filter(s => s.n === target.n && (s.p||'') === (target.p||''));
+    loginAs(sameStudents);
   });
 
   // 학생 선택 → 로그인 돌아가기

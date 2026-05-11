@@ -89,6 +89,11 @@ function subscribeChanges(){
     else if(snap.key==='swim_att_guests') ATT_GUESTS=parseJSON(asStr,{});
     else if(snap.key==='swim_day_snapshot') DAY_SNAPSHOT=parseJSON(asStr,{});
     if(_currentTeacher!==null) render();
+    // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신 (REQUESTS / INST_MAP / TEACHERS 변경 반응)
+    const selScreen = document.getElementById('teacher-select-screen');
+    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key==='swim_inst' || snap.key==='swim_teachers')){
+      if(typeof populateTeachers === 'function') populateTeachers();
+    }
   });
 }
 
@@ -109,11 +114,38 @@ function populateTeachers(){
   });
   // TEACHERS 목록에서도 추가
   TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
+  // [v118] 선생님별 대기 요청 카운트 (REQUESTS 중 status==='pending' or 없음)
+  const pendingCounts = _countPendingByTeacher();
   [...names].sort().forEach(n=>{
     const opt=document.createElement('option');
-    opt.value=n;opt.textContent=n;
+    opt.value=n;
+    const cnt = pendingCounts[n] || 0;
+    opt.textContent = cnt > 0 ? `${n}  🔴 ${cnt}건` : n;
     sel.appendChild(opt);
   });
+}
+
+function _countPendingByTeacher(){
+  const counts = {};
+  Object.values(REQUESTS||{}).forEach(r => {
+    if(r.status && r.status !== 'pending') return;
+    const name = r.target?.instName;
+    if(name) counts[name] = (counts[name]||0) + 1;
+  });
+  return counts;
+}
+
+function _renderPendingTeacherChips(counts){
+  const wrap = document.getElementById('pending-teachers');
+  if(!wrap) return;
+  const entries = Object.entries(counts).filter(([n,c]) => c > 0).sort((a,b)=>b[1]-a[1]);
+  if(!entries.length){ wrap.innerHTML=''; return; }
+  let html = `<div class="pending-label">🔔 대기 요청 있는 선생님 (${entries.reduce((s,[,c])=>s+c,0)}건)</div>`;
+  entries.forEach(([name, cnt]) => {
+    const safe = name.replace(/'/g, "\\'");
+    html += `<button class="pending-chip" onclick="enterAsTeacher('${safe}')">${esc(name)}<span class="pending-chip-badge">${cnt}</span></button>`;
+  });
+  wrap.innerHTML = html;
 }
 
 function enterAsTeacher(teacherName){
