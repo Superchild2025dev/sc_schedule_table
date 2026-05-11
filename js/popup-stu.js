@@ -3,6 +3,58 @@
  * ════════════════════════════════════════════════════════════════ */
 let _stuPopup={key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,showEnroll:false,showBogang:false,showSample:false,showHyuwon:false};
 let _stuBusy=false;
+
+// [v118] 승하차 장소: 승차/하차/자가등하원 분리 입출력 헬퍼
+//   기존 loc 문자열과 호환 (UI만 분리, 저장은 loc 한 줄로 합침)
+function _parseLoc(loc){
+  if(!loc) return { pickUp:'', dropOff:'', pickSelf:false, dropSelf:false };
+  const txt = String(loc).trim();
+  // 전체 자가등하원/도보 → 둘 다 자가
+  if(/^(자가등하원|도보등하원)$/.test(txt)) return { pickUp:'', dropOff:'', pickSelf:true, dropSelf:true };
+  // 줄바꿈 + 슬래시 + 파이프 구분자로 분리
+  const segments = txt.split(/[\n\/|]/);
+  let pickUp='', dropOff='', pickSelf=false, dropSelf=false, other=[];
+  for(const raw of segments){
+    const t = raw.trim();
+    if(!t) continue;
+    let m;
+    if(m = t.match(/^승하차\s*[:：]?\s*(.+)/)) {
+      const v = m[1].trim();
+      if(/^(자가|도보)/.test(v)) { pickSelf=true; dropSelf=true; }
+      else { pickUp = pickUp||v; dropOff = dropOff||v; }
+    }
+    else if(m = t.match(/^승차만?\s*[:：]?\s*(.+)/)) {
+      const v = m[1].trim();
+      if(/^(자가|도보)/.test(v)) pickSelf=true;
+      else pickUp = pickUp||v;
+    }
+    else if(m = t.match(/^하차만?\s*[:：]?\s*(.+)/)) {
+      const v = m[1].trim();
+      if(/^(자가|도보)/.test(v)) dropSelf=true;
+      else dropOff = dropOff||v;
+    }
+    else if(/^(자가|도보)/.test(t)) { pickSelf=true; dropSelf=true; }
+    else other.push(t);
+  }
+  if(!pickUp && !dropOff && !pickSelf && !dropSelf && other.length){
+    pickUp = dropOff = other.join(' ');
+  }
+  return { pickUp, dropOff, pickSelf, dropSelf };
+}
+function _buildLoc(pickUp, dropOff, pickSelf, dropSelf){
+  pickUp = (pickUp||'').trim(); dropOff = (dropOff||'').trim();
+  // 둘 다 자가 → "자가등하원"
+  if(pickSelf && dropSelf) return '자가등하원';
+  // 한쪽만 자가
+  const pVal = pickSelf ? '자가' : pickUp;
+  const dVal = dropSelf ? '자가' : dropOff;
+  if(!pVal && !dVal) return '';
+  if(pVal === dVal && pVal && !pickSelf && !dropSelf) return '승하차: ' + pVal;
+  const parts = [];
+  if(pVal) parts.push('승차: ' + pVal);
+  if(dVal) parts.push('하차: ' + dVal);
+  return parts.join('\n');
+}
 // _tabFocusTime → data.js (cross-file shared state)
 
 function openStuPopup(td,t,day,lane,row){
@@ -231,7 +283,18 @@ function buildEnrollFormHtml(existing){
       <button type="button" class="sp-chip male ${e.g==='m'?'on':''}" id="sp-enroll-gender-m">남</button>
       <button type="button" class="sp-chip female ${e.g==='f'?'on':''}" id="sp-enroll-gender-f">여</button>
     </div>
-    <textarea class="fi" id="sp-enroll-loc" placeholder="승하차 장소" style="margin:0 0 4px;padding:4px 6px;font-size:11px;min-height:28px">${e.loc?esc(e.loc):''}</textarea>
+    ${(()=>{ const p=_parseLoc(e.loc); return `
+    <div style="margin:0 0 4px;padding:4px 6px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px">
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:2px">
+        <input class="fi" id="sp-enroll-pickup" placeholder="승차 장소" style="flex:1;margin:0;padding:3px 6px;font-size:11px" value="${esc(p.pickUp||'')}" ${p.pickSelf?'disabled':''}>
+        <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-enroll-pick-self" ${p.pickSelf?'checked':''}> 자가</label>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <input class="fi" id="sp-enroll-dropoff" placeholder="하차 장소" style="flex:1;margin:0;padding:3px 6px;font-size:11px" value="${esc(p.dropOff||'')}" ${p.dropSelf?'disabled':''}>
+        <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-enroll-drop-self" ${p.dropSelf?'checked':''}> 자가</label>
+      </div>
+    </div>
+    `;})()}
     <textarea class="fi" id="sp-enroll-memo" placeholder="메모" style="margin:0 0 4px;padding:4px 6px;font-size:11px;min-height:28px">${e.memo?esc(e.memo):''}</textarea>
     <div style="display:flex;gap:4px">
       <button class="btn btn-p" id="sp-enroll-set" style="flex:1;padding:4px;font-size:10px;background:#3B82F6">${existing?'등록 수정':'등록 예약'}</button>
@@ -341,8 +404,17 @@ function buildStuPopupLeft(stu, slotKey, enrollMode){
       <button type="button" class="sp-chip female ${stu&&stu.g==='f'?'on':''}" id="sp-gender-f">여</button>
     </div>
     <div style="margin-bottom:4px">
-      <label class="fl">승하차 장소</label>
-      <textarea class="fi" id="sp-loc" placeholder="예) 가경초 정문" style="margin-top:2px">${stu&&stu.loc?esc(stu.loc):''}</textarea>
+      <label class="fl">승하차</label>
+      ${(()=>{ const p=_parseLoc(stu&&stu.loc); return `
+        <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
+          <input class="fi" id="sp-pickup" placeholder="승차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.pickUp||'')}" ${p.pickSelf?'disabled':''}>
+          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-pick-self" ${p.pickSelf?'checked':''}> 자가</label>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
+          <input class="fi" id="sp-dropoff" placeholder="하차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.dropOff||'')}" ${p.dropSelf?'disabled':''}>
+          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-drop-self" ${p.dropSelf?'checked':''}> 자가</label>
+        </div>
+      `; })()}
     </div>
     <div style="margin-bottom:4px">
       <label class="fl">메모</label>
@@ -396,11 +468,16 @@ function captureStuFormDraft(){
   const get = id => document.getElementById(id);
   const name=get('sp-name');
   if(!name) return null; // 폼이 아직 없음
+  // [v118] 승차/하차 각각 자가 체크
+  const pickUp   = get('sp-pickup')?.value || '';
+  const dropOff  = get('sp-dropoff')?.value || '';
+  const pickSelf = get('sp-pick-self')?.checked || false;
+  const dropSelf = get('sp-drop-self')?.checked || false;
   return {
     name: name.value,
     age: get('sp-age')?.value || '',
     phone: get('sp-phone')?.value || '',
-    loc: get('sp-loc')?.value || '',
+    loc: _buildLoc(pickUp, dropOff, pickSelf, dropSelf),
     memo: get('sp-memo')?.value || '',
     vehicle: get('sp-vehicle')?.classList.contains('on') || false,
     gender: get('sp-gender-m')?.classList.contains('on') ? 'm'
@@ -415,7 +492,12 @@ function restoreStuFormDraft(d){
   setVal('sp-name', d.name);
   setVal('sp-age',  d.age);
   setVal('sp-phone',d.phone);
-  setVal('sp-loc',  d.loc);
+  // [v118] loc → 승차/하차/각각 자가 분리
+  const _p = _parseLoc(d.loc);
+  setVal('sp-pickup',  _p.pickUp);
+  setVal('sp-dropoff', _p.dropOff);
+  if(_p.pickSelf) { const el=get('sp-pick-self'); if(el){el.checked=true;} const inp=get('sp-pickup'); if(inp){inp.disabled=true;} }
+  if(_p.dropSelf) { const el=get('sp-drop-self'); if(el){el.checked=true;} const inp=get('sp-dropoff'); if(inp){inp.disabled=true;} }
   setVal('sp-memo', d.memo);
   if(d.vehicle) get('sp-vehicle')?.classList.add('on');
   if(d.gender==='m') get('sp-gender-m')?.classList.add('on');
@@ -539,7 +621,12 @@ function handleSave(e, ctx){
   const isNewCheck=document.getElementById('sp-new')?.classList.contains('on')||false;
   const gender=document.getElementById('sp-gender-m')?.classList.contains('on')?'m'
     :(document.getElementById('sp-gender-f')?.classList.contains('on')?'f':null);
-  const loc=document.getElementById('sp-loc')?.value.trim()||'';
+  // [v118] 승차/하차 각각 자가 → loc 합성
+  const _pickUp = document.getElementById('sp-pickup')?.value.trim() || '';
+  const _dropOff = document.getElementById('sp-dropoff')?.value.trim() || '';
+  const _pickSelf = document.getElementById('sp-pick-self')?.checked || false;
+  const _dropSelf = document.getElementById('sp-drop-self')?.checked || false;
+  const loc = _buildLoc(_pickUp, _dropOff, _pickSelf, _dropSelf);
   const memo=document.getElementById('sp-memo')?.value.trim()||'';
 
   // 기존 데이터 제거
@@ -923,7 +1010,15 @@ function _readEnrollForm(prefix){
   const vehicle=g(prefix+'vehicle')?.classList.contains('on')||false;
   const gender=g(prefix+'gender-m')?.classList.contains('on')?'m'
     :(g(prefix+'gender-f')?.classList.contains('on')?'f':null);
-  const loc=g(prefix+'loc')?.value.trim()||'';
+  // [v118] 승차/하차 각각 자가 (좌측 sp- 또는 우측 sp-enroll-)
+  const _pickUp = g(prefix+'pickup')?.value.trim() || '';
+  const _dropOff = g(prefix+'dropoff')?.value.trim() || '';
+  const _pickSelf = g(prefix+'pick-self')?.checked || false;
+  const _dropSelf = g(prefix+'drop-self')?.checked || false;
+  const hasSplitInputs = g(prefix+'pickup') || g(prefix+'dropoff') || g(prefix+'pick-self');
+  const loc = hasSplitInputs
+    ? _buildLoc(_pickUp, _dropOff, _pickSelf, _dropSelf)
+    : (g(prefix+'loc')?.value.trim() || '');
   const memo=g(prefix+'memo')?.value.trim()||'';
   const isNew=g(prefix+'new')?.classList.contains('on')||false;
   return {name,age,phone,vehicle,gender,loc,memo,isNew};
@@ -1173,22 +1268,50 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
   }
 });
 
-// [v96 #3] 승하차 장소에 입력하면 차량 토글 자동 ON
+// [v118] 승차/하차 입력 시 차량 자동 ON (좌측·우측 폼)
+//   자가등하원 체크 시 차량 OFF
 document.getElementById('stu-popup').addEventListener('input',function(e){
-  if(e.target?.id==='sp-loc' && e.target.value.trim().length>0){
+  const id = e.target?.id;
+  // 좌측 폼: sp-pickup / sp-dropoff
+  if((id==='sp-pickup'||id==='sp-dropoff') && e.target.value.trim().length>0){
     const vBtn=document.getElementById('sp-vehicle');
-    if(vBtn && !vBtn.classList.contains('on')){
-      vBtn.classList.remove('off');
-      vBtn.classList.add('on');
-    }
+    if(vBtn && !vBtn.classList.contains('on')){ vBtn.classList.remove('off'); vBtn.classList.add('on'); }
   }
-  // [v99] 등록 폼의 승하차도 동일하게
-  if(e.target?.id==='sp-enroll-loc' && e.target.value.trim().length>0){
+  // 우측 등록 폼: sp-enroll-pickup / sp-enroll-dropoff
+  if((id==='sp-enroll-pickup'||id==='sp-enroll-dropoff') && e.target.value.trim().length>0){
     const vBtn=document.getElementById('sp-enroll-vehicle');
-    if(vBtn && !vBtn.classList.contains('on')){
-      vBtn.classList.remove('off');
-      vBtn.classList.add('on');
-    }
+    if(vBtn && !vBtn.classList.contains('on')){ vBtn.classList.remove('off'); vBtn.classList.add('on'); }
+  }
+});
+// [v118] 승차/하차 각각 자가 체크 → 해당 input 비활성/활성
+//   둘 다 자가 체크 시 차량 토글 OFF (사용자에게 시각 힌트)
+document.getElementById('stu-popup').addEventListener('change',function(e){
+  const id = e.target?.id;
+  // 좌측 폼
+  if(id==='sp-pick-self'){
+    const inp=document.getElementById('sp-pickup');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  if(id==='sp-drop-self'){
+    const inp=document.getElementById('sp-dropoff');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  if(id==='sp-pick-self' || id==='sp-drop-self'){
+    const both = document.getElementById('sp-pick-self')?.checked && document.getElementById('sp-drop-self')?.checked;
+    if(both){ const v=document.getElementById('sp-vehicle'); if(v){v.classList.remove('on');v.classList.add('off');} }
+  }
+  // 우측 등록 폼
+  if(id==='sp-enroll-pick-self'){
+    const inp=document.getElementById('sp-enroll-pickup');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  if(id==='sp-enroll-drop-self'){
+    const inp=document.getElementById('sp-enroll-dropoff');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  if(id==='sp-enroll-pick-self' || id==='sp-enroll-drop-self'){
+    const both = document.getElementById('sp-enroll-pick-self')?.checked && document.getElementById('sp-enroll-drop-self')?.checked;
+    if(both){ const v=document.getElementById('sp-enroll-vehicle'); if(v){v.classList.remove('on');v.classList.add('off');} }
   }
 });
 
