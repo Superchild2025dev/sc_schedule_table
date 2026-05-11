@@ -574,15 +574,9 @@ document.addEventListener('mouseout',function(e){
  * - 만료된 isNew/enrolled 플래그 정리
  */
 function syncStudentsBeforeRender(){
-  // [타임머신 보호] 가짜 날짜 모드에서는 자동 sync (RETIRE/ENROLL 처리, 만료 플래그 정리) 스킵
-  //   — 메모리 변경 자체를 막아 화면이 흔들리지 않게 + saveJSON 가드와 이중 안전
-  //   단 앱바 타이틀(현재 학기 표시)은 갱신
-  if(typeof _fakeDate !== 'undefined' && _fakeDate){
-    const cp=SCHEDULE_PERIODS[getCurrentPeriod()];
-    const yr=cp.start.split('-')[0];
-    document.getElementById('app-period').textContent=yr+'년 '+cp.month+'월';
-    return;
-  }
+  // [v118] 타임머신 모드에서도 sync는 실행 (ENROLL_MAP→STUDENTS 옮겨야 미래 학생이 보임).
+  //   영구 저장은 saveJSON 타임머신 가드로 차단됨.
+  //   buildTable 끝에서 메모리 복원되므로 일반 모드 데이터 손상 X.
   let changed=false;
   let enrollChanged=false;
   let retireChanged=false;
@@ -1272,6 +1266,17 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 function buildTable(){
   const DAYS=getDays(),TIMES=getTimes(),SAT_TIME_LABEL=getSatLabel(),HAS_NUM=getHasNum(),LANE_COUNT=getLanes();
 
+  // [v118] 타임머신 모드: sync로 메모리 변경되더라도 buildTable 끝에 복원 → 영구 손상 X
+  let _tmBackup = null;
+  if(typeof _fakeDate !== 'undefined' && _fakeDate){
+    _tmBackup = {
+      stu: STUDENTS.slice(),
+      stuIdx: Object.assign({}, _stuIdx),
+      enroll: JSON.parse(JSON.stringify(ENROLL_MAP)),
+      retire: JSON.parse(JSON.stringify(RETIRE_MAP)),
+    };
+  }
+
   syncStudentsBeforeRender();
   const todayStr=toDateStr(getToday());
 
@@ -1436,6 +1441,18 @@ function buildTable(){
     Object.keys(_stuIdx).forEach(k=>delete _stuIdx[k]);
     // 원래 _stuIdx 재구축
     STUDENTS.forEach(s=>{_stuIdx[s.t+'/'+s.d+'/'+s.l+'/'+s.r]=s;});
+  }
+
+  // [v118] 타임머신 모드: 화면용으로 sync한 메모리를 원본으로 복원
+  if(_tmBackup){
+    STUDENTS.length=0;
+    _tmBackup.stu.forEach(s=>STUDENTS.push(s));
+    Object.keys(_stuIdx).forEach(k=>delete _stuIdx[k]);
+    Object.assign(_stuIdx, _tmBackup.stuIdx);
+    Object.keys(ENROLL_MAP).forEach(k=>delete ENROLL_MAP[k]);
+    Object.assign(ENROLL_MAP, _tmBackup.enroll);
+    Object.keys(RETIRE_MAP).forEach(k=>delete RETIRE_MAP[k]);
+    Object.assign(RETIRE_MAP, _tmBackup.retire);
   }
 }
 
