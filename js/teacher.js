@@ -786,20 +786,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     }
   });
 
-  // 주간 네비게이션
-  document.getElementById('att-week-prev').addEventListener('click',()=>{
+  // 주간 네비게이션 (출석 탭 제거 후엔 요소 없으므로 옵셔널 체이닝)
+  document.getElementById('att-week-prev')?.addEventListener('click',()=>{
     const d=new Date(_attWeekStart);d.setDate(d.getDate()-7);
     _attWeekStart=toDateStr(d);renderAttendanceTimetable();
   });
-  document.getElementById('att-week-next').addEventListener('click',()=>{
+  document.getElementById('att-week-next')?.addEventListener('click',()=>{
     const d=new Date(_attWeekStart);d.setDate(d.getDate()+7);
     _attWeekStart=toDateStr(d);renderAttendanceTimetable();
   });
-  document.getElementById('att-week-today').addEventListener('click',()=>{
+  document.getElementById('att-week-today')?.addEventListener('click',()=>{
     _attWeekStart=getMondayOf(new Date());renderAttendanceTimetable();
   });
   // 오늘 모두 출석 버튼
-  document.getElementById('att-save-all').addEventListener('click',markAllPresentToday);
+  document.getElementById('att-save-all')?.addEventListener('click',markAllPresentToday);
 
   // 수락/거절 위임
   document.addEventListener('click',e=>{
