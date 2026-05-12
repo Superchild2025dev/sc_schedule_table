@@ -308,6 +308,78 @@ function renderDashboard(){
   } else {
     document.getElementById('next-period-wrap').style.display='none';
   }
+
+  // [v118] 내 신청 내역
+  renderMyRequests(fresh);
+}
+
+// [v118] 내 신청 내역 (결석 + 보강 요청)
+function renderMyRequests(students){
+  const wrap = document.getElementById('my-requests-list');
+  if(!wrap) return;
+  const todayStr = toDateStr(typeof getToday==='function' ? getToday() : new Date());
+  const childName = students[0]?.n;
+  const childPhone = students[0]?.p || '';
+  const slotKeys = students.map(s => s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+  const items = [];
+
+  // 1. 결석 (MARK_MAP에서 학생 slotKey의 absent 마크)
+  Object.entries(MARK_MAP||{}).forEach(([key, mark])=>{
+    if(!mark) return;
+    const parts = key.split('/');
+    if(parts.length !== 5) return;
+    const slotKey = parts.slice(0,4).join('/');
+    const ds = parts[4];
+    if(!slotKeys.includes(slotKey)) return;
+    if(ds < todayStr) return; // 과거 X
+    if(mark.type === 'absent'){
+      const stu = students.find(s => slotKey === s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+      items.push({
+        type: 'absent', ds,
+        title: '❌ 결석',
+        sub: `${stu?.d}요일 ${stu?.t} · ${stu?.l}레인`,
+        status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : '대기',
+        color: '#EF4444'
+      });
+    }
+  });
+
+  // 2. 보강 요청 (REQUESTS에서 본인 자녀의 보강)
+  Object.entries(REQUESTS||{}).forEach(([id, req])=>{
+    if(!req || req.type !== 'bogang') return;
+    if(req.parent?.name !== childName) return;
+    if(childPhone && req.parent?.phone && req.parent.phone !== childPhone) return;
+    const t = req.target;
+    if(!t?.ds || t.ds < todayStr) return;
+    const status = req.status === 'accepted' ? '✅ 확정'
+                 : req.status === 'rejected' ? '⛔ 거절'
+                 : '⏳ 선생님 승인 대기';
+    items.push({
+      type: 'bogang', ds: t.ds,
+      title: '📅 보강 신청',
+      sub: `${t.d}요일 ${t.t} · ${t.l}레인 · ${t.instName||''} 선생님`,
+      status,
+      color: '#7C3AED'
+    });
+  });
+
+  // 정렬: 날짜순
+  items.sort((a,b) => a.ds.localeCompare(b.ds));
+
+  if(!items.length){
+    wrap.innerHTML = '<div style="background:#fff;padding:20px;text-align:center;color:#9CA3AF;font-size:13px;border-radius:10px">아직 신청한 내역이 없습니다</div>';
+    return;
+  }
+  const _fdate = ds => { const p=ds.split('-'); return `${parseInt(p[1])}/${parseInt(p[2])}`; };
+  wrap.innerHTML = items.map(it => `
+    <div style="background:#fff;padding:10px 14px;border-radius:10px;border-left:4px solid ${it.color};margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+        <span style="font-weight:800;font-size:13px;color:${it.color}">${it.title} · ${_fdate(it.ds)}</span>
+        <span style="font-size:11px;color:#6B7280;font-weight:600">${esc(it.status)}</span>
+      </div>
+      <div style="font-size:11px;color:#6B7280">${esc(it.sub)}</div>
+    </div>
+  `).join('');
 }
 
 function instNameOf(s){
