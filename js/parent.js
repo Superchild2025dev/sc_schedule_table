@@ -513,13 +513,15 @@ function renderDateList(slotKey,period,day){
         if(pendingCancel){
           actions=`<span style="font-size:10px;color:#F59E0B;font-weight:700">⏳ 승인 대기</span>`;
         } else {
-          actions=`<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>`;
+          // [v118] 결석 누른 상태에서만 보강 신청 가능
+          actions=`
+            <button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
+            <button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청</button>
+          `;
         }
       } else {
-        actions=`
-          <button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석</button>
-          <button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청</button>
-        `;
+        // [v118] 결석 안 한 상태 → 결석 버튼만 (보강 신청 X)
+        actions=`<button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석</button>`;
       }
     }
 
