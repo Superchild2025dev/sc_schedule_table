@@ -383,6 +383,19 @@ function getMyRequests(type){
   results.sort((a,b)=>(b[1].requestedAt||'').localeCompare(a[1].requestedAt||''));
   return results;
 }
+function getMyProcessedBogangRequests(){
+  const results=[];
+  for(const [reqId,req] of Object.entries(REQUESTS)){
+    if(req.type!=='bogang') continue;
+    if(!['accepted','rejected','superseded'].includes(req.status)) continue;
+    if(_currentTeacher && reqAssignedTeacherName(req)!==_currentTeacher) continue;
+    results.push([reqId,req]);
+  }
+  results.sort((a,b)=>
+    (b[1].processedAt||b[1].requestedAt||'').localeCompare(a[1].processedAt||a[1].requestedAt||'')
+  );
+  return results;
+}
 
 function render(){
   if(_activeTab==='attendance'){
@@ -402,6 +415,7 @@ function render(){
 
   renderBogangList(bogangReqs);
   renderCancelList(cancelReqs);
+  renderBogangHistory();
 }
 
 function fmtDate(ds){
@@ -448,6 +462,17 @@ function groupBogangRequests(reqs){
     });
   });
   groups.sort((a,b)=>(b.requestedAt||'').localeCompare(a.requestedAt||''));
+  return groups;
+}
+function groupBogangHistory(reqs){
+  const groups=groupBogangRequests(reqs);
+  groups.forEach(group=>{
+    group.processedAt=group.items.reduce((latest,[,req])=>{
+      const ts=req.processedAt||req.requestedAt||'';
+      return ts>latest ? ts : latest;
+    },'');
+  });
+  groups.sort((a,b)=>(b.processedAt||'').localeCompare(a.processedAt||''));
   return groups;
 }
 function isTargetSlotBlocked(req){
@@ -503,7 +528,7 @@ function renderBogangList(reqs){
           <span>${t.l}레인 ${t.r}번</span>
           <span>수업 ${esc(targetTeacher)}${targetClass}</span>
         </div>
-        ${_renderClassmates(t.t, t.d, t.l, t.ds, t.r)}
+        ${_renderClassmatesCompact(t.t, t.d, t.l, t.ds, t.r)}
         <button class="btn-accept candidate-accept" data-act="accept" data-id="${id}" ${slotState.blocked?'disabled':''}>이 후보 수락</button>
       </div>`;
     }).join('');
@@ -524,6 +549,47 @@ function renderBogangList(reqs){
       </div>
     </div>`;
   }).join('');
+}
+
+function renderBogangHistory(){
+  const container=document.getElementById('bogang-history');
+  if(!container) return;
+  const groups=groupBogangHistory(getMyProcessedBogangRequests()).slice(0,20);
+  if(!groups.length){
+    container.innerHTML='';
+    return;
+  }
+  container.innerHTML=`<div class="history-title">
+    <span>최근 보강 신청 기록</span>
+    <small>최근 ${groups.length}건</small>
+  </div>
+  <div class="history-list">
+    ${groups.map(renderBogangHistoryRow).join('')}
+  </div>`;
+}
+
+function renderBogangHistoryRow(group){
+  const accepted=group.items.find(([,req])=>req.status==='accepted');
+  const rejected=group.items.filter(([,req])=>req.status==='rejected');
+  const basePair=accepted || rejected[0] || group.items[0];
+  const r=basePair[1];
+  const p=r.parent||{};
+  const t=r.target||{};
+  const status=accepted ? '수락' : '거절';
+  const statusClass=accepted ? 'accepted' : 'rejected';
+  const parentInfo=`${p.name||''}${p.age?'('+p.age+'살)':''}`;
+  const targetText=accepted
+    ? `${fmtDate(t.ds)} ${esc(t.d)} ${esc(t.t)} · ${t.l}레인 ${t.r}번`
+    : `후보 ${group.items.length}개 거절`;
+  const sourceDate=p.absentDs ? `원 결석일 ${fmtDate(p.absentDs)}` : '원 결석일 미기록';
+  const choiceText=accepted && group.items.length>1 ? ` · 나머지 ${group.items.length-1}개 정리` : '';
+  return `<div class="history-row ${statusClass}">
+    <span class="history-status">${status}</span>
+    <span class="history-student">${esc(parentInfo)}</span>
+    <span class="history-target">${targetText}${choiceText}</span>
+    <span class="history-source">${sourceDate}</span>
+    <span class="history-time">${fmtTime(group.processedAt||r.processedAt||r.requestedAt)}</span>
+  </div>`;
 }
 
 // [v118] 같은 반(t/d/l)의 학생들을 시간표 셀 스타일로 렌더 (해당 날짜 결석/보강 표시)
@@ -573,6 +639,38 @@ function _renderClassmates(t, d, l, ds, targetR){
   });
   html += `</div></div>`;
   return html;
+}
+
+function _renderClassmatesCompact(t, d, l, ds, targetR){
+  if(!t||!d||!l||!ds) return '';
+  const li=parseInt(l);
+  const cells=[];
+  for(let r=1; r<=8; r++){
+    const stu=STUDENTS.find(s=>s.t===t && s.d===d && s.l===li && s.r===r);
+    const markKey=`${t}/${d}/${l}/${r}/${ds}`;
+    const mark=MARK_MAP[markKey]||null;
+    cells.push({r,stu,mark,isTarget:r==targetR});
+  }
+  let lastIdx=cells.findIndex((c,i)=>{
+    if(i<targetR-1) return false;
+    return cells.slice(i).every(x=>!x.stu && !x.mark && !x.isTarget);
+  });
+  if(lastIdx<0) lastIdx=cells.length;
+  const visible=cells.slice(0,Math.max(targetR,lastIdx,5));
+  const chips=visible.map(c=>{
+    const isAbsent=c.mark?.type==='absent';
+    const isBogang=c.mark?.type==='bogang'||c.mark?.sub?.type==='bogang';
+    const isSample=c.mark?.type==='sample'||c.mark?.sub?.type==='sample';
+    let cls='cm-chip';
+    if(c.isTarget) cls+=' target';
+    if(!c.stu && !c.mark && !c.isTarget) cls+=' empty';
+    if(isAbsent) cls+=' absent';
+    if(isBogang||isSample) cls+=' guest';
+    const label=c.isTarget ? '보강자리' : (c.stu ? `${c.stu.n}${c.stu.a||''}` : '-');
+    const tag=isAbsent ? '결석' : (isBogang ? '보강' : (isSample ? '샘플' : ''));
+    return `<span class="${cls}"><b>${c.r}</b>${esc(label)}${tag?`<em>${tag}</em>`:''}</span>`;
+  }).join('');
+  return `<div class="cm-compact"><span class="cm-compact-label">같은 반</span>${chips}</div>`;
 }
 
 function renderCancelList(reqs){
@@ -1131,8 +1229,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       btn.classList.add('active');
       _activeTab=btn.dataset.tab;
       document.getElementById('bogang-list').style.display=_activeTab==='bogang'?'flex':'none';
+      const history=document.getElementById('bogang-history');
+      if(history) history.style.display=_activeTab==='bogang'?'block':'none';
       document.getElementById('cancel-list').style.display=_activeTab==='cancel'?'flex':'none';
-      document.getElementById('attendance-panel').style.display=_activeTab==='attendance'?'block':'none';
+      const attendance=document.getElementById('attendance-panel');
+      if(attendance) attendance.style.display=_activeTab==='attendance'?'block':'none';
       if(_activeTab==='attendance'){
         if(!_attWeekStart) _attWeekStart=getMondayOf(new Date());
         ensureTodaySnapshot();
