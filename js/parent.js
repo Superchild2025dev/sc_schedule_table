@@ -885,6 +885,18 @@ function setBogangTeacherMode(mode){
   refreshBogangSlots(document.getElementById('bg-date')?.value||'');
 }
 
+function _bgSlotKey(slot){
+  if(!slot) return '';
+  return [slot.t,slot.day,slot.lane,slot.row,slot.ds].join('/');
+}
+
+function _bgSlotLabel(slot){
+  if(!slot) return '';
+  const [y,m,d]=(slot.ds||'').split('-');
+  const dateLabel=m&&d ? `${parseInt(m)}/${parseInt(d)}` : '';
+  return `${dateLabel} ${slot.day} ${slot.t} ${slot.lane}레인`;
+}
+
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
 function _parentSlotMaxRows(inst){
   if(inst && (inst.elma || inst.cls==='elma' || inst.cls==='elite' || inst.cls==='master')) return 8;
@@ -954,7 +966,6 @@ function findAvailableSlots(ds){
 }
 
 function refreshBogangSlots(ds){
-  _bgSelectedSlots=[];
   _renderBgTeacherFilter();
   const slots=findAvailableSlots(ds);
   const container=document.getElementById('bg-slots');
@@ -966,13 +977,11 @@ function refreshBogangSlots(ds){
       ? '담당 선생님 수업에 가능한 자리가 없습니다.<br>다른 선생님 시간표를 확인해보세요.'
       : '이 날짜에는 가능한 수업이 없습니다.<br>다른 날짜를 선택해주세요.';
     container.innerHTML=`<div class="bg-no-slots">${msg}</div>`;
-    document.getElementById('bg-sel-count').textContent='';
-    document.getElementById('bg-submit').disabled=true;
-    document.getElementById('bg-submit').textContent='신청';
+    updateBogangSelCount();
     return;
   }
   container.innerHTML=slots.map((x,i)=>`
-    <div class="bg-slot-item" data-idx="${i}">
+    <div class="bg-slot-item ${_bgSelectedSlots.some(s=>_bgSlotKey(s)===_bgSlotKey(x))?'selected':''}" data-idx="${i}">
       <div>
         <div class="slot-main">${x.day}요일 · ${esc(x.t)}</div>
         <div class="slot-sub">${x.lane}레인 · ${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
@@ -983,7 +992,8 @@ function refreshBogangSlots(ds){
   container.querySelectorAll('.bg-slot-item').forEach((el,i)=>{
     el.onclick=()=>{
       const slot=slots[i];
-      const idx=_bgSelectedSlots.findIndex(s=>s.t===slot.t&&s.day===slot.day&&s.lane===slot.lane&&s.row===slot.row);
+      const key=_bgSlotKey(slot);
+      const idx=_bgSelectedSlots.findIndex(s=>_bgSlotKey(s)===key);
       if(idx>=0){
         _bgSelectedSlots.splice(idx,1);
         el.classList.remove('selected');
@@ -1006,7 +1016,8 @@ function updateBogangSelCount(){
     submit.disabled=true;
     submit.textContent='신청';
   } else {
-    count.textContent=`선택된 수업: ${n}개`;
+    const labels=_bgSelectedSlots.map(_bgSlotLabel).filter(Boolean);
+    count.textContent=`선택된 수업: ${n}개${labels.length?' · '+labels.join(', '):''}`;
     submit.disabled=false;
     submit.textContent=`${n}개 신청`;
   }
