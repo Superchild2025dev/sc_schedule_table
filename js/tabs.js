@@ -331,14 +331,40 @@ function switchTabView(){
 }
 /* ──── [v118] 시간표 자체 줌 (CSS 변수 기반) ──── */
 const TBL_ZOOM_KEY='tbl_zoom';
+const TBL_ZOOM_USER_KEY='tbl_zoom_user_set';
 const TBL_ZOOM_MIN=0.6, TBL_ZOOM_MAX=1.5, TBL_ZOOM_STEP=0.05;
-function getTableZoom(){
-  try{ const v=parseFloat(localStorage.getItem(TBL_ZOOM_KEY)); return isFinite(v)&&v>0?v:1; }catch(e){ return 1; }
+function hasUserTableZoom(){
+  try{ return localStorage.getItem(TBL_ZOOM_USER_KEY)==='1'; }catch(e){ return false; }
 }
-function setTableZoom(scale){
+function getDefaultTableZoom(){
+  const w=Math.min(window.innerWidth||9999, document.documentElement?.clientWidth||9999);
+  if(w<=420) return 0.62;
+  if(w<=720) return 0.7;
+  return 1;
+}
+function getTableZoom(){
+  try{
+    const saved=localStorage.getItem(TBL_ZOOM_KEY);
+    if(saved!==null){
+      const v=parseFloat(saved);
+      if(isFinite(v)&&v>0){
+        const autoDefault=getDefaultTableZoom();
+        if(!hasUserTableZoom() && autoDefault<1 && Math.abs(v-1)<0.001) return autoDefault;
+        return v;
+      }
+    }
+  }catch(e){}
+  return getDefaultTableZoom();
+}
+function setTableZoom(scale, persist=true){
   scale=Math.min(TBL_ZOOM_MAX, Math.max(TBL_ZOOM_MIN, Math.round(scale*100)/100));
   document.documentElement.style.setProperty('--tbl-scale', scale);
-  try{ localStorage.setItem(TBL_ZOOM_KEY, String(scale)); }catch(e){}
+  if(persist){
+    try{
+      localStorage.setItem(TBL_ZOOM_KEY, String(scale));
+      localStorage.setItem(TBL_ZOOM_USER_KEY, '1');
+    }catch(e){}
+  }
   const lbl=document.getElementById('tbl-zoom-pct');
   if(lbl) lbl.textContent=Math.round(scale*100)+'%';
   // [잔상/보더 fix] 셀 너비는 CSS 변수로 즉시 갱신되지만,
@@ -359,7 +385,7 @@ function tblZoomIn(){ setTableZoom(getTableZoom()+TBL_ZOOM_STEP); }
 function tblZoomOut(){ setTableZoom(getTableZoom()-TBL_ZOOM_STEP); }
 function tblZoomReset(){ setTableZoom(1); }
 // 페이지 로드 시 저장된 줌 적용
-document.addEventListener('DOMContentLoaded',()=>{ setTableZoom(getTableZoom()); });
+document.addEventListener('DOMContentLoaded',()=>{ setTableZoom(getTableZoom(), hasUserTableZoom()); });
 
 function setTimeMachine(val){
   if(!val){resetTimeMachine();return;}
@@ -382,4 +408,3 @@ function resetTimeMachine(){
 
 
 /* 기본 데이터(_DEFAULT_STU, _DEFAULT_INST)는 파일 하단 「DEFAULTS」 섹션 참고 */
-
