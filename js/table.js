@@ -6,6 +6,16 @@ function _isTodayDay(day){
   const t=getToday();
   return ['일','월','화','수','목','금','토'][t.getDay()]===day;
 }
+function _tableLocUsesVehicle(loc){
+  const txt=(loc||'').trim();
+  if(!txt || /^(자가등하원|도보등하원)$/.test(txt)) return false;
+  const lines=txt.split(/[\n\/|]/).map(s=>s.trim()).filter(Boolean);
+  return lines.some(line=>{
+    const m=line.match(/^(?:승하차|승차|하차)\s*[:：]?\s*(.+)$/);
+    const val=(m?m[1]:line).trim();
+    return !!val && !/^(자가|도보)/.test(val);
+  });
+}
 let _attendanceMode=false;
 let _attendanceDate=null;  // YYYY-MM-DD
 let _attEditMode=false;     // true면 셀 클릭 시 출석체크 대신 편집
@@ -548,10 +558,11 @@ document.addEventListener('mouseover',function(e){
     let html=`<div class="cell-tip-name">${esc(stu.n)}${stu.a?'('+stu.a+')':''}${stu.g==='m'?' 👦':stu.g==='f'?' 👧':''}</div>`;
     if(stu.p) html+=`<div class="cell-tip-row"><b>📞</b> ${esc(stu.p)}</div>`;
     const nl2br = s => esc(s).replace(/\n/g,'<br>');
-    if(stu.v) html+=`<div class="cell-tip-row"><b>🚐</b> ${stu.loc?nl2br(stu.loc):'차량 이용'}</div>`;
+    const tipVehicle=stu.v||_tableLocUsesVehicle(stu.loc);
+    if(tipVehicle) html+=`<div class="cell-tip-row"><b>🚐</b> ${stu.loc?nl2br(stu.loc):'차량 이용'}</div>`;
     if(stu.memo) html+=`<div class="cell-tip-row"><b>📝</b> ${nl2br(stu.memo)}</div>`;
 
-    if(!stu.p&&!stu.v&&!stu.memo&&!stu.g) return;
+    if(!stu.p&&!tipVehicle&&!stu.memo&&!stu.g) return;
     _showTip(cell,html);
   },400);
 });
@@ -624,6 +635,7 @@ function syncStudentsBeforeRender(){
         const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
         if(entry.p) obj.p=entry.p;
         if(entry.isNew) obj.isNew=entry.isNew;
+        else if(entry.reenroll) obj.reenroll=entry.reenroll;
         else if(entry.enrolled){
           obj.enrolled=entry.ds;
         }
@@ -661,6 +673,7 @@ function syncStudentsBeforeRender(){
   let flagChanged=false;
   STUDENTS.forEach(s=>{
     if(s.isNew&&s.isNew!==cp.month){ delete s.isNew; flagChanged=true; }
+    if(s.reenroll&&s.reenroll!==cp.month){ delete s.reenroll; flagChanged=true; }
     if(s.enrolled&&s.enrolled<todayStr){ delete s.enrolled; flagChanged=true; }
   });
   if(flagChanged) saveStudents();
@@ -944,9 +957,10 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const _attIsActive=_attendanceMode && _attendanceDate;
       // 출석 모드면 특수 배경/마크 클래스 적용 안 함 (흰 배경 유지)
       if(!_attIsActive){
-        if(stu&&stu.v) td.classList.add('stu-vehicle');
+        const stuVehicle=stu&&(stu.v||_tableLocUsesVehicle(stu.loc));
+        if(stuVehicle) td.classList.add('stu-vehicle');
         if(stu&&stu.isNew&&stu.isNew===curMonth) td.classList.add('stu-new');
-        if(stu&&(stu.memo||stu.v||stu.p||stu.g)) td.classList.add('stu-has-note');
+        if(stu&&(stu.memo||stuVehicle||stu.p||stu.g)) td.classList.add('stu-has-note');
       }
       if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
       td.dataset.t=t;td.dataset.day=day;td.dataset.lane=_l;td.dataset.ri=_r;
@@ -1028,8 +1042,12 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       }
 
       // 등원(비신규) 빨간 배경 — 등원일까지만 (출석 모드에선 스킵)
-      if(!_attIsActive && stu&&stu.enrolled&&stu.enrolled>=todayStr&&!td.classList.contains('stu-new')){
-        td.classList.add('stu-enrolled');
+      if(!_attIsActive && stu&&!td.classList.contains('stu-new')){
+        if(stu.reenroll&&stu.reenroll===curMonth){
+          td.classList.add('stu-enrolled');
+        } else if(stu.enrolled&&stu.enrolled>=todayStr){
+          td.classList.add('stu-enrolled');
+        }
       }
 
       // ── 이벤트 수집 (그리드 뱃지) ──
@@ -1604,8 +1622,9 @@ function exportExcel(){
           if(enr) txt+=' [등'+(enr.name||'')+' '+enr.ds.slice(5).replace('-','/')+']';
           const hyu=HYUWON_MAP[slotKey];
           if(hyu) txt+=' [휴원]';
-          if(stu.v) txt+=' 🚐';
+          if(stu.v||_tableLocUsesVehicle(stu.loc)) txt+=' 🚐';
           if(stu.isNew) txt+=' (신규)';
+          if(stu.reenroll) txt+=' (재등록)';
           stuRow.push(txt);
         }
       });

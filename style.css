@@ -171,7 +171,7 @@ body.is-snapshot .snap-banner{display:block}
 .stu-vehicle{background:#FFF88D!important}
 .stu-new{background:#FF0000!important;color:#0000FF!important}
 .stu-enrolled{background:#FF0000!important}
-.stu-enroll-pending{outline:2.5px solid #FF0000!important;outline-offset:-1px}
+.stu-enroll-pending{background:#FF0000!important;outline:none!important}
 .stu-req-pending{outline:2.5px solid #F59E0B!important;outline-offset:-1px}
 .stu-bogang-only{background:#EDE9FE!important}
 
@@ -294,14 +294,6 @@ body.is-snapshot .snap-banner{display:block}
 .cell-tip-row{color:#555}
 .cell-tip-row b{color:#0F9D58}
 
-/* 차량 토글 */
-.sp-vehicle-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.sp-vehicle-toggle{width:36px;height:20px;border-radius:10px;border:none;cursor:pointer;position:relative;transition:background .2s}
-.sp-vehicle-toggle.on{background:#0F9D58}
-.sp-vehicle-toggle.off{background:#D1D5DB}
-.sp-vehicle-toggle::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;transition:left .2s}
-.sp-vehicle-toggle.off::after{left:2px}
-.sp-vehicle-toggle.on::after{left:18px}
 .sp-gender-btn{padding:2px 8px;border-radius:4px;border:1.5px solid #D1D5DB;background:#fff;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit}
 .sp-gender-btn.sel-m{background:#3B82F6;color:#fff;border-color:#3B82F6}
 .sp-gender-btn.sel-f{background:#EC4899;color:#fff;border-color:#EC4899}
@@ -329,15 +321,15 @@ body.is-snapshot .snap-banner{display:block}
   cursor:pointer;user-select:none;
 }
 .sp-vt-label{font-size:10px;font-weight:700;color:#6B7280;line-height:1;transition:color .15s}
-.sp-vt-col.veh-col.on .sp-vt-label{color:#0F9D58}
 .sp-vt-col.new-col.on .sp-vt-label{color:#DC2626}
+.sp-vt-col.reenroll-col.on .sp-vt-label{color:#DC2626}
 .sp-vt-toggle{
   width:34px;height:18px;border-radius:9px;border:none;cursor:pointer;
   position:relative;background:#D1D5DB;transition:background .2s;flex-shrink:0;
   pointer-events:none; /* 부모 클릭으로 처리 */
 }
-.sp-vt-col.veh-col.on .sp-vt-toggle{background:#0F9D58}
 .sp-vt-col.new-col.on .sp-vt-toggle{background:#DC2626}
+.sp-vt-col.reenroll-col.on .sp-vt-toggle{background:#DC2626}
 .sp-vt-toggle::after{
   content:'';position:absolute;width:14px;height:14px;border-radius:50%;
   background:#fff;top:2px;left:2px;transition:left .2s;

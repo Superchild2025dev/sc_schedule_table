@@ -55,6 +55,16 @@ function _buildLoc(pickUp, dropOff, pickSelf, dropSelf){
   if(dVal) parts.push('하차: ' + dVal);
   return parts.join('\n');
 }
+function _locUsesVehicle(loc){
+  const txt=(loc||'').trim();
+  if(!txt || /^(자가등하원|도보등하원)$/.test(txt)) return false;
+  const lines=txt.split(/[\n\/|]/).map(s=>s.trim()).filter(Boolean);
+  return lines.some(line=>{
+    const m=line.match(/^(?:승하차|승차|하차)\s*[:：]?\s*(.+)$/);
+    const val=(m?m[1]:line).trim();
+    return !!val && !/^(자가|도보)/.test(val);
+  });
+}
 // _tabFocusTime → data.js (cross-file shared state)
 
 function openStuPopup(td,t,day,lane,row){
@@ -272,12 +282,12 @@ function buildEnrollFormHtml(existing){
     </div>
     <input class="fi" id="sp-enroll-phone" placeholder="010-0000-0000" value="${e.p?esc(e.p):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
     <div class="sp-chip-row" style="margin-bottom:4px">
-      <div class="sp-vt-col veh-col ${e.v?'on':''}" id="sp-enroll-vehicle">
-        <span class="sp-vt-label">차량</span>
-        <span class="sp-vt-toggle"></span>
-      </div>
       <div class="sp-vt-col new-col ${e.isNew?'on':''}" id="sp-enroll-new">
         <span class="sp-vt-label">신규</span>
+        <span class="sp-vt-toggle"></span>
+      </div>
+      <div class="sp-vt-col reenroll-col ${e.reenroll?'on':''}" id="sp-enroll-reenroll">
+        <span class="sp-vt-label">재등록</span>
         <span class="sp-vt-toggle"></span>
       </div>
       <button type="button" class="sp-chip male ${e.g==='m'?'on':''}" id="sp-enroll-gender-m">남</button>
@@ -369,7 +379,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
 }
 
 /**
- * 학생 팝업 좌측 컬럼: 이름/나이/전화/차량/성별/신규/메모/저장·삭제·이동 버튼
+ * 학생 팝업 좌측 컬럼: 이름/나이/전화/성별/신규/메모/저장·삭제·이동 버튼
  * [v100] enrollMode=true일 때: 빈 셀에서 날짜+등록 클릭 후. 같은 폼을 등록 예약 입력에 재활용.
  *   - 저장 버튼이 "등록 예약" 버튼으로 바뀜
  *   - 삭제/비활성화/이동 버튼은 숨김
@@ -392,14 +402,14 @@ function buildStuPopupLeft(stu, slotKey, enrollMode){
       <input class="fi" id="sp-phone" value="${stu&&stu.p?esc(stu.p):''}" placeholder="010-0000-0000" style="margin-top:2px">
     </div>
     <div class="sp-chip-row">
-      <div class="sp-vt-col veh-col ${stu&&stu.v?'on':''}" id="sp-vehicle">
-        <span class="sp-vt-label">차량</span>
-        <span class="sp-vt-toggle"></span>
-      </div>
       <div class="sp-vt-col new-col ${stu&&stu.isNew&&stu.isNew===curMonth?'on':''}" id="sp-new">
         <span class="sp-vt-label">신규</span>
         <span class="sp-vt-toggle"></span>
       </div>
+      ${enrollMode?`<div class="sp-vt-col reenroll-col" id="sp-reenroll">
+        <span class="sp-vt-label">재등록</span>
+        <span class="sp-vt-toggle"></span>
+      </div>`:''}
       <button type="button" class="sp-chip male ${stu&&stu.g==='m'?'on':''}" id="sp-gender-m">남</button>
       <button type="button" class="sp-chip female ${stu&&stu.g==='f'?'on':''}" id="sp-gender-f">여</button>
     </div>
@@ -479,10 +489,10 @@ function captureStuFormDraft(){
     phone: get('sp-phone')?.value || '',
     loc: _buildLoc(pickUp, dropOff, pickSelf, dropSelf),
     memo: get('sp-memo')?.value || '',
-    vehicle: get('sp-vehicle')?.classList.contains('on') || false,
     gender: get('sp-gender-m')?.classList.contains('on') ? 'm'
           : get('sp-gender-f')?.classList.contains('on') ? 'f' : null,
     isNew: get('sp-new')?.classList.contains('on') || false,
+    reenroll: get('sp-reenroll')?.classList.contains('on') || false,
   };
 }
 function restoreStuFormDraft(d){
@@ -499,10 +509,10 @@ function restoreStuFormDraft(d){
   if(_p.pickSelf) { const el=get('sp-pick-self'); if(el){el.checked=true;} const inp=get('sp-pickup'); if(inp){inp.disabled=true;} }
   if(_p.dropSelf) { const el=get('sp-drop-self'); if(el){el.checked=true;} const inp=get('sp-dropoff'); if(inp){inp.disabled=true;} }
   setVal('sp-memo', d.memo);
-  if(d.vehicle) get('sp-vehicle')?.classList.add('on');
   if(d.gender==='m') get('sp-gender-m')?.classList.add('on');
   if(d.gender==='f') get('sp-gender-f')?.classList.add('on');
   if(d.isNew) get('sp-new')?.classList.add('on');
+  if(d.reenroll) get('sp-reenroll')?.classList.add('on');
 }
 
 function renderStuPopup(freshOpen){
@@ -557,13 +567,6 @@ function makeStuPopupCtx(){
 
 /* ── 단순 토글 핸들러 ── */
 
-function handleVehicleToggle(e, ctx){
-  const btn=e.target.closest('#sp-vehicle');
-  if(!btn) return;
-  btn.classList.toggle('on');
-  // [v95 #3] 승하차 장소는 항상 입력 가능. 차량 토글은 데이터만 변경.
-}
-
 function handleGenderM(e, ctx){
   const btn=document.getElementById('sp-gender-m');
   const other=document.getElementById('sp-gender-f');
@@ -581,7 +584,18 @@ function handleGenderF(e, ctx){
 // [v104] 신규 chip 토글 (이전엔 checkbox였음)
 function handleNewToggle(e, ctx){
   const btn=document.getElementById('sp-new');
-  if(btn) btn.classList.toggle('on');
+  if(btn){
+    btn.classList.toggle('on');
+    if(btn.classList.contains('on')) document.getElementById('sp-reenroll')?.classList.remove('on');
+  }
+}
+
+function handleReenrollToggle(e, ctx){
+  const btn=document.getElementById('sp-reenroll');
+  if(btn){
+    btn.classList.toggle('on');
+    if(btn.classList.contains('on')) document.getElementById('sp-new')?.classList.remove('on');
+  }
 }
 
 function handleMoveAll(e, ctx){ startMove('all'); }
@@ -617,7 +631,6 @@ function handleSave(e, ctx){
   const name=document.getElementById('sp-name').value.trim();
   const age=parseInt(document.getElementById('sp-age').value)||null;
   const phone=normPhone(document.getElementById('sp-phone').value);
-  const vehicle=document.getElementById('sp-vehicle')?.classList.contains('on')||false;
   const isNewCheck=document.getElementById('sp-new')?.classList.contains('on')||false;
   const gender=document.getElementById('sp-gender-m')?.classList.contains('on')?'m'
     :(document.getElementById('sp-gender-f')?.classList.contains('on')?'f':null);
@@ -627,6 +640,7 @@ function handleSave(e, ctx){
   const _pickSelf = document.getElementById('sp-pick-self')?.checked || false;
   const _dropSelf = document.getElementById('sp-drop-self')?.checked || false;
   const loc = _buildLoc(_pickUp, _dropOff, _pickSelf, _dropSelf);
+  const vehicle=_locUsesVehicle(loc);
   const memo=document.getElementById('sp-memo')?.value.trim()||'';
 
   // 기존 데이터 제거
@@ -1007,7 +1021,6 @@ function _readEnrollForm(prefix){
   const name=g(prefix+'name')?.value.trim();
   const age=parseInt(g(prefix+'age')?.value)||null;
   const phone=normPhone(g(prefix+'phone')?.value)||'';
-  const vehicle=g(prefix+'vehicle')?.classList.contains('on')||false;
   const gender=g(prefix+'gender-m')?.classList.contains('on')?'m'
     :(g(prefix+'gender-f')?.classList.contains('on')?'f':null);
   // [v118] 승차/하차 각각 자가 (좌측 sp- 또는 우측 sp-enroll-)
@@ -1021,33 +1034,33 @@ function _readEnrollForm(prefix){
     : (g(prefix+'loc')?.value.trim() || '');
   const memo=g(prefix+'memo')?.value.trim()||'';
   const isNew=g(prefix+'new')?.classList.contains('on')||false;
-  return {name,age,phone,vehicle,gender,loc,memo,isNew};
+  const reenroll=!isNew && (g(prefix+'reenroll')?.classList.contains('on')||false);
+  const vehicle=_locUsesVehicle(loc);
+  return {name,age,phone,vehicle,gender,loc,memo,isNew,reenroll};
+}
+
+function _periodMonthForDate(ds){
+  let month=null;
+  for(let i=0;i<SCHEDULE_PERIODS.length;i++){
+    const p=SCHEDULE_PERIODS[i];
+    const inPeriod = ds>=p.start && (!p.end || ds<=p.end);
+    const beforePeriod = ds<p.start;
+    if(inPeriod || beforePeriod){
+      month=p.month;
+      break;
+    }
+  }
+  if(month===null && SCHEDULE_PERIODS.length){
+    month=SCHEDULE_PERIODS[SCHEDULE_PERIODS.length-1].month;
+  }
+  return month;
 }
 
 function _commitEnroll(slotKey, form){
   if(!form.name){toast('이름을 입력하세요','err');return;}
   const ds=_stuPopup.selDate;
   const todayStr=toDateStr(getToday());
-  let enrollMonth=null;
-  if(form.isNew){
-    // [FIX] ds가 학기 안에 들어가면 그 학기 month, 아니면 ds 이후 첫 학기 month.
-    //   이전엔 "ds >= start"만 봐서 학기 사이 공백(예: 4/30~5/5)에 등록 예약하면
-    //   isNew=4(이전 학기)로 저장됨 → 5월에 활성화돼도 신규 표시 안 됨.
-    for(let i=0;i<SCHEDULE_PERIODS.length;i++){
-      const p=SCHEDULE_PERIODS[i];
-      // ds가 이 학기 안에 떨어짐 (start <= ds <= end), 또는 이 학기 시작 전 (다음에 들어갈 학기)
-      const inPeriod = ds>=p.start && (!p.end || ds<=p.end);
-      const beforePeriod = ds<p.start;
-      if(inPeriod || beforePeriod){
-        enrollMonth=p.month;
-        break;
-      }
-    }
-    // 모든 학기보다 뒤(예: 12월 학기 종료 후) → 마지막 학기 month
-    if(enrollMonth===null && SCHEDULE_PERIODS.length){
-      enrollMonth=SCHEDULE_PERIODS[SCHEDULE_PERIODS.length-1].month;
-    }
-  }
+  const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
 
   // [FIX] 당일/과거 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
   if(ds<=todayStr){
@@ -1062,7 +1075,8 @@ function _commitEnroll(slotKey, form){
     if(form.gender) obj.g=form.gender;
     if(form.loc) obj.loc=form.loc;
     if(form.memo) obj.memo=form.memo;
-    if(enrollMonth) obj.isNew=enrollMonth;
+    if(form.isNew&&enrollMonth) obj.isNew=enrollMonth;
+    else if(form.reenroll&&enrollMonth) obj.reenroll=enrollMonth;
     else obj.enrolled=ds;  // 등록 표시 (빨간 배경 시각 효과)
     STUDENTS.push(obj);
     _stuIdx[slotKey]=obj;
@@ -1081,8 +1095,9 @@ function _commitEnroll(slotKey, form){
     ds,
     name:form.name, age:form.age,
     p:form.phone||undefined,
-    isNew:enrollMonth||undefined,
-    enrolled:true,
+    isNew:form.isNew ? enrollMonth||undefined : undefined,
+    reenroll:form.reenroll ? enrollMonth||undefined : undefined,
+    enrolled:(!form.isNew&&!form.reenroll) ? true : undefined,
     v:form.vehicle||undefined,
     loc:form.loc||undefined,
     memo:form.memo||undefined,
@@ -1115,12 +1130,6 @@ function handleEnrollDel(e, ctx){
   toast('등록 해제','ok');
 }
 
-function handleEnrollVehicleToggle(e, ctx){
-  const btn=e.target.closest('#sp-enroll-vehicle');
-  if(!btn) return;
-  btn.classList.toggle('on');
-}
-
 // [v102] 우측 등록 폼 성별 토글
 function handleEnrollGenderM(e, ctx){
   const btn=document.getElementById('sp-enroll-gender-m');
@@ -1138,7 +1147,18 @@ function handleEnrollGenderF(e, ctx){
 // [v104] 우측 등록 폼 신규 chip 토글
 function handleEnrollNewToggle(e, ctx){
   const btn=document.getElementById('sp-enroll-new');
-  if(btn) btn.classList.toggle('on');
+  if(btn){
+    btn.classList.toggle('on');
+    if(btn.classList.contains('on')) document.getElementById('sp-enroll-reenroll')?.classList.remove('on');
+  }
+}
+
+function handleEnrollReenrollToggle(e, ctx){
+  const btn=document.getElementById('sp-enroll-reenroll');
+  if(btn){
+    btn.classList.toggle('on');
+    if(btn.classList.contains('on')) document.getElementById('sp-enroll-new')?.classList.remove('on');
+  }
 }
 
 /**
@@ -1146,14 +1166,14 @@ function handleEnrollNewToggle(e, ctx){
  * (ctx만 받는 핸들러들)
  */
 const STU_POPUP_SIMPLE_HANDLERS = [
-  ['#sp-vehicle',         handleVehicleToggle],
-  ['#sp-enroll-vehicle',  handleEnrollVehicleToggle],
   ['#sp-gender-m',        handleGenderM],
   ['#sp-gender-f',        handleGenderF],
   ['#sp-new',             handleNewToggle],
+  ['#sp-reenroll',        handleReenrollToggle],
   ['#sp-enroll-gender-m', handleEnrollGenderM],
   ['#sp-enroll-gender-f', handleEnrollGenderF],
   ['#sp-enroll-new',      handleEnrollNewToggle],
+  ['#sp-enroll-reenroll', handleEnrollReenrollToggle],
   ['#sp-move-all',        handleMoveAll],
   ['#sp-move-stu',        handleMoveStu],
   ['#sp-copy-stu',        handleCopyStu],
@@ -1268,23 +1288,7 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
   }
 });
 
-// [v118] 승차/하차 입력 시 차량 자동 ON (좌측·우측 폼)
-//   자가등하원 체크 시 차량 OFF
-document.getElementById('stu-popup').addEventListener('input',function(e){
-  const id = e.target?.id;
-  // 좌측 폼: sp-pickup / sp-dropoff
-  if((id==='sp-pickup'||id==='sp-dropoff') && e.target.value.trim().length>0){
-    const vBtn=document.getElementById('sp-vehicle');
-    if(vBtn && !vBtn.classList.contains('on')){ vBtn.classList.remove('off'); vBtn.classList.add('on'); }
-  }
-  // 우측 등록 폼: sp-enroll-pickup / sp-enroll-dropoff
-  if((id==='sp-enroll-pickup'||id==='sp-enroll-dropoff') && e.target.value.trim().length>0){
-    const vBtn=document.getElementById('sp-enroll-vehicle');
-    if(vBtn && !vBtn.classList.contains('on')){ vBtn.classList.remove('off'); vBtn.classList.add('on'); }
-  }
-});
 // [v118] 승차/하차 각각 자가 체크 → 해당 input 비활성/활성
-//   둘 다 자가 체크 시 차량 토글 OFF (사용자에게 시각 힌트)
 document.getElementById('stu-popup').addEventListener('change',function(e){
   const id = e.target?.id;
   // 좌측 폼
@@ -1296,10 +1300,6 @@ document.getElementById('stu-popup').addEventListener('change',function(e){
     const inp=document.getElementById('sp-dropoff');
     if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
   }
-  if(id==='sp-pick-self' || id==='sp-drop-self'){
-    const both = document.getElementById('sp-pick-self')?.checked && document.getElementById('sp-drop-self')?.checked;
-    if(both){ const v=document.getElementById('sp-vehicle'); if(v){v.classList.remove('on');v.classList.add('off');} }
-  }
   // 우측 등록 폼
   if(id==='sp-enroll-pick-self'){
     const inp=document.getElementById('sp-enroll-pickup');
@@ -1308,10 +1308,6 @@ document.getElementById('stu-popup').addEventListener('change',function(e){
   if(id==='sp-enroll-drop-self'){
     const inp=document.getElementById('sp-enroll-dropoff');
     if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
-  }
-  if(id==='sp-enroll-pick-self' || id==='sp-enroll-drop-self'){
-    const both = document.getElementById('sp-enroll-pick-self')?.checked && document.getElementById('sp-enroll-drop-self')?.checked;
-    if(both){ const v=document.getElementById('sp-enroll-vehicle'); if(v){v.classList.remove('on');v.classList.add('off');} }
   }
 });
 
@@ -1828,4 +1824,3 @@ document.addEventListener('click',e=>{
   if(_mouseDownTarget && popup.contains(_mouseDownTarget)) return;
   closeStuPopup();
 });
-
