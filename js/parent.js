@@ -696,27 +696,83 @@ async function submitAbsentCancel(){
 let _bgSelectedSlots=[];  // 배열로 변경 (다중 선택)
 
 let _bgSourceSlotKey=null;  // 보강 요청하는 학생의 원래 슬롯
+let _bgTeacherMode='mine';  // mine | other
+
+function _periodIndexForDate(ds){
+  if(!ds) return getCurrentPeriod();
+  const idx=SCHEDULE_PERIODS.findIndex(p=>ds>=p.start && (!p.end || ds<=p.end));
+  return idx>=0 ? idx : getCurrentPeriod();
+}
+
+function _getBogangDateOptions(baseDs){
+  const baseIdx=_periodIndexForDate(baseDs);
+  const periods=[SCHEDULE_PERIODS[baseIdx], SCHEDULE_PERIODS[baseIdx+1]].filter(Boolean);
+  const todayStr=toDateStr(new Date());
+  const dowNames=['일','월','화','수','목','금','토'];
+  if(!periods.length){
+    const fallback=[];
+    for(let i=0;i<60;i++){
+      const d=new Date();
+      d.setDate(d.getDate()+i);
+      const ds=toDateStr(d);
+      if(isClosedDate(ds)) continue;
+      const dow=dowNames[d.getDay()];
+      if(dow==='일') continue;
+      fallback.push({ds,dow,m:d.getMonth()+1,d:d.getDate()});
+    }
+    return fallback;
+  }
+  const start=periods[0].start>todayStr ? periods[0].start : todayStr;
+  const end=periods[periods.length-1].end || periods[periods.length-1].start;
+  const dates=[];
+  const cur=new Date(start);
+  const last=new Date(end);
+  while(cur<=last){
+    const ds=toDateStr(cur);
+    if(!isClosedDate(ds)){
+      const dow=dowNames[cur.getDay()];
+      if(dow!=='일') dates.push({ds,dow,m:cur.getMonth()+1,d:cur.getDate()});
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+  return dates;
+}
+
+function _bgSourceStudent(){
+  if(!_bgSourceSlotKey) return null;
+  return _currentStudents.find(s=>s.t+'/'+s.d+'/'+s.l+'/'+s.r===_bgSourceSlotKey) || _currentStudent;
+}
+
+function _bgSourceTeacherName(){
+  const s=_bgSourceStudent();
+  if(!s) return '';
+  return INST_MAP[s.t+'/'+s.d+'/'+s.l]?.n || '';
+}
+
+function _renderBgTeacherFilter(){
+  const teacher=_bgSourceTeacherName();
+  document.querySelectorAll('[data-bg-teacher]').forEach(btn=>{
+    btn.classList.toggle('active', btn.dataset.bgTeacher===_bgTeacherMode);
+  });
+  const hint=document.getElementById('bg-teacher-hint');
+  if(hint){
+    hint.textContent=teacher
+      ? (_bgTeacherMode==='mine' ? `${teacher} 선생님 수업만 표시 중입니다.` : `${teacher} 선생님을 제외한 시간표입니다.`)
+      : '담당 선생님 정보가 없어 전체 시간표를 표시합니다.';
+  }
+}
 
 function openBogangModal(ds, slotKey){
   _bgSelectedSlots=[];
   _bgSourceSlotKey=slotKey || (_currentStudent ? _currentStudent.t+'/'+_currentStudent.d+'/'+_currentStudent.l+'/'+_currentStudent.r : null);
+  _bgTeacherMode='mine';
   // 폼/성공 화면 초기화
   document.getElementById('bg-form').style.display='block';
   document.getElementById('bg-success').style.display='none';
 
   const dateSel=document.getElementById('bg-date');
   dateSel.innerHTML='<option value="">날짜를 선택하세요</option>';
-  const dowNames=['일','월','화','수','목','금','토'];
-  const dates=[];
-  for(let i=0;i<60;i++){
-    const d=new Date();
-    d.setDate(d.getDate()+i);
-    const dateStr=toDateStr(d);
-    if(isClosedDate(dateStr)) continue;
-    const dow=dowNames[d.getDay()];
-    if(dow==='일') continue;
-    dates.push({ds:dateStr, dow, m:d.getMonth()+1, d:d.getDate()});
-  }
+  const dates=_getBogangDateOptions(ds);
   dates.forEach(x=>{
     const opt=document.createElement('option');
     opt.value=x.ds;
@@ -731,6 +787,7 @@ function openBogangModal(ds, slotKey){
   document.getElementById('bg-sel-count').textContent='';
   document.getElementById('bg-submit').disabled=true;
   document.getElementById('bg-submit').textContent='신청';
+  _renderBgTeacherFilter();
   document.getElementById('bogang-modal').style.display='flex';
 
   dateSel.onchange=()=>refreshBogangSlots(dateSel.value);
@@ -740,6 +797,12 @@ function openBogangModal(ds, slotKey){
 function closeBogangModal(){
   document.getElementById('bogang-modal').style.display='none';
   _bgSelectedSlots=[];
+}
+
+function setBogangTeacherMode(mode){
+  _bgTeacherMode=mode==='other'?'other':'mine';
+  _renderBgTeacherFilter();
+  refreshBogangSlots(document.getElementById('bg-date')?.value||'');
 }
 
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
@@ -755,6 +818,7 @@ function findAvailableSlots(ds){
   const s=_currentStudent;
   // 모든 내 슬롯 (여러 수업일 때 모두 제외)
   const mySlots=_currentStudents.map(x=>x.t+'/'+x.d+'/'+x.l+'/'+x.r);
+  const sourceTeacher=_bgSourceTeacherName();
 
   // 대기중 요청에서 해당 날짜에 이미 잡힌 슬롯 수집
   const pendingOccupied=new Set();  // key: 'slotKey/ds'
@@ -772,6 +836,10 @@ function findAvailableSlots(ds){
     const [t,d,l]=instKey.split('/');
     if(d!==day) continue;
     if(!inst || !inst.n) continue;
+    if(sourceTeacher){
+      if(_bgTeacherMode==='mine' && inst.n!==sourceTeacher) continue;
+      if(_bgTeacherMode==='other' && inst.n===sourceTeacher) continue;
+    }
     const k=t+'/'+day+'/'+l;
     slotCandidates[k]={instName:inst.n, inst, t, day, lane:parseInt(l)};
   }
@@ -807,12 +875,17 @@ function findAvailableSlots(ds){
 
 function refreshBogangSlots(ds){
   _bgSelectedSlots=[];
+  _renderBgTeacherFilter();
   const slots=findAvailableSlots(ds);
   const container=document.getElementById('bg-slots');
   const wrap=document.getElementById('bg-slot-wrap');
   wrap.style.display='block';
   if(!slots.length){
-    container.innerHTML='<div class="bg-no-slots">이 날짜에는 가능한 수업이 없습니다.<br>다른 날짜를 선택해주세요.</div>';
+    const sourceTeacher=_bgSourceTeacherName();
+    const msg=_bgTeacherMode==='mine' && sourceTeacher
+      ? '담당 선생님 수업에 가능한 자리가 없습니다.<br>다른 선생님 시간표를 확인해보세요.'
+      : '이 날짜에는 가능한 수업이 없습니다.<br>다른 날짜를 선택해주세요.';
+    container.innerHTML=`<div class="bg-no-slots">${msg}</div>`;
     document.getElementById('bg-sel-count').textContent='';
     document.getElementById('bg-submit').disabled=true;
     document.getElementById('bg-submit').textContent='신청';
@@ -1022,6 +1095,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   document.getElementById('bg-cancel').addEventListener('click', closeBogangModal);
   document.getElementById('bg-submit').addEventListener('click', submitBogang);
   document.getElementById('bg-success-close').addEventListener('click', closeBogangModal);
+  document.getElementById('bg-teacher-filter')?.addEventListener('click',e=>{
+    const btn=e.target.closest('[data-bg-teacher]');
+    if(btn) setBogangTeacherMode(btn.dataset.bgTeacher);
+  });
   document.getElementById('bogang-modal').addEventListener('click',e=>{
     if(e.target.id==='bogang-modal') closeBogangModal();
   });
