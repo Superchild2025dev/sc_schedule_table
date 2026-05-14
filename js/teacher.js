@@ -102,6 +102,44 @@ function saveRequests(){ return _fb.child('swim_requests').set(JSON.stringify(RE
 function saveAttendance(){ return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
 function saveAttGuests(){ return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
 function saveDaySnapshot(){ return _fb.child('swim_day_snapshot').set(JSON.stringify(DAY_SNAPSHOT)); }
+function updateMarkTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  let abortReason='';
+  return _fb.child('swim_mark').transaction(raw=>{
+    const marks=parseJSON(raw,{});
+    const next=mutator(marks, reason=>{abortReason=reason||'';});
+    if(next===undefined) return;
+    return JSON.stringify(next);
+  }).then(res=>{
+    if(!res.committed) throw new Error(abortReason||'mark transaction aborted');
+    MARK_MAP=parseJSON(res.snapshot.val(),{});
+    return MARK_MAP;
+  });
+}
+function updateRequestsTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_requests').transaction(raw=>{
+    const reqs=parseJSON(raw,{});
+    const next=mutator(reqs);
+    if(next===undefined) return;
+    return JSON.stringify(next);
+  }).then(res=>{
+    if(!res.committed) throw new Error('request transaction aborted');
+    REQUESTS=parseJSON(res.snapshot.val(),{});
+    return REQUESTS;
+  });
+}
+function setRequestStatus(reqId,status){
+  const processedAt=new Date().toISOString();
+  const processedBy=_currentTeacher||'관리자';
+  return updateRequestsTx(reqs=>{
+    if(!reqs[reqId]) return reqs;
+    reqs[reqId].status=status;
+    reqs[reqId].processedAt=processedAt;
+    reqs[reqId].processedBy=processedBy;
+    return reqs;
+  });
+}
 
 /* ── 선생님 선택 ── */
 function populateTeachers(){
@@ -332,37 +370,39 @@ async function acceptRequest(reqId){
     if(req.type==='bogang'){
       const t=req.target;
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
-      const existing=MARK_MAP[markKey];
-      if(existing?.type==='absent'&&existing.sub){toast('이미 다른 마크가 있습니다','err');return;}
-      if(existing&&existing.type!=='absent'){toast('이미 다른 마크가 있습니다','err');return;}
-
       const bogangObj={type:'bogang', n:req.parent.name, a:req.parent.age||null};
       if(req.parent.phone) bogangObj.p=req.parent.phone;
 
-      // 결석이 있으면 sub로 붙임
-      if(existing?.type==='absent'){
-        MARK_MAP[markKey]={type:'absent', sub:bogangObj};
-      } else {
-        MARK_MAP[markKey]=bogangObj;
-      }
-      await saveMark();
+      await updateMarkTx((marks, abort)=>{
+        const existing=marks[markKey];
+        if(existing?.type==='absent'&&existing.sub){abort('이미 다른 마크가 있습니다');return;}
+        if(existing&&existing.type!=='absent'){abort('이미 다른 마크가 있습니다');return;}
+        // 결석이 있으면 sub로 붙임
+        if(existing?.type==='absent'){
+          marks[markKey]={type:'absent', sub:bogangObj};
+        } else {
+          marks[markKey]=bogangObj;
+        }
+        return marks;
+      });
       // 학부모 쪽 원래 슬롯은 자동 결석 처리 안 함 (학부모가 직접 결석 신청해야 함)
     } else if(req.type==='absent-cancel'){
       const t=req.target;
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
-      const cur=MARK_MAP[markKey];
-      if(cur?.type==='absent'){
-        if(cur.sub) MARK_MAP[markKey]=cur.sub;
-        else delete MARK_MAP[markKey];
-        await saveMark();
-      }
+      await updateMarkTx(marks=>{
+        const cur=marks[markKey];
+        if(cur?.type==='absent'){
+          if(cur.sub) marks[markKey]=cur.sub;
+          else delete marks[markKey];
+        }
+        return marks;
+      });
     }
-    delete REQUESTS[reqId];
-    await saveRequests();
+    await setRequestStatus(reqId,'accepted');
     toast('수락 완료','ok');
     render();
   }catch(e){
-    toast('처리 실패','err');
+    toast(e?.message==='이미 다른 마크가 있습니다' ? e.message : '처리 실패','err');
     console.error(e);
   }
 }
@@ -372,8 +412,7 @@ async function rejectRequest(reqId){
   if(!req) return;
   if(!confirm('이 요청을 거절하시겠습니까?')) return;
   try{
-    delete REQUESTS[reqId];
-    await saveRequests();
+    await setRequestStatus(reqId,'rejected');
     toast('거절 완료','ok');
     render();
   }catch(e){

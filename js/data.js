@@ -212,6 +212,14 @@ function pushUndo(){
 }
 function popUndo(){
   if(!_undoStack.length){toast('되돌릴 내역 없음','err');return;}
+  if(typeof isSnapshotTab==='function' && isSnapshotTab()){
+    toast('스냅샷은 읽기 전용 — 되돌리기를 사용할 수 없습니다','err');
+    return;
+  }
+  if(typeof _fakeDate !== 'undefined' && _fakeDate){
+    toast('타임머신 모드 — 되돌리기를 사용할 수 없습니다','err');
+    return;
+  }
   const s=_undoStack.pop();
   _undoLock=true;
   STUDENTS=JSON.parse(s.stu);INST_MAP=JSON.parse(s.inst);
@@ -801,4 +809,3 @@ let _pendingSync=false;
 let _tabFocusTime=0;
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)_tabFocusTime=Date.now();});
 window.addEventListener('focus',()=>{_tabFocusTime=Date.now();});
-

@@ -130,6 +130,19 @@ function saveMark(){
   if(!_fbReady) return Promise.reject('not ready');
   return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP));
 }
+function updateMarkTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_mark').transaction(raw=>{
+    const marks=parseJSON(raw,{});
+    const next=mutator(marks);
+    if(next===undefined) return;
+    return JSON.stringify(next);
+  }).then(res=>{
+    if(!res.committed) throw new Error('mark transaction aborted');
+    MARK_MAP=parseJSON(res.snapshot.val(),{});
+    return MARK_MAP;
+  });
+}
 function saveReserve(){
   if(!_fbReady) return Promise.reject('not ready');
   return _fb.child('swim_reserve').set(JSON.stringify(RESERVE_MAP));
@@ -137,6 +150,25 @@ function saveReserve(){
 function saveRequests(){
   if(!_fbReady) return Promise.reject('not ready');
   return _fb.child('swim_requests').set(JSON.stringify(REQUESTS));
+}
+function updateRequestsTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_requests').transaction(raw=>{
+    const reqs=parseJSON(raw,{});
+    const next=mutator(reqs);
+    if(next===undefined) return;
+    return JSON.stringify(next);
+  }).then(res=>{
+    if(!res.committed) throw new Error('request transaction aborted');
+    REQUESTS=parseJSON(res.snapshot.val(),{});
+    return REQUESTS;
+  });
+}
+function addRequestEntries(entries){
+  return updateRequestsTx(reqs=>{
+    Object.assign(reqs, entries);
+    return reqs;
+  });
 }
 function makeReqId(){ return 'r_'+Date.now()+'_'+Math.random().toString(36).slice(2,6); }
 
@@ -363,6 +395,25 @@ function renderMyRequests(students){
     });
   });
 
+  // 3. 결석 취소 요청
+  Object.entries(REQUESTS||{}).forEach(([id, req])=>{
+    if(!req || req.type !== 'absent-cancel') return;
+    if(req.parent?.name !== childName) return;
+    if(childPhone && req.parent?.phone && req.parent.phone !== childPhone) return;
+    const t = req.target;
+    if(!t?.ds || t.ds < todayStr) return;
+    const status = req.status === 'accepted' ? '✅ 취소 완료'
+                 : req.status === 'rejected' ? '⛔ 거절'
+                 : '⏳ 선생님 승인 대기';
+    items.push({
+      type: 'absent-cancel', ds: t.ds,
+      title: '✓ 결석 취소',
+      sub: `${t.d}요일 ${t.t} · ${t.l}레인`,
+      status,
+      color: '#10B981'
+    });
+  });
+
   // 정렬: 날짜순
   items.sort((a,b) => a.ds.localeCompare(b.ds));
 
@@ -489,6 +540,7 @@ function renderDateList(slotKey,period,day){
     let pendingCancel=false;     // 결석 취소 대기 중
     let pendingBogangCount=0;    // 이 날짜에 학부모가 신청한 보강 개수
     for(const req of Object.values(REQUESTS)){
+      if(req.status && req.status!=='pending') continue;
       if(req.target?.ds!==ds) continue;
       if(req.type==='absent-cancel' && req.parent?.studentSlotKey===selfSlot){
         pendingCancel=true;
@@ -579,14 +631,16 @@ async function submitAbsent(){
   const slotKey=document.getElementById('ab-submit').dataset.slot;
   if(!slotKey) return;
   const markKey=slotKey+'/'+ds;
-  const cur=MARK_MAP[markKey];
   try{
-    if(cur?.type==='bogang'||cur?.type==='sample'){
-      MARK_MAP[markKey]={type:'absent', sub:cur};
-    } else {
-      MARK_MAP[markKey]={type:'absent'};
-    }
-    await saveMark();
+    await updateMarkTx(marks=>{
+      const cur=marks[markKey];
+      if(cur?.type==='bogang'||cur?.type==='sample'){
+        marks[markKey]={type:'absent', sub:cur};
+      } else {
+        marks[markKey]={type:'absent'};
+      }
+      return marks;
+    });
     document.getElementById('ab-form').style.display='none';
     document.getElementById('ab-success').style.display='block';
     renderDashboard();
@@ -605,13 +659,14 @@ async function submitAbsentCancel(){
   if(!stu) return;
   // 기존 대기 요청 있으면 중복 방지
   for(const req of Object.values(REQUESTS)){
+    if(req.status && req.status!=='pending') continue;
     if(req.type==='absent-cancel' && req.parent?.studentSlotKey===slotKey && req.target?.ds===ds){
       toast('이미 취소 신청이 접수되었습니다','err');
       return;
     }
   }
   const reqId=makeReqId();
-  REQUESTS[reqId]={
+  const entry={
     type:'absent-cancel',
     status:'pending',
     parent:{
@@ -625,7 +680,7 @@ async function submitAbsentCancel(){
     requestedAt:new Date().toISOString(),
   };
   try{
-    await saveRequests();
+    await addRequestEntries({[reqId]:entry});
     document.getElementById('ac-form').style.display='none';
     document.getElementById('ac-success').style.display='block';
     renderDashboard();
@@ -688,6 +743,11 @@ function closeBogangModal(){
 }
 
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
+function _parentSlotMaxRows(inst){
+  if(inst && (inst.elma || inst.cls==='elma' || inst.cls==='elite' || inst.cls==='master')) return 8;
+  return 5;
+}
+
 function findAvailableSlots(ds){
   if(!ds) return [];
   const dowNames=['일','월','화','수','목','금','토'];
@@ -700,6 +760,7 @@ function findAvailableSlots(ds){
   const pendingOccupied=new Set();  // key: 'slotKey/ds'
   for(const req of Object.values(REQUESTS)){
     if(req.type!=='bogang') continue;
+    if(req.status && req.status!=='pending') continue;
     if(req.target?.ds===ds){
       const k=req.target.t+'/'+req.target.d+'/'+req.target.l+'/'+req.target.r;
       pendingOccupied.add(k+'/'+ds);
@@ -712,12 +773,12 @@ function findAvailableSlots(ds){
     if(d!==day) continue;
     if(!inst || !inst.n) continue;
     const k=t+'/'+day+'/'+l;
-    slotCandidates[k]={instName:inst.n, t, day, lane:parseInt(l)};
+    slotCandidates[k]={instName:inst.n, inst, t, day, lane:parseInt(l)};
   }
 
   const available=[];
   for(const [k,info] of Object.entries(slotCandidates)){
-    const maxRows=5;
+    const maxRows=_parentSlotMaxRows(info.inst);
     let freeRow=null;
     for(let r=1;r<=maxRows;r++){
       const checkKey=info.t+'/'+info.day+'/'+info.lane+'/'+r;
@@ -806,9 +867,10 @@ async function submitBogang(){
   // 출발 슬롯 (해당 버튼이 속한 수업의 슬롯)
   const selfSlotKey=_bgSourceSlotKey || (s.t+'/'+s.d+'/'+s.l+'/'+s.r);
   const now=new Date().toISOString();
+  const entries={};
   for(const slot of _bgSelectedSlots){
     const reqId=makeReqId();
-    REQUESTS[reqId]={
+    entries[reqId]={
       type:'bogang',
       status:'pending',
       parent:{
@@ -827,7 +889,7 @@ async function submitBogang(){
   }
 
   try{
-    await saveRequests();
+    await addRequestEntries(entries);
     // 성공 화면 표시
     document.getElementById('bg-form').style.display='none';
     document.getElementById('bg-success').style.display='block';
