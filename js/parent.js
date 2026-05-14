@@ -198,6 +198,7 @@ function addRequestEntries(entries){
   return updateRequestsTx((reqs,abort)=>{
     const pending=Object.values(reqs||{}).filter(req=>!req.status||req.status==='pending');
     const seenTargets=new Set();
+    const seenSources=new Set();
     for(const entry of Object.values(entries||{})){
       if(entry.type==='bogang'){
         const t=entry.target||{};
@@ -215,6 +216,21 @@ function addRequestEntries(entries){
         if(occupied){
           abort('이미 다른 학부모가 같은 보강 자리를 신청했습니다');
           return;
+        }
+        const sourceKey=[entry.parent?.studentSlotKey||'', entry.parent?.absentDs||''].join('/');
+        if(entry.parent?.studentSlotKey && entry.parent?.absentDs){
+          if(!seenSources.has(sourceKey)){
+            const sourcePending=pending.some(req=>
+              req.type==='bogang'
+              && req.parent?.studentSlotKey===entry.parent?.studentSlotKey
+              && req.parent?.absentDs===entry.parent?.absentDs
+            );
+            if(sourcePending){
+              abort('이미 이 결석일에 대한 보강 신청이 접수되었습니다');
+              return;
+            }
+            seenSources.add(sourceKey);
+          }
         }
       }
       if(entry.type==='absent-cancel'){
@@ -455,6 +471,7 @@ function renderMyRequests(students){
   // 2. 보강 요청 (REQUESTS에서 본인 자녀의 보강)
   Object.entries(REQUESTS||{}).forEach(([id, req])=>{
     if(!req || req.type !== 'bogang') return;
+    if(req.status==='superseded') return;
     if(req.parent?.name !== childName) return;
     if(childPhone && req.parent?.phone && req.parent.phone !== childPhone) return;
     const t = req.target;
@@ -622,11 +639,13 @@ function renderDateList(slotKey,period,day){
     let pendingBogangCount=0;    // 이 날짜에 학부모가 신청한 보강 개수
     for(const req of Object.values(REQUESTS)){
       if(req.status && req.status!=='pending') continue;
-      if(req.target?.ds!==ds) continue;
       if(req.type==='absent-cancel' && req.parent?.studentSlotKey===selfSlot){
+        if(req.target?.ds!==ds) continue;
         pendingCancel=true;
       }
       if(req.type==='bogang' && req.parent?.studentSlotKey===selfSlot){
+        const requestDs=req.parent?.absentDs || req.sourceDs || req.target?.ds;
+        if(requestDs!==ds) continue;
         pendingBogangCount++;
       }
     }
@@ -783,6 +802,7 @@ async function submitAbsentCancel(){
 let _bgSelectedSlots=[];  // 배열로 변경 (다중 선택)
 
 let _bgSourceSlotKey=null;  // 보강 요청하는 학생의 원래 슬롯
+let _bgSourceDs=null;       // 결석한 원래 수업일
 let _bgTeacherMode='mine';  // mine | other
 
 function _periodIndexForDate(ds){
@@ -852,6 +872,7 @@ function _renderBgTeacherFilter(){
 function openBogangModal(ds, slotKey){
   _bgSelectedSlots=[];
   _bgSourceSlotKey=slotKey || (_currentStudent ? _currentStudent.t+'/'+_currentStudent.d+'/'+_currentStudent.l+'/'+_currentStudent.r : null);
+  _bgSourceDs=ds||null;
   const src=_bgSourceStudent();
   if(isNoMakeupInst(instOfStudent(src))){
     toast('엘리트반/마스터반은 보강 신청이 불가합니다','err');
@@ -889,6 +910,7 @@ function openBogangModal(ds, slotKey){
 function closeBogangModal(){
   document.getElementById('bogang-modal').style.display='none';
   _bgSelectedSlots=[];
+  _bgSourceDs=null;
 }
 
 function setBogangTeacherMode(mode){
@@ -1051,6 +1073,10 @@ async function submitBogang(){
   // REQUESTS에 저장 (즉시 MARK_MAP에 반영 X — 선생님 승인 대기)
   // 출발 슬롯 (해당 버튼이 속한 수업의 슬롯)
   const selfSlotKey=_bgSourceSlotKey || (s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+  const sourceStu=_bgSourceStudent() || s;
+  const sourceInst=instOfStudent(sourceStu);
+  const sourceInstKey=sourceStu ? sourceStu.t+'/'+sourceStu.d+'/'+sourceStu.l : '';
+  const choiceGroupId='bg_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
   const now=new Date().toISOString();
   const entries={};
   for(const slot of _bgSelectedSlots){
@@ -1063,7 +1089,13 @@ async function submitBogang(){
         name:s.n,
         age:s.a||null,
         phone:s.p||null,
+        absentDs:_bgSourceDs||null,
+        sourceInstKey,
+        sourceInstName:sourceInst?.n||'',
+        sourceClassLabel:instClassText(sourceInst),
       },
+      choiceGroupId,
+      choiceCount:_bgSelectedSlots.length,
       target:{
         t:slot.t, d:slot.day, l:slot.lane, r:slot.row,
         ds:slot.ds, instName:slot.instName, classLabel:slot.classLabel||'',
@@ -1079,7 +1111,7 @@ async function submitBogang(){
     document.getElementById('bg-form').style.display='none';
     document.getElementById('bg-success').style.display='block';
     document.getElementById('bg-success-msg').innerHTML=
-      `총 <strong>${_bgSelectedSlots.length}개</strong>의 보강을 신청했습니다.<br>각 담당 선생님이 검토 후 승인합니다.`;
+      `총 <strong>${_bgSelectedSlots.length}개</strong>의 후보를 보냈습니다.<br>담당 선생님이 이 중 하나를 확정합니다.`;
     renderDashboard();
   }catch(e){
     toast(e?.message||'신청 실패','err');

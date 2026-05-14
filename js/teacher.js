@@ -78,15 +78,26 @@ function reqTargetInst(req){
   const t=req?.target||{};
   return INST_MAP[req?.instKey] || INST_MAP[t.t+'/'+t.d+'/'+t.l] || null;
 }
+function reqSourceInst(req){
+  const p=req?.parent||{};
+  if(p.sourceInstKey && INST_MAP[p.sourceInstKey]) return INST_MAP[p.sourceInstKey];
+  const [t,d,l]=(p.studentSlotKey||'').split('/');
+  return t&&d&&l ? INST_MAP[t+'/'+d+'/'+l] || null : null;
+}
+function reqTargetTeacherName(req){
+  const inst=reqTargetInst(req);
+  return inst?.n || req?.target?.instName || req?.targetInstName || UNASSIGNED_TEACHER_LABEL;
+}
 function reqSnapshotTeacherName(req){
+  if(req?.type==='bogang') return req?.parent?.sourceInstName || req?.targetInstName || '';
   return req?.target?.instName || req?.targetInstName || '';
 }
 function reqAssignedTeacherName(req){
-  const inst=reqTargetInst(req);
+  const inst=req?.type==='bogang' ? reqSourceInst(req) : reqTargetInst(req);
   return inst?.n || reqSnapshotTeacherName(req) || UNASSIGNED_TEACHER_LABEL;
 }
 function reqTeacherWarningHtml(req){
-  const inst=reqTargetInst(req);
+  const inst=req?.type==='bogang' ? reqSourceInst(req) : reqTargetInst(req);
   const currentName=inst?.n || '';
   const snapshotName=reqSnapshotTeacherName(req);
   if(!currentName){
@@ -220,6 +231,18 @@ function claimRequest(reqId){
       abort('이미 다른 곳에서 처리 중이거나 완료된 요청입니다');
       return;
     }
+    if(req.type==='bogang' && req.choiceGroupId){
+      const busy=Object.entries(reqs).some(([id,other])=>
+        id!==reqId
+        && other?.type==='bogang'
+        && other.choiceGroupId===req.choiceGroupId
+        && (other.status==='accepted'||other.status==='processing')
+      );
+      if(busy){
+        abort('이미 같은 보강 후보 중 하나가 처리 중이거나 확정되었습니다');
+        return;
+      }
+    }
     req.status='processing';
     req.processingAt=processingAt;
     req.processingBy=processingBy;
@@ -259,6 +282,20 @@ function setRequestStatus(reqId,status){
     reqs[reqId].processedBy=processedBy;
     delete reqs[reqId].processingAt;
     delete reqs[reqId].processingBy;
+    if(status==='accepted' && reqs[reqId].type==='bogang' && reqs[reqId].choiceGroupId){
+      const gid=reqs[reqId].choiceGroupId;
+      for(const [id,other] of Object.entries(reqs)){
+        if(id===reqId || other?.type!=='bogang' || other.choiceGroupId!==gid) continue;
+        if(!other.status || other.status==='pending' || other.status==='processing'){
+          other.status='superseded';
+          other.processedAt=processedAt;
+          other.processedBy=processedBy;
+          other.supersededBy=reqId;
+          delete other.processingAt;
+          delete other.processingBy;
+        }
+      }
+    }
     return reqs;
   });
 }
@@ -336,8 +373,7 @@ function getMyRequests(type){
     if(req.status==='pending' || !req.status){
       // 선생님 필터
       if(_currentTeacher){
-        // bogang: target의 선생님이 내 이름이어야 함
-        // absent-cancel: 원생의 담임 선생님이 내 이름이어야 함
+        // bogang/absent-cancel 모두 원생의 원래 담당 선생님 기준
         if(reqAssignedTeacherName(req) !== _currentTeacher) continue;
       }
       results.push([reqId,req]);
@@ -394,8 +430,10 @@ function renderBogangList(reqs){
     const origin=p.studentSlotKey ? `${od}요일 ${ot} ${ol}레인 ${or2}번${originLabel?' · '+originLabel:''}` : '';
     const targetInst=reqTargetInst(r);
     const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
-    const targetTeacher=reqAssignedTeacherName(r);
+    const approveTeacher=reqAssignedTeacherName(r);
+    const targetTeacher=reqTargetTeacherName(r);
     const warning=reqTeacherWarningHtml(r);
+    const choiceLabel=r.choiceCount>1 ? `후보 ${r.choiceCount}개 중 선택` : '후보 1개';
     // [v118] 보강 받는 반의 다른 학생들 표시 (시간표 셀 스타일)
     const classmatesHtml = _renderClassmates(t.t, t.d, t.l, t.ds, t.r);
     return `<div class="req-card">
@@ -405,8 +443,8 @@ function renderBogangList(reqs){
       </div>
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
-        <div class="sub-info">원래 수업: ${esc(origin)}</div>
-        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass}</div>
+        <div class="sub-info">원래 수업: ${esc(origin)} · 승인 담당 ${esc(approveTeacher)}</div>
+        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · 수업 ${esc(targetTeacher)}${targetClass} · ${choiceLabel}</div>
         ${warning}
       </div>
       ${classmatesHtml}
