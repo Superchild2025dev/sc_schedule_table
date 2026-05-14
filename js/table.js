@@ -98,23 +98,36 @@ async function _saveAttAdd(status){
         DAY_SNAPSHOT[cellDs].students.push(newStu);
         saveDaySnapshot();
       } else {
-        STUDENTS.push(newStu);
-        _stuIdx[slotKey]=newStu;
-        saveStudents();
+        await updateScheduleTx(ctx=>{
+          const stuKey=getTabConfig().stuKey;
+          const students=ctx.get(stuKey,[]);
+          if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
+            ctx.abort('이미 학생이 있는 자리입니다');
+            return;
+          }
+          students.push(newStu);
+          const att=ctx.get(STORAGE_KEYS.ATTENDANCE,{});
+          att[slotKey+'/'+cellDs]={s:status, at:new Date().toISOString(), by:null};
+          ctx.set(stuKey,students);
+          ctx.set(STORAGE_KEYS.ATTENDANCE,att);
+          return true;
+        });
       }
-      ATTENDANCE[slotKey+'/'+cellDs]={s:status, at:new Date().toISOString(), by:null};
-      saveAttendance();
+      if(useSnapshot) await setAttendanceEntryTx(slotKey+'/'+cellDs,{s:status, at:new Date().toISOString(), by:null});
       toast(name+' 등록 + '+(status==='present'?'출석':'결석'),'ok');
     } else if(status==='bogang' || status==='sample'){
       // 일회성 MARK_MAP (정규 학생 등록 X)
-      const existing=MARK_MAP[slotKey+'/'+cellDs];
-      if(existing && existing.type==='absent'){
-        // 결석 + sub 보강/샘플
-        MARK_MAP[slotKey+'/'+cellDs]={...existing, sub:{type:status, n:name, a:age}};
-      } else {
-        MARK_MAP[slotKey+'/'+cellDs]={type:status, n:name, a:age};
-      }
-      saveMark();
+      const markKey=slotKey+'/'+cellDs;
+      await updateMarkMapTx(marks=>{
+        const existing=marks[markKey];
+        if(existing && existing.type==='absent'){
+          // 결석 + sub 보강/샘플
+          marks[markKey]={...existing, sub:{type:status, n:name, a:age}};
+        } else {
+          marks[markKey]={type:status, n:name, a:age};
+        }
+        return marks;
+      });
       toast(name+' '+(status==='bogang'?'보강':'샘플')+' 등록','ok');
     } else if(status==='hyuwon'){
       // 정규 학생 등록 + 휴원 날짜
@@ -124,16 +137,31 @@ async function _saveAttAdd(status){
         DAY_SNAPSHOT[cellDs].students.push(newStu);
         saveDaySnapshot();
       } else {
-        STUDENTS.push(newStu);
-        _stuIdx[slotKey]=newStu;
-        saveStudents();
+        await updateScheduleTx(ctx=>{
+          const stuKey=getTabConfig().stuKey;
+          const students=ctx.get(stuKey,[]);
+          if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
+            ctx.abort('이미 학생이 있는 자리입니다');
+            return;
+          }
+          students.push(newStu);
+          const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+          if(!hyuwon[slotKey]) hyuwon[slotKey]={dates:[]};
+          if(!hyuwon[slotKey].dates) hyuwon[slotKey].dates=[];
+          if(!hyuwon[slotKey].dates.includes(cellDs)) hyuwon[slotKey].dates.push(cellDs);
+          ctx.set(stuKey,students);
+          ctx.set(STORAGE_KEYS.休원,hyuwon);
+          return true;
+        });
       }
-      if(!HYUWON_MAP[slotKey]) HYUWON_MAP[slotKey]={dates:[]};
-      if(!HYUWON_MAP[slotKey].dates) HYUWON_MAP[slotKey].dates=[];
-      if(!HYUWON_MAP[slotKey].dates.includes(cellDs)){
-        HYUWON_MAP[slotKey].dates.push(cellDs);
+      if(useSnapshot){
+        await updateHyuwonMapTx(hyuwon=>{
+          if(!hyuwon[slotKey]) hyuwon[slotKey]={dates:[]};
+          if(!hyuwon[slotKey].dates) hyuwon[slotKey].dates=[];
+          if(!hyuwon[slotKey].dates.includes(cellDs)) hyuwon[slotKey].dates.push(cellDs);
+          return hyuwon;
+        });
       }
-      saveHyuwon();
       toast(name+' 등록 + 휴원','ok');
     }
     _closeAttAddModal();
@@ -175,7 +203,7 @@ function _closeEditModal(){
   document.getElementById('att-edit-modal').style.display='none';
 }
 
-function _saveEditModal(){
+async function _saveEditModal(){
   if(!_editModalCtx) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
@@ -193,17 +221,25 @@ function _saveEditModal(){
     saveDaySnapshot();
     toast('과거 시간표 저장','ok');
   } else {
-    const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-    if(idx>=0){STUDENTS[idx].n=newName; STUDENTS[idx].a=newAge; _stuIdx[slotKey]=STUDENTS[idx];}
-    else {const s={n:newName, a:newAge, t, d, l:li, r:ri}; STUDENTS.push(s); _stuIdx[slotKey]=s;}
-    saveStudents();
+    try{
+      await updateStudentsTx(students=>{
+        const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
+        if(idx>=0){students[idx].n=newName; students[idx].a=newAge;}
+        else students.push({n:newName, a:newAge, t, d, l:li, r:ri});
+        return students;
+      });
+    }catch(e){
+      toast(e?.message||'저장 실패','err');
+      console.error(e);
+      return;
+    }
     toast('저장 완료','ok');
   }
   _closeEditModal();
   buildTable();
 }
 
-function _deleteEditModal(){
+async function _deleteEditModal(){
   if(!_editModalCtx) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
@@ -215,10 +251,17 @@ function _deleteEditModal(){
     if(idx>=0) arr.splice(idx,1);
     saveDaySnapshot();
   } else {
-    const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-    if(idx>=0) STUDENTS.splice(idx,1);
-    delete _stuIdx[slotKey];
-    saveStudents();
+    try{
+      await updateStudentsTx(students=>{
+        const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
+        if(idx>=0) students.splice(idx,1);
+        return students;
+      });
+    }catch(e){
+      toast(e?.message||'삭제 실패','err');
+      console.error(e);
+      return;
+    }
   }
   _closeEditModal();
   buildTable();
@@ -333,34 +376,48 @@ function _dayToCellDs(day){
 async function _cycleAttendance(slotKey){
   if(!_attendanceDate) return;
   const key=slotKey+'/'+_attendanceDate;
-  const cur=ATTENDANCE[key];
-  const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
-  let next;
-  if(!curVal) next='present';
-  else if(curVal==='present') next='absent';
-  else next=null;
-  if(next===null) delete ATTENDANCE[key];
-  else ATTENDANCE[key]={s:next, at:new Date().toISOString(), by:null};
-  saveAttendance();
-  buildTable();
-  _updateAttBarInfo();
+  try{
+    await updateAttendanceMapTx(att=>{
+      const cur=att[key];
+      const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
+      let next;
+      if(!curVal) next='present';
+      else if(curVal==='present') next='absent';
+      else next=null;
+      if(next===null) delete att[key];
+      else att[key]={s:next, at:new Date().toISOString(), by:null};
+      return att;
+    });
+    buildTable();
+    _updateAttBarInfo();
+  }catch(e){
+    toast('출석 저장 실패','err');
+    console.error(e);
+  }
 }
 
 // Sub(보강/샘플 대체) 출석 체크
 async function _cycleAttendanceSub(slotKey){
   if(!_attendanceDate) return;
   const key=slotKey+'/'+_attendanceDate+'#sub';
-  const cur=ATTENDANCE[key];
-  const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
-  let next;
-  if(!curVal) next='present';
-  else if(curVal==='present') next='absent';
-  else next=null;
-  if(next===null) delete ATTENDANCE[key];
-  else ATTENDANCE[key]={s:next, at:new Date().toISOString(), by:null};
-  saveAttendance();
-  buildTable();
-  _updateAttBarInfo();
+  try{
+    await updateAttendanceMapTx(att=>{
+      const cur=att[key];
+      const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
+      let next;
+      if(!curVal) next='present';
+      else if(curVal==='present') next='absent';
+      else next=null;
+      if(next===null) delete att[key];
+      else att[key]={s:next, at:new Date().toISOString(), by:null};
+      return att;
+    });
+    buildTable();
+    _updateAttBarInfo();
+  }catch(e){
+    toast('출석 저장 실패','err');
+    console.error(e);
+  }
 }
 
 // 출석 체크 모달
@@ -385,12 +442,15 @@ async function _setAttModal(value){
   if(!_attModalCtx) return;
   const {slotKey, isSub, ds}=_attModalCtx;
   const key=slotKey+'/'+ds+(isSub?'#sub':'');
-  if(value===null) delete ATTENDANCE[key];
-  else ATTENDANCE[key]={s:value, at:new Date().toISOString(), by:null};
-  saveAttendance();
-  _closeAttModal();
-  buildTable();
-  _updateAttBarInfo();
+  try{
+    await setAttendanceEntryTx(key,value===null?null:{s:value, at:new Date().toISOString(), by:null});
+    _closeAttModal();
+    buildTable();
+    _updateAttBarInfo();
+  }catch(e){
+    toast('출석 저장 실패','err');
+    console.error(e);
+  }
 }
 
 // 출석 모달에서 학생 삭제
@@ -399,85 +459,112 @@ async function _deleteFromAttModal(){
   const {slotKey, isSub, ds}=_attModalCtx;
   if(!confirm('이 학생을 출석부에서 삭제하시겠습니까?')) return;
 
-  const [t,d,l,r]=slotKey.split('/');
-  const li=parseInt(l), ri=parseInt(r);
-  const isPast=ds<toDateStr(getToday());
-  const useSnapshot=isPast && DAY_SNAPSHOT[ds];
+  try{
+    const [t,d,l,r]=slotKey.split('/');
+    const li=parseInt(l), ri=parseInt(r);
+    const isPast=ds<toDateStr(getToday());
+    const useSnapshot=isPast && DAY_SNAPSHOT[ds];
 
-  if(isSub){
-    // Sub (결석+대체 보강/샘플 중 sub) 삭제
-    const mark=MARK_MAP[slotKey+'/'+ds];
-    if(mark && mark.sub){
-      const newMark={...mark};
-      delete newMark.sub;
-      MARK_MAP[slotKey+'/'+ds]=newMark;
-      saveMark();
-    }
-    delete ATTENDANCE[slotKey+'/'+ds+'#sub'];
-    saveAttendance();
-  } else {
-    // Primary 삭제
-    const mark=MARK_MAP[slotKey+'/'+ds];
-    if(mark){
-      if(mark.type==='bogang' || mark.type==='sample'){
-        // 단독 보강/샘플 → 통째로 삭제
-        delete MARK_MAP[slotKey+'/'+ds];
-        saveMark();
-      } else if(mark.type==='absent'){
-        // 결석 마크 삭제 (sub가 있어도 함께 삭제 — sub만 남겨두려면 별도 처리)
-        delete MARK_MAP[slotKey+'/'+ds];
-        saveMark();
+    if(isSub){
+      // Sub (결석+대체 보강/샘플 중 sub) 삭제
+      const mark=MARK_MAP[slotKey+'/'+ds];
+      if(mark && mark.sub){
+        const newMark={...mark};
+        delete newMark.sub;
+        await setMarkEntryTx(slotKey+'/'+ds,newMark);
+      }
+      await setAttendanceEntryTx(slotKey+'/'+ds+'#sub',null);
+    } else {
+      // Primary 삭제
+      const mark=MARK_MAP[slotKey+'/'+ds];
+      if(mark){
+        if(mark.type==='bogang' || mark.type==='sample'){
+          // 단독 보강/샘플 → 통째로 삭제
+          await clearMarkEntryTx(slotKey+'/'+ds);
+        } else if(mark.type==='absent'){
+          // 결석 마크 삭제 (sub가 있어도 함께 삭제 — sub만 남겨두려면 별도 처리)
+          await clearMarkEntryTx(slotKey+'/'+ds);
+        }
+      }
+      // 정규 학생도 삭제 (+ 버튼으로 추가한 경우)
+      if(useSnapshot){
+        const arr=DAY_SNAPSHOT[ds].students||[];
+        const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
+        if(idx>=0){arr.splice(idx,1); saveDaySnapshot();}
+        await updateAttendanceMapTx(att=>{
+          delete att[slotKey+'/'+ds];
+          delete att[slotKey+'/'+ds+'#sub'];
+          return att;
+        });
+        await updateHyuwonMapTx(hyuwon=>{
+          if(hyuwon[slotKey]&&hyuwon[slotKey].dates){
+            hyuwon[slotKey].dates=hyuwon[slotKey].dates.filter(x=>x!==ds);
+            if(!hyuwon[slotKey].dates.length) delete hyuwon[slotKey];
+          }
+          return hyuwon;
+        });
+      } else {
+        await updateScheduleTx(ctx=>{
+          const stuKey=getTabConfig().stuKey;
+          const students=ctx.get(stuKey,[]);
+          const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
+          if(idx>=0) students.splice(idx,1);
+          const att=ctx.get(STORAGE_KEYS.ATTENDANCE,{});
+          delete att[slotKey+'/'+ds];
+          delete att[slotKey+'/'+ds+'#sub'];
+          const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+          if(hyuwon[slotKey]&&hyuwon[slotKey].dates){
+            hyuwon[slotKey].dates=hyuwon[slotKey].dates.filter(x=>x!==ds);
+            if(!hyuwon[slotKey].dates.length) delete hyuwon[slotKey];
+          }
+          ctx.set(stuKey,students);
+          ctx.set(STORAGE_KEYS.ATTENDANCE,att);
+          ctx.set(STORAGE_KEYS.休원,hyuwon);
+          return true;
+        });
       }
     }
-    // 정규 학생도 삭제 (+ 버튼으로 추가한 경우)
-    if(useSnapshot){
-      const arr=DAY_SNAPSHOT[ds].students||[];
-      const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-      if(idx>=0){arr.splice(idx,1); saveDaySnapshot();}
-    } else {
-      const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-      if(idx>=0){STUDENTS.splice(idx,1); delete _stuIdx[slotKey]; saveStudents();}
-    }
-    // 출석 기록 제거
-    delete ATTENDANCE[slotKey+'/'+ds];
-    delete ATTENDANCE[slotKey+'/'+ds+'#sub'];
-    saveAttendance();
-    // 휴원 날짜도 제거
-    if(HYUWON_MAP[slotKey] && HYUWON_MAP[slotKey].dates){
-      HYUWON_MAP[slotKey].dates=HYUWON_MAP[slotKey].dates.filter(x=>x!==ds);
-      if(!HYUWON_MAP[slotKey].dates.length) delete HYUWON_MAP[slotKey];
-      saveHyuwon();
-    }
-  }
 
-  toast('삭제 완료','ok');
-  _closeAttModal();
-  buildTable();
-  _updateAttBarInfo();
+    toast('삭제 완료','ok');
+    _closeAttModal();
+    buildTable();
+    _updateAttBarInfo();
+  }catch(e){
+    toast('삭제 실패','err');
+    console.error(e);
+  }
 }
 
 // 오늘 모두 출석
-function markAllPresentForDate(){
+async function markAllPresentForDate(){
   if(!_attendanceDate) return;
   const dow=['일','월','화','수','목','금','토'][new Date(_attendanceDate).getDay()];
   const now=new Date().toISOString();
   let cnt=0;
-  STUDENTS.forEach(stu=>{
-    if(stu.d!==dow) return;
-    const slotKey=stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r;
-    const key=slotKey+'/'+_attendanceDate;
-    const cur=ATTENDANCE[key];
-    const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
-    if(!curVal){
-      ATTENDANCE[key]={s:'present', at:now, by:null};
-      cnt++;
-    }
-  });
-  if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
-  saveAttendance();
-  buildTable();
-  _updateAttBarInfo();
-  toast(cnt+'명 출석 처리','ok');
+  try{
+    await updateAttendanceMapTx(att=>{
+      cnt=0;
+      STUDENTS.forEach(stu=>{
+        if(stu.d!==dow) return;
+        const slotKey=stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r;
+        const key=slotKey+'/'+_attendanceDate;
+        const cur=att[key];
+        const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
+        if(!curVal){
+          att[key]={s:'present', at:now, by:null};
+          cnt++;
+        }
+      });
+      return att;
+    });
+    if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
+    buildTable();
+    _updateAttBarInfo();
+    toast(cnt+'명 출석 처리','ok');
+  }catch(e){
+    toast('출석 저장 실패','err');
+    console.error(e);
+  }
 }
 
 // 오늘 스냅샷 저장 (과거 날짜 동결용)
@@ -591,6 +678,7 @@ function syncStudentsBeforeRender(){
   let changed=false;
   let enrollChanged=false;
   let retireChanged=false;
+  let hyuwonChanged=false;
   const todayStr=toDateStr(getToday());
 
   // 퇴원일 지난 학생 자동 삭제
@@ -620,7 +708,7 @@ function syncStudentsBeforeRender(){
       // 퇴원한 슬롯의 휴원도 정리 (orphan 방지 — 빈 셀에 휴원 뱃지 안 남음)
       if(HYUWON_MAP[slotKey]){
         delete HYUWON_MAP[slotKey];
-        saveHyuwon();
+        hyuwonChanged=true;
       }
     }
   }
@@ -659,10 +747,6 @@ function syncStudentsBeforeRender(){
     }
   }
 
-  if(changed){saveStudents();rebuildStuIdx();}
-  if(enrollChanged) saveEnroll();
-  if(retireChanged) saveRetire();
-
   // 앱바 타이틀 업데이트
   const cp=SCHEDULE_PERIODS[getCurrentPeriod()];
   const yr=cp.start.split('-')[0];
@@ -676,7 +760,76 @@ function syncStudentsBeforeRender(){
     if(s.reenroll&&s.reenroll!==cp.month){ delete s.reenroll; flagChanged=true; }
     if(s.enrolled&&s.enrolled<todayStr){ delete s.enrolled; flagChanged=true; }
   });
-  if(flagChanged) saveStudents();
+  if(changed||enrollChanged||retireChanged||hyuwonChanged||flagChanged){
+    const periodMonth=cp.month;
+    updateScheduleTx(ctx=>{
+      const stuKey=getTabConfig().stuKey;
+      const students=ctx.get(stuKey,[]);
+      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+      const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+      const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+      let txStudentsChanged=false;
+      let txEnrollChanged=false;
+      let txRetireChanged=false;
+      let txHyuwonChanged=false;
+
+      const slotMatch=(s,slotKey)=>{
+        const [t,d,l,r]=slotKey.split('/');
+        return s.t===t&&s.d===d&&parseInt(s.l)===parseInt(l)&&parseInt(s.r)===parseInt(r);
+      };
+
+      for(const [slotKey,entry] of Object.entries(retire)){
+        const retDs=entry?.ds||entry;
+        if(retDs<todayStr){
+          const idx=students.findIndex(s=>slotMatch(s,slotKey));
+          if(idx>=0){students.splice(idx,1);txStudentsChanged=true;}
+          const enr=enroll[slotKey];
+          if(enr&&enr.ds<retDs){delete enroll[slotKey];txEnrollChanged=true;}
+          delete retire[slotKey];
+          txRetireChanged=true;
+          if(hyuwon[slotKey]){delete hyuwon[slotKey];txHyuwonChanged=true;}
+        }
+      }
+
+      for(const [slotKey,entry] of Object.entries(enroll)){
+        if(entry.ds<=todayStr){
+          const [t,d,l,r]=slotKey.split('/');
+          const li=parseInt(l),ri=parseInt(r);
+          const existing=students.find(s=>slotMatch(s,slotKey));
+          if(!existing){
+            const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
+            if(entry.p) obj.p=entry.p;
+            if(entry.isNew) obj.isNew=entry.isNew;
+            else if(entry.reenroll) obj.reenroll=entry.reenroll;
+            else if(entry.enrolled) obj.enrolled=entry.ds;
+            if(entry.v) obj.v=true;
+            if(entry.loc) obj.loc=entry.loc;
+            if(entry.memo) obj.memo=entry.memo;
+            if(entry.g) obj.g=entry.g;
+            students.push(obj);
+            txStudentsChanged=true;
+            delete enroll[slotKey];
+            txEnrollChanged=true;
+          } else if(existing.n===entry.name){
+            delete enroll[slotKey];
+            txEnrollChanged=true;
+          }
+        }
+      }
+
+      students.forEach(s=>{
+        if(s.isNew&&s.isNew!==periodMonth){delete s.isNew;txStudentsChanged=true;}
+        if(s.reenroll&&s.reenroll!==periodMonth){delete s.reenroll;txStudentsChanged=true;}
+        if(s.enrolled&&s.enrolled<todayStr){delete s.enrolled;txStudentsChanged=true;}
+      });
+
+      if(txStudentsChanged) ctx.set(stuKey,students);
+      if(txEnrollChanged) ctx.set(STORAGE_KEYS.ENROLL,enroll);
+      if(txRetireChanged) ctx.set(STORAGE_KEYS.RETIRE,retire);
+      if(txHyuwonChanged) ctx.set(STORAGE_KEYS.休원,hyuwon);
+      return true;
+    }).catch(e=>{console.error('syncStudentsBeforeRender transaction failed',e);});
+  }
 }
 
 /**

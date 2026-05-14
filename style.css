@@ -25,7 +25,6 @@ body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;f
 .branch-btn:hover{border-color:#0F9D58;background:#F0FDF4;transform:translateY(-3px);box-shadow:0 8px 24px rgba(15,157,88,.2)}
 .branch-emoji{font-size:36px}
 .branch-name{font-size:16px;font-weight:900;color:#0F9D58}
-.branch-desc{font-size:11px;color:#6B7280;font-weight:500}
 #branch-switch-btn{background:rgba(255,255,255,.18);border:1px dashed rgba(255,255,255,.5)}
 .tab-modal-box{background:#fff;border-radius:12px;padding:20px;min-width:240px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2)}
 .tab-modal-title{font-size:14px;font-weight:700;margin-bottom:14px;color:#333}

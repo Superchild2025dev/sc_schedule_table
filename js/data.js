@@ -721,6 +721,211 @@ function saveAttendance(){ saveJSON(STORAGE_KEYS.ATTENDANCE, ATTENDANCE); }
 function saveAttGuests(){ saveJSON(STORAGE_KEYS.ATT_GUESTS, ATT_GUESTS); }
 function saveDaySnapshot(){ saveJSON(STORAGE_KEYS.DAY_SNAPSHOT, DAY_SNAPSHOT); }
 
+function _cacheJSONOnly(key,val){
+  const json=JSON.stringify(val||{});
+  const sk=key.replace(/[.#$/\[\]]/g,'_');
+  try{ _dbCache[sk]=json; }catch(e){}
+  try{ localStorage.setItem(_lsKey(key),json); }catch(e){}
+}
+function _parseJSONMap(raw){
+  if(!raw) return {};
+  try{return typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return {};}
+}
+function _cloneJSON(val){
+  if(val===undefined||val===null) return val;
+  try{return JSON.parse(JSON.stringify(val));}catch(e){return val;}
+}
+function _parseJSONValue(raw,fallback){
+  if(!raw) return _cloneJSON(fallback);
+  try{
+    const val=typeof raw==='string'?JSON.parse(raw):raw;
+    return val===undefined||val===null?_cloneJSON(fallback):val;
+  }catch(e){
+    return _cloneJSON(fallback);
+  }
+}
+function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
+  if(!_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
+  if(typeof isSnapshotTab==='function' && isSnapshotTab()
+     && storageKey!==STORAGE_KEYS.TAB_LIST && !storageKey.startsWith('swim_snap_')){
+    return Promise.reject(new Error('스냅샷은 읽기 전용입니다'));
+  }
+  if(typeof _fakeDate !== 'undefined' && _fakeDate
+     && storageKey!==STORAGE_KEYS.TAB_LIST && !storageKey.startsWith('swim_snap_')){
+    return Promise.reject(new Error('타임머신 모드에서는 저장되지 않습니다'));
+  }
+  let abortReason='';
+  const runMutator=value=>mutator(value, reason=>{abortReason=reason||'';});
+  if(!_fbReady){
+    const next=runMutator(_cloneJSON(currentValue!==undefined?currentValue:fallback));
+    if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
+    if(next!==undefined){
+      applyResult(next);
+      saveJSON(storageKey,next);
+    }
+    return Promise.resolve(next);
+  }
+  const sk=storageKey.replace(/[.#$/\[\]]/g,'_');
+  return _fb.child(sk).transaction(raw=>{
+    const value=_parseJSONValue(raw,fallback);
+    const next=runMutator(value);
+    if(next===undefined) return;
+    return JSON.stringify(next);
+  }).then(res=>{
+    if(!res.committed) throw new Error(abortReason||'transaction aborted');
+    const next=_parseJSONValue(res.snapshot.val(),fallback);
+    applyResult(next);
+    _cacheJSONOnly(storageKey,next);
+    return next;
+  });
+}
+function _txJSONMap(storageKey,currentMap,applyResult,mutator){
+  return _txJSONValue(storageKey,currentMap,applyResult,mutator,{});
+}
+function _storageSafeKey(key){ return key.replace(/[.#$/\[\]]/g,'_'); }
+function _applyStoredValue(key,val){
+  const tabCfg=getTabConfig();
+  if(key===tabCfg.stuKey){
+    STUDENTS=Array.isArray(val)?val:[];
+    _lastSaveStuCount[key]=STUDENTS.length;
+    rebuildStuIdx();
+  } else if(key===tabCfg.instKey){
+    INST_MAP=val||{};
+  } else if(key===STORAGE_KEYS.RETIRE) RETIRE_MAP=val||{};
+  else if(key===STORAGE_KEYS.ENROLL) ENROLL_MAP=val||{};
+  else if(key===STORAGE_KEYS.MARK) MARK_MAP=val||{};
+  else if(key===STORAGE_KEYS.DISABLED) DISABLED_MAP=val||{};
+  else if(key===STORAGE_KEYS.RESERVE) RESERVE_MAP=val||{};
+  else if(key===STORAGE_KEYS.休원) HYUWON_MAP=val||{};
+  else if(key===STORAGE_KEYS.TEACHERS && typeof TEACHERS!=='undefined'){
+    TEACHERS=Array.isArray(val)?val:[];
+    if(typeof updateTeacherStyles==='function') updateTeacherStyles();
+  }
+  else if(key===STORAGE_KEYS.ATTENDANCE) ATTENDANCE=val||{};
+  else if(key===STORAGE_KEYS.ATT_GUESTS) ATT_GUESTS=val||{};
+  else if(key===STORAGE_KEYS.DAY_SNAPSHOT) DAY_SNAPSHOT=val||{};
+}
+function updateScheduleTx(mutator){
+  if(!_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
+  if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.reject(new Error('스냅샷은 읽기 전용입니다'));
+  if(typeof _fakeDate !== 'undefined' && _fakeDate) return Promise.reject(new Error('타임머신 모드에서는 저장되지 않습니다'));
+  const touched=new Set();
+  let abortReason='';
+  const makeCtx=root=>({
+    get(key,fallback){
+      return _parseJSONValue(root[_storageSafeKey(key)],fallback);
+    },
+    set(key,val){
+      root[_storageSafeKey(key)]=JSON.stringify(val);
+      touched.add(key);
+    },
+    abort(reason){ abortReason=reason||''; },
+  });
+  if(!_fbReady){
+    const localRoot={};
+    const keys=[
+      getTabConfig().stuKey,getTabConfig().instKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,
+      STORAGE_KEYS.MARK,STORAGE_KEYS.DISABLED,STORAGE_KEYS.RESERVE,STORAGE_KEYS.休원,
+      STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,STORAGE_KEYS.DAY_SNAPSHOT,STORAGE_KEYS.TEACHERS,
+    ];
+    keys.forEach(key=>{localRoot[_storageSafeKey(key)]=dbGet(key);});
+    const next=mutator(makeCtx(localRoot));
+    if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
+    touched.forEach(key=>{
+      const val=_parseJSONValue(localRoot[_storageSafeKey(key)],{});
+      _applyStoredValue(key,val);
+      saveJSON(key,val);
+    });
+    return Promise.resolve();
+  }
+  return _fb.transaction(root=>{
+    root=root||{};
+    touched.clear();
+    abortReason='';
+    const result=mutator(makeCtx(root));
+    if(result===undefined) return;
+    return root;
+  }).then(res=>{
+    if(!res.committed) throw new Error(abortReason||'transaction aborted');
+    const root=res.snapshot.val()||{};
+    touched.forEach(key=>{
+      const val=_parseJSONValue(root[_storageSafeKey(key)],{});
+      _applyStoredValue(key,val);
+      _cacheJSONOnly(key,val);
+    });
+  });
+}
+function updateStudentsTx(mutator){
+  const tabKey=getTabConfig().stuKey;
+  return _txJSONValue(tabKey,STUDENTS,next=>{
+    STUDENTS=Array.isArray(next)?next:[];
+    _lastSaveStuCount[tabKey]=STUDENTS.length;
+    rebuildStuIdx();
+  },(students,abort)=>{
+    const list=Array.isArray(students)?students:[];
+    const next=mutator(list,abort);
+    if(next===undefined) return;
+    if(Array.isArray(next)&&next.length===0&&(_lastSaveStuCount[tabKey]||0)>=10){
+      abort('학생 0명 저장 시도 차단');
+      return;
+    }
+    return next;
+  },[]);
+}
+function updateInstMapTx(mutator){
+  return _txJSONMap(getTabConfig().instKey,INST_MAP,next=>{INST_MAP=next;},mutator);
+}
+function updateRetireMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.RETIRE,RETIRE_MAP,next=>{RETIRE_MAP=next;},mutator);
+}
+function updateEnrollMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.ENROLL,ENROLL_MAP,next=>{ENROLL_MAP=next;},mutator);
+}
+function updateDisabledMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.DISABLED,DISABLED_MAP,next=>{DISABLED_MAP=next;},mutator);
+}
+function updateReserveMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.RESERVE,RESERVE_MAP,next=>{RESERVE_MAP=next;},mutator);
+}
+function updateHyuwonMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.休원,HYUWON_MAP,next=>{HYUWON_MAP=next;},mutator);
+}
+function updateMarkMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.MARK,MARK_MAP,next=>{MARK_MAP=next;},mutator);
+}
+function setMarkEntryTx(markKey,val){
+  MARK_MAP[markKey]=val;
+  return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; });
+}
+function clearMarkEntryTx(markKey){
+  delete MARK_MAP[markKey];
+  return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
+}
+function updateAttendanceMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.ATTENDANCE,ATTENDANCE,next=>{ATTENDANCE=next;},mutator);
+}
+function setAttendanceEntryTx(attKey,val){
+  if(val===undefined||val===null) delete ATTENDANCE[attKey];
+  else ATTENDANCE[attKey]=val;
+  return updateAttendanceMapTx(att=>{
+    if(val===undefined||val===null) delete att[attKey];
+    else att[attKey]=val;
+    return att;
+  });
+}
+function updateAttGuestsMapTx(mutator){
+  return _txJSONMap(STORAGE_KEYS.ATT_GUESTS,ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator);
+}
+function setAttGuestsEntryTx(guestKey,list){
+  if(list&&list.length) ATT_GUESTS[guestKey]=list;
+  else delete ATT_GUESTS[guestKey];
+  return updateAttGuestsMapTx(guests=>{
+    if(list&&list.length) guests[guestKey]=list;
+    else delete guests[guestKey];
+    return guests;
+  });
+}
+
 // [FIX] Firebase child_changed 시 뱃지 맵도 메모리에 갱신
 function reloadBadgeMaps(){
   // [스냅샷 보호] 활성 탭이 스냅샷이면 화면용 메모리는 그대로 두고
@@ -787,13 +992,22 @@ function addReserve(instKey,name,phone,memo,date,teacher){
   if(date) obj.d=date;
   if(teacher) obj.teacher=teacher;
   RESERVE_MAP[instKey].push(obj);
-  saveReserve();
+  return updateReserveMapTx(reserve=>{
+    if(!reserve[instKey]) reserve[instKey]=[];
+    reserve[instKey].push(obj);
+    return reserve;
+  }).catch(e=>{toast('예약 저장 실패','err');console.error(e);});
 }
 function removeReserve(instKey,idx){
   if(!RESERVE_MAP[instKey]) return;
   RESERVE_MAP[instKey].splice(idx,1);
   if(!RESERVE_MAP[instKey].length) delete RESERVE_MAP[instKey];
-  saveReserve();
+  return updateReserveMapTx(reserve=>{
+    if(!reserve[instKey]) return reserve;
+    reserve[instKey].splice(idx,1);
+    if(!reserve[instKey].length) delete reserve[instKey];
+    return reserve;
+  }).catch(e=>{toast('예약 저장 실패','err');console.error(e);});
 }
 function getMark(slotKey,ds){
   const v=MARK_MAP[slotKey+'/'+ds];
@@ -801,8 +1015,8 @@ function getMark(slotKey,ds){
   if(typeof v==='string') return {type:v}; // backward compat
   return v;
 }
-function setMark(slotKey,ds,val){ MARK_MAP[slotKey+'/'+ds]=val; saveMark(); }
-function clearMark(slotKey,ds){ delete MARK_MAP[slotKey+'/'+ds]; saveMark(); }
+function setMark(slotKey,ds,val){ setMarkEntryTx(slotKey+'/'+ds,val).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
+function clearMark(slotKey,ds){ clearMarkEntryTx(slotKey+'/'+ds).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
 
 /* ──── Cross-file shared state ──── */
 let _pendingSync=false;

@@ -28,6 +28,15 @@ function saveTeachers(){
   saveJSON(STORAGE_KEYS.TEACHERS, TEACHERS);
   updateTeacherStyles();
 }
+function updateTeachersTx(mutator){
+  return _txJSONValue(STORAGE_KEYS.TEACHERS,TEACHERS,next=>{
+    TEACHERS=Array.isArray(next)?next:[];
+    updateTeacherStyles();
+  },(teachers,abort)=>{
+    const list=Array.isArray(teachers)?teachers:[];
+    return mutator(list,abort);
+  },[]);
+}
 
 // [v115] 선생님 이름을 CSS-safe 클래스명으로 변환
 //   한글/영숫자/언더스코어만 허용, 그 외는 언더스코어로 치환
@@ -101,30 +110,48 @@ function renderTeacherList(){
     });
   });
 }
-function addTeacher(){
+async function addTeacher(){
   // 중복 안 나는 기본 이름 찾기
-  let i=1, name='선생님'+i;
-  while(TEACHERS.some(t=>t.n===name)){ i++; name='선생님'+i; }
-  // 팔레트 순환해서 기본색 지정
-  const palette=['#93C5FD','#86EFAC','#FCD34D','#F9A8D4','#C4B5FD','#6EE7B7','#FCA5A5','#FDBA74','#A5F3FC','#D8B4FE'];
-  const color=palette[TEACHERS.length % palette.length];
-  TEACHERS.push({n:name, color});
-  saveTeachers();
-  renderTeacherList();
-  // 새로 추가한 행의 이름 input에 포커스 + 전체 선택
-  setTimeout(()=>{
-    const inputs=document.querySelectorAll('#tm-list .tm-name');
-    const last=inputs[inputs.length-1];
-    if(last){ last.focus(); last.select(); }
-  },30);
+  let createdName='';
+  try{
+    await updateTeachersTx(teachers=>{
+      let i=1, name='선생님'+i;
+      while(teachers.some(t=>t.n===name)){ i++; name='선생님'+i; }
+      // 팔레트 순환해서 기본색 지정
+      const palette=['#93C5FD','#86EFAC','#FCD34D','#F9A8D4','#C4B5FD','#6EE7B7','#FCA5A5','#FDBA74','#A5F3FC','#D8B4FE'];
+      const color=palette[teachers.length % palette.length];
+      teachers.push({n:name, color});
+      createdName=name;
+      return teachers;
+    });
+    renderTeacherList();
+    // 새로 추가한 행의 이름 input에 포커스 + 전체 선택
+    setTimeout(()=>{
+      const input=[...document.querySelectorAll('#tm-list .tm-name')].find(el=>el.value===createdName);
+      if(input){ input.focus(); input.select(); }
+    },30);
+  }catch(err){
+    toast(err?.message||'선생님 추가 실패','err');
+    console.error(err);
+  }
 }
-function handleTeacherColorChange(idx, newColor){
+async function handleTeacherColorChange(idx, newColor){
   if(!TEACHERS[idx]) return;
-  TEACHERS[idx].color=newColor;
-  saveTeachers();
-  buildTable();
+  const targetName=TEACHERS[idx].n;
+  try{
+    await updateTeachersTx((teachers,abort)=>{
+      const i=teachers.findIndex(t=>t.n===targetName);
+      if(i<0){abort('선생님 정보가 먼저 변경되었습니다');return;}
+      teachers[i].color=newColor;
+      return teachers;
+    });
+    buildTable();
+  }catch(err){
+    toast(err?.message||'색상 저장 실패','err');
+    console.error(err);
+  }
 }
-function handleTeacherNameEdit(idx, oldName, newName){
+async function handleTeacherNameEdit(idx, oldName, newName){
   if(!TEACHERS[idx]) return;
   // 중복 검사
   if(TEACHERS.some((t,i)=>i!==idx && t.n===newName)){
@@ -132,41 +159,50 @@ function handleTeacherNameEdit(idx, oldName, newName){
     renderTeacherList(); // 원복
     return;
   }
-  TEACHERS[idx].n=newName;
-  // 모든 탭의 INST_MAP에서 oldName → newName 일괄 변경
   let renameCount=0;
-  // 현재 탭
-  for(const k in INST_MAP){
-    if(INST_MAP[k] && INST_MAP[k].n===oldName){
-      INST_MAP[k].n=newName;
-      renameCount++;
-    }
-  }
-  if(renameCount>0) saveInst();
-  // 다른 탭
-  _tabList.forEach(tab=>{
-    if(tab.id===_activeTab) return; // 현재 탭은 이미 처리
-    const iKey = tab.type==='bangteuk'
-      ? 'swim_bt_'+tab.id+'_inst'
-      : (tab.id==='regular' ? 'swim_inst' : 'swim_inst_'+tab.id);
-    const otherInst = loadJSON(iKey, null);
-    if(!otherInst) return;
-    let changed=false;
-    for(const k in otherInst){
-      if(otherInst[k] && otherInst[k].n===oldName){
-        otherInst[k].n=newName;
-        renameCount++;
-        changed=true;
+  try{
+    await updateScheduleTx(ctx=>{
+      const teachers=ctx.get(STORAGE_KEYS.TEACHERS,[]);
+      const tIdx=teachers.findIndex(t=>t.n===oldName);
+      if(tIdx<0){ctx.abort('선생님 정보가 먼저 변경되었습니다');return;}
+      if(teachers.some((t,i)=>i!==tIdx && t.n===newName)){
+        ctx.abort('같은 이름의 선생님이 이미 있습니다');
+        return;
       }
-    }
-    if(changed) saveJSON(iKey, otherInst, true);
-  });
-  saveTeachers();
-  renderTeacherList();
-  buildTable();
-  toast(`"${oldName}" → "${newName}" (${renameCount}개 셀 갱신)`,'ok');
+      teachers[tIdx].n=newName;
+      ctx.set(STORAGE_KEYS.TEACHERS,teachers);
+
+      const keys=new Set([getTabConfig().instKey]);
+      _tabList.forEach(tab=>{
+        const iKey = tab.type==='bangteuk'
+          ? 'swim_bt_'+tab.id+'_inst'
+          : (tab.id==='regular' ? 'swim_inst' : 'swim_inst_'+tab.id);
+        keys.add(iKey);
+      });
+      keys.forEach(iKey=>{
+        const inst=ctx.get(iKey,{});
+        let changed=false;
+        for(const k in inst){
+          if(inst[k] && inst[k].n===oldName){
+            inst[k].n=newName;
+            renameCount++;
+            changed=true;
+          }
+        }
+        if(changed) ctx.set(iKey,inst);
+      });
+      return true;
+    });
+    renderTeacherList();
+    buildTable();
+    toast(`"${oldName}" → "${newName}" (${renameCount}개 셀 갱신)`,'ok');
+  }catch(err){
+    toast(err?.message||'선생님 이름 변경 실패','err');
+    renderTeacherList();
+    console.error(err);
+  }
 }
-function handleTeacherDelete(idx){
+async function handleTeacherDelete(idx){
   const t=TEACHERS[idx];
   if(!t) return;
   // 사용 중인지 확인
@@ -179,11 +215,20 @@ function handleTeacherDelete(idx){
     return;
   }
   if(!confirm(`${t.n} 선생님을 삭제하시겠습니까?`)) return;
-  TEACHERS.splice(idx,1);
-  saveTeachers();
-  renderTeacherList();
-  buildTable();
-  toast('삭제 완료','ok');
+  try{
+    await updateTeachersTx((teachers,abort)=>{
+      const i=teachers.findIndex(x=>x.n===t.n);
+      if(i<0){abort('선생님 정보가 먼저 변경되었습니다');return;}
+      teachers.splice(i,1);
+      return teachers;
+    });
+    renderTeacherList();
+    buildTable();
+    toast('삭제 완료','ok');
+  }catch(err){
+    toast(err?.message||'삭제 실패','err');
+    console.error(err);
+  }
 }
 
 let _instPopup={el:null,key:null};
@@ -318,7 +363,7 @@ function renderInstPopup(){
 let _instBusy=false;
 
 // 이벤트 위임 (팝업 내부)
-document.getElementById('inst-popup').addEventListener('click',function(e){
+document.getElementById('inst-popup').addEventListener('click',async function(e){
   // [스냅샷] 읽기 전용 — 닫기만 허용
   if(typeof isSnapshotTab==='function'&&isSnapshotTab()){
     if(e.target.closest('#ip-close')){ e.stopPropagation(); closeInstPopup(); return; }
@@ -328,7 +373,7 @@ document.getElementById('inst-popup').addEventListener('click',function(e){
   const rdel=e.target.closest('[data-rdel]');
   if(rdel){
     e.stopPropagation();
-    removeReserve(_instPopup.key,parseInt(rdel.dataset.rdel));
+    await removeReserve(_instPopup.key,parseInt(rdel.dataset.rdel));
     renderInstPopup();buildTable();
     return;
   }
@@ -355,7 +400,7 @@ document.getElementById('inst-popup').addEventListener('click',function(e){
     const d=isToday?toDateStr(getToday()):(document.getElementById('ip-rdate')?.value||toDateStr(getToday()));
     const isAny=document.getElementById('ip-rany')?.checked;
     const teacher=isAny?'':(document.getElementById('ip-rteacher')?.value||'');
-    addReserve(_instPopup.key,n,p,m,d,teacher);
+    await addReserve(_instPopup.key,n,p,m,d,teacher);
     renderInstPopup();buildTable();
     setTimeout(()=>document.getElementById('ip-rname')?.focus(),50);
     return;
@@ -367,23 +412,34 @@ document.getElementById('inst-popup').addEventListener('click',function(e){
   const key=_instPopup.key;
   if(!key) return;
   const name=btn.dataset.name;
-  const cur=INST_MAP[key]||null;
+
+  try{
+    await updateInstMapTx(inst=>{
+      const cur=inst[key]||null;
+      if(name==='__clear__'){
+        delete inst[key];
+      } else if(cur&&cur.n===name){
+        delete inst[key];
+      } else {
+        // [v117] 선생님 변경 시 기존 cls(엘/마/엘리트/마스터) 보존
+        const oldCls=getInstCls(cur);
+        const obj={n:name};
+        if(oldCls) obj.cls=oldCls;
+        inst[key]=obj;
+      }
+      return inst;
+    });
+  }catch(err){
+    toast(err?.message||'담임 저장 실패','err');
+    console.error(err);
+    return;
+  }
 
   if(name==='__clear__'){
-    delete INST_MAP[key];saveInst();
     closeInstPopup();
     buildTable();
     return;
-  } else if(cur&&cur.n===name){
-    delete INST_MAP[key];
-  } else {
-    // [v117] 선생님 변경 시 기존 cls(엘/마/엘리트/마스터) 보존
-    const oldCls=getInstCls(cur);
-    const obj={n:name};
-    if(oldCls) obj.cls=oldCls;
-    INST_MAP[key]=obj;
   }
-  saveInst();
   _instBusy=true;
   buildTable();
   renderInstPopup();
@@ -397,7 +453,7 @@ document.getElementById('inst-popup').addEventListener('keydown',function(e){
   }
 });
 
-document.getElementById('inst-popup').addEventListener('change',function(e){
+document.getElementById('inst-popup').addEventListener('change',async function(e){
   if(e.target.id==='ip-rtoday'){
     const datePicker=document.getElementById('ip-rdate');
     if(datePicker){
@@ -410,21 +466,32 @@ document.getElementById('inst-popup').addEventListener('change',function(e){
   const key=_instPopup.key;
   if(!key||!INST_MAP[key]) return;
   const flag=e.target.id.replace('ip-','');
-  // [v117] elma/elite/master는 셋 중 하나만 (XOR). cls 필드로 통합 저장.
-  if(flag==='elma'||flag==='elite'||flag==='master'){
-    if(e.target.checked){
-      INST_MAP[key].cls=flag;
-      delete INST_MAP[key].elma; // 구버전 필드 제거 (마이그레이션)
-    } else {
-      // 같은 cls 해제 시에만 cls 제거
-      if(INST_MAP[key].cls===flag) delete INST_MAP[key].cls;
-      delete INST_MAP[key].elma;
-    }
-  } else {
-    if(e.target.checked) INST_MAP[key][flag]=true;
-    else delete INST_MAP[key][flag];
+  const checked=e.target.checked;
+  try{
+    await updateInstMapTx(inst=>{
+      if(!inst[key]) return inst;
+      // [v117] elma/elite/master는 셋 중 하나만 (XOR). cls 필드로 통합 저장.
+      if(flag==='elma'||flag==='elite'||flag==='master'){
+        if(checked){
+          inst[key].cls=flag;
+          delete inst[key].elma; // 구버전 필드 제거 (마이그레이션)
+        } else {
+          // 같은 cls 해제 시에만 cls 제거
+          if(inst[key].cls===flag) delete inst[key].cls;
+          delete inst[key].elma;
+        }
+      } else {
+        if(checked) inst[key][flag]=true;
+        else delete inst[key][flag];
+      }
+      return inst;
+    });
+  }catch(err){
+    toast(err?.message||'담임 저장 실패','err');
+    console.error(err);
+    if(e.target) e.target.checked=!checked;
+    return;
   }
-  saveInst();
   _instBusy=true;
   buildTable();
   renderInstPopup();
@@ -452,77 +519,89 @@ function cancelInstSwap(){
   buildTable();
 }
 
-function executeInstSwap(dstT,dstDay,dstLane){
+function _instSwapMapKey(map,srcKey,dstKey){
+  const src=map[srcKey], dst=map[dstKey];
+  if(dst) map[srcKey]=dst; else delete map[srcKey];
+  if(src) map[dstKey]=src; else delete map[dstKey];
+}
+function _instFindStudentIndex(students,t,day,lane,row){
+  return students.findIndex(s=>s.t===t&&s.d===day&&parseInt(s.l)===parseInt(lane)&&parseInt(s.r)===parseInt(row));
+}
+function _instStudentAt(stu,t,day,lane){
+  return {...stu,t,d:day,l:parseInt(lane)};
+}
+function _instSwapMarkKeys(marks,srcSK,dstSK){
+  const srcMarks={}, dstMarks={};
+  for(const mk of Object.keys(marks)){
+    if(mk.startsWith(srcSK+'/')){srcMarks[mk.slice(srcSK.length+1)]=marks[mk];delete marks[mk];}
+    else if(mk.startsWith(dstSK+'/')){dstMarks[mk.slice(dstSK.length+1)]=marks[mk];delete marks[mk];}
+  }
+  for(const [ds,v] of Object.entries(dstMarks)) marks[srcSK+'/'+ds]=v;
+  for(const [ds,v] of Object.entries(srcMarks)) marks[dstSK+'/'+ds]=v;
+}
+
+async function executeInstSwap(dstT,dstDay,dstLane){
   if(!_instSwapMode) return;
   const {srcT,srcDay,srcLane}=_instSwapMode;
   if(srcT===dstT&&srcDay===dstDay&&srcLane===dstLane){cancelInstSwap();return;}
 
   pushUndo();
   const maxRows=Math.max(getTimeRows(srcT),getTimeRows(dstT));
-
-  // 1) INST_MAP 교환
   const srcIK=srcT+'/'+srcDay+'/'+srcLane;
   const dstIK=dstT+'/'+dstDay+'/'+dstLane;
-  const tmpInst=INST_MAP[srcIK];
-  if(INST_MAP[dstIK]) INST_MAP[srcIK]=INST_MAP[dstIK]; else delete INST_MAP[srcIK];
-  if(tmpInst) INST_MAP[dstIK]=tmpInst; else delete INST_MAP[dstIK];
+  try{
+    await updateScheduleTx(ctx=>{
+      const stuKey=getTabConfig().stuKey;
+      const instKey=getTabConfig().instKey;
+      const inst=ctx.get(instKey,{});
+      const reserve=ctx.get(STORAGE_KEYS.RESERVE,{});
+      const students=ctx.get(stuKey,[]);
+      const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+      const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+      const marks=ctx.get(STORAGE_KEYS.MARK,{});
 
-  // 2) RESERVE_MAP 교환
-  const tmpRes=RESERVE_MAP[srcIK];
-  if(RESERVE_MAP[dstIK]) RESERVE_MAP[srcIK]=RESERVE_MAP[dstIK]; else delete RESERVE_MAP[srcIK];
-  if(tmpRes) RESERVE_MAP[dstIK]=tmpRes; else delete RESERVE_MAP[dstIK];
+      _instSwapMapKey(inst,srcIK,dstIK);
+      _instSwapMapKey(reserve,srcIK,dstIK);
 
-  // 3) 행별 데이터 교환 (학생, 퇴원, 등원, 비활성화, 마크)
-  for(let r=1;r<=maxRows;r++){
-    const srcSK=srcT+'/'+srcDay+'/'+srcLane+'/'+r;
-    const dstSK=dstT+'/'+dstDay+'/'+dstLane+'/'+r;
+      for(let r=1;r<=maxRows;r++){
+        const srcSK=srcT+'/'+srcDay+'/'+srcLane+'/'+r;
+        const dstSK=dstT+'/'+dstDay+'/'+dstLane+'/'+r;
+        const srcIdx=_instFindStudentIndex(students,srcT,srcDay,srcLane,r);
+        const dstIdx=_instFindStudentIndex(students,dstT,dstDay,dstLane,r);
+        if(srcIdx>=0&&dstIdx>=0){
+          const srcStu=students[srcIdx], dstStu=students[dstIdx];
+          students[srcIdx]=_instStudentAt(dstStu,srcT,srcDay,srcLane);
+          students[dstIdx]=_instStudentAt(srcStu,dstT,dstDay,dstLane);
+        } else if(srcIdx>=0){
+          students[srcIdx]=_instStudentAt(students[srcIdx],dstT,dstDay,dstLane);
+        } else if(dstIdx>=0){
+          students[dstIdx]=_instStudentAt(students[dstIdx],srcT,srcDay,srcLane);
+        }
 
-    // 학생 교환
-    const srcIdx=STUDENTS.findIndex(s=>s.t===srcT&&s.d===srcDay&&s.l===srcLane&&s.r===r);
-    const dstIdx=STUDENTS.findIndex(s=>s.t===dstT&&s.d===dstDay&&s.l===dstLane&&s.r===r);
-    if(srcIdx>=0&&dstIdx>=0){
-      // 둘 다 있음 — 위치 정보만 교환
-      Object.assign(STUDENTS[srcIdx],{t:dstT,d:dstDay,l:dstLane});
-      Object.assign(STUDENTS[dstIdx],{t:srcT,d:srcDay,l:srcLane});
-    } else if(srcIdx>=0){
-      Object.assign(STUDENTS[srcIdx],{t:dstT,d:dstDay,l:dstLane});
-    } else if(dstIdx>=0){
-      Object.assign(STUDENTS[dstIdx],{t:srcT,d:srcDay,l:srcLane});
-    }
+        _instSwapMapKey(retire,srcSK,dstSK);
+        _instSwapMapKey(enroll,srcSK,dstSK);
+        _instSwapMapKey(disabled,srcSK,dstSK);
+        _instSwapMarkKeys(marks,srcSK,dstSK);
+      }
 
-    // RETIRE_MAP 교환
-    const tmpRet=RETIRE_MAP[srcSK];
-    if(RETIRE_MAP[dstSK]) RETIRE_MAP[srcSK]=RETIRE_MAP[dstSK]; else delete RETIRE_MAP[srcSK];
-    if(tmpRet) RETIRE_MAP[dstSK]=tmpRet; else delete RETIRE_MAP[dstSK];
-
-    // ENROLL_MAP 교환
-    const tmpEnr=ENROLL_MAP[srcSK];
-    if(ENROLL_MAP[dstSK]) ENROLL_MAP[srcSK]=ENROLL_MAP[dstSK]; else delete ENROLL_MAP[srcSK];
-    if(tmpEnr) ENROLL_MAP[dstSK]=tmpEnr; else delete ENROLL_MAP[dstSK];
-
-    // DISABLED_MAP 교환
-    const tmpDis=DISABLED_MAP[srcSK];
-    if(DISABLED_MAP[dstSK]) DISABLED_MAP[srcSK]=DISABLED_MAP[dstSK]; else delete DISABLED_MAP[srcSK];
-    if(tmpDis) DISABLED_MAP[dstSK]=tmpDis; else delete DISABLED_MAP[dstSK];
-
-    // MARK_MAP 교환 (날짜별 키가 여러 개)
-    const srcMarks={}, dstMarks={};
-    for(const mk of Object.keys(MARK_MAP)){
-      if(mk.startsWith(srcSK+'/')){ srcMarks[mk.slice(srcSK.length+1)]=MARK_MAP[mk]; delete MARK_MAP[mk]; }
-      if(mk.startsWith(dstSK+'/')){ dstMarks[mk.slice(dstSK.length+1)]=MARK_MAP[mk]; delete MARK_MAP[mk]; }
-    }
-    for(const [ds,v] of Object.entries(dstMarks)) MARK_MAP[srcSK+'/'+ds]=v;
-    for(const [ds,v] of Object.entries(srcMarks)) MARK_MAP[dstSK+'/'+ds]=v;
+      ctx.set(instKey,inst);
+      ctx.set(STORAGE_KEYS.RESERVE,reserve);
+      ctx.set(stuKey,students);
+      ctx.set(STORAGE_KEYS.RETIRE,retire);
+      ctx.set(STORAGE_KEYS.ENROLL,enroll);
+      ctx.set(STORAGE_KEYS.DISABLED,disabled);
+      ctx.set(STORAGE_KEYS.MARK,marks);
+      return true;
+    });
+    _instSwapMode=null;
+    document.getElementById('move-bar').style.display='none';
+    buildTable();
+    toast('위치 교환 완료','ok');
+  }catch(err){
+    toast(err?.message||'위치 교환 실패','err');
+    console.error(err);
   }
-
-  // 저장
-  saveStudents();rebuildStuIdx();saveInst();
-  saveRetire();saveEnroll();saveDisabled();saveMark();saveReserve();
-
-  _instSwapMode=null;
-  document.getElementById('move-bar').style.display='none';
-  buildTable();
-  toast('위치 교환 완료','ok');
 }
 
 function closeInstPopup(){
@@ -542,4 +621,3 @@ document.addEventListener('click',e=>{
   if(_mouseDownTarget && popup.contains(_mouseDownTarget)) return;
   closeInstPopup();
 });
-

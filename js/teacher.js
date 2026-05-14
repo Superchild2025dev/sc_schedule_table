@@ -20,6 +20,7 @@ let STUDENTS=[], INST_MAP={}, MARK_MAP={}, REQUESTS={}, TEACHERS=[], ATTENDANCE=
 let _currentTeacher=null;
 let _activeTab='bogang';
 let _attWeekStart=null;
+const UNASSIGNED_TEACHER_LABEL='담당 미확인';
 
 /* [v118] 지점 선택 (가경/용암) — 메인 앱과 동일 */
 const SELECTED_BRANCH_KEY='selected_branch';
@@ -72,6 +73,26 @@ function instClassBadgeHtml(inst, fallbackText=''){
 function reqTargetInst(req){
   const t=req?.target||{};
   return INST_MAP[req?.instKey] || INST_MAP[t.t+'/'+t.d+'/'+t.l] || null;
+}
+function reqSnapshotTeacherName(req){
+  return req?.target?.instName || req?.targetInstName || '';
+}
+function reqAssignedTeacherName(req){
+  const inst=reqTargetInst(req);
+  return inst?.n || reqSnapshotTeacherName(req) || UNASSIGNED_TEACHER_LABEL;
+}
+function reqTeacherWarningHtml(req){
+  const inst=reqTargetInst(req);
+  const currentName=inst?.n || '';
+  const snapshotName=reqSnapshotTeacherName(req);
+  if(!currentName){
+    const saved=snapshotName ? `${esc(snapshotName)} 선생님` : '요청 당시 담당자';
+    return `<div class="req-warning">현재 시간표에서 담당 선생님을 찾을 수 없어 ${saved} 기준으로 표시 중입니다.</div>`;
+  }
+  if(snapshotName && snapshotName!==currentName){
+    return `<div class="req-warning">요청 당시 담당은 ${esc(snapshotName)} 선생님, 현재 시간표 담당은 ${esc(currentName)} 선생님입니다.</div>`;
+  }
+  return '';
 }
 
 function initFirebase(){
@@ -131,6 +152,32 @@ function saveRequests(){ return _fb.child('swim_requests').set(JSON.stringify(RE
 function saveAttendance(){ return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
 function saveAttGuests(){ return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
 function saveDaySnapshot(){ return _fb.child('swim_day_snapshot').set(JSON.stringify(DAY_SNAPSHOT)); }
+function updateAttendanceMapTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_attendance').transaction(raw=>{
+    const att=parseJSON(raw,{});
+    const next=mutator(att);
+    if(next===undefined) return;
+    return JSON.stringify(next||{});
+  }).then(res=>{
+    if(!res.committed) throw new Error('attendance transaction aborted');
+    ATTENDANCE=parseJSON(res.snapshot.val(),{});
+    return ATTENDANCE;
+  });
+}
+function updateAttGuestsMapTx(mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  return _fb.child('swim_att_guests').transaction(raw=>{
+    const guests=parseJSON(raw,{});
+    const next=mutator(guests);
+    if(next===undefined) return;
+    return JSON.stringify(next||{});
+  }).then(res=>{
+    if(!res.committed) throw new Error('guest transaction aborted');
+    ATT_GUESTS=parseJSON(res.snapshot.val(),{});
+    return ATT_GUESTS;
+  });
+}
 function updateMarkTx(mutator){
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
@@ -147,25 +194,67 @@ function updateMarkTx(mutator){
 }
 function updateRequestsTx(mutator){
   if(!_fbReady) return Promise.reject('not ready');
+  let abortReason='';
   return _fb.child('swim_requests').transaction(raw=>{
     const reqs=parseJSON(raw,{});
-    const next=mutator(reqs);
+    const next=mutator(reqs, reason=>{abortReason=reason||'';});
     if(next===undefined) return;
     return JSON.stringify(next);
   }).then(res=>{
-    if(!res.committed) throw new Error('request transaction aborted');
+    if(!res.committed) throw new Error(abortReason||'request transaction aborted');
     REQUESTS=parseJSON(res.snapshot.val(),{});
     return REQUESTS;
+  });
+}
+function claimRequest(reqId){
+  const processingAt=new Date().toISOString();
+  const processingBy=_currentTeacher||'관리자';
+  return updateRequestsTx((reqs,abort)=>{
+    const req=reqs[reqId];
+    if(!req){abort('요청을 찾을 수 없습니다');return;}
+    if(req.status && req.status!=='pending'){
+      abort('이미 다른 곳에서 처리 중이거나 완료된 요청입니다');
+      return;
+    }
+    req.status='processing';
+    req.processingAt=processingAt;
+    req.processingBy=processingBy;
+    return reqs;
+  });
+}
+function releaseRequest(reqId){
+  return updateRequestsTx(reqs=>{
+    const req=reqs[reqId];
+    if(req&&req.status==='processing'){
+      req.status='pending';
+      delete req.processingAt;
+      delete req.processingBy;
+    }
+    return reqs;
   });
 }
 function setRequestStatus(reqId,status){
   const processedAt=new Date().toISOString();
   const processedBy=_currentTeacher||'관리자';
-  return updateRequestsTx(reqs=>{
-    if(!reqs[reqId]) return reqs;
+  return updateRequestsTx((reqs,abort)=>{
+    if(!reqs[reqId]){abort('요청을 찾을 수 없습니다');return;}
+    const curStatus=reqs[reqId].status;
+    if(status==='accepted'){
+      if(curStatus && curStatus!=='pending' && curStatus!=='processing'){
+        abort('이미 처리된 요청입니다');
+        return;
+      }
+    } else if(status==='rejected'){
+      if(curStatus && curStatus!=='pending'){
+        abort('이미 처리 중이거나 완료된 요청입니다');
+        return;
+      }
+    }
     reqs[reqId].status=status;
     reqs[reqId].processedAt=processedAt;
     reqs[reqId].processedBy=processedBy;
+    delete reqs[reqId].processingAt;
+    delete reqs[reqId].processingBy;
     return reqs;
   });
 }
@@ -183,6 +272,7 @@ function populateTeachers(){
   TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
   // [v118] 선생님별 대기 요청 카운트 (REQUESTS 중 status==='pending' or 없음)
   const pendingCounts = _countPendingByTeacher();
+  Object.keys(pendingCounts).forEach(n=>names.add(n));
   [...names].sort().forEach(n=>{
     const opt=document.createElement('option');
     opt.value=n;
@@ -190,13 +280,14 @@ function populateTeachers(){
     opt.textContent = cnt > 0 ? `${n}  🔴 ${cnt}건` : n;
     sel.appendChild(opt);
   });
+  _renderPendingTeacherChips(pendingCounts);
 }
 
 function _countPendingByTeacher(){
   const counts = {};
   Object.values(REQUESTS||{}).forEach(r => {
     if(r.status && r.status !== 'pending') return;
-    const name = r.target?.instName;
+    const name = reqAssignedTeacherName(r);
     if(name) counts[name] = (counts[name]||0) + 1;
   });
   return counts;
@@ -209,7 +300,7 @@ function _renderPendingTeacherChips(counts){
   if(!entries.length){ wrap.innerHTML=''; return; }
   let html = `<div class="pending-label">🔔 대기 요청 있는 선생님 (${entries.reduce((s,[,c])=>s+c,0)}건)</div>`;
   entries.forEach(([name, cnt]) => {
-    const safe = name.replace(/'/g, "\\'");
+    const safe = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     html += `<button class="pending-chip" onclick="enterAsTeacher('${safe}')">${esc(name)}<span class="pending-chip-badge">${cnt}</span></button>`;
   });
   wrap.innerHTML = html;
@@ -221,7 +312,7 @@ function enterAsTeacher(teacherName){
   document.getElementById('teacher-select-screen').style.display='none';
   document.getElementById('teacher-dashboard').style.display='flex';
   document.getElementById('teacher-display').textContent=
-    teacherName ? `${teacherName} 선생님` : '전체 관리자';
+    teacherName ? (teacherName===UNASSIGNED_TEACHER_LABEL ? '담당 미확인 요청' : `${teacherName} 선생님`) : '전체 관리자';
   render();
 }
 
@@ -243,8 +334,7 @@ function getMyRequests(type){
       if(_currentTeacher){
         // bogang: target의 선생님이 내 이름이어야 함
         // absent-cancel: 원생의 담임 선생님이 내 이름이어야 함
-        const inst=INST_MAP[req.instKey];
-        if(inst?.n !== _currentTeacher) continue;
+        if(reqAssignedTeacherName(req) !== _currentTeacher) continue;
       }
       results.push([reqId,req]);
     }
@@ -298,7 +388,10 @@ function renderBogangList(reqs){
     const originInst=INST_MAP[ot+'/'+od+'/'+ol];
     const originLabel=instClassText(originInst);
     const origin=p.studentSlotKey ? `${od}요일 ${ot} ${ol}레인 ${or2}번${originLabel?' · '+originLabel:''}` : '';
-    const targetClass=instClassBadgeHtml(reqTargetInst(r), t.classLabel||'');
+    const targetInst=reqTargetInst(r);
+    const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
+    const targetTeacher=reqAssignedTeacherName(r);
+    const warning=reqTeacherWarningHtml(r);
     // [v118] 보강 받는 반의 다른 학생들 표시 (시간표 셀 스타일)
     const classmatesHtml = _renderClassmates(t.t, t.d, t.l, t.ds, t.r);
     return `<div class="req-card">
@@ -309,7 +402,8 @@ function renderBogangList(reqs){
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
         <div class="sub-info">원래 수업: ${esc(origin)}</div>
-        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(t.instName||'')}${targetClass}</div>
+        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass}</div>
+        ${warning}
       </div>
       ${classmatesHtml}
       <div class="req-actions">
@@ -378,7 +472,10 @@ function renderCancelList(reqs){
   container.innerHTML=reqs.map(([id,r])=>{
     const p=r.parent, t=r.target;
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
-    const targetClass=instClassBadgeHtml(reqTargetInst(r), t.classLabel||'');
+    const targetInst=reqTargetInst(r);
+    const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
+    const targetTeacher=reqAssignedTeacherName(r);
+    const warning=reqTeacherWarningHtml(r);
     return `<div class="req-card cancel">
       <div class="req-hdr">
         <span class="req-type cancel">결석 취소 요청</span>
@@ -386,7 +483,8 @@ function renderCancelList(reqs){
       </div>
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
-        <div class="target">❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번${targetClass} 결석 취소</div>
+        <div class="target">❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 결석 취소</div>
+        ${warning}
       </div>
       <div class="req-actions">
         <button class="btn-reject" data-act="reject" data-id="${id}">거절 (결석 유지)</button>
@@ -400,9 +498,19 @@ function renderCancelList(reqs){
 async function acceptRequest(reqId){
   const req=REQUESTS[reqId];
   if(!req) return;
+  let claimed=false;
+  let markApplied=false;
   try{
+    await claimRequest(reqId);
+    claimed=true;
     if(req.type==='bogang'){
       const t=req.target;
+      const occupied=STUDENTS.some(s=>
+        s.t===t.t && s.d===t.d
+        && parseInt(s.l)===parseInt(t.l)
+        && parseInt(s.r)===parseInt(t.r)
+      );
+      if(occupied) throw new Error('현재 시간표에서 이미 찬 자리입니다');
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
       const bogangObj={type:'bogang', n:req.parent.name, a:req.parent.age||null};
       if(req.parent.phone) bogangObj.p=req.parent.phone;
@@ -419,6 +527,7 @@ async function acceptRequest(reqId){
         }
         return marks;
       });
+      markApplied=true;
       // 학부모 쪽 원래 슬롯은 자동 결석 처리 안 함 (학부모가 직접 결석 신청해야 함)
     } else if(req.type==='absent-cancel'){
       const t=req.target;
@@ -431,12 +540,14 @@ async function acceptRequest(reqId){
         }
         return marks;
       });
+      markApplied=true;
     }
     await setRequestStatus(reqId,'accepted');
     toast('수락 완료','ok');
     render();
   }catch(e){
-    toast(e?.message==='이미 다른 마크가 있습니다' ? e.message : '처리 실패','err');
+    if(claimed && !markApplied) await releaseRequest(reqId).catch(()=>{});
+    toast(e?.message==='이미 다른 마크가 있습니다' || e?.message==='현재 시간표에서 이미 찬 자리입니다' ? e.message : (e?.message||'처리 실패'),'err');
     console.error(e);
   }
 }
@@ -704,33 +815,41 @@ function renderAttendanceTimetable(){
 
 async function cycleAttendance(slotKey, ds){
   const key=slotKey+'/'+ds;
-  const cur=ATTENDANCE[key];
-  const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
-  let next;
-  if(!curVal) next='present';
-  else if(curVal==='present') next='absent';
-  else next=null;
-  if(next===null) delete ATTENDANCE[key];
-  else ATTENDANCE[key]={s:next, at:new Date().toISOString(), by:_currentTeacher||null};
-  try{await saveAttendance(); renderAttendanceTimetable();}
+  try{
+    await updateAttendanceMapTx(att=>{
+      const cur=att[key];
+      const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
+      let next;
+      if(!curVal) next='present';
+      else if(curVal==='present') next='absent';
+      else next=null;
+      if(next===null) delete att[key];
+      else att[key]={s:next, at:new Date().toISOString(), by:_currentTeacher||null};
+      return att;
+    });
+    renderAttendanceTimetable();
+  }
   catch(e){toast('저장 실패','err');}
 }
 
 async function cycleGuestAttendance(sgk, ds, gid){
   const key=sgk+'/'+ds;
-  const list=ATT_GUESTS[key]||[];
-  const idx=list.findIndex(g=>g.gid===gid);
-  if(idx<0) return;
-  const cur=list[idx].s;
-  let next;
-  if(!cur) next='present';
-  else if(cur==='present') next='absent';
-  else next=null;
-  list[idx].s=next;
-  list[idx].at=new Date().toISOString();
-  list[idx].by=_currentTeacher||null;
-  ATT_GUESTS[key]=list;
-  try{await saveAttGuests(); renderAttendanceTimetable();}
+  try{
+    await updateAttGuestsMapTx(guests=>{
+      const list=[...(guests[key]||[])];
+      const idx=list.findIndex(g=>g.gid===gid);
+      if(idx<0) return guests;
+      const cur=list[idx].s;
+      let next;
+      if(!cur) next='present';
+      else if(cur==='present') next='absent';
+      else next=null;
+      list[idx]={...list[idx], s:next, at:new Date().toISOString(), by:_currentTeacher||null};
+      guests[key]=list;
+      return guests;
+    });
+    renderAttendanceTimetable();
+  }
   catch(e){toast('저장 실패','err');}
 }
 
@@ -740,23 +859,34 @@ async function addGuest(sgk, ds){
   const ageStr=prompt('나이 (선택)')||'';
   const age=parseInt(ageStr)||null;
   const key=sgk+'/'+ds;
-  if(!ATT_GUESTS[key]) ATT_GUESTS[key]=[];
   const gid='g_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-  ATT_GUESTS[key].push({
-    gid, n:name.trim(), a:age, s:'present',
-    at:new Date().toISOString(), by:_currentTeacher||null,
-  });
-  try{await saveAttGuests(); toast(name+' 추가','ok'); renderAttendanceTimetable();}
+  try{
+    await updateAttGuestsMapTx(guests=>{
+      const list=[...(guests[key]||[])];
+      list.push({
+        gid, n:name.trim(), a:age, s:'present',
+        at:new Date().toISOString(), by:_currentTeacher||null,
+      });
+      guests[key]=list;
+      return guests;
+    });
+    toast(name+' 추가','ok'); renderAttendanceTimetable();
+  }
   catch(e){toast('저장 실패','err');}
 }
 
 async function deleteGuest(sgk, ds, gid){
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const key=sgk+'/'+ds;
-  const list=(ATT_GUESTS[key]||[]).filter(g=>g.gid!==gid);
-  if(list.length) ATT_GUESTS[key]=list;
-  else delete ATT_GUESTS[key];
-  try{await saveAttGuests(); renderAttendanceTimetable();}
+  try{
+    await updateAttGuestsMapTx(guests=>{
+      const list=(guests[key]||[]).filter(g=>g.gid!==gid);
+      if(list.length) guests[key]=list;
+      else delete guests[key];
+      return guests;
+    });
+    renderAttendanceTimetable();
+  }
   catch(e){toast('저장 실패','err');}
 }
 
@@ -766,24 +896,30 @@ async function markAllPresentToday(){
   const dow=['일','월','화','수','목','금','토'][new Date().getDay()];
   const now=new Date().toISOString();
   let cnt=0;
-  students.forEach(s=>{
-    if(s.d!==dow) return;
-    const instKey=s.t+'/'+s.d+'/'+s.l;
-    if(_currentTeacher){
-      const io=inst[instKey];
-      if(!io||io.n!==_currentTeacher) return;
-    }
-    const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
-    const key=slotKey+'/'+today;
-    const cur=ATTENDANCE[key];
-    const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
-    if(!curVal){
-      ATTENDANCE[key]={s:'present', at:now, by:_currentTeacher||null};
-      cnt++;
-    }
-  });
-  if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
-  try{await saveAttendance(); toast(cnt+'명 출석','ok'); renderAttendanceTimetable();}
+  try{
+    await updateAttendanceMapTx(att=>{
+      cnt=0;
+      students.forEach(s=>{
+        if(s.d!==dow) return;
+        const instKey=s.t+'/'+s.d+'/'+s.l;
+        if(_currentTeacher){
+          const io=inst[instKey];
+          if(!io||io.n!==_currentTeacher) return;
+        }
+        const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
+        const key=slotKey+'/'+today;
+        const cur=att[key];
+        const curVal=cur?(typeof cur==='string'?cur:cur.s):null;
+        if(!curVal){
+          att[key]={s:'present', at:now, by:_currentTeacher||null};
+          cnt++;
+        }
+      });
+      return att;
+    });
+    if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
+    toast(cnt+'명 출석','ok'); renderAttendanceTimetable();
+  }
   catch(e){toast('저장 실패','err');}
 }
 

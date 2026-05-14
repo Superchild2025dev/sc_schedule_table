@@ -178,19 +178,59 @@ function saveRequests(){
 }
 function updateRequestsTx(mutator){
   if(!_fbReady) return Promise.reject('not ready');
+  let abortReason='';
   return _fb.child('swim_requests').transaction(raw=>{
     const reqs=parseJSON(raw,{});
-    const next=mutator(reqs);
+    const next=mutator(reqs, reason=>{abortReason=reason||'';});
     if(next===undefined) return;
     return JSON.stringify(next);
   }).then(res=>{
-    if(!res.committed) throw new Error('request transaction aborted');
+    if(!res.committed) throw new Error(abortReason||'request transaction aborted');
     REQUESTS=parseJSON(res.snapshot.val(),{});
     return REQUESTS;
   });
 }
 function addRequestEntries(entries){
-  return updateRequestsTx(reqs=>{
+  return updateRequestsTx((reqs,abort)=>{
+    const pending=Object.values(reqs||{}).filter(req=>!req.status||req.status==='pending');
+    const seenTargets=new Set();
+    for(const entry of Object.values(entries||{})){
+      if(entry.type==='bogang'){
+        const t=entry.target||{};
+        const key=[t.t,t.d,t.l,t.r,t.ds].join('/');
+        if(seenTargets.has('bogang/'+key)){
+          abort('같은 보강 자리가 중복 선택되었습니다');
+          return;
+        }
+        seenTargets.add('bogang/'+key);
+        const occupied=pending.some(req=>{
+          if(req.type!=='bogang') return false;
+          const rt=req.target||{};
+          return [rt.t,rt.d,rt.l,rt.r,rt.ds].join('/')===key;
+        });
+        if(occupied){
+          abort('이미 다른 학부모가 같은 보강 자리를 신청했습니다');
+          return;
+        }
+      }
+      if(entry.type==='absent-cancel'){
+        const key=(entry.parent?.studentSlotKey||'')+'/'+(entry.target?.ds||'');
+        const exists=pending.some(req=>
+          req.type==='absent-cancel'
+          && req.parent?.studentSlotKey===entry.parent?.studentSlotKey
+          && req.target?.ds===entry.target?.ds
+        );
+        if(exists){
+          abort('이미 취소 신청이 접수되었습니다');
+          return;
+        }
+        if(seenTargets.has('cancel/'+key)){
+          abort('같은 결석 취소 신청이 중복되었습니다');
+          return;
+        }
+        seenTargets.add('cancel/'+key);
+      }
+    }
     Object.assign(reqs, entries);
     return reqs;
   });
@@ -680,7 +720,7 @@ async function submitAbsent(){
     document.getElementById('ab-success').style.display='block';
     renderDashboard();
   }catch(e){
-    toast('저장 실패','err');
+    toast(e?.message||'저장 실패','err');
     console.error(e);
   }
 }
@@ -701,6 +741,7 @@ async function submitAbsentCancel(){
     }
   }
   const reqId=makeReqId();
+  const inst=INST_MAP[stu.t+'/'+stu.d+'/'+stu.l];
   const entry={
     type:'absent-cancel',
     status:'pending',
@@ -710,7 +751,11 @@ async function submitAbsentCancel(){
       age:stu.a||null,
       phone:stu.p||null,
     },
-    target:{ t:stu.t, d:stu.d, l:stu.l, r:stu.r, ds },
+    target:{
+      t:stu.t, d:stu.d, l:stu.l, r:stu.r, ds,
+      instName:inst?.n||'',
+      classLabel:instClassText(inst),
+    },
     instKey:stu.t+'/'+stu.d+'/'+stu.l,
     requestedAt:new Date().toISOString(),
   };
@@ -1005,7 +1050,7 @@ async function submitBogang(){
       `총 <strong>${_bgSelectedSlots.length}개</strong>의 보강을 신청했습니다.<br>각 담당 선생님이 검토 후 승인합니다.`;
     renderDashboard();
   }catch(e){
-    toast('신청 실패','err');
+    toast(e?.message||'신청 실패','err');
     console.error(e);
   }
 }

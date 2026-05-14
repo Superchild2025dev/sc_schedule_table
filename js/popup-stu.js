@@ -605,19 +605,26 @@ function handleEnrollMove(e, ctx){ startMove('enroll'); }
 function handleMoveReserve(e, ctx){ startMove('reserve'); }
 function handleSwap(e, ctx){ startMove('swap'); }
 
-function handleDisable(e, ctx){
+async function handleDisable(e, ctx){
   const wasDis=isDisabled(ctx.slotKey);
-  if(wasDis) delete DISABLED_MAP[ctx.slotKey];
-  else DISABLED_MAP[ctx.slotKey]=true;
-  saveDisabled();
-  closeStuPopup();
-  buildTable();
-  toast(wasDis?'활성화 완료':'비활성화 완료','ok');
+  try{
+    await updateDisabledMapTx(disabled=>{
+      if(wasDis) delete disabled[ctx.slotKey];
+      else disabled[ctx.slotKey]=true;
+      return disabled;
+    });
+    closeStuPopup();
+    buildTable();
+    toast(wasDis?'활성화 완료':'비활성화 완료','ok');
+  }catch(err){
+    toast(err?.message||'저장 실패','err');
+    console.error(err);
+  }
 }
 
 /* ── 저장/삭제/날짜박스 핸들러 ── */
 
-function handleSave(e, ctx){
+async function handleSave(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
 
@@ -643,45 +650,68 @@ function handleSave(e, ctx){
   const vehicle=_locUsesVehicle(loc);
   const memo=document.getElementById('sp-memo')?.value.trim()||'';
 
-  // 기존 데이터 제거
   const oldStu=getStu(t,day,lane,row);
-  const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
-  if(idx>=0) STUDENTS.splice(idx,1);
-
-  if(name){
-    const obj={n:name,a:age,t,d:day,l:lane,r:row};
-    if(phone) obj.p=phone;
-    if(vehicle) obj.v=true;
-    if(gender) obj.g=gender;
-    if(isNewCheck) obj.isNew=oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month;
-    if(loc) obj.loc=loc;
-    if(memo) obj.memo=memo;
-    STUDENTS.push(obj);
-    _stuIdx[key]=obj;
+  try{
+    await updateStudentsTx((students,abort)=>{
+      const idx=students.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
+      const remoteOld=idx>=0?students[idx]:null;
+      if(!oldStu && remoteOld && name){
+        abort('이미 다른 학생이 등록된 자리입니다');
+        return;
+      }
+      if(oldStu && remoteOld && (remoteOld.n!==oldStu.n || remoteOld.a!==oldStu.a)){
+        abort('다른 기기에서 먼저 변경된 자리입니다');
+        return;
+      }
+      if(idx>=0) students.splice(idx,1);
+      if(name){
+        const obj={n:name,a:age,t,d:day,l:lane,r:row};
+        if(phone) obj.p=phone;
+        if(vehicle) obj.v=true;
+        if(gender) obj.g=gender;
+        if(isNewCheck) obj.isNew=oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month;
+        if(loc) obj.loc=loc;
+        if(memo) obj.memo=memo;
+        students.push(obj);
+      }
+      return students;
+    });
     // 비활성화 해제
-    if(DISABLED_MAP[key]){delete DISABLED_MAP[key];saveDisabled();}
-  } else {
-    delete _stuIdx[key];
+    if(name&&DISABLED_MAP[key]){
+      await updateDisabledMapTx(disabled=>{delete disabled[key];return disabled;});
+    }
+    _flashKey=key;
+    closeStuPopup();
+    buildTable();
+    toast(name?name+' 저장':'삭제 완료','ok');
+  }catch(err){
+    toast(err?.message||'저장 실패','err');
+    console.error(err);
   }
-
-  saveStudents();
-  rebuildStuIdx();
-  _flashKey=key;
-  closeStuPopup();
-  buildTable();
-  toast(name?name+' 저장':'삭제 완료','ok');
 }
 
-function handleDelete(e, ctx){
+async function handleDelete(e, ctx){
   const {t, day, lane, row, key} = ctx;
-  const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
-  if(idx>=0) STUDENTS.splice(idx,1);
-  delete _stuIdx[key];
-  saveStudents();
-  _flashKey=key;
-  closeStuPopup();
-  buildTable();
-  toast('학생 삭제','ok');
+  const oldStu=getStu(t,day,lane,row);
+  try{
+    await updateStudentsTx((students,abort)=>{
+      const idx=students.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
+      const remoteOld=idx>=0?students[idx]:null;
+      if(oldStu && remoteOld && (remoteOld.n!==oldStu.n || remoteOld.a!==oldStu.a)){
+        abort('다른 기기에서 먼저 변경된 자리입니다');
+        return;
+      }
+      if(idx>=0) students.splice(idx,1);
+      return students;
+    });
+    _flashKey=key;
+    closeStuPopup();
+    buildTable();
+    toast('학생 삭제','ok');
+  }catch(err){
+    toast(err?.message||'삭제 실패','err');
+    console.error(err);
+  }
 }
 
 /**
@@ -691,42 +721,54 @@ function handleDelete(e, ctx){
  * 3) 같은 날짜 재클릭 → 선택 해제
  * 4) 새 날짜 → 선택 + 기존 마크 있으면 해당 폼 자동 열기
  */
-function handleDateBoxClick(dateBox, ctx){
+async function handleDateBoxClick(dateBox, ctx){
   const {slotKey} = ctx;
   const ds=dateBox.dataset.ds;
 
   // 0) 휴원 모드면 날짜 토글
   if(_stuPopup.showHyuwon){
-    let hyuwon=HYUWON_MAP[slotKey];
-    if(!hyuwon) hyuwon={dates:[]};
-    // 구 형식(from/to) → 신 형식(dates) 변환
-    if(hyuwon.from&&!hyuwon.dates){hyuwon={dates:[]};}
-    const idx=hyuwon.dates.indexOf(ds);
-    if(idx>=0){
-      hyuwon.dates.splice(idx,1);
-    } else {
-      if(hyuwon.dates.length>=14){toast('최대 14일까지 선택 가능','err');renderStuPopup();return;}
-      hyuwon.dates.push(ds);
+    try{
+      await updateHyuwonMapTx(map=>{
+        let hyuwon=map[slotKey];
+        if(!hyuwon) hyuwon={dates:[]};
+        // 구 형식(from/to) → 신 형식(dates) 변환
+        if(hyuwon.from&&!hyuwon.dates){hyuwon={dates:[]};}
+        hyuwon={dates:[...(hyuwon.dates||[])]};
+        const idx=hyuwon.dates.indexOf(ds);
+        if(idx>=0){
+          hyuwon.dates.splice(idx,1);
+        } else {
+          if(hyuwon.dates.length>=14){toast('최대 14일까지 선택 가능','err');return map;}
+          hyuwon.dates.push(ds);
+        }
+        if(hyuwon.dates.length) map[slotKey]=hyuwon;
+        else delete map[slotKey];
+        return map;
+      });
+      _stuPopup.selDate=ds;
+      renderStuPopup();
+      buildTable();
+    }catch(err){
+      toast(err?.message||'휴원 저장 실패','err');
+      console.error(err);
     }
-    if(hyuwon.dates.length) HYUWON_MAP[slotKey]=hyuwon;
-    else delete HYUWON_MAP[slotKey];
-    saveHyuwon();
-    _stuPopup.selDate=ds;
-    renderStuPopup();
-    buildTable();
     return;
   }
 
   // 1) 제외일 클릭 → 해제
   if(RETIRE_MAP[slotKey]?.ds===ds){
-    delete RETIRE_MAP[slotKey];
-    saveRetire();
-    _stuPopup.selDate=null;
-    _stuPopup.showEnroll=false;
-    _flashKey=slotKey;
-    renderStuPopup();
-    buildTable();
-    toast('제외 해제','ok');
+    try{
+      await updateRetireMapTx(retire=>{delete retire[slotKey];return retire;});
+      _stuPopup.selDate=null;
+      _stuPopup.showEnroll=false;
+      _flashKey=slotKey;
+      renderStuPopup();
+      buildTable();
+      toast('제외 해제','ok');
+    }catch(err){
+      toast(err?.message||'제외 해제 실패','err');
+      console.error(err);
+    }
     return;
   }
 
@@ -898,30 +940,38 @@ function handleHyuwonShow(e, ctx){
 
 // handleHyuwonSet 제거 — 날짜 클릭으로 즉시 토글됨
 
-function handleHyuwonDel(e, ctx){
+async function handleHyuwonDel(e, ctx){
   const {slotKey} = ctx;
-  delete HYUWON_MAP[slotKey];
-  saveHyuwon();
-  _stuPopup.showHyuwon=false;
-  _flashKey=slotKey;
-  renderStuPopup();
-  buildTable();
-  toast('휴원 해제','ok');
+  try{
+    await updateHyuwonMapTx(map=>{delete map[slotKey];return map;});
+    _stuPopup.showHyuwon=false;
+    _flashKey=slotKey;
+    renderStuPopup();
+    buildTable();
+    toast('휴원 해제','ok');
+  }catch(err){
+    toast(err?.message||'휴원 해제 실패','err');
+    console.error(err);
+  }
 }
 
 /* ── 예약(제외/등록) 핸들러 ── */
 
-function handleRetireSet(e, ctx){
+async function handleRetireSet(e, ctx){
   const {t, day, lane, row, slotKey} = ctx;
   const ds=_stuPopup.selDate;
   // 같은 날짜 토글 → 해제
   if(RETIRE_MAP[slotKey]?.ds===ds){
-    delete RETIRE_MAP[slotKey];
-    saveRetire();
-    renderStuPopup();
-    _flashKey=slotKey;
-    buildTable();
-    toast('제외 해제','ok');
+    try{
+      await updateRetireMapTx(retire=>{delete retire[slotKey];return retire;});
+      renderStuPopup();
+      _flashKey=slotKey;
+      buildTable();
+      toast('제외 해제','ok');
+    }catch(err){
+      toast(err?.message||'제외 해제 실패','err');
+      console.error(err);
+    }
     return;
   }
   // [v118] 제외 종류 선택: 퇴원(기록 영구 보관) vs 단순 제외(이동 등 임시용, 기록 X)
@@ -957,9 +1007,11 @@ function _showRetireChoiceModal({stu, slotKey, ds}){
   document.getElementById('rc-cancel').addEventListener('click', close);
   modal.addEventListener('click', (e)=>{ if(e.target===modal) close(); });
   // 공통: RETIRE_MAP 저장
-  const _setRetire = (withHistory)=>{
-    RETIRE_MAP[slotKey]={ds, name:stu?(stu.n+(stu.a||'')):''};
-    saveRetire();
+  const _setRetire = async (withHistory)=>{
+    await updateRetireMapTx(retire=>{
+      retire[slotKey]={ds, name:stu?(stu.n+(stu.a||'')):''};
+      return retire;
+    });
     if(withHistory && stu && typeof addRetireHistory==='function') addRetireHistory(stu, ds);
     renderStuPopup();
     _flashKey=slotKey;
@@ -967,13 +1019,13 @@ function _showRetireChoiceModal({stu, slotKey, ds}){
   };
   document.getElementById('rc-retire').addEventListener('click', ()=>{
     close();
-    _setRetire(true);
-    toast('🚪 퇴원 처리 완료 (기록 보관됨)','ok');
+    _setRetire(true).then(()=>toast('🚪 퇴원 처리 완료 (기록 보관됨)','ok'))
+      .catch(err=>{toast(err?.message||'퇴원 처리 실패','err');console.error(err);});
   });
   document.getElementById('rc-simple').addEventListener('click', ()=>{
     close();
-    _setRetire(false);
-    toast('✂️ 단순 제외 완료 (기록 X)','ok');
+    _setRetire(false).then(()=>toast('✂️ 단순 제외 완료 (기록 X)','ok'))
+      .catch(err=>{toast(err?.message||'단순 제외 실패','err');console.error(err);});
   });
 }
 
@@ -1056,7 +1108,7 @@ function _periodMonthForDate(ds){
   return month;
 }
 
-function _commitEnroll(slotKey, form){
+async function _commitEnroll(slotKey, form){
   if(!form.name){toast('이름을 입력하세요','err');return;}
   const ds=_stuPopup.selDate;
   const todayStr=toDateStr(getToday());
@@ -1066,32 +1118,39 @@ function _commitEnroll(slotKey, form){
   if(ds<=todayStr){
     const [t,d,l,r]=slotKey.split('/');
     const li=parseInt(l), ri=parseInt(r);
-    // 기존 학생 제거 (혹시 있다면)
-    const existIdx=STUDENTS.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-    if(existIdx>=0) STUDENTS.splice(existIdx,1);
-    const obj={n:form.name, a:form.age||null, t, d, l:li, r:ri};
-    if(form.phone) obj.p=form.phone;
-    if(form.vehicle) obj.v=true;
-    if(form.gender) obj.g=form.gender;
-    if(form.loc) obj.loc=form.loc;
-    if(form.memo) obj.memo=form.memo;
-    if(form.isNew&&enrollMonth) obj.isNew=enrollMonth;
-    else if(form.reenroll&&enrollMonth) obj.reenroll=enrollMonth;
-    else obj.enrolled=ds;  // 등록 표시 (빨간 배경 시각 효과)
-    STUDENTS.push(obj);
-    _stuIdx[slotKey]=obj;
-    if(DISABLED_MAP[slotKey]){delete DISABLED_MAP[slotKey];saveDisabled();}
-    saveStudents();
-    _stuPopup.selDate=null;
-    _stuPopup.showEnroll=false;
-    renderStuPopup(true);
-    buildTable();
-    toast(form.name+(form.age||'')+' 즉시 등록','ok');
+    try{
+      await updateStudentsTx(students=>{
+        const existIdx=students.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
+        if(existIdx>=0) students.splice(existIdx,1);
+        const obj={n:form.name, a:form.age||null, t, d, l:li, r:ri};
+        if(form.phone) obj.p=form.phone;
+        if(form.vehicle) obj.v=true;
+        if(form.gender) obj.g=form.gender;
+        if(form.loc) obj.loc=form.loc;
+        if(form.memo) obj.memo=form.memo;
+        if(form.isNew&&enrollMonth) obj.isNew=enrollMonth;
+        else if(form.reenroll&&enrollMonth) obj.reenroll=enrollMonth;
+        else obj.enrolled=ds;  // 등록 표시 (빨간 배경 시각 효과)
+        students.push(obj);
+        return students;
+      });
+      if(DISABLED_MAP[slotKey]){
+        await updateDisabledMapTx(disabled=>{delete disabled[slotKey];return disabled;});
+      }
+      _stuPopup.selDate=null;
+      _stuPopup.showEnroll=false;
+      renderStuPopup(true);
+      buildTable();
+      toast(form.name+(form.age||'')+' 즉시 등록','ok');
+    }catch(err){
+      toast(err?.message||'등록 실패','err');
+      console.error(err);
+    }
     return;
   }
 
   // 미래 → ENROLL_MAP에 예약 저장
-  ENROLL_MAP[slotKey]={
+  const entry={
     ds,
     name:form.name, age:form.age,
     p:form.phone||undefined,
@@ -1103,12 +1162,20 @@ function _commitEnroll(slotKey, form){
     memo:form.memo||undefined,
     g:form.gender||undefined,
   };
-  saveEnroll();
-  _stuPopup.selDate=null;
-  _stuPopup.showEnroll=false;
-  renderStuPopup(true);
-  buildTable();
-  toast(form.name+(form.age||'')+' 등록 예약','ok');
+  try{
+    await updateEnrollMapTx(enroll=>{
+      enroll[slotKey]=entry;
+      return enroll;
+    });
+    _stuPopup.selDate=null;
+    _stuPopup.showEnroll=false;
+    renderStuPopup(true);
+    buildTable();
+    toast(form.name+(form.age||'')+' 등록 예약','ok');
+  }catch(err){
+    toast(err?.message||'등록 예약 실패','err');
+    console.error(err);
+  }
 }
 
 function handleEnrollSet(e, ctx){
@@ -1119,15 +1186,19 @@ function handleEnrollFromLeft(e, ctx){
   _commitEnroll(ctx.slotKey, _readEnrollForm('sp-'));
 }
 
-function handleEnrollDel(e, ctx){
-  delete ENROLL_MAP[ctx.slotKey];
-  saveEnroll();
-  _stuPopup.selDate=null;
-  _stuPopup.showEnroll=false;
-  _flashKey=ctx.slotKey;
-  renderStuPopup();
-  buildTable();
-  toast('등록 해제','ok');
+async function handleEnrollDel(e, ctx){
+  try{
+    await updateEnrollMapTx(enroll=>{delete enroll[ctx.slotKey];return enroll;});
+    _stuPopup.selDate=null;
+    _stuPopup.showEnroll=false;
+    _flashKey=ctx.slotKey;
+    renderStuPopup();
+    buildTable();
+    toast('등록 해제','ok');
+  }catch(err){
+    toast(err?.message||'등록 해제 실패','err');
+    console.error(err);
+  }
 }
 
 // [v102] 우측 등록 폼 성별 토글
@@ -1499,7 +1570,86 @@ function askDateForDay(day, callback){
   backdrop.onclick=(e)=>{if(e.target===backdrop){backdrop.remove();callback(null);}};
 }
 
-function executeMove(dstT,dstDay,dstLane,dstRow){
+function _slotParts(slotKey){
+  const [t,d,l,r]=slotKey.split('/');
+  return {t,d,l:parseInt(l),r:parseInt(r)};
+}
+function _findStudentIndexAt(students,slotKey){
+  const p=_slotParts(slotKey);
+  return students.findIndex(s=>s.t===p.t&&s.d===p.d&&parseInt(s.l)===p.l&&parseInt(s.r)===p.r);
+}
+function _studentForSlot(stu,t,d,l,r){
+  const next={...stu,t,d,l:parseInt(l),r:parseInt(r)};
+  delete next.movedUntil;
+  return next;
+}
+function _swapMapKey(map,srcKey,dstKey){
+  const src=map[srcKey], dst=map[dstKey];
+  if(dst) map[srcKey]=dst; else delete map[srcKey];
+  if(src) map[dstKey]=src; else delete map[dstKey];
+}
+function _swapFutureMarks(marks,srcKey,dstKey,todayStr){
+  const srcMarks={}, dstMarks={};
+  for(const key of Object.keys(marks)){
+    if(key.startsWith(srcKey+'/')){
+      const ds=key.slice(srcKey.length+1);
+      if(ds>=todayStr){srcMarks[key.slice(srcKey.length)]=marks[key];delete marks[key];}
+    } else if(key.startsWith(dstKey+'/')){
+      const ds=key.slice(dstKey.length+1);
+      if(ds>=todayStr){dstMarks[key.slice(dstKey.length)]=marks[key];delete marks[key];}
+    }
+  }
+  for(const suf of Object.keys(srcMarks)) marks[dstKey+suf]=srcMarks[suf];
+  for(const suf of Object.keys(dstMarks)) marks[srcKey+suf]=dstMarks[suf];
+}
+function _moveFutureMarks(marks,srcKey,dstKey,todayStr){
+  for(const key of Object.keys(marks)){
+    if(!key.startsWith(srcKey+'/')) continue;
+    const ds=key.slice(srcKey.length+1);
+    if(ds<todayStr) continue;
+    marks[dstKey+'/'+ds]=marks[key];
+    delete marks[key];
+  }
+}
+function _splitHyuwonByDate(hyuwon,todayStr){
+  if(!hyuwon||!hyuwon.dates) return {past:null,future:null};
+  const past=hyuwon.dates.filter(d=>d<todayStr);
+  const future=hyuwon.dates.filter(d=>d>=todayStr);
+  return {
+    past:past.length?{dates:past}:null,
+    future:future.length?{dates:future}:null,
+  };
+}
+function _swapFutureHyuwon(map,srcKey,dstKey,todayStr){
+  const src=_splitHyuwonByDate(map[srcKey],todayStr);
+  const dst=_splitHyuwonByDate(map[dstKey],todayStr);
+  const nextSrc=mergeHyuwon(src.past,dst.future);
+  const nextDst=mergeHyuwon(dst.past,src.future);
+  if(nextSrc) map[srcKey]=nextSrc; else delete map[srcKey];
+  if(nextDst) map[dstKey]=nextDst; else delete map[dstKey];
+}
+function _moveFutureHyuwon(map,srcKey,dstKey,todayStr){
+  const src=map[srcKey];
+  if(!src) return;
+  if(src.dates){
+    const past=src.dates.filter(d=>d<todayStr);
+    const future=src.dates.filter(d=>d>=todayStr);
+    if(future.length) map[dstKey]=mergeHyuwon(map[dstKey],{dates:future});
+    if(past.length) map[srcKey]={dates:past};
+    else delete map[srcKey];
+  } else {
+    map[dstKey]=src;
+    delete map[srcKey];
+  }
+}
+function _finishMove(msg){
+  _moveMode=null;
+  document.getElementById('move-bar').style.display='none';
+  buildTable();
+  toast(msg,'ok');
+}
+
+async function executeMove(dstT,dstDay,dstLane,dstRow){
   if(!_moveMode) return;
   const {srcKey, type}=_moveMode;
   const dstKey=dstT+'/'+dstDay+'/'+dstLane+'/'+dstRow;
@@ -1513,179 +1663,156 @@ function executeMove(dstT,dstDay,dstLane,dstRow){
     const dstStu=getStu(dstT,dstDay,dstLane,dstRow);
     const [sT,sD,sL,sR]=srcKey.split('/');
     const sLi=parseInt(sL),sRi=parseInt(sR);
+    try{
+      await updateScheduleTx(ctx=>{
+        const stuKey=getTabConfig().stuKey;
+        const students=ctx.get(stuKey,[]);
+        const srcIdx=_findStudentIndexAt(students,srcKey);
+        if(srcIdx<0){ctx.abort('소스 학생 정보 오류');return;}
+        const dstIdx=_findStudentIndexAt(students,dstKey);
+        if(dstStu && dstIdx<0){ctx.abort('목적지 학생이 다른 기기에서 변경되었습니다');return;}
+        if(!dstStu && dstIdx>=0){ctx.abort('목적지에 이미 학생이 있습니다');return;}
+        const remoteSrc=students[srcIdx];
+        if(dstIdx>=0){
+          const remoteDst=students[dstIdx];
+          students[srcIdx]=_studentForSlot(remoteDst,sT,sD,sLi,sRi);
+          students[dstIdx]=_studentForSlot(remoteSrc,dstT,dstDay,dstLane,dstRow);
+        } else {
+          students[srcIdx]=_studentForSlot(remoteSrc,dstT,dstDay,dstLane,dstRow);
+        }
+        ctx.set(stuKey,students);
 
-    // 1) 학생 바꾸기 / 또는 한쪽으로 이동
-    const srcIdx=STUDENTS.findIndex(s=>s.t===sT&&s.d===sD&&s.l===sLi&&s.r===sRi);
-    if(srcIdx<0){toast('소스 학생 정보 오류','err');return;}
-    if(dstStu){
-      // 양쪽 모두 학생: 완전 교환
-      const dstIdx=STUDENTS.findIndex(s=>s.t===dstT&&s.d===dstDay&&s.l===dstLane&&s.r===dstRow);
-      STUDENTS[srcIdx]={...dstStu, t:sT, d:sD, l:sLi, r:sRi};
-      STUDENTS[dstIdx]={...srcStu, t:dstT, d:dstDay, l:dstLane, r:dstRow};
-      _stuIdx[srcKey]=STUDENTS[srcIdx];
-      _stuIdx[dstKey]=STUDENTS[dstIdx];
-    } else {
-      // 도착지는 빈 셀 (뱃지만 있음): 소스 학생 → 도착지로 이동, 소스는 비게 됨 (뱃지만 남음)
-      STUDENTS[srcIdx]={...srcStu, t:dstT, d:dstDay, l:dstLane, r:dstRow};
-      _stuIdx[dstKey]=STUDENTS[srcIdx];
-      delete _stuIdx[srcKey];
-      // 도착지가 비활성화 셀이었다면 활성화
-      if(DISABLED_MAP[dstKey]){delete DISABLED_MAP[dstKey];saveDisabled();}
-    }
+        const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+        if(dstIdx<0) delete disabled[dstKey];
+        ctx.set(STORAGE_KEYS.DISABLED,disabled);
 
-    // 2) RETIRE_MAP 교환
-    const sR1=RETIRE_MAP[srcKey], dR1=RETIRE_MAP[dstKey];
-    if(sR1||dR1){
-      if(dR1) RETIRE_MAP[srcKey]=dR1; else delete RETIRE_MAP[srcKey];
-      if(sR1) RETIRE_MAP[dstKey]=sR1; else delete RETIRE_MAP[dstKey];
-      saveRetire();
+        const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+        _swapMapKey(retire,srcKey,dstKey);
+        ctx.set(STORAGE_KEYS.RETIRE,retire);
+
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        _swapMapKey(enroll,srcKey,dstKey);
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+
+        const todayStr=toDateStr(getToday());
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        _swapFutureMarks(marks,srcKey,dstKey,todayStr);
+        ctx.set(STORAGE_KEYS.MARK,marks);
+
+        const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+        _swapFutureHyuwon(hyuwon,srcKey,dstKey,todayStr);
+        ctx.set(STORAGE_KEYS.休원,hyuwon);
+        return true;
+      });
+      const srcLabel=srcStu.n+(srcStu.a||'');
+      const dstLabel=dstStu?dstStu.n+(dstStu.a||''):'빈 셀';
+      _finishMove(`${srcLabel} ↔ ${dstLabel} 자리바꾸기 완료`);
+    }catch(err){
+      toast(err?.message||'자리바꾸기 실패','err');
+      console.error(err);
     }
-    // 3) ENROLL_MAP 교환
-    const sE1=ENROLL_MAP[srcKey], dE1=ENROLL_MAP[dstKey];
-    if(sE1||dE1){
-      if(dE1) ENROLL_MAP[srcKey]=dE1; else delete ENROLL_MAP[srcKey];
-      if(sE1) ENROLL_MAP[dstKey]=sE1; else delete ENROLL_MAP[dstKey];
-      saveEnroll();
-    }
-    // 4) MARK_MAP 교환 — 미래 마크만 교환, 과거 마크는 원래 자리 유지 (히스토리 보존)
-    const todayStr=toDateStr(getToday());
-    const srcMarks={}, dstMarks={};
-    for(const k of Object.keys(MARK_MAP)){
-      if(k.startsWith(srcKey+'/')){
-        const ds=k.slice(srcKey.length+1);  // 'YYYY-MM-DD'
-        if(ds>=todayStr){srcMarks[k.slice(srcKey.length)]=MARK_MAP[k];delete MARK_MAP[k];}
-      } else if(k.startsWith(dstKey+'/')){
-        const ds=k.slice(dstKey.length+1);
-        if(ds>=todayStr){dstMarks[k.slice(dstKey.length)]=MARK_MAP[k];delete MARK_MAP[k];}
-      }
-    }
-    let markChanged=false;
-    for(const suf of Object.keys(srcMarks)){MARK_MAP[dstKey+suf]=srcMarks[suf];markChanged=true;}
-    for(const suf of Object.keys(dstMarks)){MARK_MAP[srcKey+suf]=dstMarks[suf];markChanged=true;}
-    if(markChanged) saveMark();
-    // 5) HYUWON_MAP 교환 — 미래 날짜만 교환
-    const sH=HYUWON_MAP[srcKey], dH=HYUWON_MAP[dstKey];
-    if(sH||dH){
-      const splitByDate=(hy)=>{
-        if(!hy||!hy.dates) return {past:null, future:null};
-        const past=hy.dates.filter(d=>d<todayStr);
-        const future=hy.dates.filter(d=>d>=todayStr);
-        return {
-          past: past.length?{dates:past}:null,
-          future: future.length?{dates:future}:null,
-        };
-      };
-      const sp=splitByDate(sH), dp=splitByDate(dH);
-      // 원래 자리에 과거 + 교환된 미래
-      const newSrc = mergeHyuwon(sp.past, dp.future);
-      const newDst = mergeHyuwon(dp.past, sp.future);
-      if(newSrc) HYUWON_MAP[srcKey]=newSrc; else delete HYUWON_MAP[srcKey];
-      if(newDst) HYUWON_MAP[dstKey]=newDst; else delete HYUWON_MAP[dstKey];
-      saveHyuwon();
-    }
-    saveStudents();
-    _moveMode=null;
-    document.getElementById('move-bar').style.display='none';
-    buildTable();
-    const srcLabel=srcStu.n+(srcStu.a||'');
-    const dstLabel=dstStu?dstStu.n+(dstStu.a||''):'빈 셀';
-    toast(`${srcLabel} ↔ ${dstLabel} 자리바꾸기 완료`,'ok');
     return;
   }
 
   // 보강/샘플 마크 이동
   if(type==='mark'){
     const {markData, markType, srcDs}=_moveMode;
-    // 목적지에 학생이 있으면 차단
-    if(getStu(dstT,dstDay,dstLane,dstRow)){toast('빈 셀에만 이동 가능합니다','err');return;}
     const [sT,sD,sL,sR]=srcKey.split('/');
+    const moveMarkTo=async(newDs)=>{
+      await updateScheduleTx(ctx=>{
+        const students=ctx.get(getTabConfig().stuKey,[]);
+        if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 이동 가능합니다');return;}
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        const srcMark=marks[srcKey+'/'+srcDs];
+        if(!srcMark){ctx.abort('원본 마크가 이미 변경되었습니다');return;}
+        if(marks[dstKey+'/'+newDs]){ctx.abort('목적지에 같은 날짜 마크가 있습니다');return;}
+        if(srcMark?.type==='absent'&&srcMark.sub){
+          const nextSrc={...srcMark};
+          delete nextSrc.sub;
+          marks[srcKey+'/'+srcDs]=nextSrc;
+        } else {
+          delete marks[srcKey+'/'+srcDs];
+        }
+        marks[dstKey+'/'+newDs]=markData;
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        return true;
+      });
+    };
     // 요일이 다르면 날짜 선택 모달
     if(sD!==dstDay){
-      askDateForDay(dstDay, function(newDs){
+      askDateForDay(dstDay, async function(newDs){
         if(!newDs) return; // 취소
-        const dstMark=getMark(dstKey,newDs);
-        if(dstMark){toast('목적지에 같은 날짜 마크가 있습니다','err');return;}
-        // 소스 제거
-        const srcMark=getMark(srcKey,srcDs);
-        if(srcMark?.type==='absent'&&srcMark.sub) setMark(srcKey,srcDs,{type:'absent'});
-        else clearMark(srcKey,srcDs);
-        // 목적지 설정
-        setMark(dstKey,newDs,markData);
-        _moveMode=null;
-        document.getElementById('move-bar').style.display='none';
-        buildTable();
-        toast((markType==='bogang'?'보강':'샘플')+' 이동 완료 ('+newDs.slice(5)+')','ok');
+        try{
+          await moveMarkTo(newDs);
+          _finishMove((markType==='bogang'?'보강':'샘플')+' 이동 완료 ('+newDs.slice(5)+')');
+        }catch(err){
+          toast(err?.message||'마크 이동 실패','err');
+          console.error(err);
+        }
       });
       return;
     }
     // 같은 요일 → 같은 날짜 유지
-    const dstMark=getMark(dstKey,srcDs);
-    if(dstMark){toast('목적지에 같은 날짜 마크가 있습니다','err');return;}
-    const srcMark=getMark(srcKey,srcDs);
-    if(srcMark?.type==='absent'&&srcMark.sub){
-      setMark(srcKey,srcDs,{type:'absent'});
-    } else {
-      clearMark(srcKey,srcDs);
+    try{
+      await moveMarkTo(srcDs);
+      _finishMove((markType==='bogang'?'보강':'샘플')+' 이동 완료');
+    }catch(err){
+      toast(err?.message||'마크 이동 실패','err');
+      console.error(err);
     }
-    setMark(dstKey,srcDs,markData);
-    _moveMode=null;
-    document.getElementById('move-bar').style.display='none';
-    buildTable();
-    toast((markType==='bogang'?'보강':'샘플')+' 이동 완료','ok');
     return;
   }
 
   // 등록 예약 이동
   if(type==='enroll'){
     const {enrData}=_moveMode;
-    if(getStu(dstT,dstDay,dstLane,dstRow)){toast('빈 셀에만 이동 가능합니다','err');return;}
-    if(ENROLL_MAP[dstKey]){toast('목적지에 이미 등록 예약이 있습니다','err');return;}
-    if(RETIRE_MAP[dstKey]){toast('목적지에 제외 예약이 있습니다','err');return;}
     const [sT,sD,sL,sR]=srcKey.split('/');
+    const moveEnrollTo=async(newDs)=>{
+      await updateScheduleTx(ctx=>{
+        const students=ctx.get(getTabConfig().stuKey,[]);
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+        if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 이동 가능합니다');return;}
+        if(enroll[dstKey]){ctx.abort('목적지에 이미 등록 예약이 있습니다');return;}
+        if(retire[dstKey]){ctx.abort('목적지에 제외 예약이 있습니다');return;}
+        const srcEnroll=enroll[srcKey];
+        if(!srcEnroll){ctx.abort('원본 등록 예약이 이미 변경되었습니다');return;}
+        delete enroll[srcKey];
+        enroll[dstKey]={...srcEnroll, ...enrData, ds:newDs};
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        return true;
+      });
+    };
     // 요일이 다르면 날짜 선택
     if(sD!==dstDay){
-      askDateForDay(dstDay, function(newDs){
+      askDateForDay(dstDay, async function(newDs){
         if(!newDs) return;
-        delete ENROLL_MAP[srcKey];
-        const newEnr={...enrData, ds:newDs};
-        ENROLL_MAP[dstKey]=newEnr;
-        saveEnroll();
-        _moveMode=null;
-        document.getElementById('move-bar').style.display='none';
-        buildTable();
-        toast('등록 예약 '+(enrData.name||'')+' 이동 완료 ('+newDs.slice(5)+')','ok');
+        try{
+          await moveEnrollTo(newDs);
+          _finishMove('등록 예약 '+(enrData.name||'')+' 이동 완료 ('+newDs.slice(5)+')');
+        }catch(err){
+          toast(err?.message||'등록 예약 이동 실패','err');
+          console.error(err);
+        }
       });
       return;
     }
-    delete ENROLL_MAP[srcKey];
-    ENROLL_MAP[dstKey]=enrData;
-    saveEnroll();
-    _moveMode=null;
-    document.getElementById('move-bar').style.display='none';
-    buildTable();
-    toast('등록 예약 '+(enrData.name||'')+' 이동 완료','ok');
+    try{
+      await moveEnrollTo(enrData.ds);
+      _finishMove('등록 예약 '+(enrData.name||'')+' 이동 완료');
+    }catch(err){
+      toast(err?.message||'등록 예약 이동 실패','err');
+      console.error(err);
+    }
     return;
   }
 
   // 예약 이동 (전체) → RETIRE(출발) + ENROLL(도착) 조합
   if(type==='reserve'){
     const {stu}=_moveMode;
-    if(getStu(dstT,dstDay,dstLane,dstRow)){toast('빈 셀에만 예약 가능합니다','err');return;}
-    // 목적지에 기존 예약 있으면 차단
-    if(RETIRE_MAP[dstKey]||ENROLL_MAP[dstKey]){
-      toast('목적지에 기존 예약이 있습니다','err');return;
-    }
-    // 출발지에 기존 제외 예약 있으면 차단
-    if(RETIRE_MAP[srcKey]){
-      toast('출발지에 이미 제외 예약이 있습니다','err');return;
-    }
     // 날짜 선택
-    askDateForDay(dstDay, function(newDs){
+    askDateForDay(dstDay, async function(newDs){
       if(!newDs){return;}
-      // 출발지 제외
-      RETIRE_MAP[srcKey]={ds:newDs, name:stu.n};
-      saveRetire();
-      // 도착지 등록 (원생 정보만 이동 — 마크/등록 플래그 안 붙임)
       const enrollEntry={
         ds:newDs,
         name:stu.n,
@@ -1696,15 +1823,26 @@ function executeMove(dstT,dstDay,dstLane,dstRow){
       if(stu.loc) enrollEntry.loc=stu.loc;
       if(stu.memo) enrollEntry.memo=stu.memo;
       if(stu.g) enrollEntry.g=stu.g;
-      ENROLL_MAP[dstKey]=enrollEntry;
-      saveEnroll();
-      // 휴원은 자동 이동하지 않음 — 사용자가 도착지에서 새 날짜 기준으로 직접 설정
-      // (출발지 휴원은 이동 실행 시점 RETIRE 처리에서 자동 정리됨)
-      _moveMode=null;
-      document.getElementById('move-bar').style.display='none';
-      buildTable();
-      const label=newDs.slice(5).replace('-','/');
-      toast(stu.n+(stu.a||'')+' 예약 이동 ('+label+')','ok');
+      try{
+        await updateScheduleTx(ctx=>{
+          const students=ctx.get(getTabConfig().stuKey,[]);
+          const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+          const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+          if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 예약 가능합니다');return;}
+          if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
+          if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
+          retire[srcKey]={ds:newDs, name:stu.n};
+          enroll[dstKey]=enrollEntry;
+          ctx.set(STORAGE_KEYS.RETIRE,retire);
+          ctx.set(STORAGE_KEYS.ENROLL,enroll);
+          return true;
+        });
+        const label=newDs.slice(5).replace('-','/');
+        _finishMove(stu.n+(stu.a||'')+' 예약 이동 ('+label+')');
+      }catch(err){
+        toast(err?.message||'예약 이동 실패','err');
+        console.error(err);
+      }
     });
     return;
   }
@@ -1712,7 +1850,6 @@ function executeMove(dstT,dstDay,dstLane,dstRow){
   // 원생 복사
   if(type==='copy'){
     const {stu}=_moveMode;
-    if(getStu(dstT,dstDay,dstLane,dstRow)){toast('빈 셀에만 복사 가능합니다','err');return;}
     // 신규 학생 객체: 위치만 변경, isNew/movedUntil/enrolled 등 메타는 제외
     const newStu={n:stu.n,a:stu.a,t:dstT,d:dstDay,l:dstLane,r:dstRow};
     if(stu.p) newStu.p=stu.p;
@@ -1720,97 +1857,84 @@ function executeMove(dstT,dstDay,dstLane,dstRow){
     if(stu.g) newStu.g=stu.g;
     if(stu.loc) newStu.loc=stu.loc;
     if(stu.memo) newStu.memo=stu.memo;
-    STUDENTS.push(newStu);
-    _stuIdx[dstKey]=newStu;
-    if(DISABLED_MAP[dstKey]){delete DISABLED_MAP[dstKey];saveDisabled();}
-    saveStudents();
-    _moveMode=null;
-    document.getElementById('move-bar').style.display='none';
-    buildTable();
-    toast(stu.n+(stu.a||'')+' 복사 완료','ok');
+    try{
+      await updateScheduleTx(ctx=>{
+        const stuKey=getTabConfig().stuKey;
+        const students=ctx.get(stuKey,[]);
+        if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 복사 가능합니다');return;}
+        students.push(newStu);
+        ctx.set(stuKey,students);
+        const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+        delete disabled[dstKey];
+        ctx.set(STORAGE_KEYS.DISABLED,disabled);
+        return true;
+      });
+      _finishMove(stu.n+(stu.a||'')+' 복사 완료');
+    }catch(err){
+      toast(err?.message||'복사 실패','err');
+      console.error(err);
+    }
     return;
   }
 
   const {stu}=_moveMode;
   const [sT,sD,sL,sR]=srcKey.split('/');
 
-  // [FIX] 목적지에 이미 학생이 있으면 이동 중단 (이전엔 사일런트 덮어쓰기 → STUDENTS 좀비)
-  if(getStu(dstT,dstDay,dstLane,dstRow)){
-    toast('목적지에 이미 학생이 있습니다','err');
-    return;
-  }
-  // [FIX] 전체 이동 시 목적지에 기존 미래 예약/마크가 있으면 데이터 손실 방지를 위해 중단
-  //   — 과거 마크는 허용 (목적지의 히스토리 데이터, 충돌 없음)
-  if(type==='all'){
-    const todayStr=toDateStr(getToday());
-    const hasFutureMark=Object.keys(MARK_MAP).some(k=>{
-      if(!k.startsWith(dstKey+'/')) return false;
-      const ds=k.slice(dstKey.length+1);
-      return ds>=todayStr;
+  try{
+    let movedName=stu.n;
+    await updateScheduleTx(ctx=>{
+      const stuKey=getTabConfig().stuKey;
+      const students=ctx.get(stuKey,[]);
+      if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('목적지에 이미 학생이 있습니다');return;}
+
+      const todayStr=toDateStr(getToday());
+      const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+      const marks=ctx.get(STORAGE_KEYS.MARK,{});
+      const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+
+      if(type==='all'){
+        const hasFutureMark=Object.keys(marks).some(k=>{
+          if(!k.startsWith(dstKey+'/')) return false;
+          const ds=k.slice(dstKey.length+1);
+          return ds>=todayStr;
+        });
+        const hasFutureHyuwon=hyuwon[dstKey]?.dates?.some(d=>d>=todayStr);
+        if(retire[dstKey]||enroll[dstKey]||hasFutureMark||hasFutureHyuwon){
+          ctx.abort('목적지에 기존 미래 예약/마크가 있습니다');
+          return;
+        }
+      }
+
+      const sIdx=_findStudentIndexAt(students,srcKey);
+      if(sIdx<0){ctx.abort('소스 학생 정보 오류');return;}
+      const remoteStu=students[sIdx];
+      movedName=remoteStu.n||stu.n;
+      students.splice(sIdx,1);
+      students.push(_studentForSlot(remoteStu,dstT,dstDay,dstLane,dstRow));
+      ctx.set(stuKey,students);
+
+      const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+      delete disabled[dstKey];
+      ctx.set(STORAGE_KEYS.DISABLED,disabled);
+
+      if(type==='all'){
+        if(retire[srcKey]){retire[dstKey]=retire[srcKey];delete retire[srcKey];}
+        if(enroll[srcKey]){enroll[dstKey]=enroll[srcKey];delete enroll[srcKey];}
+        _moveFutureMarks(marks,srcKey,dstKey,todayStr);
+        _moveFutureHyuwon(hyuwon,srcKey,dstKey,todayStr);
+        ctx.set(STORAGE_KEYS.RETIRE,retire);
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        ctx.set(STORAGE_KEYS.休원,hyuwon);
+      }
+      return true;
     });
-    const hasFutureHyuwon=HYUWON_MAP[dstKey]?.dates?.some(d=>d>=todayStr);
-    if(RETIRE_MAP[dstKey]||ENROLL_MAP[dstKey]||hasFutureMark||hasFutureHyuwon){
-      toast('목적지에 기존 미래 예약/마크가 있습니다','err');
-      return;
-    }
+    _finishMove(movedName+' 이동 완료');
+  }catch(err){
+    toast(err?.message||'이동 실패','err');
+    console.error(err);
   }
-
-  // 소스 학생 제거
-  const sIdx=STUDENTS.findIndex(s=>s.t===sT&&s.d===sD&&s.l===parseInt(sL)&&s.r===parseInt(sR));
-  if(sIdx>=0) STUDENTS.splice(sIdx,1);
-  delete _stuIdx[srcKey];
-
-  // 목적지에 학생 등록
-  const newStu={...stu, t:dstT, d:dstDay, l:dstLane, r:dstRow};
-  // 기존 movedUntil 필드가 있었다면 제거 (이전 구현 잔재)
-  delete newStu.movedUntil;
-  STUDENTS.push(newStu);
-  _stuIdx[dstKey]=newStu;
-  // [FIX] 비활성화된 목적지 셀이면 자동 활성화 (handleSave와 동일 동작)
-  if(DISABLED_MAP[dstKey]){delete DISABLED_MAP[dstKey];saveDisabled();}
-  saveStudents();
-
-  // 전체 이동: 날짜 데이터도 이동 — 과거는 원 자리 유지, 미래만 이동
-  if(type==='all'){
-    const todayStr=toDateStr(getToday());
-    // RETIRE_MAP (보통 미래만 존재)
-    if(RETIRE_MAP[srcKey]){RETIRE_MAP[dstKey]=RETIRE_MAP[srcKey];delete RETIRE_MAP[srcKey];saveRetire();}
-    // ENROLL_MAP (보통 미래만 존재)
-    if(ENROLL_MAP[srcKey]){ENROLL_MAP[dstKey]=ENROLL_MAP[srcKey];delete ENROLL_MAP[srcKey];saveEnroll();}
-    // MARK_MAP — 미래 마크만 이동, 과거는 원 자리(히스토리)에 유지
-    let markMoved=false;
-    for(const key of Object.keys(MARK_MAP)){
-      if(key.startsWith(srcKey+'/')){
-        const ds=key.slice(srcKey.length+1);
-        if(ds<todayStr) continue;  // 과거 마크는 유지
-        MARK_MAP[dstKey+'/'+ds]=MARK_MAP[key];
-        delete MARK_MAP[key];
-        markMoved=true;
-      }
-    }
-    if(markMoved) saveMark();
-    // HYUWON_MAP — 미래 날짜만 이동, 과거는 원 자리 유지
-    if(HYUWON_MAP[srcKey]){
-      const src=HYUWON_MAP[srcKey];
-      if(src.dates){
-        const past=src.dates.filter(d=>d<todayStr);
-        const future=src.dates.filter(d=>d>=todayStr);
-        if(future.length) HYUWON_MAP[dstKey]={dates:future};
-        if(past.length) HYUWON_MAP[srcKey]={dates:past};
-        else delete HYUWON_MAP[srcKey];
-      } else {
-        // 구 형식 호환: 날짜 구분 없이 이동
-        HYUWON_MAP[dstKey]=src;
-        delete HYUWON_MAP[srcKey];
-      }
-      saveHyuwon();
-    }
-  }
-
-  _moveMode=null;
-  document.getElementById('move-bar').style.display='none';
-  buildTable();
-  toast(newStu.n+' 이동 완료','ok');
 }
 
 document.addEventListener('click',e=>{
