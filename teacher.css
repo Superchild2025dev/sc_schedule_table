@@ -62,10 +62,24 @@ html,body{background:#F3F6FA}
 .req-main .target{color:#374151}
 .req-main .sub-info{font-size:13px;color:#6B7280}
 .req-warning{font-size:11px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FCD34D;border-radius:6px;padding:6px 8px;line-height:1.4}
+.candidate-list{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.candidate-row{border:1px solid #DBEAFE;background:#F8FBFF;border-radius:8px;padding:13px}
+.candidate-row.blocked{border-color:#FECACA;background:#FEF2F2}
+.candidate-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+.candidate-no{font-size:12px;font-weight:900;color:#1D4ED8;background:#DBEAFE;border-radius:7px;padding:4px 8px}
+.candidate-state{font-size:11px;font-weight:900;border-radius:7px;padding:4px 8px}
+.candidate-state.ok{background:#D1FAE5;color:#047857}
+.candidate-state.danger{background:#FEE2E2;color:#991B1B}
+.candidate-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#374151;font-size:14px;line-height:1.5}
+.candidate-main strong{color:#111;font-size:15px}
+.candidate-row .classmates-wrap{margin:10px 0 0;background:#fff}
+.candidate-accept{width:100%;padding:11px 14px;margin-top:10px;border-radius:8px;font-size:14px;font-weight:900}
 .req-actions{display:flex;gap:10px;margin-top:14px}
 .req-actions button{flex:1;padding:12px 14px;font-size:14px;font-weight:800;border-radius:8px;transition:all 0.15s}
 .btn-accept{background:#10B981;color:#fff}
 .btn-accept:hover{background:#059669}
+.btn-accept:disabled{background:#D1D5DB;color:#6B7280;cursor:not-allowed}
+.btn-accept:disabled:hover{background:#D1D5DB}
 .btn-reject{background:#F3F4F6;color:#991B1B}
 .btn-reject:hover{background:#FEE2E2}
 
@@ -83,6 +97,9 @@ html,body{background:#F3F6FA}
   .req-card{padding:15px 14px}
   .req-main{font-size:13px}
   .req-main .parent-name{font-size:15px}
+  .candidate-row{padding:11px 10px}
+  .candidate-main{font-size:12px;gap:6px}
+  .candidate-main strong{font-size:13px}
   .classmates-grid{grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px}
   .cm-cell{min-height:56px;padding:6px 4px}
   .cm-content{font-size:12px}

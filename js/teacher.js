@@ -389,15 +389,16 @@ function render(){
     renderAttendanceTimetable();
   }
   const bogangReqs=getMyRequests('bogang');
+  const bogangGroupCount=groupBogangRequests(bogangReqs).length;
   const cancelReqs=getMyRequests('absent-cancel');
 
-  document.getElementById('cnt-bogang').textContent=bogangReqs.length;
-  document.getElementById('cnt-bogang').dataset.n=bogangReqs.length;
+  document.getElementById('cnt-bogang').textContent=bogangGroupCount;
+  document.getElementById('cnt-bogang').dataset.n=bogangGroupCount;
   document.getElementById('cnt-cancel').textContent=cancelReqs.length;
   document.getElementById('cnt-cancel').dataset.n=cancelReqs.length;
 
   document.getElementById('teacher-stats').textContent=
-    `승인 대기 — 보강 ${bogangReqs.length}건 · 결석취소 ${cancelReqs.length}건`;
+    `승인 대기 — 보강 ${bogangGroupCount}건 · 결석취소 ${cancelReqs.length}건`;
 
   renderBogangList(bogangReqs);
   renderCancelList(cancelReqs);
@@ -415,42 +416,111 @@ function fmtTime(iso){
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
+function bogangGroupKey(id,req){
+  return req?.choiceGroupId || `single:${id}`;
+}
+function groupBogangRequests(reqs){
+  const map=new Map();
+  reqs.forEach(([id,req])=>{
+    const key=bogangGroupKey(id,req);
+    if(!map.has(key)) map.set(key,{key,items:[],requestedAt:req.requestedAt||''});
+    const group=map.get(key);
+    group.items.push([id,req]);
+    if((req.requestedAt||'')>(group.requestedAt||'')) group.requestedAt=req.requestedAt||'';
+  });
+  const groups=[...map.values()];
+  groups.forEach(group=>{
+    group.items.sort((a,b)=>{
+      const at=a[1].target||{}, bt=b[1].target||{};
+      return [
+        at.ds||'',
+        at.d||'',
+        at.t||'',
+        String(at.l||'').padStart(2,'0'),
+        String(at.r||'').padStart(2,'0')
+      ].join('|').localeCompare([
+        bt.ds||'',
+        bt.d||'',
+        bt.t||'',
+        String(bt.l||'').padStart(2,'0'),
+        String(bt.r||'').padStart(2,'0')
+      ].join('|'));
+    });
+  });
+  groups.sort((a,b)=>(b.requestedAt||'').localeCompare(a.requestedAt||''));
+  return groups;
+}
+function isTargetSlotBlocked(req){
+  const t=req?.target||{};
+  const occupied=STUDENTS.some(s=>
+    s.t===t.t && s.d===t.d
+    && parseInt(s.l)===parseInt(t.l)
+    && parseInt(s.r)===parseInt(t.r)
+  );
+  const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
+  const existing=MARK_MAP[markKey];
+  const markBlocked=!!(existing && !(existing.type==='absent' && !existing.sub));
+  return {
+    blocked: occupied || markBlocked,
+    reason: occupied ? '현재 정규 학생 자리' : (markBlocked ? '이미 보강/샘플 있음' : '')
+  };
+}
+
 function renderBogangList(reqs){
   const container=document.getElementById('bogang-list');
   if(!reqs.length){
     container.innerHTML='<div class="req-empty">승인 대기 중인 보강 신청이 없습니다.</div>';
     return;
   }
-  container.innerHTML=reqs.map(([id,r])=>{
-    const p=r.parent, t=r.target;
+  const groups=groupBogangRequests(reqs);
+  container.innerHTML=groups.map(group=>{
+    const first=group.items[0][1];
+    const p=first.parent||{};
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
     const [ot,od,ol,or2]=(p.studentSlotKey||'').split('/');
     const originInst=INST_MAP[ot+'/'+od+'/'+ol];
     const originLabel=instClassText(originInst);
     const origin=p.studentSlotKey ? `${od}요일 ${ot} ${ol}레인 ${or2}번${originLabel?' · '+originLabel:''}` : '';
-    const targetInst=reqTargetInst(r);
-    const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
-    const approveTeacher=reqAssignedTeacherName(r);
-    const targetTeacher=reqTargetTeacherName(r);
-    const warning=reqTeacherWarningHtml(r);
-    const choiceLabel=r.choiceCount>1 ? `후보 ${r.choiceCount}개 중 선택` : '후보 1개';
-    // [v118] 보강 받는 반의 다른 학생들 표시 (시간표 셀 스타일)
-    const classmatesHtml = _renderClassmates(t.t, t.d, t.l, t.ds, t.r);
+    const approveTeacher=reqAssignedTeacherName(first);
+    const warning=reqTeacherWarningHtml(first);
+    const sourceDate=p.absentDs ? ` · 원 결석일 ${fmtDate(p.absentDs)}` : '';
+    const choiceLabel=group.items.length>1 ? `후보 ${group.items.length}개 비교` : '후보 1개';
+    const candidateHtml=group.items.map(([id,r],idx)=>{
+      const t=r.target||{};
+      const targetInst=reqTargetInst(r);
+      const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
+      const targetTeacher=reqTargetTeacherName(r);
+      const slotState=isTargetSlotBlocked(r);
+      const blockedClass=slotState.blocked ? ' blocked' : '';
+      const blockedLabel=slotState.blocked ? `<span class="candidate-state danger">${esc(slotState.reason)}</span>` : '<span class="candidate-state ok">수락 가능</span>';
+      return `<div class="candidate-row${blockedClass}">
+        <div class="candidate-meta">
+          <span class="candidate-no">후보 ${idx+1}</span>
+          ${blockedLabel}
+        </div>
+        <div class="candidate-main">
+          <strong>${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)}</strong>
+          <span>${t.l}레인 ${t.r}번</span>
+          <span>수업 ${esc(targetTeacher)}${targetClass}</span>
+        </div>
+        ${_renderClassmates(t.t, t.d, t.l, t.ds, t.r)}
+        <button class="btn-accept candidate-accept" data-act="accept" data-id="${id}" ${slotState.blocked?'disabled':''}>이 후보 수락</button>
+      </div>`;
+    }).join('');
     return `<div class="req-card">
       <div class="req-hdr">
         <span class="req-type">보강 신청</span>
-        <span class="req-time">${fmtTime(r.requestedAt)}</span>
+        <span class="req-time">${fmtTime(group.requestedAt)}</span>
       </div>
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
-        <div class="sub-info">원래 수업: ${esc(origin)} · 승인 담당 ${esc(approveTeacher)}</div>
-        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · 수업 ${esc(targetTeacher)}${targetClass} · ${choiceLabel}</div>
+        <div class="sub-info">원래 수업: ${esc(origin)}${sourceDate} · 승인 담당 ${esc(approveTeacher)}</div>
+        <div class="target">보강 후보: ${choiceLabel}</div>
         ${warning}
       </div>
-      ${classmatesHtml}
+      <div class="candidate-list">${candidateHtml}</div>
       <div class="req-actions">
-        <button class="btn-reject" data-act="reject" data-id="${id}">거절</button>
-        <button class="btn-accept" data-act="accept" data-id="${id}">수락</button>
+        <button class="btn-reject" data-act="reject-group" data-group="${esc(group.key)}">전체 거절</button>
       </div>
     </div>`;
   }).join('');
@@ -605,6 +675,57 @@ async function rejectRequest(reqId){
     render();
   }catch(e){
     toast('처리 실패','err');
+    console.error(e);
+  }
+}
+
+async function rejectBogangGroup(groupKey){
+  if(!groupKey) return;
+  const ids=Object.entries(REQUESTS)
+    .filter(([id,req])=>
+      req?.type==='bogang'
+      && bogangGroupKey(id,req)===groupKey
+      && (!req.status || req.status==='pending')
+      && (!_currentTeacher || reqAssignedTeacherName(req)===_currentTeacher)
+    )
+    .map(([id])=>id);
+  if(!ids.length){
+    toast('처리할 후보가 없습니다','err');
+    render();
+    return;
+  }
+  const msg=ids.length>1 ? `보강 후보 ${ids.length}개를 모두 거절하시겠습니까?` : '이 요청을 거절하시겠습니까?';
+  if(!confirm(msg)) return;
+  try{
+    if(ids.length===1){
+      await setRequestStatus(ids[0],'rejected');
+    }else{
+      const processedAt=new Date().toISOString();
+      const processedBy=_currentTeacher||'관리자';
+      await updateRequestsTx((reqs,abort)=>{
+        let changed=0;
+        for(const id of ids){
+          const req=reqs[id];
+          if(!req) continue;
+          if(req.status && req.status!=='pending'){
+            abort('이미 처리 중이거나 완료된 후보가 있습니다');
+            return;
+          }
+          req.status='rejected';
+          req.processedAt=processedAt;
+          req.processedBy=processedBy;
+          delete req.processingAt;
+          delete req.processingBy;
+          changed++;
+        }
+        if(!changed){abort('처리할 후보가 없습니다');return;}
+        return reqs;
+      });
+    }
+    toast('거절 완료','ok');
+    render();
+  }catch(e){
+    toast(e?.message||'처리 실패','err');
     console.error(e);
   }
 }
@@ -1061,5 +1182,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const id=btn.dataset.id;
     if(act==='accept') acceptRequest(id);
     else if(act==='reject') rejectRequest(id);
+    else if(act==='reject-group') rejectBogangGroup(btn.dataset.group);
   });
 });
