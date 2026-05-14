@@ -231,11 +231,12 @@ function claimRequest(reqId){
       abort('이미 다른 곳에서 처리 중이거나 완료된 요청입니다');
       return;
     }
-    if(req.type==='bogang' && req.choiceGroupId){
+    if(req.type==='bogang'){
+      const groupKey=bogangGroupKey(reqId,req);
       const busy=Object.entries(reqs).some(([id,other])=>
         id!==reqId
         && other?.type==='bogang'
-        && other.choiceGroupId===req.choiceGroupId
+        && bogangGroupKey(id,other)===groupKey
         && (other.status==='accepted'||other.status==='processing')
       );
       if(busy){
@@ -282,10 +283,10 @@ function setRequestStatus(reqId,status){
     reqs[reqId].processedBy=processedBy;
     delete reqs[reqId].processingAt;
     delete reqs[reqId].processingBy;
-    if(status==='accepted' && reqs[reqId].type==='bogang' && reqs[reqId].choiceGroupId){
-      const gid=reqs[reqId].choiceGroupId;
+    if(status==='accepted' && reqs[reqId].type==='bogang'){
+      const groupKey=bogangGroupKey(reqId,reqs[reqId]);
       for(const [id,other] of Object.entries(reqs)){
-        if(id===reqId || other?.type!=='bogang' || other.choiceGroupId!==gid) continue;
+        if(id===reqId || other?.type!=='bogang' || bogangGroupKey(id,other)!==groupKey) continue;
         if(!other.status || other.status==='pending' || other.status==='processing'){
           other.status='superseded';
           other.processedAt=processedAt;
@@ -431,7 +432,13 @@ function fmtTime(iso){
 }
 
 function bogangGroupKey(id,req){
-  return req?.choiceGroupId || `single:${id}`;
+  if(req?.choiceGroupId) return `group:${req.choiceGroupId}`;
+  const p=req?.parent||{};
+  const studentKey=p.studentSlotKey || [p.name||'',p.phone||''].join('/');
+  const sourceDs=p.absentDs || req?.sourceDs || '';
+  const requestedAt=req?.requestedAt || '';
+  if(studentKey && requestedAt) return `legacy:${studentKey}|${sourceDs}|${requestedAt}`;
+  return `single:${id}`;
 }
 function groupBogangRequests(reqs){
   const map=new Map();
