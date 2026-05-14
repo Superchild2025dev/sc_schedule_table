@@ -133,6 +133,10 @@ function instClassText(inst){
 function instClassBadgeHtml(inst){
   return instClassTags(inst).map(t=>`<span class="class-badge ${t.key}">${esc(t.label)}</span>`).join('');
 }
+function isNoMakeupInst(inst){
+  const kind=instKind(inst);
+  return kind==='elite'||kind==='master';
+}
 
 /* ── 실시간 sync ── */
 function subscribeChanges(){
@@ -570,6 +574,8 @@ function renderDateList(slotKey,period,day){
   const dates=getClassDatesForDay(period,day);
   if(!dates.length) return '<div style="padding:20px;text-align:center;color:#9CA3AF">수업일 없음</div>';
   const todayStr=toDateStr(new Date());
+  const [slotT,slotD,slotL]=slotKey.split('/');
+  const sourceNoMakeup=isNoMakeupInst(INST_MAP[slotT+'/'+slotD+'/'+slotL]);
 
   return dates.map(d=>{
     const ds=d.ds;
@@ -641,10 +647,11 @@ function renderDateList(slotKey,period,day){
           actions=`<span style="font-size:10px;color:#F59E0B;font-weight:700">⏳ 승인 대기</span>`;
         } else {
           // [v118] 결석 누른 상태에서만 보강 신청 가능
-          actions=`
-            <button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
-            <button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청</button>
-          `;
+          actions=sourceNoMakeup
+            ? `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
+               <span style="font-size:10px;color:#9CA3AF;font-weight:700">보강 불가</span>`
+            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
+               <button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청</button>`;
         }
       } else {
         // [v118] 결석 안 한 상태 → 결석 버튼만 (보강 신청 X)
@@ -845,6 +852,11 @@ function _renderBgTeacherFilter(){
 function openBogangModal(ds, slotKey){
   _bgSelectedSlots=[];
   _bgSourceSlotKey=slotKey || (_currentStudent ? _currentStudent.t+'/'+_currentStudent.d+'/'+_currentStudent.l+'/'+_currentStudent.r : null);
+  const src=_bgSourceStudent();
+  if(isNoMakeupInst(instOfStudent(src))){
+    toast('엘리트반/마스터반은 보강 신청이 불가합니다','err');
+    return;
+  }
   _bgTeacherMode='mine';
   // 폼/성공 화면 초기화
   document.getElementById('bg-form').style.display='block';
@@ -928,6 +940,7 @@ function findAvailableSlots(ds){
     const [t,d,l]=instKey.split('/');
     if(d!==day) continue;
     if(!inst || !inst.n) continue;
+    if(isNoMakeupInst(inst)) continue;
     if(sourceTeacher){
       if(_bgTeacherMode==='mine' && inst.n!==sourceTeacher) continue;
       if(_bgTeacherMode==='other' && inst.n===sourceTeacher) continue;
@@ -1026,6 +1039,14 @@ function updateBogangSelCount(){
 async function submitBogang(){
   const s=_currentStudent;
   if(!s||!_bgSelectedSlots.length){toast('수업을 선택해주세요','err');return;}
+  if(isNoMakeupInst(instOfStudent(_bgSourceStudent()))){
+    toast('엘리트반/마스터반은 보강 신청이 불가합니다','err');
+    return;
+  }
+  if(_bgSelectedSlots.some(slot=>isNoMakeupInst(slot.inst))){
+    toast('엘리트반/마스터반으로는 보강 신청이 불가합니다','err');
+    return;
+  }
 
   // REQUESTS에 저장 (즉시 MARK_MAP에 반영 X — 선생님 승인 대기)
   // 출발 슬롯 (해당 버튼이 속한 수업의 슬롯)

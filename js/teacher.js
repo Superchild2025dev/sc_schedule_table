@@ -64,6 +64,10 @@ function instClassTags(inst){
 function instClassText(inst){
   return instClassTags(inst).map(t=>t.label).join(' · ');
 }
+function isNoMakeupInst(inst){
+  const kind=instKind(inst);
+  return kind==='elite'||kind==='master';
+}
 function instClassBadgeHtml(inst, fallbackText=''){
   const tags=instClassTags(inst);
   if(tags.length) return tags.map(t=>`<span class="class-badge ${t.key}">${esc(t.label)}</span>`).join('');
@@ -505,6 +509,7 @@ async function acceptRequest(reqId){
     claimed=true;
     if(req.type==='bogang'){
       const t=req.target;
+      if(isNoMakeupInst(reqTargetInst(req))) throw new Error('엘리트반/마스터반은 보강 수락이 불가합니다');
       const occupied=STUDENTS.some(s=>
         s.t===t.t && s.d===t.d
         && parseInt(s.l)===parseInt(t.l)
