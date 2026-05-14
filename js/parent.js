@@ -109,6 +109,31 @@ function parseJSON(v,def){
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
 }
 
+function instOfStudent(s){
+  return s ? INST_MAP[s.t+'/'+s.d+'/'+s.l] : null;
+}
+function instKind(inst){
+  if(!inst) return null;
+  if(inst.cls==='elma'||inst.cls==='elite'||inst.cls==='master') return inst.cls;
+  if(inst.elma) return 'elma';
+  return null;
+}
+function instClassTags(inst){
+  const tags=[];
+  if(inst?.youth) tags.push({key:'youth', label:'유아반'});
+  const kind=instKind(inst);
+  if(kind==='elma') tags.push({key:'elma', label:'엘/마반'});
+  else if(kind==='elite') tags.push({key:'elite', label:'엘리트반'});
+  else if(kind==='master') tags.push({key:'master', label:'마스터반'});
+  return tags;
+}
+function instClassText(inst){
+  return instClassTags(inst).map(t=>t.label).join(' · ');
+}
+function instClassBadgeHtml(inst){
+  return instClassTags(inst).map(t=>`<span class="class-badge ${t.key}">${esc(t.label)}</span>`).join('');
+}
+
 /* ── 실시간 sync ── */
 function subscribeChanges(){
   if(!_fbReady) return;
@@ -236,7 +261,10 @@ function showStudentSelector(groups){
     const div=document.createElement('div');
     div.className='choice-item';
     const slotCount=grp.length;
-    const classList=grp.map(x=>`${x.d} ${x.t} ${x.l}레인`).join(' · ');
+    const classList=grp.map(x=>{
+      const label=instClassText(instOfStudent(x));
+      return `${x.d} ${x.t} ${x.l}레인${label?' · '+label:''}`;
+    }).join(' · ');
     div.innerHTML=`<div class="cname">${esc(s.n)}${s.a?'('+s.a+'살)':''}${slotCount>1?` · ${slotCount}개 수업`:''}</div>
                    <div class="cinfo">${esc(classList)}</div>`;
     div.onclick=()=>loginAs(grp);
@@ -259,7 +287,8 @@ function _populateTestStuPicker(){
     seen.add(key);
     const slotKey = s.t+'/'+s.d+'/'+s.l+'/'+s.r;
     const phone = s.p ? ' · ' + s.p.slice(-4) : '';
-    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d} ${s.l}레인` });
+    const classLabel=instClassText(instOfStudent(s));
+    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d} ${s.l}레인${classLabel?' · '+classLabel:''}` });
   });
   opts.sort((a,b) => a.label.localeCompare(b.label));
   sel.innerHTML = '<option value="">학생 선택 (' + opts.length + '명)</option>' +
@@ -320,9 +349,11 @@ function renderDashboard(){
   // 헤더
   document.getElementById('child-display').textContent=s.n+(s.a?'('+s.a+'살)':'');
   const slotCount=fresh.length;
+  const inst=instOfStudent(s);
+  const classLabel=instClassText(inst);
   document.getElementById('class-info').textContent=
     slotCount===1
-      ? `${s.d}요일 ${s.t} · ${s.l}레인 · ${instNameOf(s)} 선생님`
+      ? `${s.d}요일 ${s.t} · ${s.l}레인 · ${instNameOf(s)} 선생님${classLabel?' · '+classLabel:''}`
       : `총 ${slotCount}개 수업 · ${s.p?esc(s.p):''}`;
 
   // 이번달/다음달 수업일
@@ -366,10 +397,11 @@ function renderMyRequests(students){
     if(ds < todayStr) return; // 과거 X
     if(mark.type === 'absent'){
       const stu = students.find(s => slotKey === s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+      const classLabel = instClassText(instOfStudent(stu));
       items.push({
         type: 'absent', ds,
         title: '❌ 결석',
-        sub: `${stu?.d}요일 ${stu?.t} · ${stu?.l}레인`,
+        sub: `${stu?.d}요일 ${stu?.t} · ${stu?.l}레인${classLabel?' · '+classLabel:''}`,
         status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : '대기',
         color: '#EF4444'
       });
@@ -386,10 +418,11 @@ function renderMyRequests(students){
     const status = req.status === 'accepted' ? '✅ 확정'
                  : req.status === 'rejected' ? '⛔ 거절'
                  : '⏳ 선생님 승인 대기';
+    const classLabel = instClassText(INST_MAP[req.instKey]) || t.classLabel;
     items.push({
       type: 'bogang', ds: t.ds,
       title: '📅 보강 신청',
-      sub: `${t.d}요일 ${t.t} · ${t.l}레인 · ${t.instName||''} 선생님`,
+      sub: `${t.d}요일 ${t.t} · ${t.l}레인 · ${t.instName||''} 선생님${classLabel?' · '+classLabel:''}`,
       status,
       color: '#7C3AED'
     });
@@ -405,10 +438,11 @@ function renderMyRequests(students){
     const status = req.status === 'accepted' ? '✅ 취소 완료'
                  : req.status === 'rejected' ? '⛔ 거절'
                  : '⏳ 선생님 승인 대기';
+    const classLabel = instClassText(INST_MAP[req.instKey]);
     items.push({
       type: 'absent-cancel', ds: t.ds,
       title: '✓ 결석 취소',
-      sub: `${t.d}요일 ${t.t} · ${t.l}레인`,
+      sub: `${t.d}요일 ${t.t} · ${t.l}레인${classLabel?' · '+classLabel:''}`,
       status,
       color: '#10B981'
     });
@@ -448,9 +482,10 @@ function renderMultiSlots(students, period){
   // 여러 슬롯: 섹션별로 렌더
   return students.map(s=>{
     const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
-    const inst=instNameOf(s);
+    const inst=instOfStudent(s);
+    const instName=instNameOf(s);
     return `<div class="slot-section">
-      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${s.l}레인 · ${esc(inst)} 선생님</div>
+      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${s.l}레인 · ${esc(instName)} 선생님${instClassBadgeHtml(inst)}</div>
       <div class="slot-dates">${renderDateList(slotKey,period,s.d)}</div>
     </div>`;
   }).join('');
@@ -841,7 +876,7 @@ function findAvailableSlots(ds){
       if(_bgTeacherMode==='other' && inst.n===sourceTeacher) continue;
     }
     const k=t+'/'+day+'/'+l;
-    slotCandidates[k]={instName:inst.n, inst, t, day, lane:parseInt(l)};
+    slotCandidates[k]={instName:inst.n, inst, classLabel:instClassText(inst), t, day, lane:parseInt(l)};
   }
 
   const available=[];
@@ -895,7 +930,7 @@ function refreshBogangSlots(ds){
     <div class="bg-slot-item" data-idx="${i}">
       <div>
         <div class="slot-main">${x.day}요일 · ${esc(x.t)}</div>
-        <div class="slot-sub">${x.lane}레인 · ${esc(x.instName)} 선생님</div>
+        <div class="slot-sub">${x.lane}레인 · ${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
       </div>
     </div>
   `).join('');
@@ -954,7 +989,7 @@ async function submitBogang(){
       },
       target:{
         t:slot.t, d:slot.day, l:slot.lane, r:slot.row,
-        ds:slot.ds, instName:slot.instName,
+        ds:slot.ds, instName:slot.instName, classLabel:slot.classLabel||'',
       },
       instKey:slot.t+'/'+slot.day+'/'+slot.lane,  // 담당 선생님 슬롯 키
       requestedAt:now,

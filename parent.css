@@ -40,6 +40,12 @@ input,textarea{font-family:inherit;outline:none}
 .choice-item:hover{border-color:#3B82F6;background:#EFF6FF}
 .choice-item .cname{font-weight:700;font-size:15px;color:#111}
 .choice-item .cinfo{font-size:12px;color:#6B7280;margin-top:2px}
+.class-badge{display:inline-flex;align-items:center;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:900;line-height:1.5;vertical-align:middle;white-space:nowrap}
+.class-badge.youth{background:#FEF3C7;color:#92400E}
+.class-badge.elma{background:#EDE9FE;color:#5B21B6}
+.class-badge.elite{background:#DBEAFE;color:#1D4ED8}
+.class-badge.master{background:#DCFCE7;color:#166534}
+.class-badge.neutral{background:#F3F4F6;color:#374151}
 
 /* ═══ 대시보드 ═══ */
 .dashboard-header{background:#3B82F6;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,0.1)}

@@ -45,6 +45,35 @@ function parseJSON(v,def){
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
 }
 
+function instKind(inst){
+  if(!inst) return null;
+  if(inst.cls==='elma'||inst.cls==='elite'||inst.cls==='master') return inst.cls;
+  if(inst.elma) return 'elma';
+  return null;
+}
+function instClassTags(inst){
+  const tags=[];
+  if(inst?.youth) tags.push({key:'youth', label:'유아반'});
+  const kind=instKind(inst);
+  if(kind==='elma') tags.push({key:'elma', label:'엘/마반'});
+  else if(kind==='elite') tags.push({key:'elite', label:'엘리트반'});
+  else if(kind==='master') tags.push({key:'master', label:'마스터반'});
+  return tags;
+}
+function instClassText(inst){
+  return instClassTags(inst).map(t=>t.label).join(' · ');
+}
+function instClassBadgeHtml(inst, fallbackText=''){
+  const tags=instClassTags(inst);
+  if(tags.length) return tags.map(t=>`<span class="class-badge ${t.key}">${esc(t.label)}</span>`).join('');
+  if(!fallbackText) return '';
+  return String(fallbackText).split(' · ').filter(Boolean).map(label=>`<span class="class-badge neutral">${esc(label)}</span>`).join('');
+}
+function reqTargetInst(req){
+  const t=req?.target||{};
+  return INST_MAP[req?.instKey] || INST_MAP[t.t+'/'+t.d+'/'+t.l] || null;
+}
+
 function initFirebase(){
   const branch=getBranchInfo();
   if(!branch){ openBranchModal(); return; }
@@ -266,7 +295,10 @@ function renderBogangList(reqs){
     const p=r.parent, t=r.target;
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
     const [ot,od,ol,or2]=(p.studentSlotKey||'').split('/');
-    const origin=p.studentSlotKey ? `${od}요일 ${ot} ${ol}레인 ${or2}번` : '';
+    const originInst=INST_MAP[ot+'/'+od+'/'+ol];
+    const originLabel=instClassText(originInst);
+    const origin=p.studentSlotKey ? `${od}요일 ${ot} ${ol}레인 ${or2}번${originLabel?' · '+originLabel:''}` : '';
+    const targetClass=instClassBadgeHtml(reqTargetInst(r), t.classLabel||'');
     // [v118] 보강 받는 반의 다른 학생들 표시 (시간표 셀 스타일)
     const classmatesHtml = _renderClassmates(t.t, t.d, t.l, t.ds, t.r);
     return `<div class="req-card">
@@ -277,7 +309,7 @@ function renderBogangList(reqs){
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
         <div class="sub-info">원래 수업: ${esc(origin)}</div>
-        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(t.instName||'')}</div>
+        <div class="target">📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(t.instName||'')}${targetClass}</div>
       </div>
       ${classmatesHtml}
       <div class="req-actions">
@@ -307,8 +339,9 @@ function _renderClassmates(t, d, l, ds, targetR){
   });
   if(lastIdx<0) lastIdx=cells.length;
   const visible = cells.slice(0, Math.max(targetR, lastIdx, 5));
+  const classBadge=instClassBadgeHtml(INST_MAP[t+'/'+d+'/'+l]);
   let html = `<div class="classmates-wrap">
-    <div class="classmates-label">🏊 같은 반 학생들 — ${esc(t)} ${esc(d)}요일 ${l}레인 (${fmtDate(ds)} 기준)</div>
+    <div class="classmates-label">🏊 같은 반 학생들 — ${esc(t)} ${esc(d)}요일 ${l}레인${classBadge} (${fmtDate(ds)} 기준)</div>
     <div class="classmates-grid">`;
   visible.forEach(c=>{
     const isAbsent = c.mark?.type==='absent';
@@ -345,6 +378,7 @@ function renderCancelList(reqs){
   container.innerHTML=reqs.map(([id,r])=>{
     const p=r.parent, t=r.target;
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
+    const targetClass=instClassBadgeHtml(reqTargetInst(r), t.classLabel||'');
     return `<div class="req-card cancel">
       <div class="req-hdr">
         <span class="req-type cancel">결석 취소 요청</span>
@@ -352,7 +386,7 @@ function renderCancelList(reqs){
       </div>
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
-        <div class="target">❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 결석 취소</div>
+        <div class="target">❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번${targetClass} 결석 취소</div>
       </div>
       <div class="req-actions">
         <button class="btn-reject" data-act="reject" data-id="${id}">거절 (결석 유지)</button>
