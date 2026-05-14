@@ -323,7 +323,7 @@ function showStudentSelector(groups){
     const slotCount=grp.length;
     const classList=grp.map(x=>{
       const label=instClassText(instOfStudent(x));
-      return `${x.d} ${x.t} ${x.l}레인${label?' · '+label:''}`;
+      return `${x.d} ${x.t}${label?' · '+label:''}`;
     }).join(' · ');
     div.innerHTML=`<div class="cname">${esc(s.n)}${s.a?'('+s.a+'살)':''}${slotCount>1?` · ${slotCount}개 수업`:''}</div>
                    <div class="cinfo">${esc(classList)}</div>`;
@@ -348,7 +348,7 @@ function _populateTestStuPicker(){
     const slotKey = s.t+'/'+s.d+'/'+s.l+'/'+s.r;
     const phone = s.p ? ' · ' + s.p.slice(-4) : '';
     const classLabel=instClassText(instOfStudent(s));
-    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d} ${s.l}레인${classLabel?' · '+classLabel:''}` });
+    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d}${classLabel?' · '+classLabel:''}` });
   });
   opts.sort((a,b) => a.label.localeCompare(b.label));
   sel.innerHTML = '<option value="">학생 선택 (' + opts.length + '명)</option>' +
@@ -413,7 +413,7 @@ function renderDashboard(){
   const classLabel=instClassText(inst);
   document.getElementById('class-info').textContent=
     slotCount===1
-      ? `${s.d}요일 ${s.t} · ${s.l}레인 · ${instNameOf(s)} 선생님${classLabel?' · '+classLabel:''}`
+      ? `${s.d}요일 ${s.t} · ${instNameOf(s)} 선생님${classLabel?' · '+classLabel:''}`
       : `총 ${slotCount}개 수업 · ${s.p?esc(s.p):''}`;
 
   // 이번달/다음달 수업일
@@ -461,7 +461,7 @@ function renderMyRequests(students){
       items.push({
         type: 'absent', ds,
         title: '❌ 결석',
-        sub: `${stu?.d}요일 ${stu?.t} · ${stu?.l}레인${classLabel?' · '+classLabel:''}`,
+        sub: `${stu?.d}요일 ${stu?.t}${classLabel?' · '+classLabel:''}`,
         status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : '대기',
         color: '#EF4444'
       });
@@ -469,21 +469,40 @@ function renderMyRequests(students){
   });
 
   // 2. 보강 요청 (REQUESTS에서 본인 자녀의 보강)
+  const bogangReqs=[];
   Object.entries(REQUESTS||{}).forEach(([id, req])=>{
     if(!req || req.type !== 'bogang') return;
-    if(req.status==='superseded') return;
     if(req.parent?.name !== childName) return;
     if(childPhone && req.parent?.phone && req.parent.phone !== childPhone) return;
-    const t = req.target;
-    if(!t?.ds || t.ds < todayStr) return;
-    const status = req.status === 'accepted' ? '✅ 확정'
-                 : req.status === 'rejected' ? '⛔ 거절'
-                 : '⏳ 선생님 승인 대기';
-    const classLabel = instClassText(INST_MAP[req.instKey]) || t.classLabel;
+    bogangReqs.push([id,req]);
+  });
+  groupParentBogangRequests(bogangReqs).forEach(group=>{
+    const accepted=group.items.find(([,req])=>req.status==='accepted');
+    const pending=group.items.filter(([,req])=>!req.status || req.status==='pending');
+    const rejected=group.items.filter(([,req])=>req.status==='rejected');
+    const visiblePair=accepted || pending[0] || rejected[0];
+    if(!visiblePair) return;
+    const req=visiblePair[1];
+    const ds=req.target?.ds || req.parent?.absentDs || '';
+    if(!ds || ds < todayStr) return;
+    let status='⏳ 선생님 승인 대기';
+    let sub='';
+    if(accepted){
+      status='✅ 확정';
+      sub=`확정: ${formatParentBogangTarget(accepted[1])}`;
+      if(group.items.length>1) sub+=` · 후보 ${group.items.length}개 중 선택`;
+    }else if(pending.length){
+      const labels=group.items.map(([,r])=>formatParentBogangTarget(r)).filter(Boolean);
+      status='⏳ 선생님 승인 대기';
+      sub=`후보 ${group.items.length}개: ${labels.slice(0,3).join(' / ')}${labels.length>3?' 외':''}`;
+    }else{
+      status='⛔ 거절';
+      sub=group.items.length>1 ? `후보 ${group.items.length}개 거절` : `${formatParentBogangTarget(req)} 거절`;
+    }
     items.push({
-      type: 'bogang', ds: t.ds,
+      type: 'bogang', ds,
       title: '📅 보강 신청',
-      sub: `${t.d}요일 ${t.t} · ${t.l}레인 · ${t.instName||''} 선생님${classLabel?' · '+classLabel:''}`,
+      sub,
       status,
       color: '#7C3AED'
     });
@@ -503,7 +522,7 @@ function renderMyRequests(students){
     items.push({
       type: 'absent-cancel', ds: t.ds,
       title: '✓ 결석 취소',
-      sub: `${t.d}요일 ${t.t} · ${t.l}레인${classLabel?' · '+classLabel:''}`,
+      sub: `${t.d}요일 ${t.t}${classLabel?' · '+classLabel:''}`,
       status,
       color: '#10B981'
     });
@@ -528,6 +547,42 @@ function renderMyRequests(students){
   `).join('');
 }
 
+function parentBogangGroupKey(id, req){
+  if(req?.choiceGroupId) return `group:${req.choiceGroupId}`;
+  const p=req?.parent||{};
+  const studentKey=p.studentSlotKey || [p.name||'',p.phone||''].join('/');
+  const sourceDs=p.absentDs || req?.sourceDs || '';
+  const requestedAt=req?.requestedAt || '';
+  if(studentKey && requestedAt) return `legacy:${studentKey}|${sourceDs}|${requestedAt}`;
+  return `single:${id}`;
+}
+function groupParentBogangRequests(reqs){
+  const map=new Map();
+  reqs.forEach(([id,req])=>{
+    const key=parentBogangGroupKey(id,req);
+    if(!map.has(key)) map.set(key,{key,items:[],requestedAt:req.requestedAt||''});
+    const group=map.get(key);
+    group.items.push([id,req]);
+    if((req.requestedAt||'')>(group.requestedAt||'')) group.requestedAt=req.requestedAt||'';
+  });
+  const groups=[...map.values()];
+  groups.forEach(group=>{
+    group.items.sort((a,b)=>{
+      const at=a[1].target||{}, bt=b[1].target||{};
+      return [at.ds||'',at.d||'',at.t||''].join('|').localeCompare([bt.ds||'',bt.d||'',bt.t||''].join('|'));
+    });
+  });
+  groups.sort((a,b)=>(b.requestedAt||'').localeCompare(a.requestedAt||''));
+  return groups;
+}
+function formatParentBogangTarget(req){
+  const t=req?.target||{};
+  if(!t.ds && !t.d && !t.t) return '';
+  const teacher=t.instName ? ` · ${t.instName} 선생님` : '';
+  const classLabel=instClassText(INST_MAP[req.instKey]) || t.classLabel || '';
+  return `${t.d||''}요일 ${t.t||''}${teacher}${classLabel?' · '+classLabel:''}`;
+}
+
 function instNameOf(s){
   const inst=INST_MAP[s.t+'/'+s.d+'/'+s.l];
   return inst?.n||'미정';
@@ -546,7 +601,7 @@ function renderMultiSlots(students, period){
     const inst=instOfStudent(s);
     const instName=instNameOf(s);
     return `<div class="slot-section">
-      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${s.l}레인 · ${esc(instName)} 선생님${instClassBadgeHtml(inst)}</div>
+      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${esc(instName)} 선생님${instClassBadgeHtml(inst)}</div>
       <div class="slot-dates">${renderDateList(slotKey,period,s.d)}</div>
     </div>`;
   }).join('');
@@ -636,8 +691,8 @@ function renderDateList(slotKey,period,day){
     // 대기 중인 요청 체크
     const selfSlot=slotKey;
     let pendingCancel=false;     // 결석 취소 대기 중
-    let pendingBogangCount=0;    // 이 날짜에 학부모가 신청한 보강 개수
-    for(const req of Object.values(REQUESTS)){
+    const pendingBogangGroups=new Set();    // 이 날짜에 학부모가 신청한 보강 묶음 수
+    for(const [reqId,req] of Object.entries(REQUESTS)){
       if(req.status && req.status!=='pending') continue;
       if(req.type==='absent-cancel' && req.parent?.studentSlotKey===selfSlot){
         if(req.target?.ds!==ds) continue;
@@ -646,13 +701,14 @@ function renderDateList(slotKey,period,day){
       if(req.type==='bogang' && req.parent?.studentSlotKey===selfSlot){
         const requestDs=req.parent?.absentDs || req.sourceDs || req.target?.ds;
         if(requestDs!==ds) continue;
-        pendingBogangCount++;
+        pendingBogangGroups.add(parentBogangGroupKey(reqId,req));
       }
     }
 
     // 보강 대기 상태 표시
+    const pendingBogangCount=pendingBogangGroups.size;
     if(pendingBogangCount>0){
-      status=`⏳ 보강 ${pendingBogangCount}개 승인 대기`;
+      status=pendingBogangCount>1 ? `⏳ 보강 ${pendingBogangCount}건 승인 대기` : '⏳ 보강 승인 대기';
     } else if(pendingCancel){
       status='⏳ 결석 취소 승인 대기';
     }
@@ -697,7 +753,7 @@ function openAbsentModal(ds, slotKey){
   const dow=dowNames[new Date(ds).getDay()];
   // 슬롯 정보 표시
   const [t,day,l,r]=slotKey.split('/');
-  const slotInfo=`${day}요일 ${t} ${l}레인`;
+  const slotInfo=`${day}요일 ${t}`;
   document.getElementById('ab-desc').innerHTML=
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 수업을 결석으로 신청하시겠습니까?`;
   document.getElementById('ab-submit').dataset.ds=ds;
@@ -711,7 +767,7 @@ function openAbsentCancelModal(ds, slotKey){
   const dowNames=['일','월','화','수','목','금','토'];
   const dow=dowNames[new Date(ds).getDay()];
   const [t,day,l,r]=slotKey.split('/');
-  const slotInfo=`${day}요일 ${t} ${l}레인`;
+  const slotInfo=`${day}요일 ${t}`;
   document.getElementById('ac-desc').innerHTML=
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 취소를 신청하시겠습니까?`;
   document.getElementById('ac-submit').dataset.ds=ds;
@@ -928,7 +984,7 @@ function _bgSlotLabel(slot){
   if(!slot) return '';
   const [y,m,d]=(slot.ds||'').split('-');
   const dateLabel=m&&d ? `${parseInt(m)}/${parseInt(d)}` : '';
-  return `${dateLabel} ${slot.day} ${slot.t} ${slot.lane}레인`;
+  return `${dateLabel} ${slot.day} ${slot.t}`;
 }
 
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
@@ -1019,7 +1075,7 @@ function refreshBogangSlots(ds){
     <div class="bg-slot-item ${_bgSelectedSlots.some(s=>_bgSlotKey(s)===_bgSlotKey(x))?'selected':''}" data-idx="${i}">
       <div>
         <div class="slot-main">${x.day}요일 · ${esc(x.t)}</div>
-        <div class="slot-sub">${x.lane}레인 · ${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
+        <div class="slot-sub">${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
       </div>
     </div>
   `).join('');
