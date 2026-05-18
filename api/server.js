@@ -535,7 +535,7 @@ function availableSlotsFor(branchData, students, ds, sourceSlotKey, teacherMode)
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "sc-schedule-api" });

@@ -55,7 +55,7 @@ if(_selectedBranch && FIREBASE_CONFIG.apiKey){
       }
     });
     _fbReady=true;
-    console.log('✅ Lightsail API 연결 준비됨');
+    console.log('✅ Firebase Functions 연결 준비됨');
   }catch(e){
     console.warn('Firebase 초기화 실패:',e);
     _fbReady=false;
@@ -230,12 +230,7 @@ function loadFromFirebase(callback){
     _fbConnected=true;
     _hideOfflineWarning();
     wrappedCallback();
-  }).catch(e=>{
-    _fbConnected=false;
-    _showOfflineWarning();
-    toast(e?.message||'서버 데이터 로드 실패 — 새로고침 후 다시 로그인해주세요','err');
-    console.error('[API LOAD FAIL]',e);
-  });
+  }).catch(e=>{_fbConnected=false;toast(e?.message||'Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
   _fb.on('child_changed',(snap)=>{
     const newVal=snap.val();
     // [FIX] setItem은 비-문자열을 강제 변환하므로 방어적 직렬화

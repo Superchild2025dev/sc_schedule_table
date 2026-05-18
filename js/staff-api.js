@@ -114,7 +114,7 @@
       });
       const data=await res.json().catch(()=>({}));
       if(!res.ok){
-        const err=new Error(data?.error?.message||(res.status===413?'전송 데이터가 너무 큽니다. 서버 제한을 확인해주세요':'처리 실패'));
+        const err=new Error(data?.error?.message||'처리 실패');
         err.code=data?.error?.code||String(res.status);
         throw err;
       }
