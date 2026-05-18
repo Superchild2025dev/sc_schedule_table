@@ -1,6 +1,6 @@
 /* ════════════════════════════════════════════════════════════════
  * 학부모 페이지
- * - 인증: 아이 이름 + 전화번호 뒷 4자리 → STUDENTS 매칭
+ * - 인증: 아이 이름 + 전화번호 전체 → STUDENTS 매칭
  * - 기능: 결석 마크 토글, 보강 요청
  * - Firebase 실시간 동기화
  * ════════════════════════════════════════════════════════════════ */
@@ -97,8 +97,6 @@ function loadAllData(){
       HYUWON_MAP=parseJSON(data.swim_hyuwon,{});
       RESERVE_MAP=parseJSON(data.swim_reserve,{});
       REQUESTS=parseJSON(data.swim_requests,{});
-      // [v118] 테스트용 학생 드롭다운 채우기
-      try{ _populateTestStuPicker?.(); }catch(e){}
       resolve();
     }).catch(reject);
   });
@@ -260,15 +258,17 @@ function makeReqId(){ return 'r_'+Date.now()+'_'+Math.random().toString(36).slic
 /* ════════════════════════════════════════════════════════════════
  * 인증
  * ════════════════════════════════════════════════════════════════ */
-function findStudents(name, phoneLast4){
+function normalizePhone(v){
+  return String(v||'').replace(/\D/g,'');
+}
+function findStudents(name, phoneInput){
   const nm=name.trim();
-  const p4=phoneLast4.trim();
-  if(!nm||!p4) return [];
+  const phone=normalizePhone(phoneInput);
+  if(!nm||!phone) return [];
   return STUDENTS.filter(s=>{
     if(s.n!==nm) return false;
     if(!s.p) return false;
-    const digits=s.p.replace(/\D/g,'');
-    return digits.slice(-4)===p4;
+    return normalizePhone(s.p)===phone;
   });
 }
 
@@ -290,14 +290,15 @@ function handleLogin(){
   errEl.style.display='none';
 
   if(!name.trim()||!phone.trim()){
-    errEl.textContent='이름과 전화번호 뒷 4자리를 입력해주세요';
+    errEl.textContent='이름과 전화번호를 입력해주세요';
     errEl.style.display='block';return;
   }
-  if(!/^\d{4}$/.test(phone.trim())){
-    errEl.textContent='전화번호 뒷 4자리(숫자 4자)를 입력해주세요';
+  const phoneDigits=normalizePhone(phone);
+  if(!/^\d{9,11}$/.test(phoneDigits)){
+    errEl.textContent='전화번호 전체를 숫자로 입력해주세요';
     errEl.style.display='block';return;
   }
-  const matched=findStudents(name,phone);
+  const matched=findStudents(name,phoneDigits);
   if(matched.length===0){
     errEl.textContent='일치하는 정보가 없습니다. 이름 또는 전화번호를 확인해주세요';
     errEl.style.display='block';return;
@@ -332,27 +333,6 @@ function showStudentSelector(groups){
   });
   document.getElementById('login-screen').style.display='none';
   document.getElementById('select-screen').style.display='flex';
-}
-
-// [v118] 테스트 학생 선택 드롭다운 채우기
-function _populateTestStuPicker(){
-  const sel = document.getElementById('test-stu-pick');
-  if(!sel || !STUDENTS?.length) return;
-  // 이름 + 전화번호 조합으로 그룹핑 (중복 제거 — 같은 학생 한 번만)
-  const seen = new Set();
-  const opts = [];
-  STUDENTS.forEach(s => {
-    const key = s.n + '|' + (s.p||'');
-    if(seen.has(key)) return;
-    seen.add(key);
-    const slotKey = s.t+'/'+s.d+'/'+s.l+'/'+s.r;
-    const phone = s.p ? ' · ' + s.p.slice(-4) : '';
-    const classLabel=instClassText(instOfStudent(s));
-    opts.push({ slotKey, label: `${s.n}${s.a?'('+s.a+')':''}${phone} — ${s.t} ${s.d}${classLabel?' · '+classLabel:''}` });
-  });
-  opts.sort((a,b) => a.label.localeCompare(b.label));
-  sel.innerHTML = '<option value="">학생 선택 (' + opts.length + '명)</option>' +
-    opts.map(o => `<option value="${o.slotKey}">${o.label.replace(/</g,'&lt;')}</option>`).join('');
 }
 
 function loginAs(students){
@@ -1239,19 +1219,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   });
   document.getElementById('login-name').addEventListener('keydown',e=>{
     if(e.key==='Enter') document.getElementById('login-phone').focus();
-  });
-
-  // [v118] 테스트용: 학생 직접 선택 메뉴
-  _populateTestStuPicker();
-  document.getElementById('test-stu-enter')?.addEventListener('click', () => {
-    const sel = document.getElementById('test-stu-pick');
-    const slotKey = sel?.value;
-    if(!slotKey) { toast('학생을 선택해주세요','err'); return; }
-    // 같은 이름+전화번호의 모든 슬롯 (loginAs 동작 흉내)
-    const target = STUDENTS.find(s => s.t+'/'+s.d+'/'+s.l+'/'+s.r === slotKey);
-    if(!target) { toast('학생 못 찾음','err'); return; }
-    const sameStudents = STUDENTS.filter(s => s.n === target.n && (s.p||'') === (target.p||''));
-    loginAs(sameStudents);
   });
 
   // 학생 선택 → 로그인 돌아가기
