@@ -114,7 +114,7 @@ function initFirebase(){
   const branch=getBranchInfo();
   if(!branch){ openBranchModal(); return; }
   try{
-    _fb=initStaffDatabase(FIREBASE_CONFIG,branch,'teacher',{
+    _fb=initStaffDatabase(FIREBASE_CONFIG,branch,'admin',{
       onPollError:function(e){console.warn('[teacher sync failed]',e);}
     });
     _fbReady=true;
@@ -362,6 +362,10 @@ function enterAsTeacher(teacherName){
 function logout(){
   _currentTeacher=null;
   try{sessionStorage.removeItem('teacher_name');}catch(e){}
+  if(_fb&&typeof _fb.signOut==='function'){
+    _fb.signOut().finally(()=>location.reload());
+    return;
+  }
   document.getElementById('teacher-dashboard').style.display='none';
   document.getElementById('teacher-select-screen').style.display='flex';
 }

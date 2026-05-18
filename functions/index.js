@@ -8,9 +8,7 @@ admin.initializeApp();
 const db = admin.database();
 const REGION = "asia-northeast3";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const STAFF_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const ADMIN_ACCESS_CODE = defineSecret("ADMIN_ACCESS_CODE");
-const TEACHER_ACCESS_CODE = defineSecret("TEACHER_ACCESS_CODE");
+const SUPER_ADMIN_EMAIL = defineSecret("SUPER_ADMIN_EMAIL");
 
 const DEFAULT_PERIODS = [
   { month: 2, start: "2026-02-02", end: "2026-03-04" },
@@ -27,7 +25,7 @@ const DEFAULT_PERIODS = [
 ];
 
 const options = { region: REGION, timeoutSeconds: 20, memory: "256MiB" };
-const staffLoginOptions = { ...options, secrets: [ADMIN_ACCESS_CODE, TEACHER_ACCESS_CODE] };
+const staffOptions = { ...options, secrets: [SUPER_ADMIN_EMAIL] };
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -115,68 +113,8 @@ function sessionHash(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
-function timingSafeEqualText(a, b) {
-  const ab = Buffer.from(String(a || ""));
-  const bb = Buffer.from(String(b || ""));
-  if (ab.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ab, bb);
-}
-
-function staffCodeForRole(role) {
-  if (role === "admin") return ADMIN_ACCESS_CODE.value() || process.env.ADMIN_ACCESS_CODE || "";
-  if (role === "teacher") return TEACHER_ACCESS_CODE.value() || process.env.TEACHER_ACCESS_CODE || "";
-  return "";
-}
-
-function validateStaffCode(role, code) {
-  const expected = staffCodeForRole(role);
-  if (!expected) {
-    throw new HttpsError("failed-precondition", `${role} 접근 코드가 서버에 설정되지 않았습니다`);
-  }
-  if (!timingSafeEqualText(expected, code)) {
-    throw new HttpsError("permission-denied", "접근 코드가 올바르지 않습니다");
-  }
-}
-
-function staffTokenRef(token) {
-  return db.ref("_staff_sessions/" + sessionHash(token));
-}
-
-async function createStaffSession(branch, role) {
-  const token = crypto.randomBytes(32).toString("base64url");
-  await staffTokenRef(token).set({
-    branch,
-    role,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + STAFF_SESSION_TTL_MS,
-  });
-  return token;
-}
-
-async function requireStaffSession(data, requiredRole = null) {
-  const token = data.token;
-  if (!token) throw new HttpsError("unauthenticated", "로그인이 필요합니다");
-  const snap = await staffTokenRef(token).once("value");
-  const session = snap.val();
-  if (!session || session.expiresAt < Date.now()) {
-    throw new HttpsError("unauthenticated", "로그인이 만료되었습니다");
-  }
-  if (data.branch && session.branch !== data.branch) {
-    throw new HttpsError("permission-denied", "지점 정보가 일치하지 않습니다");
-  }
-  if (requiredRole && session.role !== requiredRole) {
-    throw new HttpsError("permission-denied", "권한이 없습니다");
-  }
-  return session;
-}
-
 function normalizeDbKey(key) {
   return String(key || "").replace(/[.#$/\[\]]/g, "_");
-}
-
-function normalizeStaffRole(role) {
-  if (role === "admin" || role === "teacher") return role;
-  throw new HttpsError("invalid-argument", "권한 구분을 확인할 수 없습니다");
 }
 
 function stableStringify(value) {
@@ -192,24 +130,76 @@ function rawEqual(a, b) {
   return stableStringify(a === undefined ? null : a) === stableStringify(b === undefined ? null : b);
 }
 
-const TEACHER_WRITABLE_KEYS = new Set([
-  "swim_requests",
-  "swim_mark",
-  "swim_attendance",
-  "swim_att_guests",
-  "swim_day_snapshot",
-]);
+const ALL_BRANCHES = ["gagyeong", "yongam"];
+
+function superAdminEmail() {
+  return String(SUPER_ADMIN_EMAIL.value() || process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+}
+
+function normalizeAdminProfile(uid, email, raw = {}) {
+  const branches = Array.isArray(raw.branches)
+    ? raw.branches.filter((branch) => ALL_BRANCHES.includes(branch))
+    : [];
+  return {
+    uid,
+    email: String(raw.email || email || "").toLowerCase(),
+    name: raw.name || "",
+    role: "admin",
+    superAdmin: !!raw.superAdmin,
+    allBranches: !!raw.allBranches,
+    branches,
+    active: raw.active !== false,
+  };
+}
+
+function canUseBranch(profile, branch) {
+  if (profile.superAdmin || profile.allBranches) return true;
+  return (profile.branches || []).includes(branch);
+}
+
+function publicAdminProfile(profile) {
+  return {
+    uid: profile.uid,
+    email: profile.email,
+    name: profile.name,
+    role: profile.role,
+    superAdmin: !!profile.superAdmin,
+    allBranches: !!profile.allBranches,
+    branches: profile.branches || [],
+  };
+}
+
+async function requireAdminSession(data, auth) {
+  const branch = data.branch;
+  branchPath(branch);
+  if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "관리자 로그인이 필요합니다");
+
+  const email = String(auth.token && auth.token.email || "").toLowerCase();
+  const bootstrapEmail = superAdminEmail();
+  if (bootstrapEmail && email === bootstrapEmail) {
+    return normalizeAdminProfile(auth.uid, email, {
+      email,
+      name: auth.token.name || "최고관리자",
+      superAdmin: true,
+      allBranches: true,
+      active: true,
+      branches: ALL_BRANCHES,
+    });
+  }
+
+  const snap = await db.ref("_admin_users/" + auth.uid).once("value");
+  const raw = snap.val();
+  if (!raw || raw.active === false) throw new HttpsError("permission-denied", "관리자 권한이 없습니다");
+  const profile = normalizeAdminProfile(auth.uid, email, raw);
+  if (!canUseBranch(profile, branch)) {
+    throw new HttpsError("permission-denied", "이 지점에 접근할 수 없습니다");
+  }
+  return profile;
+}
 
 function assertStaffCanWrite(session, key) {
   if (session.role === "admin") return;
-  if (session.role === "teacher" && TEACHER_WRITABLE_KEYS.has(normalizeDbKey(key))) return;
   throw new HttpsError("permission-denied", "이 데이터는 수정할 수 없습니다");
-}
-
-async function loadRawRoot(branch) {
-  const path = branchPath(branch);
-  const snap = await db.ref(path).once("value");
-  return { path, root: snap.val() || {} };
 }
 
 function makeReqId() {
@@ -692,56 +682,45 @@ exports.parentSubmitBogang = onCall(options, async (request) => {
   return { submittedCount: targets.length, ...(await refreshedPayload(data.branch, session)) };
 });
 
-exports.staffLogin = onCall(staffLoginOptions, async (request) => {
+exports.staffGetData = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const branch = data.branch;
-  const role = normalizeStaffRole(data.role);
-  const code = String(data.code || "");
-  branchPath(branch);
-  validateStaffCode(role, code);
-  const token = await createStaffSession(branch, role);
-  return { token, branch, role, expiresInMs: STAFF_SESSION_TTL_MS };
+  const session = await requireAdminSession(data, request.auth);
+  const snap = await db.ref(branchPath(data.branch)).once("value");
+  return { data: snap.val() || {}, user: publicAdminProfile(session) };
 });
 
-exports.staffGetData = onCall(options, async (request) => {
+exports.staffGetValue = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data);
-  const snap = await db.ref(branchPath(session.branch)).once("value");
-  return { data: snap.val() || {} };
-});
-
-exports.staffGetValue = onCall(options, async (request) => {
-  const data = request.data || {};
-  const session = await requireStaffSession(data);
+  await requireAdminSession(data, request.auth);
   const key = normalizeDbKey(data.key);
-  const snap = await db.ref(branchPath(session.branch) + "/" + key).once("value");
+  const snap = await db.ref(branchPath(data.branch) + "/" + key).once("value");
   return { value: snap.val() === undefined ? null : snap.val() };
 });
 
-exports.staffSetValue = onCall(options, async (request) => {
+exports.staffSetValue = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data);
+  const session = await requireAdminSession(data, request.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
-  await db.ref(branchPath(session.branch) + "/" + key).set(data.value === undefined ? null : data.value);
+  await db.ref(branchPath(data.branch) + "/" + key).set(data.value === undefined ? null : data.value);
   return { ok: true };
 });
 
-exports.staffRemoveValue = onCall(options, async (request) => {
+exports.staffRemoveValue = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data);
+  const session = await requireAdminSession(data, request.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
-  await db.ref(branchPath(session.branch) + "/" + key).remove();
+  await db.ref(branchPath(data.branch) + "/" + key).remove();
   return { ok: true };
 });
 
-exports.staffCompareAndSetValue = onCall(options, async (request) => {
+exports.staffCompareAndSetValue = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data);
+  const session = await requireAdminSession(data, request.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
-  const ref = db.ref(branchPath(session.branch) + "/" + key);
+  const ref = db.ref(branchPath(data.branch) + "/" + key);
   const res = await ref.transaction((current) => {
     if (!rawEqual(current, data.expected)) return;
     return data.value === undefined ? null : data.value;
@@ -752,10 +731,10 @@ exports.staffCompareAndSetValue = onCall(options, async (request) => {
   };
 });
 
-exports.staffCompareAndSetRoot = onCall(options, async (request) => {
+exports.staffCompareAndSetRoot = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data, "admin");
-  const ref = db.ref(branchPath(session.branch));
+  await requireAdminSession(data, request.auth);
+  const ref = db.ref(branchPath(data.branch));
   const res = await ref.transaction((current) => {
     if (!rawEqual(current || {}, data.expected || {})) return;
     return data.value === undefined ? null : data.value;
@@ -766,9 +745,10 @@ exports.staffCompareAndSetRoot = onCall(options, async (request) => {
   };
 });
 
-exports.staffClearBranch = onCall(options, async (request) => {
+exports.staffClearBranch = onCall(staffOptions, async (request) => {
   const data = request.data || {};
-  const session = await requireStaffSession(data, "admin");
-  await db.ref(branchPath(session.branch)).remove();
+  const session = await requireAdminSession(data, request.auth);
+  if (!session.superAdmin) throw new HttpsError("permission-denied", "최고관리자만 초기화할 수 있습니다");
+  await db.ref(branchPath(data.branch)).remove();
   return { ok: true };
 });
