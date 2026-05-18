@@ -2,7 +2,7 @@
  * 학부모 페이지
  * - 인증: 아이 이름 + 전화번호 전체 → STUDENTS 매칭
  * - 기능: 결석 마크 토글, 보강 요청
- * - Firebase 실시간 동기화
+ * - Cloud Functions를 통해 본인 데이터만 로드
  * ════════════════════════════════════════════════════════════════ */
 
 /* ── Firebase 설정 (메인 앱과 동일) ── */
@@ -16,7 +16,10 @@ const FIREBASE_CONFIG = {
   appId: "1:45509278949:web:f16989a9c416f06e25e80c"
 };
 
-let _fb=null, _fbReady=false;
+const FUNCTIONS_REGION='asia-northeast3';
+const PARENT_SESSION_KEY='parent_session_token';
+const PARENT_SESSION_BRANCH_KEY='parent_session_branch';
+let _functions=null, _fbReady=false, _parentSessionToken=null, _parentRefreshTimer=null;
 let STUDENTS=[], INST_MAP={}, MARK_MAP={}, CLOSED_LIST=[], SCHEDULE_PERIODS=[], HYUWON_MAP={}, RESERVE_MAP={}, REQUESTS={};
 
 /* [v118] 지점 선택 (가경점/용암점) — 메인 앱과 동일 */
@@ -70,7 +73,7 @@ function initFirebase(){
   }
   try{
     firebase.initializeApp(FIREBASE_CONFIG);
-    _fb=firebase.database().ref(branch.fbPath);
+    _functions=firebase.app().functions(FUNCTIONS_REGION);
     _fbReady=true;
     // 헤더 타이틀에 지점명 반영
     const brand=document.getElementById('parent-brand');
@@ -82,24 +85,7 @@ function initFirebase(){
 }
 
 function loadAllData(){
-  return new Promise((resolve,reject)=>{
-    if(!_fbReady){reject('not ready');return;}
-    _fb.once('value').then(snap=>{
-      const data=snap.val()||{};
-      STUDENTS=parseJSON(data.swim_students,[]);
-      INST_MAP=parseJSON(data.swim_inst,{});
-      MARK_MAP=parseJSON(data.swim_mark,{});
-      CLOSED_LIST=parseJSON(data.swim_closed,[]);
-      const parsedPeriods=parseJSON(data.swim_periods,null);
-      SCHEDULE_PERIODS=(parsedPeriods&&Array.isArray(parsedPeriods)&&parsedPeriods.length)
-        ? parsedPeriods
-        : JSON.parse(JSON.stringify(_DEFAULT_PERIODS));
-      HYUWON_MAP=parseJSON(data.swim_hyuwon,{});
-      RESERVE_MAP=parseJSON(data.swim_reserve,{});
-      REQUESTS=parseJSON(data.swim_requests,{});
-      resolve();
-    }).catch(reject);
-  });
+  return _fbReady ? Promise.resolve() : Promise.reject('not ready');
 }
 
 function parseJSON(v,def){
@@ -136,124 +122,44 @@ function isNoMakeupInst(inst){
   return kind==='elite'||kind==='master';
 }
 
-/* ── 실시간 sync ── */
-function subscribeChanges(){
-  if(!_fbReady) return;
-  _fb.on('child_changed',snap=>{
-    const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
-    if(snap.key==='swim_mark') MARK_MAP=parseJSON(asStr,{});
-    else if(snap.key==='swim_students') STUDENTS=parseJSON(asStr,[]);
-    else if(snap.key==='swim_reserve') RESERVE_MAP=parseJSON(asStr,{});
-    else if(snap.key==='swim_closed') CLOSED_LIST=parseJSON(asStr,[]);
-    else if(snap.key==='swim_hyuwon') HYUWON_MAP=parseJSON(asStr,{});
-    else if(snap.key==='swim_requests') REQUESTS=parseJSON(asStr,{});
-    // 대시보드 재렌더
-    if(_currentStudent) renderDashboard();
-  });
+function applyParentPayload(data){
+  STUDENTS=Array.isArray(data?.students)?data.students:[];
+  INST_MAP=data?.inst||{};
+  MARK_MAP=data?.mark||{};
+  CLOSED_LIST=data?.closed||[];
+  SCHEDULE_PERIODS=Array.isArray(data?.periods)&&data.periods.length
+    ? data.periods
+    : JSON.parse(JSON.stringify(_DEFAULT_PERIODS));
+  HYUWON_MAP=data?.hyuwon||{};
+  REQUESTS=data?.requests||{};
 }
-
-/* ── Firebase 저장 ── */
-function saveMark(){
-  if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP));
+function parentFunctionPayload(extra={}){
+  const branch=getBranchInfo();
+  if(!branch) throw new Error('지점을 선택해주세요');
+  return {...extra, branch:branch.id, token:_parentSessionToken||null};
 }
-function updateMarkTx(mutator){
-  if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_mark').transaction(raw=>{
-    const marks=parseJSON(raw,{});
-    const next=mutator(marks);
-    if(next===undefined) return;
-    return JSON.stringify(next);
-  }).then(res=>{
-    if(!res.committed) throw new Error('mark transaction aborted');
-    MARK_MAP=parseJSON(res.snapshot.val(),{});
-    return MARK_MAP;
-  });
+function callParentFunction(name, extra={}){
+  if(!_fbReady||!_functions) return Promise.reject(new Error('연결 준비 중입니다'));
+  const fn=_functions.httpsCallable(name);
+  return fn(parentFunctionPayload(extra)).then(res=>res.data||{});
 }
-function saveReserve(){
-  if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_reserve').set(JSON.stringify(RESERVE_MAP));
+function functionErrorMessage(e, fallback='처리 실패'){
+  return e?.message || e?.details?.message || fallback;
 }
-function saveRequests(){
-  if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_requests').set(JSON.stringify(REQUESTS));
+async function refreshParentData(){
+  if(!_parentSessionToken) return;
+  const data=await callParentFunction('parentGetData');
+  applyParentPayload(data);
+  if(_currentStudent) renderDashboard();
 }
-function updateRequestsTx(mutator){
-  if(!_fbReady) return Promise.reject('not ready');
-  let abortReason='';
-  return _fb.child('swim_requests').transaction(raw=>{
-    const reqs=parseJSON(raw,{});
-    const next=mutator(reqs, reason=>{abortReason=reason||'';});
-    if(next===undefined) return;
-    return JSON.stringify(next);
-  }).then(res=>{
-    if(!res.committed) throw new Error(abortReason||'request transaction aborted');
-    REQUESTS=parseJSON(res.snapshot.val(),{});
-    return REQUESTS;
-  });
+function startParentRefresh(){
+  clearInterval(_parentRefreshTimer);
+  _parentRefreshTimer=setInterval(()=>refreshParentData().catch(()=>{}),60000);
 }
-function addRequestEntries(entries){
-  return updateRequestsTx((reqs,abort)=>{
-    const pending=Object.values(reqs||{}).filter(req=>!req.status||req.status==='pending');
-    const seenTargets=new Set();
-    const seenSources=new Set();
-    for(const entry of Object.values(entries||{})){
-      if(entry.type==='bogang'){
-        const t=entry.target||{};
-        const key=[t.t,t.d,t.l,t.r,t.ds].join('/');
-        if(seenTargets.has('bogang/'+key)){
-          abort('같은 보강 자리가 중복 선택되었습니다');
-          return;
-        }
-        seenTargets.add('bogang/'+key);
-        const occupied=pending.some(req=>{
-          if(req.type!=='bogang') return false;
-          const rt=req.target||{};
-          return [rt.t,rt.d,rt.l,rt.r,rt.ds].join('/')===key;
-        });
-        if(occupied){
-          abort('이미 다른 학부모가 같은 보강 자리를 신청했습니다');
-          return;
-        }
-        const sourceKey=[entry.parent?.studentSlotKey||'', entry.parent?.absentDs||''].join('/');
-        if(entry.parent?.studentSlotKey && entry.parent?.absentDs){
-          if(!seenSources.has(sourceKey)){
-            const sourcePending=pending.some(req=>
-              req.type==='bogang'
-              && req.parent?.studentSlotKey===entry.parent?.studentSlotKey
-              && req.parent?.absentDs===entry.parent?.absentDs
-            );
-            if(sourcePending){
-              abort('이미 이 결석일에 대한 보강 신청이 접수되었습니다');
-              return;
-            }
-            seenSources.add(sourceKey);
-          }
-        }
-      }
-      if(entry.type==='absent-cancel'){
-        const key=(entry.parent?.studentSlotKey||'')+'/'+(entry.target?.ds||'');
-        const exists=pending.some(req=>
-          req.type==='absent-cancel'
-          && req.parent?.studentSlotKey===entry.parent?.studentSlotKey
-          && req.target?.ds===entry.target?.ds
-        );
-        if(exists){
-          abort('이미 취소 신청이 접수되었습니다');
-          return;
-        }
-        if(seenTargets.has('cancel/'+key)){
-          abort('같은 결석 취소 신청이 중복되었습니다');
-          return;
-        }
-        seenTargets.add('cancel/'+key);
-      }
-    }
-    Object.assign(reqs, entries);
-    return reqs;
-  });
+function stopParentRefresh(){
+  clearInterval(_parentRefreshTimer);
+  _parentRefreshTimer=null;
 }
-function makeReqId(){ return 'r_'+Date.now()+'_'+Math.random().toString(36).slice(2,6); }
 
 /* ════════════════════════════════════════════════════════════════
  * 인증
@@ -261,29 +167,7 @@ function makeReqId(){ return 'r_'+Date.now()+'_'+Math.random().toString(36).slic
 function normalizePhone(v){
   return String(v||'').replace(/\D/g,'');
 }
-function findStudents(name, phoneInput){
-  const nm=name.trim();
-  const phone=normalizePhone(phoneInput);
-  if(!nm||!phone) return [];
-  return STUDENTS.filter(s=>{
-    if(s.n!==nm) return false;
-    if(!s.p) return false;
-    return normalizePhone(s.p)===phone;
-  });
-}
-
-// 같은 이름+같은 전체 전화번호 → 한 사람(그룹)으로 묶기
-function groupByIdentity(students){
-  const groups={};  // key: name|fullPhone → [student, ...]
-  students.forEach(s=>{
-    const k=s.n+'|'+(s.p||'');
-    if(!groups[k]) groups[k]=[];
-    groups[k].push(s);
-  });
-  return Object.values(groups);
-}
-
-function handleLogin(){
+async function handleLogin(){
   const name=document.getElementById('login-name').value;
   const phone=document.getElementById('login-phone').value;
   const errEl=document.getElementById('login-error');
@@ -298,19 +182,18 @@ function handleLogin(){
     errEl.textContent='전화번호 전체를 숫자로 입력해주세요';
     errEl.style.display='block';return;
   }
-  const matched=findStudents(name,phoneDigits);
-  if(matched.length===0){
-    errEl.textContent='일치하는 정보가 없습니다. 이름 또는 전화번호를 확인해주세요';
-    errEl.style.display='block';return;
-  }
-  // 같은 이름+같은 전체 전화번호 그룹화
-  const groups=groupByIdentity(matched);
-  if(groups.length===1){
-    // 한 사람 (여러 수업 가능) → 바로 로그인
-    loginAs(groups[0]);
-  } else {
-    // 여러 사람 (동명이인, 다른 전화번호) → 선택
-    showStudentSelector(groups);
+  try{
+    const result=await callParentFunction('parentLogin',{name:name.trim(), phone:phoneDigits});
+    _parentSessionToken=result.token;
+    try{
+      sessionStorage.setItem(PARENT_SESSION_KEY,_parentSessionToken);
+      sessionStorage.setItem(PARENT_SESSION_BRANCH_KEY,getBranchInfo()?.id||'');
+    }catch(e){}
+    applyParentPayload(result);
+    loginAs(STUDENTS);
+  }catch(e){
+    errEl.textContent=functionErrorMessage(e,'일치하는 정보가 없습니다. 이름 또는 전화번호를 확인해주세요');
+    errEl.style.display='block';
   }
 }
 
@@ -343,19 +226,19 @@ function loginAs(students){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('select-screen').style.display='none';
   document.getElementById('dashboard').style.display='flex';
-  // 세션 저장 (모든 슬롯 키)
-  try{
-    const keys=students.map(s=>s.t+'/'+s.d+'/'+s.l+'/'+s.r).join(',');
-    sessionStorage.setItem('parent_stu_keys', keys);
-  }catch(e){}
+  startParentRefresh();
   renderDashboard();
 }
 
 function logout(){
   _currentStudents=[];
   _currentStudent=null;
+  _parentSessionToken=null;
+  stopParentRefresh();
   try{
-    sessionStorage.removeItem('parent_stu_keys');
+    sessionStorage.removeItem(PARENT_SESSION_KEY);
+    sessionStorage.removeItem(PARENT_SESSION_BRANCH_KEY);
+    sessionStorage.removeItem('parent_stu_keys'); // 이전 버전 호환
     sessionStorage.removeItem('parent_stu_key');  // 이전 버전 호환
   }catch(e){}
   document.getElementById('dashboard').style.display='none';
@@ -662,10 +545,10 @@ function renderDateList(slotKey,period,day){
     else status='수업 예정';
 
     if(mark?.type==='absent'){
-      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강: '+esc(mark.sub.n||'');
+      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강 배정';
       else status='❌ 결석';
     } else if(mark?.type==='bogang'){
-      status='🟣 보강: '+esc(mark.n||'');
+      status=mark.n ? '🟣 보강: '+esc(mark.n) : '🟣 보강';
     }
 
     // 대기 중인 요청 체크
@@ -767,22 +650,14 @@ async function submitAbsent(){
   const ds=document.getElementById('ab-submit').dataset.ds;
   const slotKey=document.getElementById('ab-submit').dataset.slot;
   if(!slotKey) return;
-  const markKey=slotKey+'/'+ds;
   try{
-    await updateMarkTx(marks=>{
-      const cur=marks[markKey];
-      if(cur?.type==='bogang'||cur?.type==='sample'){
-        marks[markKey]={type:'absent', sub:cur};
-      } else {
-        marks[markKey]={type:'absent'};
-      }
-      return marks;
-    });
+    const data=await callParentFunction('parentSubmitAbsent',{slotKey, ds});
+    applyParentPayload(data);
     document.getElementById('ab-form').style.display='none';
     document.getElementById('ab-success').style.display='block';
     renderDashboard();
   }catch(e){
-    toast(e?.message||'저장 실패','err');
+    toast(functionErrorMessage(e,'저장 실패'),'err');
     console.error(e);
   }
 }
@@ -791,43 +666,14 @@ async function submitAbsentCancel(){
   const ds=document.getElementById('ac-submit').dataset.ds;
   const slotKey=document.getElementById('ac-submit').dataset.slot;
   if(!slotKey) return;
-  // 해당 슬롯 학생 찾기
-  const stu=_currentStudents.find(s=>s.t+'/'+s.d+'/'+s.l+'/'+s.r===slotKey);
-  if(!stu) return;
-  // 기존 대기 요청 있으면 중복 방지
-  for(const req of Object.values(REQUESTS)){
-    if(req.status && req.status!=='pending') continue;
-    if(req.type==='absent-cancel' && req.parent?.studentSlotKey===slotKey && req.target?.ds===ds){
-      toast('이미 취소 신청이 접수되었습니다','err');
-      return;
-    }
-  }
-  const reqId=makeReqId();
-  const inst=INST_MAP[stu.t+'/'+stu.d+'/'+stu.l];
-  const entry={
-    type:'absent-cancel',
-    status:'pending',
-    parent:{
-      studentSlotKey:slotKey,
-      name:stu.n,
-      age:stu.a||null,
-      phone:stu.p||null,
-    },
-    target:{
-      t:stu.t, d:stu.d, l:stu.l, r:stu.r, ds,
-      instName:inst?.n||'',
-      classLabel:instClassText(inst),
-    },
-    instKey:stu.t+'/'+stu.d+'/'+stu.l,
-    requestedAt:new Date().toISOString(),
-  };
   try{
-    await addRequestEntries({[reqId]:entry});
+    const data=await callParentFunction('parentSubmitAbsentCancel',{slotKey, ds});
+    applyParentPayload(data);
     document.getElementById('ac-form').style.display='none';
     document.getElementById('ac-success').style.display='block';
     renderDashboard();
   }catch(e){
-    toast('저장 실패','err');
+    toast(functionErrorMessage(e,'저장 실패'),'err');
     console.error(e);
   }
 }
@@ -973,75 +819,30 @@ function _parentSlotMaxRows(inst){
   return 5;
 }
 
-function findAvailableSlots(ds){
+async function findAvailableSlots(ds){
   if(!ds) return [];
-  const dowNames=['일','월','화','수','목','금','토'];
-  const day=dowNames[new Date(ds).getDay()];
-  const s=_currentStudent;
-  // 모든 내 슬롯 (여러 수업일 때 모두 제외)
-  const mySlots=_currentStudents.map(x=>x.t+'/'+x.d+'/'+x.l+'/'+x.r);
-  const sourceTeacher=_bgSourceTeacherName();
-
-  // 대기중 요청에서 해당 날짜에 이미 잡힌 슬롯 수집
-  const pendingOccupied=new Set();  // key: 'slotKey/ds'
-  for(const req of Object.values(REQUESTS)){
-    if(req.type!=='bogang') continue;
-    if(req.status && req.status!=='pending') continue;
-    if(req.target?.ds===ds){
-      const k=req.target.t+'/'+req.target.d+'/'+req.target.l+'/'+req.target.r;
-      pendingOccupied.add(k+'/'+ds);
-    }
-  }
-
-  const slotCandidates={};
-  for(const [instKey,inst] of Object.entries(INST_MAP)){
-    const [t,d,l]=instKey.split('/');
-    if(d!==day) continue;
-    if(!inst || !inst.n) continue;
-    if(isNoMakeupInst(inst)) continue;
-    if(sourceTeacher){
-      if(_bgTeacherMode==='mine' && inst.n!==sourceTeacher) continue;
-      if(_bgTeacherMode==='other' && inst.n===sourceTeacher) continue;
-    }
-    const k=t+'/'+day+'/'+l;
-    slotCandidates[k]={instName:inst.n, inst, classLabel:instClassText(inst), t, day, lane:parseInt(l)};
-  }
-
-  const available=[];
-  for(const [k,info] of Object.entries(slotCandidates)){
-    const maxRows=_parentSlotMaxRows(info.inst);
-    let freeRow=null;
-    for(let r=1;r<=maxRows;r++){
-      const checkKey=info.t+'/'+info.day+'/'+info.lane+'/'+r;
-      if(STUDENTS.find(x=>x.t===info.t&&x.d===info.day&&x.l===info.lane&&x.r===r)) continue;
-      const mark=MARK_MAP[checkKey+'/'+ds];
-      if(mark?.type==='bogang'||mark?.type==='sample') continue;
-      if(mark?.type==='absent'&&mark.sub) continue;
-      // 이미 대기중인 요청 자리도 제외
-      if(pendingOccupied.has(checkKey+'/'+ds)) continue;
-      freeRow=r;
-      break;
-    }
-    // 본인이 이미 등록된 슬롯은 모두 제외 (여러 수업 중 하나라도 겹치면)
-    const candidateKey=info.t+'/'+info.day+'/'+info.lane+'/'+freeRow;
-    if(freeRow && !mySlots.includes(candidateKey)){
-      available.push({...info, row:freeRow, ds});
-    }
-  }
-  available.sort((a,b)=>{
-    const ta=parseInt(a.t);const tb=parseInt(b.t);
-    if(ta!==tb) return ta-tb;
-    return a.lane-b.lane;
+  const result=await callParentFunction('parentFindBogangSlots',{
+    ds,
+    sourceSlotKey:_bgSourceSlotKey,
+    teacherMode:_bgTeacherMode,
   });
-  return available;
+  return result.slots||[];
 }
 
-function refreshBogangSlots(ds){
+async function refreshBogangSlots(ds){
   _renderBgTeacherFilter();
-  const slots=findAvailableSlots(ds);
   const container=document.getElementById('bg-slots');
   const wrap=document.getElementById('bg-slot-wrap');
   wrap.style.display='block';
+  container.innerHTML='<div class="bg-no-slots">가능한 수업을 확인 중입니다.</div>';
+  let slots=[];
+  try{
+    slots=await findAvailableSlots(ds);
+  }catch(e){
+    container.innerHTML=`<div class="bg-no-slots">${esc(functionErrorMessage(e,'가능한 수업을 불러오지 못했습니다'))}</div>`;
+    updateBogangSelCount();
+    return;
+  }
   if(!slots.length){
     const sourceTeacher=_bgSourceTeacherName();
     const msg=_bgTeacherMode==='mine' && sourceTeacher
@@ -1106,43 +907,20 @@ async function submitBogang(){
     return;
   }
 
-  // REQUESTS에 저장 (즉시 MARK_MAP에 반영 X — 선생님 승인 대기)
-  // 출발 슬롯 (해당 버튼이 속한 수업의 슬롯)
   const selfSlotKey=_bgSourceSlotKey || (s.t+'/'+s.d+'/'+s.l+'/'+s.r);
-  const sourceStu=_bgSourceStudent() || s;
-  const sourceInst=instOfStudent(sourceStu);
-  const sourceInstKey=sourceStu ? sourceStu.t+'/'+sourceStu.d+'/'+sourceStu.l : '';
-  const choiceGroupId='bg_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-  const now=new Date().toISOString();
-  const entries={};
-  for(const slot of _bgSelectedSlots){
-    const reqId=makeReqId();
-    entries[reqId]={
-      type:'bogang',
-      status:'pending',
-      parent:{
-        studentSlotKey:selfSlotKey,
-        name:s.n,
-        age:s.a||null,
-        phone:s.p||null,
-        absentDs:_bgSourceDs||null,
-        sourceInstKey,
-        sourceInstName:sourceInst?.n||'',
-        sourceClassLabel:instClassText(sourceInst),
-      },
-      choiceGroupId,
-      choiceCount:_bgSelectedSlots.length,
-      target:{
-        t:slot.t, d:slot.day, l:slot.lane, r:slot.row,
-        ds:slot.ds, instName:slot.instName, classLabel:slot.classLabel||'',
-      },
-      instKey:slot.t+'/'+slot.day+'/'+slot.lane,  // 담당 선생님 슬롯 키
-      requestedAt:now,
-    };
-  }
-
   try{
-    await addRequestEntries(entries);
+    const data=await callParentFunction('parentSubmitBogang',{
+      sourceSlotKey:selfSlotKey,
+      sourceDs:_bgSourceDs||null,
+      targets:_bgSelectedSlots.map(slot=>({
+        t:slot.t,
+        day:slot.day,
+        lane:slot.lane,
+        row:slot.row,
+        ds:slot.ds,
+      })),
+    });
+    applyParentPayload(data);
     // 성공 화면 표시
     document.getElementById('bg-form').style.display='none';
     document.getElementById('bg-success').style.display='block';
@@ -1150,7 +928,7 @@ async function submitBogang(){
       `총 <strong>${_bgSelectedSlots.length}개</strong>의 후보를 보냈습니다.<br>담당 선생님이 이 중 하나를 확정합니다.`;
     renderDashboard();
   }catch(e){
-    toast(e?.message||'신청 실패','err');
+    toast(functionErrorMessage(e,'신청 실패'),'err');
     console.error(e);
   }
 }
@@ -1180,7 +958,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   initFirebase();
   try{
     await loadAllData();
-    subscribeChanges();
   }catch(e){
     console.error('데이터 로드 실패:',e);
     toast('연결 실패 — 새로고침 해주세요','err');
@@ -1189,28 +966,24 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
   // 세션 복구
   try{
-    const savedKeys=sessionStorage.getItem('parent_stu_keys');
-    if(savedKeys){
-      const keyList=savedKeys.split(',');
-      const foundList=keyList.map(key=>{
-        const [t,d,l,r]=key.split('/');
-        return STUDENTS.find(s=>s.t===t&&s.d===d&&s.l===parseInt(l)&&s.r===parseInt(r));
-      }).filter(Boolean);
-      if(foundList.length) loginAs(foundList);
-    } else {
-      // 이전 버전 호환
-      const savedKey=sessionStorage.getItem('parent_stu_key');
-      if(savedKey){
-        const [t,d,l,r]=savedKey.split('/');
-        const found=STUDENTS.find(s=>s.t===t&&s.d===d&&s.l===parseInt(l)&&s.r===parseInt(r));
-        if(found){
-          // 같은 이름+전화번호 그룹 전체를 로그인
-          const grouped=STUDENTS.filter(s=>s.n===found.n && s.p===found.p);
-          loginAs(grouped.length?grouped:[found]);
-        }
-      }
+    const branchId=getBranchInfo()?.id||'';
+    const savedBranch=sessionStorage.getItem(PARENT_SESSION_BRANCH_KEY);
+    const savedToken=sessionStorage.getItem(PARENT_SESSION_KEY);
+    if(savedToken && savedBranch===branchId){
+      _parentSessionToken=savedToken;
+      const data=await callParentFunction('parentGetData');
+      applyParentPayload(data);
+      loginAs(STUDENTS);
     }
-  }catch(e){}
+  }catch(e){
+    _parentSessionToken=null;
+    try{
+      sessionStorage.removeItem(PARENT_SESSION_KEY);
+      sessionStorage.removeItem(PARENT_SESSION_BRANCH_KEY);
+      sessionStorage.removeItem('parent_stu_keys');
+      sessionStorage.removeItem('parent_stu_key');
+    }catch(_e){}
+  }
 
   // 로그인 버튼
   document.getElementById('login-btn').addEventListener('click', handleLogin);
