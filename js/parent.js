@@ -2,13 +2,24 @@
  * 학부모 페이지
  * - 인증: 아이 이름 + 전화번호 전체 → STUDENTS 매칭
  * - 기능: 결석 마크 토글, 보강 요청
- * - Lightsail API를 통해 본인 데이터만 로드
+ * - Cloud Functions를 통해 본인 데이터만 로드
  * ════════════════════════════════════════════════════════════════ */
 
-const API_BASE='/api';
+/* ── Firebase 설정 (메인 앱과 동일) ── */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyArHQQfHnVreH8gVamyl1e5IqUDfXUJ5F8",
+  authDomain: "scswimming-schedule.firebaseapp.com",
+  databaseURL: "https://scswimming-schedule-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "scswimming-schedule",
+  storageBucket: "scswimming-schedule.firebasestorage.app",
+  messagingSenderId: "45509278949",
+  appId: "1:45509278949:web:f16989a9c416f06e25e80c"
+};
+
+const FUNCTIONS_REGION='asia-northeast3';
 const PARENT_SESSION_KEY='parent_session_token';
 const PARENT_SESSION_BRANCH_KEY='parent_session_branch';
-let _fbReady=false, _parentSessionToken=null, _parentRefreshTimer=null;
+let _functions=null, _fbReady=false, _parentSessionToken=null, _parentRefreshTimer=null;
 let STUDENTS=[], INST_MAP={}, MARK_MAP={}, CLOSED_LIST=[], SCHEDULE_PERIODS=[], HYUWON_MAP={}, RESERVE_MAP={}, REQUESTS={};
 
 /* [v118] 지점 선택 (가경점/용암점) — 메인 앱과 동일 */
@@ -61,12 +72,14 @@ function initFirebase(){
     return;
   }
   try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _functions=firebase.app().functions(FUNCTIONS_REGION);
     _fbReady=true;
     // 헤더 타이틀에 지점명 반영
     const brand=document.getElementById('parent-brand');
     if(brand) brand.textContent=(branch.id==='yongam'?'용암':'가경')+' 수영장';
   }catch(e){
-    console.error('API 초기화 실패:',e);
+    console.error('Firebase 초기화 실패:',e);
     toast('연결 실패','err');
   }
 }
@@ -120,35 +133,15 @@ function applyParentPayload(data){
   HYUWON_MAP=data?.hyuwon||{};
   REQUESTS=data?.requests||{};
 }
-function parentApiPayload(extra={}){
+function parentFunctionPayload(extra={}){
   const branch=getBranchInfo();
   if(!branch) throw new Error('지점을 선택해주세요');
   return {...extra, branch:branch.id, token:_parentSessionToken||null};
 }
-const PARENT_API_PATHS={
-  parentLogin:'login',
-  parentGetData:'data',
-  parentSubmitAbsent:'absent',
-  parentSubmitAbsentCancel:'absent-cancel',
-  parentFindBogangSlots:'bogang-slots',
-  parentSubmitBogang:'bogang',
-};
-async function callParentFunction(name, extra={}){
-  if(!_fbReady) throw new Error('연결 준비 중입니다');
-  const path=PARENT_API_PATHS[name];
-  if(!path) throw new Error('지원하지 않는 요청입니다');
-  const res=await fetch(`${API_BASE}/parent/${path}`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(parentApiPayload(extra)),
-  });
-  const data=await res.json().catch(()=>({}));
-  if(!res.ok){
-    const err=new Error(data?.error?.message||'처리 실패');
-    err.code=data?.error?.code||String(res.status);
-    throw err;
-  }
-  return data||{};
+function callParentFunction(name, extra={}){
+  if(!_fbReady||!_functions) return Promise.reject(new Error('연결 준비 중입니다'));
+  const fn=_functions.httpsCallable(name);
+  return fn(parentFunctionPayload(extra)).then(res=>res.data||{});
 }
 function functionErrorMessage(e, fallback='처리 실패'){
   return e?.message || e?.details?.message || fallback;

@@ -1,16 +1,7 @@
 (function(){
-  const API_BASE='/api';
+  const STAFF_REGION='asia-northeast3';
   const POLL_MS=4500;
   const TX_RETRIES=5;
-  const STAFF_API_PATHS={
-    staffGetData:'data',
-    staffGetValue:'value',
-    staffSetValue:'set-value',
-    staffRemoveValue:'remove-value',
-    staffCompareAndSetValue:'compare-and-set-value',
-    staffCompareAndSetRoot:'compare-and-set-root',
-    staffClearBranch:'clear-branch',
-  };
 
   function normalizeKey(key){
     return String(key||'').replace(/[.#$/\[\]]/g,'_');
@@ -91,34 +82,25 @@
   window.initStaffDatabase=function(config, branch, role, opts){
     opts=opts||{};
     if(!branch||!branch.id) throw new Error('지점을 먼저 선택해주세요');
-    if(!window.firebase||!firebase.auth) throw new Error('Firebase Auth SDK가 필요합니다');
+    if(!window.firebase||!firebase.functions||!firebase.auth) throw new Error('Firebase Auth/Functions SDK가 필요합니다');
     const app=(firebase.apps&&firebase.apps.length)?firebase.app():firebase.initializeApp(config);
+    const functions=app.functions(STAFF_REGION);
     const auth=firebase.auth();
     try{auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);}catch(e){}
+    const callableCache={};
 
     const listeners={child_changed:[], child_removed:[]};
     let rootCache=null;
     let pollTimer=null;
     let pollBusy=false;
 
-    async function callRaw(name,payload,idToken){
-      const path=STAFF_API_PATHS[name];
-      if(!path) throw new Error('지원하지 않는 요청입니다');
-      const res=await fetch(`${API_BASE}/staff/${path}`,{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':`Bearer ${idToken}`,
-        },
-        body:JSON.stringify(payload||{}),
-      });
-      const data=await res.json().catch(()=>({}));
-      if(!res.ok){
-        const err=new Error(data?.error?.message||'처리 실패');
-        err.code=data?.error?.code||String(res.status);
-        throw err;
-      }
-      return data||{};
+    function callable(name){
+      if(!callableCache[name]) callableCache[name]=functions.httpsCallable(name);
+      return callableCache[name];
+    }
+    async function callRaw(name,payload){
+      const res=await callable(name)(payload||{});
+      return res.data||{};
     }
     async function ensureUser(){
       const current=auth.currentUser || await waitAuthReady(auth);
@@ -128,10 +110,9 @@
       return user;
     }
     async function callStaff(name,payload,retried){
-      const user=await ensureUser();
-      const idToken=await user.getIdToken();
+      await ensureUser();
       try{
-        return await callRaw(name,Object.assign({},payload||{},{branch:branch.id}),idToken);
+        return await callRaw(name,Object.assign({},payload||{},{branch:branch.id}));
       }catch(e){
         if(!retried && authError(e)){
           try{await auth.signOut();}catch(ignore){}

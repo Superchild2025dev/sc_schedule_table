@@ -2,7 +2,3 @@
 .DS_Store
 Thumbs.db
 *.log
-node_modules/
-.env
-*.service-account.json
-firebase-service-account.json
