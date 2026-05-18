@@ -116,7 +116,7 @@ async function resetAllData(){
     location.reload();
   }catch(e){
     console.error('[RESET FAIL]',e);
-    toast('초기화 실패 — 관리자 권한 또는 네트워크를 확인해주세요','err');
+    toast('초기화 실패 — 접근 코드 또는 네트워크를 확인해주세요','err');
   }
 }
 
@@ -230,7 +230,7 @@ function loadFromFirebase(callback){
     _fbConnected=true;
     _hideOfflineWarning();
     wrappedCallback();
-  }).catch(e=>{_fbConnected=false;toast(e?.message||'Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
+  }).catch(()=>{_fbConnected=false;toast('Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
   _fb.on('child_changed',(snap)=>{
     const newVal=snap.val();
     // [FIX] setItem은 비-문자열을 강제 변환하므로 방어적 직렬화
