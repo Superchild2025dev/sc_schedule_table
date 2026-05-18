@@ -1,31 +1,47 @@
 const crypto = require("crypto");
+const express = require("express");
 const admin = require("firebase-admin");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { defineSecret } = require("firebase-functions/params");
 
-admin.initializeApp();
-
-const db = admin.database();
-const REGION = "asia-northeast3";
+const PORT = Number(process.env.PORT || 3001);
+const DATABASE_URL = process.env.FIREBASE_DATABASE_URL ||
+  "https://scswimming-schedule-default-rtdb.asia-southeast1.firebasedatabase.app";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const SUPER_ADMIN_EMAIL = defineSecret("SUPER_ADMIN_EMAIL");
 
-const DEFAULT_PERIODS = [
-  { month: 2, start: "2026-02-02", end: "2026-03-04" },
-  { month: 3, start: "2026-03-05", end: "2026-04-01" },
-  { month: 4, start: "2026-04-02", end: "2026-04-29" },
-  { month: 5, start: "2026-05-06", end: "2026-06-02" },
-  { month: 6, start: "2026-06-03", end: "2026-06-30" },
-  { month: 7, start: "2026-07-06", end: "2026-08-01" },
-  { month: 8, start: "2026-08-03", end: "2026-08-29" },
-  { month: 9, start: "2026-08-31", end: "2026-10-02" },
-  { month: 10, start: "2026-10-05", end: "2026-10-31" },
-  { month: 11, start: "2026-11-02", end: "2026-11-28" },
-  { month: 12, start: "2026-11-30", end: "2026-12-26" },
-];
+function initFirebaseAdmin() {
+  if (admin.apps.length) return;
+  let credential = admin.credential.applicationDefault();
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    credential = admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON));
+  }
+  admin.initializeApp({ credential, databaseURL: DATABASE_URL });
+}
 
-const options = { region: REGION, timeoutSeconds: 20, memory: "256MiB" };
-const staffOptions = { ...options, secrets: [SUPER_ADMIN_EMAIL] };
+initFirebaseAdmin();
+const db = admin.database();
+
+class ApiError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function apiError(code, message) {
+  const statusByCode = {
+    "invalid-argument": 400,
+    unauthenticated: 401,
+    "permission-denied": 403,
+    "not-found": 404,
+    "failed-precondition": 409,
+    "resource-exhausted": 429,
+  };
+  return new ApiError(statusByCode[code] || 500, code, message);
+}
+
+function asyncRoute(fn) {
+  return (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
+}
 
 function parseJSON(value, fallback) {
   if (!value) return fallback;
@@ -43,7 +59,7 @@ function normalizePhone(value) {
 function branchPath(branch) {
   if (branch === "gagyeong") return "schedule";
   if (branch === "yongam") return "schedule_yongam";
-  throw new HttpsError("invalid-argument", "지점을 확인할 수 없습니다");
+  throw apiError("invalid-argument", "지점을 확인할 수 없습니다");
 }
 
 function slotKeyOf(student) {
@@ -131,9 +147,46 @@ function rawEqual(a, b) {
 }
 
 const ALL_BRANCHES = ["gagyeong", "yongam"];
+const rateBuckets = new Map();
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 40;
+
+function clientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "");
+  return (forwarded.split(",")[0] || req.socket.remoteAddress || "unknown").trim();
+}
+
+function assertLoginRate(req) {
+  const key = "parent-login:" + clientIp(req);
+  const now = Date.now();
+  const bucket = rateBuckets.get(key) || { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+  if (bucket.resetAt < now) {
+    bucket.count = 0;
+    bucket.resetAt = now + LOGIN_WINDOW_MS;
+  }
+  bucket.count += 1;
+  rateBuckets.set(key, bucket);
+  if (bucket.count > LOGIN_MAX_ATTEMPTS) {
+    throw apiError("resource-exhausted", "로그인 시도가 많습니다. 잠시 후 다시 시도해주세요");
+  }
+}
+
+const DEFAULT_PERIODS = [
+  { month: 2, start: "2026-02-02", end: "2026-03-04" },
+  { month: 3, start: "2026-03-05", end: "2026-04-01" },
+  { month: 4, start: "2026-04-02", end: "2026-04-29" },
+  { month: 5, start: "2026-05-06", end: "2026-06-02" },
+  { month: 6, start: "2026-06-03", end: "2026-06-30" },
+  { month: 7, start: "2026-07-06", end: "2026-08-01" },
+  { month: 8, start: "2026-08-03", end: "2026-08-29" },
+  { month: 9, start: "2026-08-31", end: "2026-10-02" },
+  { month: 10, start: "2026-10-05", end: "2026-10-31" },
+  { month: 11, start: "2026-11-02", end: "2026-11-28" },
+  { month: 12, start: "2026-11-30", end: "2026-12-26" },
+];
 
 function superAdminEmail() {
-  return String(SUPER_ADMIN_EMAIL.value() || process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+  return String(process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
 }
 
 function normalizeAdminProfile(uid, email, raw = {}) {
@@ -169,17 +222,29 @@ function publicAdminProfile(profile) {
   };
 }
 
+async function verifyFirebaseAuth(req, res, next) {
+  try {
+    const header = String(req.headers.authorization || "");
+    const match = header.match(/^Bearer\s+(.+)$/i);
+    if (!match) throw apiError("unauthenticated", "관리자 로그인이 필요합니다");
+    req.auth = await admin.auth().verifyIdToken(match[1]);
+    next();
+  } catch (e) {
+    next(e.code ? e : apiError("unauthenticated", "관리자 로그인이 필요합니다"));
+  }
+}
+
 async function requireAdminSession(data, auth) {
   const branch = data.branch;
   branchPath(branch);
-  if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "관리자 로그인이 필요합니다");
+  if (!auth || !auth.uid) throw apiError("unauthenticated", "관리자 로그인이 필요합니다");
 
-  const email = String(auth.token && auth.token.email || "").toLowerCase();
+  const email = String(auth.email || "").toLowerCase();
   const bootstrapEmail = superAdminEmail();
   if (bootstrapEmail && email === bootstrapEmail) {
     return normalizeAdminProfile(auth.uid, email, {
       email,
-      name: auth.token.name || "최고관리자",
+      name: auth.name || "최고관리자",
       superAdmin: true,
       allBranches: true,
       active: true,
@@ -189,21 +254,17 @@ async function requireAdminSession(data, auth) {
 
   const snap = await db.ref("_admin_users/" + auth.uid).once("value");
   const raw = snap.val();
-  if (!raw || raw.active === false) throw new HttpsError("permission-denied", "관리자 권한이 없습니다");
+  if (!raw || raw.active === false) throw apiError("permission-denied", "관리자 권한이 없습니다");
   const profile = normalizeAdminProfile(auth.uid, email, raw);
   if (!canUseBranch(profile, branch)) {
-    throw new HttpsError("permission-denied", "이 지점에 접근할 수 없습니다");
+    throw apiError("permission-denied", "이 지점에 접근할 수 없습니다");
   }
   return profile;
 }
 
-function assertStaffCanWrite(session, key) {
+function assertStaffCanWrite(session) {
   if (session.role === "admin") return;
-  throw new HttpsError("permission-denied", "이 데이터는 수정할 수 없습니다");
-}
-
-function makeReqId() {
-  return "r_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex");
+  throw apiError("permission-denied", "이 데이터는 수정할 수 없습니다");
 }
 
 async function loadBranchData(branch) {
@@ -227,9 +288,8 @@ async function loadBranchData(branch) {
 
 async function createSession(branch, students) {
   const token = crypto.randomBytes(32).toString("base64url");
-  const hash = sessionHash(token);
   const first = students[0] || {};
-  await db.ref("_parent_sessions/" + hash).set({
+  await db.ref("_parent_sessions/" + sessionHash(token)).set({
     branch,
     name: first.n || "",
     phone: normalizePhone(first.p),
@@ -243,12 +303,11 @@ async function createSession(branch, students) {
 async function requireSession(data) {
   const branch = data.branch;
   const token = data.token;
-  if (!token) throw new HttpsError("unauthenticated", "로그인이 필요합니다");
-  const hash = sessionHash(token);
-  const snap = await db.ref("_parent_sessions/" + hash).once("value");
+  if (!token) throw apiError("unauthenticated", "로그인이 필요합니다");
+  const snap = await db.ref("_parent_sessions/" + sessionHash(token)).once("value");
   const session = snap.val();
   if (!session || session.branch !== branch || session.expiresAt < Date.now()) {
-    throw new HttpsError("unauthenticated", "로그인이 만료되었습니다");
+    throw apiError("unauthenticated", "로그인이 만료되었습니다");
   }
   return session;
 }
@@ -259,7 +318,7 @@ function sessionStudents(allStudents, session) {
   if (!students.length && session.name && session.phone) {
     students = allStudents.filter((s) => s.n === session.name && normalizePhone(s.p) === session.phone);
   }
-  if (!students.length) throw new HttpsError("not-found", "학생 정보를 찾을 수 없습니다");
+  if (!students.length) throw apiError("not-found", "학생 정보를 찾을 수 없습니다");
   return students;
 }
 
@@ -369,16 +428,16 @@ function buildParentPayload(branchData, students) {
 
 function ensureOwnedSlot(students, slotKey) {
   const found = students.find((s) => slotKeyOf(s) === slotKey);
-  if (!found) throw new HttpsError("permission-denied", "본인 수업만 처리할 수 있습니다");
+  if (!found) throw apiError("permission-denied", "본인 수업만 처리할 수 있습니다");
   return found;
 }
 
 function checkFutureOpen(branchData, slotKey, ds) {
-  if (!ds || ds < todayStr()) throw new HttpsError("failed-precondition", "지난 날짜는 처리할 수 없습니다");
-  if (isClosedDate(branchData.closed, ds)) throw new HttpsError("failed-precondition", "휴관일은 처리할 수 없습니다");
+  if (!ds || ds < todayStr()) throw apiError("failed-precondition", "지난 날짜는 처리할 수 없습니다");
+  if (isClosedDate(branchData.closed, ds)) throw apiError("failed-precondition", "휴관일은 처리할 수 없습니다");
   const hy = branchData.hyuwon[slotKey];
   if (hy && Array.isArray(hy.dates) && hy.dates.includes(ds)) {
-    throw new HttpsError("failed-precondition", "휴원일은 처리할 수 없습니다");
+    throw apiError("failed-precondition", "휴원일은 처리할 수 없습니다");
   }
 }
 
@@ -393,7 +452,7 @@ async function updateJsonChild(path, child, mutator) {
     if (next === undefined) return;
     return JSON.stringify(next);
   });
-  if (!res.committed) throw new HttpsError("failed-precondition", abortReason || "저장에 실패했습니다");
+  if (!res.committed) throw apiError("failed-precondition", abortReason || "저장에 실패했습니다");
   return parseJSON(res.snapshot.val(), child === "swim_students" ? [] : {});
 }
 
@@ -403,104 +462,9 @@ async function refreshedPayload(branch, session) {
   return buildParentPayload(branchData, students);
 }
 
-exports.parentLogin = onCall(options, async (request) => {
-  const data = request.data || {};
-  const branch = data.branch;
-  const name = String(data.name || "").trim();
-  const phone = normalizePhone(data.phone);
-  if (!name || !/^\d{9,11}$/.test(phone)) {
-    throw new HttpsError("invalid-argument", "이름과 전화번호를 확인해주세요");
-  }
-  const branchData = await loadBranchData(branch);
-  const students = branchData.students.filter((s) => s.n === name && normalizePhone(s.p) === phone);
-  if (!students.length) throw new HttpsError("not-found", "일치하는 정보가 없습니다");
-  const token = await createSession(branch, students);
-  return { token, ...buildParentPayload(branchData, students) };
-});
-
-exports.parentGetData = onCall(options, async (request) => {
-  const data = request.data || {};
-  const session = await requireSession(data);
-  return refreshedPayload(data.branch, session);
-});
-
-exports.parentSubmitAbsent = onCall(options, async (request) => {
-  const data = request.data || {};
-  const session = await requireSession(data);
-  const branchData = await loadBranchData(data.branch);
-  const students = sessionStudents(branchData.students, session);
-  const slotKey = String(data.slotKey || "");
-  const ds = String(data.ds || "");
-  const student = ensureOwnedSlot(students, slotKey);
-  checkFutureOpen(branchData, slotKey, ds);
-  const markKey = slotKey + "/" + ds;
-  await updateJsonChild(branchData.path, "swim_mark", (marks) => {
-    const cur = marks[markKey];
-    if (cur && cur.type === "absent") return marks;
-    if (cur && (cur.type === "bogang" || cur.type === "sample")) {
-      marks[markKey] = {
-        type: "absent",
-        n: student.n,
-        a: student.a || null,
-        p: student.p || null,
-        sub: cur,
-      };
-      return marks;
-    }
-    if (cur && cur.type !== "absent") return marks;
-    marks[markKey] = {
-      type: "absent",
-      n: student.n,
-      a: student.a || null,
-      p: student.p || null,
-    };
-    return marks;
-  });
-  return refreshedPayload(data.branch, session);
-});
-
-exports.parentSubmitAbsentCancel = onCall(options, async (request) => {
-  const data = request.data || {};
-  const session = await requireSession(data);
-  const branchData = await loadBranchData(data.branch);
-  const students = sessionStudents(branchData.students, session);
-  const slotKey = String(data.slotKey || "");
-  const ds = String(data.ds || "");
-  const student = ensureOwnedSlot(students, slotKey);
-  checkFutureOpen(branchData, slotKey, ds);
-  const mark = branchData.mark[slotKey + "/" + ds];
-  if (!mark || mark.type !== "absent") throw new HttpsError("failed-precondition", "결석 상태가 아닙니다");
-  const [t, d, l, r] = slotKey.split("/");
-  const inst = branchData.inst[[t, d, l].join("/")] || {};
-  const entry = {
-    type: "absent-cancel",
-    status: "pending",
-    parent: {
-      studentSlotKey: slotKey,
-      name: student.n,
-      age: student.a || null,
-      phone: student.p || null,
-    },
-    target: { t, d, l: parseInt(l, 10), r: parseInt(r, 10), ds, instName: inst.n || "" },
-    instKey: [t, d, l].join("/"),
-    requestedAt: new Date().toISOString(),
-  };
-  await updateJsonChild(branchData.path, "swim_requests", (reqs, abort) => {
-    const exists = Object.values(reqs || {}).some((req) =>
-      req.type === "absent-cancel" &&
-      (!req.status || req.status === "pending") &&
-      req.parent && req.parent.studentSlotKey === slotKey &&
-      req.target && req.target.ds === ds
-    );
-    if (exists) {
-      abort("이미 취소 신청이 접수되었습니다");
-      return;
-    }
-    reqs[makeReqId()] = entry;
-    return reqs;
-  });
-  return refreshedPayload(data.branch, session);
-});
+function makeReqId() {
+  return "r_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex");
+}
 
 function parentSlotMaxRows(inst) {
   if (inst && (inst.elma || inst.cls === "elma" || inst.cls === "elite" || inst.cls === "master")) return 8;
@@ -569,15 +533,107 @@ function availableSlotsFor(branchData, students, ds, sourceSlotKey, teacherMode)
   return candidates;
 }
 
-exports.parentFindBogangSlots = onCall(options, async (request) => {
-  const data = request.data || {};
+const app = express();
+app.disable("x-powered-by");
+app.use(express.json({ limit: "2mb" }));
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, service: "sc-schedule-api" });
+});
+
+app.post("/api/parent/login", asyncRoute(async (req, res) => {
+  assertLoginRate(req);
+  const data = req.body || {};
+  const branch = data.branch;
+  const name = String(data.name || "").trim();
+  const phone = normalizePhone(data.phone);
+  if (!name || !/^\d{9,11}$/.test(phone)) {
+    throw apiError("invalid-argument", "이름과 전화번호를 확인해주세요");
+  }
+  const branchData = await loadBranchData(branch);
+  const students = branchData.students.filter((s) => s.n === name && normalizePhone(s.p) === phone);
+  if (!students.length) throw apiError("not-found", "일치하는 정보가 없습니다");
+  const token = await createSession(branch, students);
+  res.json({ token, ...buildParentPayload(branchData, students) });
+}));
+
+app.post("/api/parent/data", asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireSession(data);
+  res.json(await refreshedPayload(data.branch, session));
+}));
+
+app.post("/api/parent/absent", asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireSession(data);
+  const branchData = await loadBranchData(data.branch);
+  const students = sessionStudents(branchData.students, session);
+  const slotKey = String(data.slotKey || "");
+  const ds = String(data.ds || "");
+  const student = ensureOwnedSlot(students, slotKey);
+  checkFutureOpen(branchData, slotKey, ds);
+  const markKey = slotKey + "/" + ds;
+  await updateJsonChild(branchData.path, "swim_mark", (marks) => {
+    const cur = marks[markKey];
+    if (cur && cur.type === "absent") return marks;
+    if (cur && (cur.type === "bogang" || cur.type === "sample")) {
+      marks[markKey] = { type: "absent", n: student.n, a: student.a || null, p: student.p || null, sub: cur };
+      return marks;
+    }
+    if (cur && cur.type !== "absent") return marks;
+    marks[markKey] = { type: "absent", n: student.n, a: student.a || null, p: student.p || null };
+    return marks;
+  });
+  res.json(await refreshedPayload(data.branch, session));
+}));
+
+app.post("/api/parent/absent-cancel", asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireSession(data);
+  const branchData = await loadBranchData(data.branch);
+  const students = sessionStudents(branchData.students, session);
+  const slotKey = String(data.slotKey || "");
+  const ds = String(data.ds || "");
+  const student = ensureOwnedSlot(students, slotKey);
+  checkFutureOpen(branchData, slotKey, ds);
+  const mark = branchData.mark[slotKey + "/" + ds];
+  if (!mark || mark.type !== "absent") throw apiError("failed-precondition", "결석 상태가 아닙니다");
+  const [t, d, l, r] = slotKey.split("/");
+  const inst = branchData.inst[[t, d, l].join("/")] || {};
+  const entry = {
+    type: "absent-cancel",
+    status: "pending",
+    parent: { studentSlotKey: slotKey, name: student.n, age: student.a || null, phone: student.p || null },
+    target: { t, d, l: parseInt(l, 10), r: parseInt(r, 10), ds, instName: inst.n || "" },
+    instKey: [t, d, l].join("/"),
+    requestedAt: new Date().toISOString(),
+  };
+  await updateJsonChild(branchData.path, "swim_requests", (reqs, abort) => {
+    const exists = Object.values(reqs || {}).some((req) =>
+      req.type === "absent-cancel" &&
+      (!req.status || req.status === "pending") &&
+      req.parent && req.parent.studentSlotKey === slotKey &&
+      req.target && req.target.ds === ds
+    );
+    if (exists) {
+      abort("이미 취소 신청이 접수되었습니다");
+      return;
+    }
+    reqs[makeReqId()] = entry;
+    return reqs;
+  });
+  res.json(await refreshedPayload(data.branch, session));
+}));
+
+app.post("/api/parent/bogang-slots", asyncRoute(async (req, res) => {
+  const data = req.body || {};
   const session = await requireSession(data);
   const branchData = await loadBranchData(data.branch);
   const students = sessionStudents(branchData.students, session);
   const ds = String(data.ds || "");
-  if (!ds || ds < todayStr()) return { slots: [] };
-  if (isClosedDate(branchData.closed, ds)) return { slots: [] };
-  return {
+  if (!ds || ds < todayStr()) return res.json({ slots: [] });
+  if (isClosedDate(branchData.closed, ds)) return res.json({ slots: [] });
+  res.json({
     slots: availableSlotsFor(
       branchData,
       students,
@@ -585,11 +641,11 @@ exports.parentFindBogangSlots = onCall(options, async (request) => {
       String(data.sourceSlotKey || ""),
       data.teacherMode === "other" ? "other" : "mine"
     ),
-  };
-});
+  });
+}));
 
-exports.parentSubmitBogang = onCall(options, async (request) => {
-  const data = request.data || {};
+app.post("/api/parent/bogang", asyncRoute(async (req, res) => {
+  const data = req.body || {};
   const session = await requireSession(data);
   const branchData = await loadBranchData(data.branch);
   const students = sessionStudents(branchData.students, session);
@@ -598,9 +654,10 @@ exports.parentSubmitBogang = onCall(options, async (request) => {
   const sourceStudent = ensureOwnedSlot(students, sourceSlotKey);
   checkFutureOpen(branchData, sourceSlotKey, sourceDs);
   const sourceInst = branchData.inst[instKeyOf(sourceStudent)] || {};
-  if (isNoMakeupInst(sourceInst)) throw new HttpsError("failed-precondition", "보강 신청이 불가한 반입니다");
+  if (isNoMakeupInst(sourceInst)) throw apiError("failed-precondition", "보강 신청이 불가한 반입니다");
   const targets = Array.isArray(data.targets) ? data.targets : [];
-  if (!targets.length) throw new HttpsError("invalid-argument", "선택한 수업이 없습니다");
+  if (!targets.length) throw apiError("invalid-argument", "선택한 수업이 없습니다");
+
   const choiceGroupId = "bg_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex");
   const now = new Date().toISOString();
   const entries = {};
@@ -618,10 +675,10 @@ exports.parentSubmitBogang = onCall(options, async (request) => {
       availableCache.set(ds, true);
     }
     const key = [target.t, target.day || target.d, target.lane, target.row, ds].join("/");
-    if (seen.has(key)) throw new HttpsError("invalid-argument", "같은 보강 자리가 중복 선택되었습니다");
+    if (seen.has(key)) throw apiError("invalid-argument", "같은 보강 자리가 중복 선택되었습니다");
     seen.add(key);
     const slot = availableByKey.get(key);
-    if (!slot) throw new HttpsError("failed-precondition", "선택한 보강 자리를 사용할 수 없습니다");
+    if (!slot) throw apiError("failed-precondition", "선택한 보강 자리를 사용할 수 없습니다");
     const reqId = makeReqId();
     entries[reqId] = {
       type: "bogang",
@@ -679,76 +736,89 @@ exports.parentSubmitBogang = onCall(options, async (request) => {
     Object.assign(reqs, entries);
     return reqs;
   });
-  return { submittedCount: targets.length, ...(await refreshedPayload(data.branch, session)) };
-});
+  res.json({ submittedCount: targets.length, ...(await refreshedPayload(data.branch, session)) });
+}));
 
-exports.staffGetData = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  const session = await requireAdminSession(data, request.auth);
+app.post("/api/staff/data", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireAdminSession(data, req.auth);
   const snap = await db.ref(branchPath(data.branch)).once("value");
-  return { data: snap.val() || {}, user: publicAdminProfile(session) };
-});
+  res.json({ data: snap.val() || {}, user: publicAdminProfile(session) });
+}));
 
-exports.staffGetValue = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  await requireAdminSession(data, request.auth);
+app.post("/api/staff/value", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  await requireAdminSession(data, req.auth);
   const key = normalizeDbKey(data.key);
   const snap = await db.ref(branchPath(data.branch) + "/" + key).once("value");
-  return { value: snap.val() === undefined ? null : snap.val() };
-});
+  res.json({ value: snap.val() === undefined ? null : snap.val() });
+}));
 
-exports.staffSetValue = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  const session = await requireAdminSession(data, request.auth);
+app.post("/api/staff/set-value", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireAdminSession(data, req.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
   await db.ref(branchPath(data.branch) + "/" + key).set(data.value === undefined ? null : data.value);
-  return { ok: true };
-});
+  res.json({ ok: true });
+}));
 
-exports.staffRemoveValue = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  const session = await requireAdminSession(data, request.auth);
+app.post("/api/staff/remove-value", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireAdminSession(data, req.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
   await db.ref(branchPath(data.branch) + "/" + key).remove();
-  return { ok: true };
-});
+  res.json({ ok: true });
+}));
 
-exports.staffCompareAndSetValue = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  const session = await requireAdminSession(data, request.auth);
+app.post("/api/staff/compare-and-set-value", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireAdminSession(data, req.auth);
   const key = normalizeDbKey(data.key);
   assertStaffCanWrite(session, key);
   const ref = db.ref(branchPath(data.branch) + "/" + key);
-  const res = await ref.transaction((current) => {
+  const tx = await ref.transaction((current) => {
     if (!rawEqual(current, data.expected)) return;
     return data.value === undefined ? null : data.value;
   });
-  return {
-    committed: !!res.committed,
-    value: res.snapshot.val() === undefined ? null : res.snapshot.val(),
-  };
-});
+  res.json({
+    committed: !!tx.committed,
+    value: tx.snapshot.val() === undefined ? null : tx.snapshot.val(),
+  });
+}));
 
-exports.staffCompareAndSetRoot = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  await requireAdminSession(data, request.auth);
+app.post("/api/staff/compare-and-set-root", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  await requireAdminSession(data, req.auth);
   const ref = db.ref(branchPath(data.branch));
-  const res = await ref.transaction((current) => {
+  const tx = await ref.transaction((current) => {
     if (!rawEqual(current || {}, data.expected || {})) return;
     return data.value === undefined ? null : data.value;
   });
-  return {
-    committed: !!res.committed,
-    value: res.snapshot.val() || {},
-  };
+  res.json({ committed: !!tx.committed, value: tx.snapshot.val() || {} });
+}));
+
+app.post("/api/staff/clear-branch", verifyFirebaseAuth, asyncRoute(async (req, res) => {
+  const data = req.body || {};
+  const session = await requireAdminSession(data, req.auth);
+  if (!session.superAdmin) throw apiError("permission-denied", "최고관리자만 초기화할 수 있습니다");
+  await db.ref(branchPath(data.branch)).remove();
+  res.json({ ok: true });
+}));
+
+app.use((req, res) => {
+  res.status(404).json({ error: { code: "not-found", message: "API 경로를 찾을 수 없습니다" } });
 });
 
-exports.staffClearBranch = onCall(staffOptions, async (request) => {
-  const data = request.data || {};
-  const session = await requireAdminSession(data, request.auth);
-  if (!session.superAdmin) throw new HttpsError("permission-denied", "최고관리자만 초기화할 수 있습니다");
-  await db.ref(branchPath(data.branch)).remove();
-  return { ok: true };
+app.use((err, req, res, next) => {
+  const status = err.status || 500;
+  const code = err.code || "internal";
+  const message = err.message || "서버 오류가 발생했습니다";
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: { code, message } });
+});
+
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(`sc-schedule-api listening on 127.0.0.1:${PORT}`);
 });
