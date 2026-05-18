@@ -114,9 +114,8 @@ function initFirebase(){
   const branch=getBranchInfo();
   if(!branch){ openBranchModal(); return; }
   try{
-    _fb=initStaffDatabase(FIREBASE_CONFIG,branch,'teacher',{
-      onPollError:function(e){console.warn('[teacher sync failed]',e);}
-    });
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _fb=firebase.database().ref(branch.fbPath);
     _fbReady=true;
     // 헤더 타이틀에 지점명 반영
     const brand=document.querySelector('#teacher-select-screen h1');
@@ -1209,7 +1208,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   try{
     await loadAllData();
     subscribeChanges();
-  }catch(e){toast(e?.message||'연결 실패','err');return;}
+  }catch(e){toast('연결 실패','err');return;}
 
   populateTeachers();
 

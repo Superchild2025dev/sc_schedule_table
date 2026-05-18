@@ -43,19 +43,29 @@ const _dbCache={};
 // 지점 선택 안 됐으면 Firebase 초기화 안 함 (모달이 열림 → 사용자 선택 후 reload)
 if(_selectedBranch && FIREBASE_CONFIG.apiKey){
   try{
-    _fb=initStaffDatabase(FIREBASE_CONFIG,getBranchInfo(),'admin',{
-      onPollError:function(e){
-        console.warn('[STAFF SYNC FAIL]',e);
-        _fbConnected=false;
-        _showOfflineWarning();
-      },
-      onPollOk:function(){
-        _fbConnected=true;
+    firebase.initializeApp(FIREBASE_CONFIG);
+    _fb=firebase.database().ref(getBranchInfo().fbPath);
+    _fbReady=true;
+    console.log('✅ Firebase 연결됨');
+    // 실시간 연결 상태 모니터링 (5초 이상 끊겼을 때만 경고)
+    let _disconnectTimer=null;
+    firebase.database().ref('.info/connected').on('value',snap=>{
+      _fbConnected=!!snap.val();
+      if(_fbConnected){
+        console.log('🟢 Firebase 온라인');
+        if(_disconnectTimer){clearTimeout(_disconnectTimer);_disconnectTimer=null;}
         _hideOfflineWarning();
+      } else {
+        console.warn('🔴 Firebase 일시적 끊김 (5초 후 확인)');
+        if(_disconnectTimer) clearTimeout(_disconnectTimer);
+        _disconnectTimer=setTimeout(()=>{
+          if(!_fbConnected){
+            console.error('🔴 Firebase 5초 이상 끊김 — 경고 표시');
+            _showOfflineWarning();
+          }
+        },5000);
       }
     });
-    _fbReady=true;
-    console.log('✅ Firebase Functions 연결 준비됨');
   }catch(e){
     console.warn('Firebase 초기화 실패:',e);
     _fbReady=false;
@@ -105,19 +115,6 @@ function dbRemove(key){
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
   if(_fbReady) _fb.child(key.replace(/[.#$/\[\]]/g,'_')).remove();
-}
-
-async function resetAllData(){
-  if(!confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')) return;
-  Object.keys(_dbCache).forEach(k=>delete _dbCache[k]);
-  try{localStorage.clear();}catch(e){}
-  try{
-    if(_fbReady) await _fb.remove();
-    location.reload();
-  }catch(e){
-    console.error('[RESET FAIL]',e);
-    toast('초기화 실패 — 접근 코드 또는 네트워크를 확인해주세요','err');
-  }
 }
 
 // [FIX] 자기 echo 식별용 큐. key별로 보낸 순서대로 쌓고, echo가 head와 일치하면 shift.
@@ -227,10 +224,8 @@ function loadFromFirebase(callback){
         }
       }catch(e){}
     }
-    _fbConnected=true;
-    _hideOfflineWarning();
     wrappedCallback();
-  }).catch(()=>{_fbConnected=false;toast('Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
+  }).catch(()=>{toast('Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
   _fb.on('child_changed',(snap)=>{
     const newVal=snap.val();
     // [FIX] setItem은 비-문자열을 강제 변환하므로 방어적 직렬화
@@ -277,3 +272,4 @@ function getToday(){
   }
   return _fakeDate ? new Date(_fakeDate) : new Date();
 }
+
