@@ -134,11 +134,15 @@
         _currentUser = user || null;
         updateEmailLabels(_currentUser);
         if(_currentUser){
-          hideLogin();
-          if(_readyResolve){
-            _readyResolve(_currentUser);
-            _readyResolve = null;
-          }
+          _currentUser.getIdToken().catch(function(e){
+            console.warn('[AUTH] token read failed', e);
+          }).then(function(){
+            hideLogin();
+            if(_readyResolve){
+              _readyResolve(_currentUser);
+              _readyResolve = null;
+            }
+          });
         }else{
           showLogin();
         }

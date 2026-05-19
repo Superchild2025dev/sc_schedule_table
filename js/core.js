@@ -40,8 +40,10 @@ let _fbConnected=true;
 let _offlineWarningShown=false;
 const _dbCache={};
 
-// 지점 선택 안 됐으면 Firebase 초기화 안 함 (모달이 열림 → 사용자 선택 후 reload)
-if(_selectedBranch && FIREBASE_CONFIG.apiKey){
+function initFirebaseStore(){
+  if(_fbReady) return true;
+  // 지점 선택 안 됐으면 Firebase 초기화 안 함 (모달이 열림 → 사용자 선택 후 reload)
+  if(!_selectedBranch || !FIREBASE_CONFIG.apiKey) return false;
   try{
     if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     _fb=firebase.database().ref(getBranchInfo().fbPath);
@@ -71,6 +73,12 @@ if(_selectedBranch && FIREBASE_CONFIG.apiKey){
     _fbReady=false;
     setTimeout(()=>{toast('Firebase 연결 실패 — 오프라인 모드','err');_showOfflineWarning();},500);
   }
+  return _fbReady;
+}
+
+// Auth 가드가 없는 환경에서는 기존처럼 즉시 초기화하고, 직원 페이지에서는 로그인 후 초기화한다.
+if(!window.SCAuth){
+  initFirebaseStore();
 }
 
 function dbSet(key,val){
@@ -203,6 +211,7 @@ function saveJSON(key, val, skipUndo){
 }
 
 function loadFromFirebase(callback){
+  if(_selectedBranch && !_fbReady) initFirebaseStore();
   // 콜백 래퍼: 로드 완료/실패 후 _firebaseLoaded=true
   const wrappedCallback=()=>{
     _firebaseLoaded=true;
