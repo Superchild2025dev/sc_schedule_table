@@ -5,7 +5,7 @@
  * - 거절 → 요청 삭제
  * ════════════════════════════════════════════════════════════════ */
 
-const FIREBASE_CONFIG = {
+const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
   apiKey: "AIzaSyArHQQfHnVreH8gVamyl1e5IqUDfXUJ5F8",
   authDomain: "scswimming-schedule.firebaseapp.com",
   databaseURL: "https://scswimming-schedule-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -114,7 +114,7 @@ function initFirebase(){
   const branch=getBranchInfo();
   if(!branch){ openBranchModal(); return; }
   try{
-    firebase.initializeApp(FIREBASE_CONFIG);
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     _fb=firebase.database().ref(branch.fbPath);
     _fbReady=true;
     // 헤더 타이틀에 지점명 반영
@@ -1204,6 +1204,9 @@ function toast(msg,type){
 }
 
 document.addEventListener('DOMContentLoaded', async ()=>{
+  if(window.SCAuth && typeof SCAuth.requireAuth === 'function'){
+    await SCAuth.requireAuth();
+  }
   initFirebase();
   try{
     await loadAllData();

@@ -2,7 +2,7 @@
    Firebase 설정 - 아래 값을 본인 프로젝트로 교체!
    Firebase Console → 프로젝트 설정 → 웹앱 추가 → config 복사
    ══════════════════════════════════════════ */
-const FIREBASE_CONFIG = {
+const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
   apiKey: "AIzaSyArHQQfHnVreH8gVamyl1e5IqUDfXUJ5F8",
   authDomain: "scswimming-schedule.firebaseapp.com",
   databaseURL: "https://scswimming-schedule-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -43,7 +43,7 @@ const _dbCache={};
 // 지점 선택 안 됐으면 Firebase 초기화 안 함 (모달이 열림 → 사용자 선택 후 reload)
 if(_selectedBranch && FIREBASE_CONFIG.apiKey){
   try{
-    firebase.initializeApp(FIREBASE_CONFIG);
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     _fb=firebase.database().ref(getBranchInfo().fbPath);
     _fbReady=true;
     console.log('✅ Firebase 연결됨');

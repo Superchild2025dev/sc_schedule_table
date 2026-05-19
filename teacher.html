@@ -7,8 +7,11 @@
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="js/firebase-config.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="auth.css">
 <link rel="stylesheet" href="parent.css">
 <link rel="stylesheet" href="teacher.css">
 </head>
@@ -37,6 +40,10 @@
     <div class="logo">🏫</div>
     <h1>가경 수영장</h1>
     <p class="subtitle">선생님 승인 페이지</p>
+    <div class="teacher-auth-line">
+      <span data-auth-email></span>
+      <button type="button" onclick="SCAuth.signOut()">계정 로그아웃</button>
+    </div>
     <div style="text-align:center;margin-bottom:8px">
       <button onclick="openBranchModal()" style="background:transparent;border:1px dashed #9CA3AF;color:#6B7280;padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">⇄ 지점 변경</button>
     </div>
@@ -77,6 +84,7 @@
 <!-- 토스트 -->
 <div id="toast" class="toast"></div>
 
+<script src="js/auth-guard.js"></script>
 <script src="js/teacher.js"></script>
 </body>
 </html>

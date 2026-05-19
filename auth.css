@@ -1,0 +1,110 @@
+.staff-auth-screen{
+  position:fixed;
+  inset:0;
+  z-index:100000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:22px;
+  background:linear-gradient(135deg,#0F9D58 0%,#1D4ED8 100%);
+}
+.staff-auth-box{
+  width:100%;
+  max-width:380px;
+  background:#fff;
+  border-radius:14px;
+  padding:32px 28px;
+  box-shadow:0 18px 60px rgba(15,23,42,.28);
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+}
+.staff-auth-logo{
+  width:52px;
+  height:52px;
+  border-radius:12px;
+  background:#0F9D58;
+  color:#fff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:18px;
+  font-weight:900;
+  margin:0 auto 6px;
+}
+.staff-auth-box h1{
+  font-size:22px;
+  font-weight:900;
+  text-align:center;
+  color:#111827;
+  margin:0;
+}
+.staff-auth-box p{
+  font-size:13px;
+  font-weight:700;
+  color:#6B7280;
+  text-align:center;
+  margin:0 0 12px;
+}
+.staff-auth-box label{
+  font-size:12px;
+  font-weight:900;
+  color:#374151;
+  margin-top:4px;
+}
+.staff-auth-box input{
+  width:100%;
+  border:1.5px solid #D1D5DB;
+  border-radius:8px;
+  padding:12px 13px;
+  font-size:15px;
+  font-family:inherit;
+  outline:none;
+}
+.staff-auth-box input:focus{
+  border-color:#0F9D58;
+  box-shadow:0 0 0 3px rgba(15,157,88,.12);
+}
+.staff-auth-box button{
+  border:none;
+  border-radius:8px;
+  padding:12px 14px;
+  font-family:inherit;
+  font-size:14px;
+  font-weight:900;
+  cursor:pointer;
+}
+#staff-auth-submit{
+  background:#0F9D58;
+  color:#fff;
+  margin-top:10px;
+}
+#staff-auth-submit:hover{background:#0B8043}
+#staff-auth-submit:disabled{
+  background:#9CA3AF;
+  cursor:wait;
+}
+#staff-auth-reset{
+  background:#F3F4F6;
+  color:#374151;
+}
+#staff-auth-reset:hover{background:#E5E7EB}
+.staff-auth-error{
+  margin-top:4px;
+  padding:10px 12px;
+  background:#FEF2F2;
+  color:#991B1B;
+  border:1px solid #FECACA;
+  border-radius:8px;
+  font-size:12px;
+  font-weight:800;
+  line-height:1.45;
+}
+.staff-auth-email{
+  font-size:11px;
+  font-weight:800;
+  opacity:.8;
+}
+.staff-auth-logout{
+  white-space:nowrap;
+}
