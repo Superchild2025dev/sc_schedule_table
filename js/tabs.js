@@ -39,6 +39,343 @@ function getSnapshotCapturedAt(){
 let _tabList = loadJSON(STORAGE_KEYS.TAB_LIST, []);
 if(!_tabList.length) _tabList=[{id:'regular',name:'정규시간표',type:'regular'}];
 function saveTabList(){ saveJSON(STORAGE_KEYS.TAB_LIST, _tabList, true); }
+let _tabFolderList = loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
+if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
+function saveTabFolders(){ saveJSON(STORAGE_KEYS.TAB_FOLDERS, _tabFolderList, true); }
+function _tabEsc(s){
+  return String(s??'').replace(/[&<>"']/g,ch=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+}
+function _tabFolderStateKey(){
+  return (typeof _lsKey==='function') ? _lsKey('tab_folder_collapsed') : 'tab_folder_collapsed';
+}
+function _loadCollapsedTabFolders(){
+  try{return JSON.parse(localStorage.getItem(_tabFolderStateKey())||'{}')||{};}catch(e){return {};}
+}
+function _saveCollapsedTabFolders(){
+  try{localStorage.setItem(_tabFolderStateKey(),JSON.stringify(_collapsedTabFolders));}catch(e){}
+}
+let _collapsedTabFolders=_loadCollapsedTabFolders();
+function _tabFolderName(tab){
+  const name=String(tab?.folder||'').trim();
+  return name||'';
+}
+function _folderedTabGroups(){
+  const groups=[];
+  const folders={};
+  (_tabFolderList||[]).forEach(folder=>{
+    folder=String(folder||'').trim();
+    if(!folder||folders[folder]) return;
+    folders[folder]={folder,items:[]};
+    groups.push(folders[folder]);
+  });
+  _tabList.forEach((tab,i)=>{
+    const folder=_tabFolderName(tab);
+    const item={tab,i};
+    if(!folder){
+      groups.push({folder:'',items:[item]});
+      return;
+    }
+    if(!folders[folder]){
+      folders[folder]={folder,items:[]};
+      groups.push(folders[folder]);
+    }
+    folders[folder].items.push(item);
+  });
+  return groups;
+}
+function renameTabFolder(oldName){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','폴더 이름 변경')) return;
+  const name=prompt('폴더 이름:', oldName);
+  if(name===null) return;
+  const folder=name.trim();
+  if(!folder) return;
+  _tabList.forEach(tab=>{ if(_tabFolderName(tab)===oldName) tab.folder=folder; });
+  _tabFolderList=(_tabFolderList||[]).map(f=>f===oldName?folder:f);
+  if(!_tabFolderList.includes(folder)) _tabFolderList.push(folder);
+  _tabFolderList=[...new Set(_tabFolderList.map(f=>String(f||'').trim()).filter(Boolean))];
+  if(_collapsedTabFolders[oldName]){
+    delete _collapsedTabFolders[oldName];
+    _collapsedTabFolders[folder]=true;
+    _saveCollapsedTabFolders();
+  }
+  saveTabFolders();
+  saveTabList();
+  renderTabBar();
+  toast('폴더 이름 변경: '+folder,'ok');
+}
+function deleteTabFolder(folder){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','폴더 삭제')) return;
+  folder=String(folder||'').trim();
+  if(!folder) return;
+  const count=(_tabList||[]).filter(tab=>_tabFolderName(tab)===folder).length;
+  if(count){
+    toast('비어있는 폴더만 삭제할 수 있어요','err');
+    return;
+  }
+  if(!confirm('빈 폴더를 삭제하시겠습니까?')) return;
+  _tabFolderList=(_tabFolderList||[]).filter(f=>String(f||'').trim()!==folder);
+  delete _collapsedTabFolders[folder];
+  saveTabFolders();
+  _saveCollapsedTabFolders();
+  renderTabBar();
+  toast('폴더 삭제 완료','ok');
+}
+function _tabFolders(){
+  return [...new Set([
+    ...(_tabFolderList||[]),
+    ...(_tabList||[]).map(_tabFolderName)
+  ].map(f=>String(f||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
+}
+function _ensureTabFolder(folder){
+  folder=String(folder||'').trim();
+  if(!folder) return false;
+  if(!_tabFolderList.includes(folder)){
+    _tabFolderList.push(folder);
+    saveTabFolders();
+    return true;
+  }
+  return false;
+}
+let _newTabType='regular';
+function openNewTabModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 편집')) return;
+  _newTabType='regular';
+  const modal=document.getElementById('tab-modal');
+  const nameEl=document.getElementById('tab-new-name');
+  const folderEl=document.getElementById('tab-new-folder');
+  const folderNameEl=document.getElementById('tab-new-folder-name');
+  if(!modal||!nameEl||!folderEl||!folderNameEl) return;
+
+  modal.querySelectorAll('[data-tab-type]').forEach(btn=>{
+    btn.classList.toggle('active',btn.dataset.tabType===_newTabType);
+  });
+  nameEl.value='';
+  const activeFolder=_tabFolderName(_tabList.find(t=>t.id===_activeTab));
+  const folders=_tabFolders();
+  let html='<option value="">폴더 없음</option>';
+  if(activeFolder) html+='<option value="__active__">현재 폴더 ('+_tabEsc(activeFolder)+')</option>';
+  folders.forEach(folder=>{
+    if(folder===activeFolder) return;
+    html+='<option value="'+_tabEsc(folder)+'">'+_tabEsc(folder)+'</option>';
+  });
+  html+='<option value="__new__">새 폴더 만들기</option>';
+  folderEl.innerHTML=html;
+  folderEl.value=activeFolder?'__active__':'';
+  folderNameEl.value='';
+  folderNameEl.style.display='none';
+  modal.classList.add('show');
+  setTimeout(()=>nameEl.focus(),30);
+}
+function _selectedNewTabFolder(){
+  const folderEl=document.getElementById('tab-new-folder');
+  const folderNameEl=document.getElementById('tab-new-folder-name');
+  const val=folderEl?.value||'';
+  if(val==='__active__') return _tabFolderName(_tabList.find(t=>t.id===_activeTab));
+  if(val==='__new__') return (folderNameEl?.value||'').trim();
+  return val.trim();
+}
+function createTabFromModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 편집')) return;
+  const modal=document.getElementById('tab-modal');
+  const name=(document.getElementById('tab-new-name')?.value||'').trim();
+  const folderEl=document.getElementById('tab-new-folder');
+  if(folderEl?.value==='__new__'&&!_selectedNewTabFolder()){
+    toast('새 폴더 이름을 입력하세요','err');
+    return;
+  }
+  const folder=_selectedNewTabFolder();
+  if(!name&&folderEl?.value==='__new__'&&folder){
+    _ensureTabFolder(folder);
+    _collapsedTabFolders[folder]=false;
+    _saveCollapsedTabFolders();
+    if(modal) modal.classList.remove('show');
+    renderTabBar();
+    toast('폴더 생성: '+folder,'ok');
+    return;
+  }
+  if(!name){toast('시간표 이름을 입력하세요','err');return;}
+  const type=_newTabType;
+  const id=(type==='regular'?'reg':'bt')+'_'+Date.now();
+  const newTab={id,name,type};
+  if(folder){
+    _ensureTabFolder(folder);
+    newTab.folder=folder;
+  }
+  _tabList.push(newTab);
+  saveTabList();
+  if(folder) _collapsedTabFolders[folder]=false;
+  _saveCollapsedTabFolders();
+  _activeTab=id;
+  if(modal) modal.classList.remove('show');
+  switchTabView();
+}
+
+let _tabActionMenu=null;
+function _closeTabActionMenu(){
+  if(_tabActionMenu){
+    _tabActionMenu.remove();
+    _tabActionMenu=null;
+  }
+}
+function _openTabActionMenu(anchor, html){
+  _closeTabActionMenu();
+  const menu=document.createElement('div');
+  menu.className='tab-action-menu';
+  menu.innerHTML=html;
+  document.body.appendChild(menu);
+  _tabActionMenu=menu;
+  const rect=anchor.getBoundingClientRect();
+  const mw=menu.offsetWidth||170;
+  const left=Math.min(Math.max(8, rect.right-mw), Math.max(8, window.innerWidth-mw-8));
+  const top=Math.min(rect.bottom+6, window.innerHeight-(menu.offsetHeight||220)-8);
+  menu.style.left=Math.round(left)+'px';
+  menu.style.top=Math.round(Math.max(8, top))+'px';
+}
+function _menuBtn(action,id,label,extraCls='',attrs=''){
+  return '<button type="button" class="'+extraCls+'" data-tab-menu-action="'+action+'" data-tab-menu-id="'+_tabEsc(id)+'" '+attrs+'>'+label+'</button>';
+}
+function _menuSep(){
+  return '<div class="tab-menu-sep"></div>';
+}
+function _menuLabel(label){
+  return '<div class="tab-menu-label">'+_tabEsc(label)+'</div>';
+}
+function _openSingleTabMenu(tabId, anchor){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 기능')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab) return;
+  const i=_tabList.findIndex(t=>t.id===tabId);
+  const isSnap=tab.type==='snapshot';
+  const currentFolder=_tabFolderName(tab);
+  const folders=_tabFolders();
+  let html='';
+  html+=_menuBtn('rename',tabId,'이름 변경');
+  html+=_menuSep();
+  html+=_menuLabel('폴더 이동');
+  if(currentFolder) html+=_menuBtn('folder-none',tabId,'폴더에서 꺼내기');
+  folders.forEach(folder=>{
+    if(folder===currentFolder) return;
+    html+=_menuBtn('folder-set',tabId,_tabEsc(folder),'','data-tab-folder-target="'+_tabEsc(folder)+'"');
+  });
+  html+=_menuBtn('folder-new',tabId,'새 폴더로 이동');
+  html+=_menuSep();
+  if(i>0) html+=_menuBtn('left',tabId,'왼쪽으로 이동');
+  if(i<_tabList.length-1) html+=_menuBtn('right',tabId,'오른쪽으로 이동');
+  if(!isSnap){
+    html+=_menuSep();
+    html+=_menuBtn('copy',tabId,'시간표 복사');
+    html+=_menuBtn('snapshot',tabId,'스냅샷 만들기');
+  }
+  if(tab.id!=='regular'){
+    html+=_menuSep();
+    html+=_menuBtn('delete',tabId,'시간표 삭제','danger');
+  }
+  _openTabActionMenu(anchor, html);
+}
+function _openFolderActionMenu(folder, anchor){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','폴더 관리')) return;
+  folder=String(folder||'').trim();
+  if(!folder) return;
+  const count=(_tabList||[]).filter(tab=>_tabFolderName(tab)===folder).length;
+  const collapsed=!!_collapsedTabFolders[folder];
+  let html='';
+  html+='<button type="button" data-folder-menu-action="toggle" data-folder-name="'+_tabEsc(folder)+'">'+(collapsed?'폴더 펼치기':'폴더 접기')+'</button>';
+  html+='<button type="button" data-folder-menu-action="rename" data-folder-name="'+_tabEsc(folder)+'">폴더 이름 변경</button>';
+  if(!count){
+    html+=_menuSep();
+    html+='<button type="button" class="danger" data-folder-menu-action="delete" data-folder-name="'+_tabEsc(folder)+'">빈 폴더 삭제</button>';
+  }
+  _openTabActionMenu(anchor, html);
+}
+function renameTab(tabId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 이름 변경')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab) return;
+  const name=prompt('탭 이름:', tab.name);
+  if(name&&name.trim()){
+    tab.name=name.trim();
+    saveTabList();
+    renderTabBar();
+    toast('탭 이름 변경: '+tab.name,'ok');
+  }
+}
+function setTabFolder(tabId, folder){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 폴더 이동')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab) return;
+  folder=String(folder||'').trim();
+  if(folder){
+    _ensureTabFolder(folder);
+    tab.folder=folder;
+    _collapsedTabFolders[folder]=false;
+    toast('폴더 이동: '+folder,'ok');
+  }else{
+    delete tab.folder;
+    toast('폴더에서 꺼냈어요','ok');
+  }
+  saveTabList();
+  _saveCollapsedTabFolders();
+  renderTabBar();
+}
+function promptNewTabFolder(tabId){
+  const name=prompt('새 폴더 이름:');
+  if(name===null) return;
+  const folder=name.trim();
+  if(!folder) return;
+  setTabFolder(tabId, folder);
+}
+function moveTabOrder(tabId, delta){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 순서 변경')) return;
+  const i=_tabList.findIndex(t=>t.id===tabId);
+  const ni=i+delta;
+  if(i<0||ni<0||ni>=_tabList.length) return;
+  [_tabList[i],_tabList[ni]]=[_tabList[ni],_tabList[i]];
+  saveTabList();
+  renderTabBar();
+}
+function deleteTab(tabId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 삭제')) return;
+  if(!confirm('이 탭을 삭제하시겠습니까?')) return;
+  const id=tabId;
+  const tab=_tabList.find(t=>t.id===id);
+  if(tab&&tab.type==='snapshot'){
+    dbRemove(SNAP_KEY_PREFIX+id);
+    if(_activeTab===id) _origGlobalMaps=null;
+  } else if(tab&&tab.type==='bangteuk'){
+    dbRemove('swim_bt_'+id+'_stu');
+    dbRemove('swim_bt_'+id+'_inst');
+  } else if(tab){
+    dbRemove('swim_stu_'+id);
+    dbRemove('swim_inst_'+id);
+  }
+  _tabList=_tabList.filter(t=>t.id!==id);
+  saveTabList();
+  if(_activeTab===id){_activeTab='regular';}
+  switchTabView();
+}
+function _handleTabMenuAction(action,id,targetFolder=''){
+  _closeTabActionMenu();
+  if(action==='rename') renameTab(id);
+  else if(action==='folder-none') setTabFolder(id,'');
+  else if(action==='folder-set') setTabFolder(id, targetFolder);
+  else if(action==='folder-new') promptNewTabFolder(id);
+  else if(action==='left') moveTabOrder(id,-1);
+  else if(action==='right') moveTabOrder(id,1);
+  else if(action==='copy') copyTab(id);
+  else if(action==='snapshot') createSnapshot(id);
+  else if(action==='delete') deleteTab(id);
+}
+function _handleFolderMenuAction(action,folder){
+  _closeTabActionMenu();
+  if(action==='toggle'){
+    _collapsedTabFolders[folder]=!_collapsedTabFolders[folder];
+    _saveCollapsedTabFolders();
+    renderTabBar();
+  }else if(action==='rename') renameTabFolder(folder);
+  else if(action==='delete') deleteTabFolder(folder);
+}
 
 /* ──── 스냅샷: 전체 상태 동결 ────
    클릭 시 현재 탭의 모든 데이터(학생/담임/출석/결석/등원/퇴원/휴원/이동/예약/스냅샷맵)를
@@ -48,6 +385,7 @@ let _origGlobalMaps=null; // 스냅샷 진입 시 백업, 떠날 때 복원
 const SNAP_KEY_PREFIX='swim_snap_';
 
 function createSnapshot(srcId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','스냅샷 만들기')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
   if(!srcTab) return;
   if(srcTab.type==='snapshot'){toast('스냅샷의 스냅샷은 만들 수 없음','err');return;}
@@ -78,7 +416,9 @@ function createSnapshot(srcId){
   dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
   // 탭 목록에 추가 (원본 바로 뒤)
   const srcIdx=_tabList.findIndex(t=>t.id===srcId);
-  _tabList.splice(srcIdx+1,0,{id:newId,name,type:'snapshot',capturedAt:today});
+  const newTab={id:newId,name,type:'snapshot',capturedAt:today};
+  if(srcTab.folder) newTab.folder=srcTab.folder;
+  _tabList.splice(srcIdx+1,0,newTab);
   // tab-list만 별도로 저장 (saveTabList는 skipUndo로 직접 저장)
   saveTabList();
   _activeTab=newId;
@@ -87,6 +427,7 @@ function createSnapshot(srcId){
 }
 
 function copyTab(srcId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 복사')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
   if(!srcTab) return;
   const name=prompt('복사할 탭 이름:', srcTab.name+' (사본)');
@@ -121,7 +462,9 @@ function copyTab(srcId){
 
   // 탭 목록에 추가 (원본 바로 뒤에 삽입)
   const srcIdx=_tabList.findIndex(t=>t.id===srcId);
-  _tabList.splice(srcIdx+1, 0, {id:newId, name, type:srcTab.type});
+  const newTab={id:newId, name, type:srcTab.type};
+  if(srcTab.folder) newTab.folder=srcTab.folder;
+  _tabList.splice(srcIdx+1, 0, newTab);
   saveTabList();
   _activeTab=newId;
   switchTabView();
@@ -131,49 +474,63 @@ function copyTab(srcId){
 function renderTabBar(){
   const bar=document.getElementById('tab-bar');
   let html='';
-  _tabList.forEach((tab,i)=>{
+  const canEditTabs=!(window.SCAuth && !SCAuth.can('editSchedule'));
+  const renderTab=(tab,i)=>{
     const isSnap=tab.type==='snapshot';
     const baseCls=isSnap?'tab-btn tab-snapshot':'tab-btn';
     const cls=tab.id===_activeTab?baseCls+' active':baseCls;
-    const arrows=_tabList.length>1?`<span class="tab-arrows">${i>0?`<span data-tab-left="${tab.id}">◀</span>`:''}${i<_tabList.length-1?`<span data-tab-right="${tab.id}">▶</span>`:''}</span>`:'';
-    // 이름 변경 ✎ 버튼 (모든 탭에 표시)
-    const renameBtn=`<span class="tab-close" data-tab-rename-btn="${tab.id}" title="이름 변경 (또는 더블클릭)" style="opacity:.4;margin-left:2px">✎</span>`;
-    // 스냅샷은 "복사" 대신 보호 아이콘. 일반 탭은 복사+스냅샷 두 버튼.
-    const actions=isSnap
-      ? `<span class="tab-snap-icon" title="📷 스냅샷 (읽기 전용 · ${tab.capturedAt||''})" style="margin-left:2px">📷</span>`
-      : `<span class="tab-close" data-tab-copy="${tab.id}" title="탭 복사" style="opacity:.3;margin-left:2px">⧉</span>`
-       +`<span class="tab-close" data-tab-snap="${tab.id}" title="📷 스냅샷 만들기" style="opacity:.5;margin-left:2px">📷</span>`;
-    const close=tab.id!=='regular'?`<span class="tab-close" data-tab-del="${tab.id}">✕</span>`:'';
     const labelTitle=isSnap?` title="📷 ${tab.capturedAt||''} 스냅샷 — 읽기 전용"`:'';
-    html+=`<button class="${cls}" data-tab="${tab.id}"${labelTitle}><span data-tab-rename="${tab.id}">${isSnap?'📷 ':''}${tab.name}</span>${arrows}${renameBtn}${actions}${close}</button>`;
+    const menu=canEditTabs?`<span class="tab-menu-trigger" data-tab-menu="${_tabEsc(tab.id)}" title="시간표 기능">⋯</span>`:'';
+    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${menu}</button>`;
+  };
+  _folderedTabGroups().forEach(group=>{
+    if(!group.folder){
+      const item=group.items[0];
+      html+=renderTab(item.tab,item.i);
+      return;
+    }
+    const hasActive=group.items.some(item=>item.tab.id===_activeTab);
+    const collapsed=!!_collapsedTabFolders[group.folder]&&!hasActive;
+    const folderCls='tab-folder'+(collapsed?' collapsed':'')+(hasActive?' active':'');
+    const folderName=_tabEsc(group.folder);
+    html+=`<div class="${folderCls}" data-tab-folder="${folderName}">`;
+    html+=`<button class="tab-folder-head" data-tab-folder-toggle="${folderName}" title="폴더 접기/펼치기"><span class="tab-folder-caret">${collapsed?'▸':'▾'}</span><span class="tab-folder-name">${folderName}</span><span class="tab-folder-count">${group.items.length}</span>${canEditTabs?`<span class="tab-folder-menu" data-tab-folder-menu="${folderName}" title="폴더 기능">⋯</span>`:''}</button>`;
+    html+=`<div class="tab-folder-tabs">${group.items.map(item=>renderTab(item.tab,item.i)).join('')}</div>`;
+    html+=`</div>`;
   });
-  html+=`<button class="tab-add" data-tab-add title="새 탭 추가">＋</button>`;
+  if(canEditTabs) html+=`<button class="tab-add" data-tab-add title="새 탭 추가">＋</button>`;
   bar.innerHTML=html;
 }
 
 document.getElementById('tab-bar').addEventListener('click',function(e){
+  // 시간표 기능 메뉴
+  const tabMenu=e.target.closest('[data-tab-menu]');
+  if(tabMenu){
+    e.stopPropagation();
+    _openSingleTabMenu(tabMenu.dataset.tabMenu, tabMenu);
+    return;
+  }
+  // 폴더 기능 메뉴
+  const folderMenu=e.target.closest('[data-tab-folder-menu]');
+  if(folderMenu){
+    e.stopPropagation();
+    _openFolderActionMenu(folderMenu.dataset.tabFolderMenu, folderMenu);
+    return;
+  }
+  // 폴더 접기/펼치기
+  const folderToggle=e.target.closest('[data-tab-folder-toggle]');
+  if(folderToggle){
+    e.stopPropagation();
+    const folder=folderToggle.dataset.tabFolderToggle;
+    _collapsedTabFolders[folder]=!_collapsedTabFolders[folder];
+    _saveCollapsedTabFolders();
+    renderTabBar();
+    return;
+  }
   // 탭 삭제
   const del=e.target.closest('[data-tab-del]');
   if(del){
-    if(!confirm('이 탭을 삭제하시겠습니까?')) return;
-    const id=del.dataset.tabDel;
-    const tab=_tabList.find(t=>t.id===id);
-    // 탭 타입에 맞는 저장 키로 삭제 (탭 제거 전에 조회)
-    if(tab&&tab.type==='snapshot'){
-      dbRemove(SNAP_KEY_PREFIX+id);
-      // 스냅샷 탭에서 떠날 때 메모리 백업도 정리
-      if(_activeTab===id) _origGlobalMaps=null;
-    } else if(tab&&tab.type==='bangteuk'){
-      dbRemove('swim_bt_'+id+'_stu');
-      dbRemove('swim_bt_'+id+'_inst');
-    } else if(tab){
-      dbRemove('swim_stu_'+id);
-      dbRemove('swim_inst_'+id);
-    }
-    _tabList=_tabList.filter(t=>t.id!==id);
-    saveTabList();
-    if(_activeTab===id){_activeTab='regular';}
-    switchTabView();
+    deleteTab(del.dataset.tabDel);
     return;
   }
   // 탭 복사
@@ -195,36 +552,23 @@ document.getElementById('tab-bar').addEventListener('click',function(e){
   const renameBtn=e.target.closest('[data-tab-rename-btn]');
   if(renameBtn){
     e.stopPropagation();
-    const id=renameBtn.dataset.tabRenameBtn;
-    const tab=_tabList.find(t=>t.id===id);
-    if(!tab) return;
-    const name=prompt('탭 이름:', tab.name);
-    if(name&&name.trim()){
-      tab.name=name.trim();
-      saveTabList();
-      renderTabBar();
-      toast('탭 이름 변경: '+tab.name,'ok');
-    }
+    renameTab(renameBtn.dataset.tabRenameBtn);
     return;
   }
   // 탭 순서 이동
   const left=e.target.closest('[data-tab-left]');
   if(left){
-    const id=left.dataset.tabLeft;
-    const i=_tabList.findIndex(t=>t.id===id);
-    if(i>0){[_tabList[i-1],_tabList[i]]=[_tabList[i],_tabList[i-1]];saveTabList();renderTabBar();}
+    moveTabOrder(left.dataset.tabLeft,-1);
     return;
   }
   const right=e.target.closest('[data-tab-right]');
   if(right){
-    const id=right.dataset.tabRight;
-    const i=_tabList.findIndex(t=>t.id===id);
-    if(i<_tabList.length-1){[_tabList[i],_tabList[i+1]]=[_tabList[i+1],_tabList[i]];saveTabList();renderTabBar();}
+    moveTabOrder(right.dataset.tabRight,1);
     return;
   }
   // 탭 추가 → 모달 열기
   if(e.target.closest('[data-tab-add]')){
-    document.getElementById('tab-modal').classList.add('show');
+    openNewTabModal();
     return;
   }
   // 탭 전환
@@ -237,31 +581,67 @@ document.getElementById('tab-bar').addEventListener('click',function(e){
   switchTabView();
 });
 
+document.addEventListener('click',function(e){
+  const tabAction=e.target.closest('[data-tab-menu-action]');
+  if(tabAction){
+    e.preventDefault();
+    _handleTabMenuAction(tabAction.dataset.tabMenuAction, tabAction.dataset.tabMenuId, tabAction.dataset.tabFolderTarget||'');
+    return;
+  }
+  const folderAction=e.target.closest('[data-folder-menu-action]');
+  if(folderAction){
+    e.preventDefault();
+    _handleFolderMenuAction(folderAction.dataset.folderMenuAction, folderAction.dataset.folderName);
+    return;
+  }
+  if(_tabActionMenu&&!e.target.closest('.tab-action-menu')) _closeTabActionMenu();
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') _closeTabActionMenu();
+});
+
 // 탭 이름 편집 (더블클릭)
 document.getElementById('tab-bar').addEventListener('dblclick',function(e){
   const rename=e.target.closest('[data-tab-rename]');
   if(!rename) return;
-  const id=rename.dataset.tabRename;
-  const tab=_tabList.find(t=>t.id===id);
-  if(!tab) return;
-  const name=prompt('탭 이름:',tab.name);
-  if(name&&name.trim()){tab.name=name.trim();saveTabList();renderTabBar();}
+  renameTab(rename.dataset.tabRename);
 });
 
-// 탭 타입 선택 모달
+// 탭 생성 모달
 document.getElementById('tab-modal').addEventListener('click',function(e){
-  const btn=e.target.closest('[data-new-type]');
-  if(!btn) return;
-  const type=btn.dataset.newType;
-  document.getElementById('tab-modal').classList.remove('show');
-  const isReg=type==='regular';
-  const name=prompt('탭 이름:',isReg?'정규시간표':'방특시간표');
-  if(!name) return;
-  const id=(isReg?'reg':'bt')+'_'+Date.now();
-  _tabList.push({id,name,type});
-  saveTabList();
-  _activeTab=id;
-  switchTabView();
+  if(e.target.id==='tab-modal'||e.target.closest('[data-tab-cancel]')){
+    document.getElementById('tab-modal').classList.remove('show');
+    return;
+  }
+  const typeBtn=e.target.closest('[data-tab-type]');
+  if(typeBtn){
+    _newTabType=typeBtn.dataset.tabType;
+    document.querySelectorAll('#tab-modal [data-tab-type]').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.tabType===_newTabType);
+    });
+    const nameEl=document.getElementById('tab-new-name');
+    if(nameEl&&!nameEl.value.trim()) nameEl.placeholder=_newTabType==='regular'?'예: 6월 정규반':'예: 여름 방특반';
+    return;
+  }
+  if(e.target.closest('[data-tab-create]')){
+    createTabFromModal();
+  }
+});
+document.getElementById('tab-new-folder')?.addEventListener('change',function(){
+  const input=document.getElementById('tab-new-folder-name');
+  if(input){
+    input.style.display=this.value==='__new__'?'block':'none';
+    if(this.value==='__new__') setTimeout(()=>input.focus(),30);
+  }
+});
+document.getElementById('tab-modal').addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    createTabFromModal();
+  }
+  if(e.key==='Escape'){
+    document.getElementById('tab-modal').classList.remove('show');
+  }
 });
 
 function switchTabView(){

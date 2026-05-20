@@ -23,8 +23,29 @@ function startScheduleApp(){
     reloadBadgeMaps();    // RETIRE/ENROLL/MARK/DISABLED/RESERVE/HYUWON
     reloadGlobalData();   // SCHEDULE_PERIODS/closedList/TEACHERS/_tabList
     loadTabData();        // STUDENTS/INST_MAP
-    renderTabBar();
-    buildTable();
+    const render=()=>{
+      renderTabBar();
+      buildTable();
+      if(window.SCAuth && typeof SCAuth.applyPagePermissions==='function'){
+        SCAuth.applyPagePermissions(document);
+      }
+    };
+    if(typeof applyAnnualAgeIncrement==='function'){
+      applyAnnualAgeIncrement()
+        .then(changed=>{
+          if(changed){
+            loadTabData();
+            toast('새해 나이 +1 반영 완료','ok');
+          }
+        })
+        .catch(err=>{
+          console.error('나이 자동 증가 실패:',err);
+          toast(err?.message||'나이 자동 증가 실패','err');
+        })
+        .finally(render);
+    } else {
+      render();
+    }
   });
 }
 

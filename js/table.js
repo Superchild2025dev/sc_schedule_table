@@ -4,6 +4,7 @@
 // [v118] 오늘 요일 판정 헬퍼 (day-sep-today 클래스 적용용)
 function _isTodayDay(day){
   const t=getToday();
+  if(typeof dayMatchesDate==='function') return dayMatchesDate(day,t);
   return ['일','월','화','수','목','금','토'][t.getDay()]===day;
 }
 function _tableLocUsesVehicle(loc){
@@ -21,6 +22,7 @@ let _attendanceDate=null;  // YYYY-MM-DD
 let _attEditMode=false;     // true면 셀 클릭 시 출석체크 대신 편집
 
 function toggleAttEditMode(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','출석부 편집')) return;
   _attEditMode=!_attEditMode;
   const btn=document.getElementById('att-edit-btn');
   if(btn){
@@ -43,6 +45,7 @@ let _editModalCtx=null;
 
 // 원생 추가 모달 (출석부 + 버튼) - 특정 레인에서 첫 빈 row 찾아서 모달 열기
 function _openAttAddModalForLane(t, day, lane, cellDs){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','원생 추가')) return;
   // row 1~8에서 빈 자리 찾기
   for(let r=1; r<=8; r++){
     const sk=t+'/'+day+'/'+lane+'/'+r;
@@ -77,6 +80,7 @@ function _closeAttAddModal(){
 }
 
 async function _saveAttAdd(status){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','원생 추가')) return;
   if(!_addModalCtx) return;
   const {slotKey, cellDs}=_addModalCtx;
   const name=document.getElementById('att-add-name').value.trim();
@@ -175,6 +179,7 @@ async function _saveAttAdd(status){
 
 // 과거 날짜 스냅샷 or 현재 STUDENTS 학생 편집 (모달)
 function _editAttCell(slotKey, cellDs){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 편집')) return;
   const [t,d,l,r]=slotKey.split('/');
   const li=parseInt(l), ri=parseInt(r);
   const targetDs=cellDs||_attendanceDate;
@@ -204,6 +209,7 @@ function _closeEditModal(){
 }
 
 async function _saveEditModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 편집')) return;
   if(!_editModalCtx) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
@@ -240,6 +246,7 @@ async function _saveEditModal(){
 }
 
 async function _deleteEditModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 삭제')) return;
   if(!_editModalCtx) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
@@ -335,13 +342,9 @@ function _updateAttBarInfo(){
 
   // 통계: 주간 전체
   let total=0,present=0,absent=0;
-  const dayOff={'월':0,'화':1,'수':2,'목':3,'금':4,'토':5};
   for(const stu of STUDENTS){
-    const off=dayOff[stu.d];
-    if(off===undefined) continue;
-    const cellDate=new Date(weekMon);
-    cellDate.setDate(cellDate.getDate()+off);
-    const cellDs=toDateStr(cellDate);
+    const cellDs=_dayToCellDs(stu.d);
+    if(!cellDs) continue;
     total++;
     const slotKey=stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r;
     const att=ATTENDANCE[slotKey+'/'+cellDs];
@@ -365,6 +368,9 @@ function _getWeekMon(ds){
 
 // 요일 → 선택 주의 해당 날짜 (YYYY-MM-DD)
 function _dayToCellDs(day){
+  if(typeof getDateForDayInWeek==='function'){
+    return toDateStr(getDateForDayInWeek(day,_attendanceDate));
+  }
   const dayOff={'월':0,'화':1,'수':2,'목':3,'금':4,'토':5,'일':6};
   const mon=_getWeekMon(_attendanceDate);
   const d=new Date(mon);
@@ -439,6 +445,7 @@ function _closeAttModal(){
   document.getElementById('att-cell-modal').style.display='none';
 }
 async function _setAttModal(value){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   if(!_attModalCtx) return;
   const {slotKey, isSub, ds}=_attModalCtx;
   const key=slotKey+'/'+ds+(isSub?'#sub':'');
@@ -455,6 +462,7 @@ async function _setAttModal(value){
 
 // 출석 모달에서 학생 삭제
 async function _deleteFromAttModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','출석부 학생 삭제')) return;
   if(!_attModalCtx) return;
   const {slotKey, isSub, ds}=_attModalCtx;
   if(!confirm('이 학생을 출석부에서 삭제하시겠습니까?')) return;
@@ -537,6 +545,7 @@ async function _deleteFromAttModal(){
 
 // 오늘 모두 출석
 async function markAllPresentForDate(){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   if(!_attendanceDate) return;
   const dow=['일','월','화','수','목','금','토'][new Date(_attendanceDate).getDay()];
   const now=new Date().toISOString();
@@ -944,6 +953,7 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
       // 출석 모드 + 이 요일에 해당하는 + 버튼을 inst 셀에 추가하는 헬퍼
       const _addAttPlusBtn=(td, laneNum)=>{
         if(!_attendanceMode || !_attendanceDate) return;
+        if(window.SCAuth && !SCAuth.can('editSchedule')) return;
         const cellDs=_dayToCellDs(day);
         const btn=document.createElement('span');
         btn.className='att-add-inst';
@@ -1025,9 +1035,11 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
 function buildStuRow(t, ri, rows, hasSat, ctx){
   const {DAYS, HAS_NUM, LANE_COUNT, DATE_HDR, classDatesCache, namePrefix, todayStr} = ctx;
   const stuRow=document.createElement('tr');
+  const isBangteukTable=typeof isBangteuk==='function'&&isBangteuk();
+  const baseSlotRows=isBangteukTable?6:5;
   // 정규 5행(ri 0~4) 이후는 반칸 높이 (추가 학생용)
   // 단, 엘마 시간대는 6~8행도 엘마반 정규 자리이므로 풀 높이 유지
-  if(ri>=5 && !hasElmaInTime(t)) stuRow.classList.add('half-row');
+  if(ri>=baseSlotRows && !hasElmaInTime(t)) stuRow.classList.add('half-row');
   const curMonth=SCHEDULE_PERIODS[getCurrentPeriod()].month;
 
   DAYS.forEach((day,di)=>{
@@ -1036,7 +1048,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
     const satEmpty=isSat&&!hasSat;
     const kimhs=getElmaLanes(t,day);
     const satSkip=isSat&&!satEmpty&&rows>5&&!kimhs&&ri>=5;
-    const dayBlocked=!satSkip&&rows>5&&!kimhs&&ri>=5;
+    const dayBlocked=!satSkip&&rows>baseSlotRows&&!kimhs&&ri>=baseSlotRows;
 
     // 번호 셀
     if(hasNum){
@@ -1075,7 +1087,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const slotKey=t+'/'+day+'/'+_l+'/'+_r;
       // 일반 레인 5행 초과는 기본적으로 blocked
       // 출석 모드에서는: 해당 날짜에 MARK_MAP 내용 or 학생이 있을 때만 활성화
-      let isBlocked=rows>5&&!isElma&&ri>=5;
+      let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows;
       if(isBlocked && _attendanceMode && _attendanceDate){
         const _cellDsChk=_dayToCellDs(day);
         const _hasContent=MARK_MAP[slotKey+'/'+_cellDsChk]
@@ -1533,12 +1545,9 @@ function buildTable(){
     let rows=getTimeRows(t);
     // 출석 모드: 해당 시간대의 해당 주에 추가된 row들(MARK_MAP)까지 확장
     if(_attendanceMode && _attendanceDate){
-      const weekMon=_getWeekMon(_attendanceDate);
-      const dayOff={'월':0,'화':1,'수':2,'목':3,'금':4,'토':5};
       let maxRi=rows;
-      for(const [ddKey, offV] of Object.entries(dayOff)){
-        const d=new Date(weekMon); d.setDate(d.getDate()+offV);
-        const dsStr=toDateStr(d);
+      DAYS.forEach(ddKey=>{
+        const dsStr=_dayToCellDs(ddKey);
         for(const mk of Object.keys(MARK_MAP)){
           if(!mk.startsWith(t+'/'+ddKey+'/')) continue;
           const parts=mk.split('/');
@@ -1547,7 +1556,7 @@ function buildTable(){
           const ri=parseInt(parts[3]);
           if(ri>maxRi) maxRi=ri;
         }
-      }
+      });
       rows=Math.max(rows, maxRi);
     }
     const hasSat=!!SAT_TIME_LABEL[t];
@@ -1716,6 +1725,7 @@ let _flashKey=null;
  * 엑셀 저장 (SheetJS)
  * ════════════════════════════════════════════════════════════════ */
 function exportExcel(){
+  if(window.SCAuth && !SCAuth.requirePermission('exportData','엑셀 내보내기')) return;
   if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
 
   const DAYS=getDays(),TIMES=getTimes(),LANE_COUNT=getLanes(),HAS_NUM=getHasNum();

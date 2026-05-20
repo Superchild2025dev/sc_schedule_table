@@ -82,6 +82,12 @@ if(!window.SCAuth){
 }
 
 function dbSet(key,val){
+  const auditBypass=(typeof _auditLock!=='undefined' && _auditLock);
+  if(!auditBypass && window.SCAuth && !SCAuth.canWriteKey(key)){
+    if(typeof toast==='function') toast('저장 권한이 없습니다','err');
+    console.warn('[AUTH] dbSet blocked:', key);
+    return;
+  }
   const json=typeof val==='string'?val:JSON.stringify(val);
   _dbCache[key]=json;
   try{localStorage.setItem(_lsKey(key),json);}catch(e){}
@@ -120,6 +126,12 @@ function dbGet(key){
   try{return localStorage.getItem(_lsKey(key));}catch(e){return null;}
 }
 function dbRemove(key){
+  const auditBypass=(typeof _auditLock!=='undefined' && _auditLock);
+  if(!auditBypass && window.SCAuth && !SCAuth.canWriteKey(key)){
+    if(typeof toast==='function') toast('삭제 권한이 없습니다','err');
+    console.warn('[AUTH] dbRemove blocked:', key);
+    return;
+  }
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
   if(_fbReady) _fb.child(key.replace(/[.#$/\[\]]/g,'_')).remove();
@@ -153,9 +165,13 @@ const STORAGE_KEYS = {
   DAY_SNAPSHOT: 'swim_day_snapshot', // 날짜별 학생/담임 스냅샷 (date → {students, inst})
   CLOSED:   'swim_closed',
   TAB_LIST: 'swim_tab_list',
+  TAB_FOLDERS: 'swim_tab_folders',
   TEACHERS: 'swim_teachers',     // [v115] 선생님 목록 (이름+색)
   PERIODS:  'swim_periods',     // 수업 기간 목록
   RETIRE_HISTORY: 'swim_retire_history', // [v118] 퇴원 기록 보관 (영구)
+  AUDIT_LOG: 'swim_audit_log',   // 기록관리: 이동/편집 로그
+  RESTORE_POINTS: 'swim_restore_points', // 기록관리: 특정 시점 복구 포인트
+  AGE_YEAR: 'swim_age_year',     // 학생 나이 자동 증가 마지막 반영 연도
   VERSION:  'swim_ver',
 };
 
@@ -179,6 +195,11 @@ let _snapshotWarnedAt=0;
 let _timeMachineWarnedAt=0;
 
 function saveJSON(key, val, skipUndo){
+  if(window.SCAuth && !SCAuth.canWriteKey(key)){
+    console.warn('[AUTH] saveJSON blocked:', key);
+    if(typeof toast==='function') toast('저장 권한이 없습니다','err');
+    return;
+  }
   // [v98 SAFETY] Firebase 로드 전 저장 차단
   if(!_firebaseLoaded){
     console.warn('[v98 SAFETY] Firebase 로드 전 saveJSON 차단:', key);
@@ -206,8 +227,18 @@ function saveJSON(key, val, skipUndo){
     }
     return;
   }
+  let auditPoint=null;
+  if(key!==STORAGE_KEYS.AUDIT_LOG && key!==STORAGE_KEYS.RESTORE_POINTS && typeof createAuditPoint==='function'){
+    auditPoint=createAuditPoint([key], {
+      type:(typeof describeStorageChangeType==='function')?describeStorageChangeType(key):'edit',
+      label:(typeof describeStorageChange==='function')?describeStorageChange(key):'편집'
+    });
+  }
   if(!skipUndo) pushUndo();
   dbSet(key, JSON.stringify(val));
+  if(auditPoint && typeof recordAuditPoint==='function'){
+    recordAuditPoint(auditPoint, [key]);
+  }
 }
 
 function loadFromFirebase(callback){

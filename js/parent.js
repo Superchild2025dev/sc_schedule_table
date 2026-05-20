@@ -598,14 +598,20 @@ function getCurrentPeriod(){
 function getClassDatesForDay(period,day){
   if(!period) return [];
   const DAY_INDEX={'월':1,'화':2,'수':3,'목':4,'금':5,'토':6,'일':0};
-  const targetDow=DAY_INDEX[day];
-  if(targetDow===undefined) return [];
+  const targetDows=[];
+  const exact=DAY_INDEX[day];
+  if(exact!==undefined) targetDows.push(exact);
+  else String(day||'').split('').forEach(ch=>{
+    const idx=DAY_INDEX[ch];
+    if(idx!==undefined&&!targetDows.includes(idx)) targetDows.push(idx);
+  });
+  if(!targetDows.length) return [];
   const dates=[];
   const start=new Date(period.start);
   const end=new Date(period.end);
   const cur=new Date(start);
   while(cur<=end){
-    if(cur.getDay()===targetDow){
+    if(targetDows.includes(cur.getDay())){
       const ds=toDateStr(cur);
       dates.push({ds, closed:isClosedDate(ds)});
     }

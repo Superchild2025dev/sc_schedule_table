@@ -3,7 +3,96 @@
   let _readyPromise = null;
   let _readyResolve = null;
   let _currentUser = null;
+  let _currentProfile = null;
   let _loginReady = false;
+
+  const SUPER_ADMIN_EMAILS = ['2025superchild@gmail.com'];
+  const ROLE_PERMISSIONS = {
+    superAdmin: ['*'],
+    desk: [
+      'viewSchedule',
+      'editSchedule',
+      'teacherRequests',
+      'attendanceCheck',
+      'manageCalendar',
+      'manageRecords',
+      'manageTeachers',
+      'exportData',
+    ],
+    teacher: [
+      'viewSchedule',
+      'teacherRequests',
+      'attendanceCheck',
+      'registerMakeup',
+    ],
+  };
+
+  function normalizeEmail(email){
+    return String(email||'').trim().toLowerCase();
+  }
+
+  function roleLabel(role){
+    if(role === 'superAdmin') return '최고관리자';
+    if(role === 'desk') return '데스크';
+    if(role === 'teacher') return '선생님';
+    return '미설정';
+  }
+
+  function defaultProfile(user){
+    const email = normalizeEmail(user && user.email);
+    const isSuper = SUPER_ADMIN_EMAILS.includes(email);
+    return {
+      uid: user && user.uid || '',
+      email,
+      name: user && (user.displayName || user.email) || '',
+      role: isSuper ? 'superAdmin' : 'teacher',
+      branchIds: isSuper ? ['gagyeong','yongam'] : [],
+      teacherName: '',
+      active: true,
+      missingProfile: !isSuper,
+    };
+  }
+
+  function normalizeBranchIds(branchIds){
+    if(Array.isArray(branchIds)) return branchIds.filter(Boolean);
+    if(branchIds && typeof branchIds === 'object'){
+      return Object.keys(branchIds).filter(function(k){ return !!branchIds[k]; });
+    }
+    return [];
+  }
+
+  function normalizeProfile(raw,user){
+    const base = defaultProfile(user);
+    if(!raw || typeof raw !== 'object') return base;
+    const role = raw.role === 'superAdmin' || raw.role === 'desk' || raw.role === 'teacher'
+      ? raw.role
+      : base.role;
+    return Object.assign({}, base, raw, {
+      uid: user && user.uid || raw.uid || '',
+      email: normalizeEmail(raw.email || user && user.email),
+      role,
+      branchIds: normalizeBranchIds(raw.branchIds),
+      active: raw.active !== false,
+      missingProfile: false,
+    });
+  }
+
+  function loadStaffProfile(user){
+    if(!user) return Promise.resolve(null);
+    try{
+      ensureFirebaseApp();
+      if(!firebase.database) return Promise.resolve(defaultProfile(user));
+      return firebase.database().ref('staff_users/'+user.uid).once('value').then(function(snap){
+        return normalizeProfile(snap.val(), user);
+      }).catch(function(e){
+        console.warn('[AUTH] staff profile load failed', e);
+        return defaultProfile(user);
+      });
+    }catch(e){
+      console.warn('[AUTH] staff profile init failed', e);
+      return Promise.resolve(defaultProfile(user));
+    }
+  }
 
   function ensureFirebaseApp(){
     if(!window.firebase) throw new Error('Firebase SDK가 로드되지 않았습니다');
@@ -55,6 +144,9 @@
     document.querySelectorAll('[data-auth-email]').forEach(function(el){
       el.textContent = user && user.email ? user.email : '';
     });
+    document.querySelectorAll('[data-auth-role]').forEach(function(el){
+      el.textContent = _currentProfile ? roleLabel(_currentProfile.role) : '';
+    });
   }
 
   function showLogin(){
@@ -67,6 +159,94 @@
     if(screen) screen.style.display = 'none';
   }
 
+  function currentBranchId(){
+    try{return localStorage.getItem('selected_branch') || '';}catch(e){return '';}
+  }
+
+  function canAccessBranch(branchId){
+    const p = _currentProfile;
+    if(!p || p.role === 'superAdmin') return true;
+    const allowed = normalizeBranchIds(p.branchIds);
+    if(!allowed.length || !branchId) return true;
+    return allowed.includes(branchId);
+  }
+
+  function hasPermission(permission){
+    const p = _currentProfile;
+    if(!p || p.active === false) return false;
+    if(p.missingProfile && permission !== 'viewSchedule') return false;
+    if(!canAccessBranch(currentBranchId())) return false;
+    const role = p.role || 'teacher';
+    const list = ROLE_PERMISSIONS[role] || [];
+    return list.includes('*') || list.includes(permission);
+  }
+
+  function canWriteKey(key){
+    if(!_currentUser || !_currentProfile) return true;
+    if(_currentProfile.active === false) return false;
+    if(!canAccessBranch(currentBranchId())) return false;
+    if(hasPermission('*') || _currentProfile.role === 'superAdmin') return true;
+    key = String(key||'');
+    if(!key) return true;
+
+    if(key === 'swim_mark' || key === 'swim_requests' || key === 'swim_attendance' ||
+       key === 'swim_att_guests' || key === 'swim_day_snapshot'){
+      return hasPermission('teacherRequests') || hasPermission('attendanceCheck');
+    }
+    if(key === 'swim_closed' || key === 'swim_periods') return hasPermission('manageCalendar');
+    if(key === 'swim_audit_log' || key === 'swim_restore_points' || key === 'swim_retire_history'){
+      return hasPermission('manageRecords');
+    }
+    if(key === 'swim_teachers') return hasPermission('manageTeachers');
+    if(key === 'swim_tab_list' || key === 'swim_tab_folders' || key === 'swim_students' ||
+       key === 'swim_inst' || key === 'swim_retire' || key === 'swim_enroll' ||
+       key === 'swim_disabled' || key === 'swim_reserve' || key === 'swim_hyuwon' ||
+       key === 'swim_move' || key === 'swim_age_year' ||
+       /^swim_stu_/.test(key) || /^swim_inst_/.test(key) || /^swim_bt_.+_(stu|inst)$/.test(key)){
+      return hasPermission('editSchedule');
+    }
+    if(/^staff_users\//.test(key)) return _currentProfile.role === 'superAdmin';
+    return hasPermission('editSchedule');
+  }
+
+  function denyMessage(label){
+    return (label || '이 기능') + ' 권한이 없습니다';
+  }
+
+  function requirePermission(permission,label){
+    if(hasPermission(permission)) return true;
+    if(typeof toast === 'function') toast(denyMessage(label),'err');
+    else alert(denyMessage(label));
+    return false;
+  }
+
+  function requireWriteKey(key,label){
+    if(canWriteKey(key)) return true;
+    if(typeof toast === 'function') toast(denyMessage(label || '저장'),'err');
+    else alert(denyMessage(label || '저장'));
+    return false;
+  }
+
+  function applyPagePermissions(root){
+    root = root || document;
+    if(document.body){
+      document.body.dataset.staffRole = _currentProfile ? (_currentProfile.role || '') : '';
+      document.body.classList.toggle('staff-profile-missing', !!(_currentProfile && _currentProfile.missingProfile));
+    }
+    root.querySelectorAll('[data-perm]').forEach(function(el){
+      const perms = String(el.getAttribute('data-perm')||'').split(/\s+/).filter(Boolean);
+      const ok = !perms.length || perms.some(hasPermission);
+      el.hidden = !ok;
+      el.classList.toggle('perm-hidden', !ok);
+    });
+    root.querySelectorAll('[data-auth-role]').forEach(function(el){
+      el.textContent = _currentProfile ? roleLabel(_currentProfile.role) : '';
+    });
+    root.querySelectorAll('[data-auth-name]').forEach(function(el){
+      el.textContent = _currentProfile ? (_currentProfile.name || _currentProfile.teacherName || '') : '';
+    });
+  }
+
   function injectLoginScreen(){
     if(_loginReady || document.getElementById('staff-auth-screen')) return;
     _loginReady = true;
@@ -76,8 +256,8 @@
     screen.innerHTML = [
       '<form class="staff-auth-box" id="staff-auth-form">',
         '<div class="staff-auth-logo">SC</div>',
-        '<h1>관리자 로그인</h1>',
-        '<p>선생님 이메일 계정으로 접속해주세요</p>',
+        '<h1>직원 로그인</h1>',
+        '<p>발급받은 이메일 계정으로 접속해주세요</p>',
         '<label for="staff-auth-email">이메일</label>',
         '<input id="staff-auth-email" type="email" inputmode="email" autocomplete="username" required>',
         '<label for="staff-auth-password">비밀번호</label>',
@@ -137,13 +317,24 @@
           _currentUser.getIdToken().catch(function(e){
             console.warn('[AUTH] token read failed', e);
           }).then(function(){
+            return loadStaffProfile(_currentUser);
+          }).then(function(profile){
+            _currentProfile = profile;
+            if(_currentProfile && _currentProfile.active === false){
+              setError('비활성화된 직원 계정입니다');
+              showLogin();
+              return;
+            }
+            updateEmailLabels(_currentUser);
             hideLogin();
+            applyPagePermissions(document);
             if(_readyResolve){
               _readyResolve(_currentUser);
               _readyResolve = null;
             }
           });
         }else{
+          _currentProfile = null;
           showLogin();
         }
       }, function(error){
@@ -172,6 +363,20 @@
   window.SCAuth = {
     requireAuth: requireAuth,
     signOut: signOut,
-    currentUser: function(){ return _currentUser; }
+    currentUser: function(){ return _currentUser; },
+    profile: function(){ return _currentProfile; },
+    role: function(){ return _currentProfile && _currentProfile.role || ''; },
+    roleLabel: function(){ return roleLabel(_currentProfile && _currentProfile.role); },
+    teacherName: function(){ return _currentProfile && _currentProfile.teacherName || ''; },
+    can: hasPermission,
+    canWriteKey: canWriteKey,
+    requirePermission: requirePermission,
+    requireWriteKey: requireWriteKey,
+    applyPagePermissions: applyPagePermissions,
+    canAccessBranch: canAccessBranch,
+    profilePath: function(){
+      const user = _currentUser;
+      return user ? 'staff_users/'+user.uid : '';
+    },
   };
 })();

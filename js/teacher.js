@@ -22,6 +22,23 @@ let _activeTab='bogang';
 let _attWeekStart=null;
 const UNASSIGNED_TEACHER_LABEL='담당 미확인';
 
+function staffRole(){
+  return window.SCAuth && typeof SCAuth.role==='function' ? SCAuth.role() : '';
+}
+function staffProfile(){
+  return window.SCAuth && typeof SCAuth.profile==='function' ? SCAuth.profile() : null;
+}
+function isTeacherAccount(){
+  return staffRole()==='teacher';
+}
+function staffTeacherName(){
+  return window.SCAuth && typeof SCAuth.teacherName==='function' ? (SCAuth.teacherName()||'') : '';
+}
+function canEnterTeacher(teacherName){
+  if(!isTeacherAccount()) return true;
+  return !!teacherName && teacherName===staffTeacherName();
+}
+
 /* [v118] 지점 선택 (가경/용암) — 메인 앱과 동일 */
 const SELECTED_BRANCH_KEY='selected_branch';
 let _selectedBranch=null;
@@ -162,12 +179,16 @@ function subscribeChanges(){
   });
 }
 
-function saveMark(){ return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP)); }
-function saveRequests(){ return _fb.child('swim_requests').set(JSON.stringify(REQUESTS)); }
-function saveAttendance(){ return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
-function saveAttGuests(){ return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
-function saveDaySnapshot(){ return _fb.child('swim_day_snapshot').set(JSON.stringify(DAY_SNAPSHOT)); }
+function _canWriteTeacherKey(key,label){
+  return !(window.SCAuth && !SCAuth.requireWriteKey(key,label||'저장'));
+}
+function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP)); }
+function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); return _fb.child('swim_requests').set(JSON.stringify(REQUESTS)); }
+function saveAttendance(){ if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
+function saveAttGuests(){ if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
+function saveDaySnapshot(){ if(!_canWriteTeacherKey('swim_day_snapshot','출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다')); return _fb.child('swim_day_snapshot').set(JSON.stringify(DAY_SNAPSHOT)); }
 function updateAttendanceMapTx(mutator){
+  if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   return _fb.child('swim_attendance').transaction(raw=>{
     const att=parseJSON(raw,{});
@@ -181,6 +202,7 @@ function updateAttendanceMapTx(mutator){
   });
 }
 function updateAttGuestsMapTx(mutator){
+  if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   return _fb.child('swim_att_guests').transaction(raw=>{
     const guests=parseJSON(raw,{});
@@ -194,6 +216,7 @@ function updateAttGuestsMapTx(mutator){
   });
 }
 function updateMarkTx(mutator){
+  if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
   return _fb.child('swim_mark').transaction(raw=>{
@@ -208,6 +231,7 @@ function updateMarkTx(mutator){
   });
 }
 function updateRequestsTx(mutator){
+  if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
   return _fb.child('swim_requests').transaction(raw=>{
@@ -305,16 +329,32 @@ function setRequestStatus(reqId,status){
 function populateTeachers(){
   const sel=document.getElementById('teacher-pick');
   sel.innerHTML='<option value="">선택하세요</option>';
+  const lockedTeacher=isTeacherAccount()?staffTeacherName():'';
+  if(isTeacherAccount()&&!lockedTeacher){
+    sel.innerHTML='<option value="">계정에 담당 선생님 이름이 없습니다</option>';
+    sel.disabled=true;
+    const enter=document.getElementById('teacher-enter');
+    if(enter) enter.disabled=true;
+    const wrap=document.getElementById('pending-teachers');
+    if(wrap) wrap.innerHTML='<div class="req-warning">관리자가 이 계정에 teacherName을 등록해야 입장할 수 있습니다.</div>';
+    return;
+  }
   // INST_MAP에서 이름 수집 (중복 제거)
   const names=new Set();
-  Object.values(INST_MAP).forEach(inst=>{
-    if(inst?.n) names.add(inst.n);
-  });
-  // TEACHERS 목록에서도 추가
-  TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
+  if(lockedTeacher){
+    names.add(lockedTeacher);
+  } else {
+    Object.values(INST_MAP).forEach(inst=>{
+      if(inst?.n) names.add(inst.n);
+    });
+    // TEACHERS 목록에서도 추가
+    TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
+  }
   // [v118] 선생님별 대기 요청 카운트 (REQUESTS 중 status==='pending' or 없음)
   const pendingCounts = _countPendingByTeacher();
-  Object.keys(pendingCounts).forEach(n=>names.add(n));
+  Object.keys(pendingCounts).forEach(n=>{
+    if(!lockedTeacher || n===lockedTeacher) names.add(n);
+  });
   [...names].sort().forEach(n=>{
     const opt=document.createElement('option');
     opt.value=n;
@@ -322,6 +362,10 @@ function populateTeachers(){
     opt.textContent = cnt > 0 ? `${n}  🔴 ${cnt}건` : n;
     sel.appendChild(opt);
   });
+  sel.disabled=!!lockedTeacher;
+  if(lockedTeacher) sel.value=lockedTeacher;
+  const enter=document.getElementById('teacher-enter');
+  if(enter) enter.disabled=false;
   _renderPendingTeacherChips(pendingCounts);
 }
 
@@ -338,7 +382,10 @@ function _countPendingByTeacher(){
 function _renderPendingTeacherChips(counts){
   const wrap = document.getElementById('pending-teachers');
   if(!wrap) return;
-  const entries = Object.entries(counts).filter(([n,c]) => c > 0).sort((a,b)=>b[1]-a[1]);
+  const lockedTeacher=isTeacherAccount()?staffTeacherName():'';
+  const entries = Object.entries(counts)
+    .filter(([n,c]) => c > 0 && (!lockedTeacher || n===lockedTeacher))
+    .sort((a,b)=>b[1]-a[1]);
   if(!entries.length){ wrap.innerHTML=''; return; }
   let html = `<div class="pending-label">🔔 대기 요청 있는 선생님 (${entries.reduce((s,[,c])=>s+c,0)}건)</div>`;
   entries.forEach(([name, cnt]) => {
@@ -349,6 +396,10 @@ function _renderPendingTeacherChips(counts){
 }
 
 function enterAsTeacher(teacherName){
+  if(!canEnterTeacher(teacherName)){
+    toast('이 계정은 담당 선생님으로만 입장할 수 있습니다','err');
+    return;
+  }
   _currentTeacher=teacherName;  // '' = 전체
   try{sessionStorage.setItem('teacher_name',teacherName);}catch(e){}
   document.getElementById('teacher-select-screen').style.display='none';
@@ -713,6 +764,7 @@ function renderCancelList(reqs){
 
 /* ── 수락/거절 액션 ── */
 async function acceptRequest(reqId){
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
   const req=REQUESTS[reqId];
   if(!req) return;
   let claimed=false;
@@ -771,6 +823,7 @@ async function acceptRequest(reqId){
 }
 
 async function rejectRequest(reqId){
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
   const req=REQUESTS[reqId];
   if(!req) return;
   if(!confirm('이 요청을 거절하시겠습니까?')) return;
@@ -785,6 +838,7 @@ async function rejectRequest(reqId){
 }
 
 async function rejectBogangGroup(groupKey){
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강 요청 처리')) return;
   if(!groupKey) return;
   const ids=Object.entries(REQUESTS)
     .filter(([id,req])=>
@@ -1083,6 +1137,7 @@ function renderAttendanceTimetable(){
 }
 
 async function cycleAttendance(slotKey, ds){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   const key=slotKey+'/'+ds;
   try{
     await updateAttendanceMapTx(att=>{
@@ -1102,6 +1157,7 @@ async function cycleAttendance(slotKey, ds){
 }
 
 async function cycleGuestAttendance(sgk, ds, gid){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   const key=sgk+'/'+ds;
   try{
     await updateAttGuestsMapTx(guests=>{
@@ -1123,6 +1179,7 @@ async function cycleGuestAttendance(sgk, ds, gid){
 }
 
 async function addGuest(sgk, ds){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 추가')) return;
   const name=prompt('추가할 학생 이름');
   if(!name||!name.trim()) return;
   const ageStr=prompt('나이 (선택)')||'';
@@ -1145,6 +1202,7 @@ async function addGuest(sgk, ds){
 }
 
 async function deleteGuest(sgk, ds, gid){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 삭제')) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const key=sgk+'/'+ds;
   try{
@@ -1160,6 +1218,7 @@ async function deleteGuest(sgk, ds, gid){
 }
 
 async function markAllPresentToday(){
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   const today=toDateStr(new Date());
   const {students, inst}=getDataForDate(today);
   const dow=['일','월','화','수','목','금','토'][new Date().getDay()];
@@ -1206,6 +1265,7 @@ function toast(msg,type){
 document.addEventListener('DOMContentLoaded', async ()=>{
   if(window.SCAuth && typeof SCAuth.requireAuth === 'function'){
     await SCAuth.requireAuth();
+    if(typeof SCAuth.applyPagePermissions==='function') SCAuth.applyPagePermissions(document);
   }
   initFirebase();
   try{
@@ -1214,20 +1274,28 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   }catch(e){toast('연결 실패','err');return;}
 
   populateTeachers();
+  const allBtn=document.getElementById('teacher-all');
+  if(allBtn && isTeacherAccount()) allBtn.style.display='none';
 
   // 세션 복구
   try{
     const saved=sessionStorage.getItem('teacher_name');
-    if(saved!==null) enterAsTeacher(saved);
+    if(isTeacherAccount()){
+      const name=staffTeacherName();
+      if(name) enterAsTeacher(name);
+    } else if(saved!==null) enterAsTeacher(saved);
   }catch(e){}
 
   // 이벤트
   document.getElementById('teacher-enter').addEventListener('click',()=>{
-    const name=document.getElementById('teacher-pick').value;
+    const name=isTeacherAccount()?staffTeacherName():document.getElementById('teacher-pick').value;
     if(!name){toast('선생님을 선택해주세요','err');return;}
     enterAsTeacher(name);
   });
-  document.getElementById('teacher-all').addEventListener('click',()=>enterAsTeacher(''));
+  document.getElementById('teacher-all').addEventListener('click',()=>{
+    if(isTeacherAccount()){toast('전체 보기 권한이 없습니다','err');return;}
+    enterAsTeacher('');
+  });
   document.getElementById('teacher-logout').addEventListener('click',()=>{
     if(confirm('로그아웃하시겠습니까?')) logout();
   });

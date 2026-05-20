@@ -46,15 +46,16 @@
     </div>
     <input type="date" id="tm-date" class="hbtn" style="width:130px;color:#fff;background:rgba(255,255,255,.12);font-size:11px" title="타임머신" onchange="setTimeMachine(this.value)">
     <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
-    <button class="hbtn" id="attendance-toggle-btn" onclick="toggleAttendanceMode()">📋 출석부</button>
-    <button class="hbtn" id="parent-req-btn" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
-    <button class="hbtn" onclick="openRetireHistoryModal()">📋 퇴원기록</button>
-    <button class="hbtn" onclick="openTeacherModal()">👥 선생님 관리</button>
-    <button class="hbtn" onclick="openPeriodModal()">📆 기간 관리</button>
-    <button class="hbtn" onclick="openClosedModal()">📅 휴관일 관리</button>
-    <button class="hbtn" onclick="if(confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')){Object.keys(_dbCache).forEach(k=>dbRemove(k));try{localStorage.clear();}catch(e){}if(_fbReady)_fb.remove();location.reload();}">🔄 초기화</button>
-    <button class="hbtn" onclick="exportExcel()">📥 엑셀</button>
+    <button class="hbtn" id="attendance-toggle-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">📋 출석부</button>
+    <button class="hbtn" id="parent-req-btn" data-perm="teacherRequests" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
+    <button class="hbtn" data-perm="manageRecords" onclick="openRecordManagerModal()">📋 기록관리</button>
+    <button class="hbtn" data-perm="manageTeachers" onclick="openTeacherModal()">👥 선생님 관리</button>
+    <button class="hbtn" data-perm="manageCalendar" onclick="openPeriodModal()">📆 기간 관리</button>
+    <button class="hbtn" data-perm="manageCalendar" onclick="openClosedModal()">📅 휴관일 관리</button>
+    <button class="hbtn" data-perm="resetData" onclick="if(confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')){Object.keys(_dbCache).forEach(k=>dbRemove(k));try{localStorage.clear();}catch(e){}if(_fbReady)_fb.remove();location.reload();}">🔄 초기화</button>
+    <button class="hbtn" data-perm="exportData" onclick="exportExcel()">📥 엑셀</button>
     <button class="hbtn" onclick="window.print()">🖨️ 인쇄</button>
+    <span class="staff-auth-role" data-auth-role></span>
     <span class="staff-auth-email" data-auth-email></span>
     <button class="hbtn staff-auth-logout" onclick="SCAuth.signOut()" title="계정 로그아웃">로그아웃</button>
   </div>
@@ -69,7 +70,7 @@
   <button onclick="setAttToday()" style="background:rgba(255,255,255,0.25);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">오늘</button>
   <span id="att-bar-date-label" style="font-size:16px;font-weight:900;margin-left:8px;padding:4px 12px;background:#fff;color:#059669;border-radius:8px"></span>
   <span id="att-bar-stats" style="margin-left:auto;font-size:13px;font-weight:700"></span>
-  <button id="att-edit-btn" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
+  <button id="att-edit-btn" data-perm="editSchedule" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
   <button onclick="toggleAttendanceMode()" style="background:rgba(0,0,0,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✕ 닫기</button>
 </div>
 
@@ -128,7 +129,7 @@
       <button id="att-modal-present" style="padding:12px;font-size:15px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:10px;cursor:pointer">✓ 출석</button>
       <button id="att-modal-absent" style="padding:12px;font-size:15px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:10px;cursor:pointer">✗ 결석</button>
       <button id="att-modal-cancel" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#6B7280;border:2px solid #D1D5DB;border-radius:10px;cursor:pointer">○ 취소 (미체크)</button>
-      <button id="att-modal-delete" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
+      <button id="att-modal-delete" data-perm="editSchedule" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
     </div>
     <button id="att-modal-close" style="width:100%;margin-top:12px;padding:8px;font-size:12px;background:transparent;color:#9CA3AF;border:none;cursor:pointer">닫기</button>
   </div>
@@ -136,12 +137,20 @@
 
 <div id="tab-modal" class="tab-modal">
   <div class="tab-modal-box">
-    <div class="tab-modal-title">새 탭 만들기</div>
-    <div class="tab-modal-btns">
-      <button class="tab-type-btn" data-new-type="regular">📋 정규시간표</button>
-      <button class="tab-type-btn" data-new-type="bangteuk">🏊 방특시간표</button>
+    <div class="tab-modal-title">새 시간표 만들기</div>
+    <div class="tab-modal-btns tab-type-row">
+      <button class="tab-type-btn active" data-tab-type="regular">정규시간표</button>
+      <button class="tab-type-btn" data-tab-type="bangteuk">방특시간표</button>
     </div>
-    <button style="margin-top:12px;border:none;background:none;color:#888;font-size:12px;cursor:pointer;font-family:inherit" onclick="document.getElementById('tab-modal').classList.remove('show')">취소</button>
+    <label class="tab-modal-label" for="tab-new-name">시간표 이름</label>
+    <input id="tab-new-name" class="tab-modal-input" placeholder="예: 6월 초급반">
+    <label class="tab-modal-label" for="tab-new-folder">폴더</label>
+    <select id="tab-new-folder" class="tab-modal-input"></select>
+    <input id="tab-new-folder-name" class="tab-modal-input" placeholder="새 폴더 이름">
+    <div class="tab-modal-actions">
+      <button class="tab-modal-cancel" data-tab-cancel>취소</button>
+      <button class="tab-modal-create" data-tab-create>만들기</button>
+    </div>
   </div>
 </div>
 
@@ -182,6 +191,34 @@
     </div>
     <div class="modal-ft">
       <button class="btn btn-o" onclick="closeRetireHistoryModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="record-manager-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeRecordManagerModal()">
+  <div class="modal record-modal">
+    <div class="modal-hd">📋 기록관리
+      <div class="modal-hd-r record-toolbar">
+        <input id="record-search" type="search" placeholder="이름/내용 검색" class="fi record-search" oninput="changeRecordFilter()">
+        <select id="record-type" class="fi record-select" onchange="changeRecordFilter()">
+          <option value="all">전체 기록</option>
+          <option value="move">이동 로그</option>
+          <option value="edit">편집 로그</option>
+          <option value="retire">퇴원 기록</option>
+          <option value="restore">되돌리기 기록</option>
+        </select>
+        <input id="record-month" type="month" class="fi record-month" title="월별 필터" onchange="changeRecordFilter()">
+        <input id="record-date" type="date" class="fi record-date" title="날짜별 필터" onchange="changeRecordFilter()">
+        <button class="btn btn-o record-clear" onclick="clearRecordDateFilters()">초기화</button>
+      </div>
+    </div>
+    <div class="modal-body record-body">
+      <div id="record-summary" class="record-summary"></div>
+      <div id="record-list" class="record-list"></div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-o" onclick="exportRecordManagerCsv()">📥 CSV</button>
+      <button class="btn btn-o" onclick="closeRecordManagerModal()">닫기</button>
     </div>
   </div>
 </div>

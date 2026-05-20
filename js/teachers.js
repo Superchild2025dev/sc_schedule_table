@@ -61,6 +61,7 @@ function updateTeacherStyles(){
 
 /* [v115] 선생님 관리 모달 */
 function openTeacherModal(){
+  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   document.getElementById('teacher-modal').style.display='flex';
   renderTeacherList();
 }
@@ -111,6 +112,7 @@ function renderTeacherList(){
   });
 }
 async function addTeacher(){
+  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   // 중복 안 나는 기본 이름 찾기
   let createdName='';
   try{
@@ -136,6 +138,7 @@ async function addTeacher(){
   }
 }
 async function handleTeacherColorChange(idx, newColor){
+  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   if(!TEACHERS[idx]) return;
   const targetName=TEACHERS[idx].n;
   try{
@@ -152,6 +155,7 @@ async function handleTeacherColorChange(idx, newColor){
   }
 }
 async function handleTeacherNameEdit(idx, oldName, newName){
+  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   if(!TEACHERS[idx]) return;
   // 중복 검사
   if(TEACHERS.some((t,i)=>i!==idx && t.n===newName)){
@@ -203,6 +207,7 @@ async function handleTeacherNameEdit(idx, oldName, newName){
   }
 }
 async function handleTeacherDelete(idx){
+  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   const t=TEACHERS[idx];
   if(!t) return;
   // 사용 중인지 확인
@@ -234,6 +239,7 @@ async function handleTeacherDelete(idx){
 let _instPopup={el:null,key:null};
 
 function openInstPopup(td,t,day,lane){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','담임 편집')) return;
   // 출석부 모드면 담임 팝업 무반응 (+ 버튼만 동작)
   if(typeof _attendanceMode!=='undefined' && _attendanceMode) return;
   // 교환 모드 → 목적지로 실행

@@ -105,6 +105,18 @@
   font-weight:800;
   opacity:.8;
 }
+.staff-auth-role{
+  font-size:10px;
+  font-weight:900;
+  padding:3px 7px;
+  border-radius:999px;
+  background:rgba(255,255,255,.22);
+  color:#fff;
+  white-space:nowrap;
+}
 .staff-auth-logout{
   white-space:nowrap;
+}
+.perm-hidden{
+  display:none!important;
 }

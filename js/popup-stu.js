@@ -68,6 +68,7 @@ function _locUsesVehicle(loc){
 // _tabFocusTime → data.js (cross-file shared state)
 
 function openStuPopup(td,t,day,lane,row){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','인원 편집')) return;
   // 담임 교환 모드면 해당 레인의 담임 교환으로 처리
   if(_instSwapMode){
     executeInstSwap(t,day,lane);
@@ -454,10 +455,9 @@ function buildStuPopupLeft(stu, slotKey, enrollMode){
 }
 
 /**
- * 학생 팝업 우측 컬럼: 날짜 그리드 + 액션 패널 (방특반에선 숨김)
+ * 학생 팝업 우측 컬럼: 날짜 그리드 + 액션 패널
  */
 function buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml){
-  if(isBangteuk()) return '';
   return `<div class="stu-popup-right">
     <div class="stu-dates-label">${curPeriod.month}월 수업</div>
     <div class="stu-dates-row">${renderDateBoxes(classDates.cur, slotKey, selDate, retireDate, retireName, enrollDate, enrollName)}</div>
@@ -727,6 +727,9 @@ async function handleDateBoxClick(dateBox, ctx){
 
   // 0) 휴원 모드면 날짜 토글
   if(_stuPopup.showHyuwon){
+    const curHyuwon=HYUWON_MAP[slotKey];
+    const isHyuwonOn=!!(curHyuwon&&curHyuwon.dates&&curHyuwon.dates.includes(ds));
+    if(isHyuwonOn&&!confirm('삭제하시겠습니까?')) return;
     try{
       await updateHyuwonMapTx(map=>{
         let hyuwon=map[slotKey];
@@ -757,14 +760,15 @@ async function handleDateBoxClick(dateBox, ctx){
 
   // 1) 제외일 클릭 → 해제
   if(RETIRE_MAP[slotKey]?.ds===ds){
+    if(!confirm(_reserveMoveDeleteMessage(RETIRE_MAP[slotKey]))) return;
     try{
-      await updateRetireMapTx(retire=>{delete retire[slotKey];return retire;});
+      const paired=await deleteRetireReservation(slotKey);
       _stuPopup.selDate=null;
       _stuPopup.showEnroll=false;
       _flashKey=slotKey;
       renderStuPopup();
       buildTable();
-      toast('제외 해제','ok');
+      toast(paired?'예약 이동 취소':'제외 해제','ok');
     }catch(err){
       toast(err?.message||'제외 해제 실패','err');
       console.error(err);
@@ -962,12 +966,13 @@ async function handleRetireSet(e, ctx){
   const ds=_stuPopup.selDate;
   // 같은 날짜 토글 → 해제
   if(RETIRE_MAP[slotKey]?.ds===ds){
+    if(!confirm(_reserveMoveDeleteMessage(RETIRE_MAP[slotKey]))) return;
     try{
-      await updateRetireMapTx(retire=>{delete retire[slotKey];return retire;});
+      const paired=await deleteRetireReservation(slotKey);
       renderStuPopup();
       _flashKey=slotKey;
       buildTable();
-      toast('제외 해제','ok');
+      toast(paired?'예약 이동 취소':'제외 해제','ok');
     }catch(err){
       toast(err?.message||'제외 해제 실패','err');
       console.error(err);
@@ -1187,14 +1192,15 @@ function handleEnrollFromLeft(e, ctx){
 }
 
 async function handleEnrollDel(e, ctx){
+  if(!confirm(_reserveMoveDeleteMessage(ENROLL_MAP[ctx.slotKey]))) return;
   try{
-    await updateEnrollMapTx(enroll=>{delete enroll[ctx.slotKey];return enroll;});
+    const paired=await deleteEnrollReservation(ctx.slotKey);
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
     _flashKey=ctx.slotKey;
     renderStuPopup();
     buildTable();
-    toast('등록 해제','ok');
+    toast(paired?'예약 이동 취소':'등록 해제','ok');
   }catch(err){
     toast(err?.message||'등록 해제 실패','err');
     console.error(err);
@@ -1411,6 +1417,7 @@ let _moveMode=null; // {srcKey, type:'all'|'stu', stuData, srcTd}
 function startMove(type){
   const {t,day,lane,row}=_stuPopup;
   const srcKey=t+'/'+day+'/'+lane+'/'+row;
+  if(_blockReserveMoveLockedSlot(type,srcKey)) return;
 
   // 보강/샘플 이동 모드
   if(type==='mark'){
@@ -1547,7 +1554,8 @@ function askDateForDay(day, callback){
   backdrop.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99998;display:flex;align-items:center;justify-content:center';
   const box=document.createElement('div');
   box.style.cssText='background:#fff;padding:14px;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.2);max-width:320px;width:90%';
-  box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">📅 ${day}요일 날짜 선택</div>
+  const dayTitle=(typeof getDayIndexes==='function'&&getDayIndexes(day).length>1)?day:(day+'요일');
+  box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">📅 ${dayTitle} 날짜 선택</div>
     <div id="dpm-dates" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:300px;overflow-y:auto"></div>
     <div style="margin-top:10px;display:flex;gap:4px">
       <button id="dpm-cancel" class="btn btn-o" style="flex:1;padding:6px;font-size:11px">취소</button>
@@ -1568,6 +1576,93 @@ function askDateForDay(day, callback){
   });
   box.querySelector('#dpm-cancel').onclick=()=>{backdrop.remove();callback(null);};
   backdrop.onclick=(e)=>{if(e.target===backdrop){backdrop.remove();callback(null);}};
+}
+
+function _sameWeekDateForDay(anchorDs, dayName){
+  if(typeof getDateForDayInWeek==='function'){
+    return toDateStr(getDateForDayInWeek(dayName,anchorDs));
+  }
+  const target=DAY_INDEX[dayName];
+  if(target===undefined) return anchorDs;
+  const d=new Date(anchorDs+'T00:00:00');
+  if(Number.isNaN(d.getTime())) return anchorDs;
+  const current=d.getDay();
+  d.setDate(d.getDate()+(target-current));
+  return toDateStr(d);
+}
+
+function _isReserveMoveEntry(entry){
+  return !!(entry&&entry.moveType==='reserve'&&entry.moveId&&entry.pairKey);
+}
+
+function _reserveMoveDeleteMessage(entry){
+  return _isReserveMoveEntry(entry)
+    ? '예약 이동을 취소하면 짝으로 연결된 등록/제외 예약도 함께 삭제됩니다. 삭제하시겠습니까?'
+    : '삭제하시겠습니까?';
+}
+
+function _reserveMoveAtSlot(slotKey,retire,enroll){
+  const r=retire||RETIRE_MAP||{};
+  const e=enroll||ENROLL_MAP||{};
+  return _isReserveMoveEntry(r[slotKey])||_isReserveMoveEntry(e[slotKey]);
+}
+
+function _isReserveMoveLockedMoveType(type){
+  return type==='all'||type==='stu'||type==='swap'||type==='reserve'||type==='enroll';
+}
+
+function _reserveMoveLockedMessage(){
+  return '예약 이동이 걸린 칸입니다. 먼저 예약 이동을 취소한 뒤 다시 이동해주세요.';
+}
+
+function _blockReserveMoveLockedSlot(type,slotKey){
+  if(!_isReserveMoveLockedMoveType(type)) return false;
+  if(!_reserveMoveAtSlot(slotKey)) return false;
+  toast(_reserveMoveLockedMessage(),'err');
+  return true;
+}
+
+function _deleteReserveMovePair(retire,enroll,kind,slotKey){
+  const entry=kind==='retire'?retire[slotKey]:enroll[slotKey];
+  if(kind==='retire') delete retire[slotKey];
+  else delete enroll[slotKey];
+  if(!_isReserveMoveEntry(entry)) return false;
+
+  const pairMap=kind==='retire'?enroll:retire;
+  const pair=pairMap[entry.pairKey];
+  if(pair&&pair.moveId===entry.moveId){
+    delete pairMap[entry.pairKey];
+    return true;
+  }
+  return false;
+}
+
+async function deleteRetireReservation(slotKey){
+  let paired=false;
+  await updateScheduleTx(ctx=>{
+    const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+    const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+    if(!retire[slotKey]){ctx.abort('제외 예약이 이미 없습니다');return;}
+    paired=_deleteReserveMovePair(retire,enroll,'retire',slotKey);
+    ctx.set(STORAGE_KEYS.RETIRE,retire);
+    if(paired) ctx.set(STORAGE_KEYS.ENROLL,enroll);
+    return true;
+  });
+  return paired;
+}
+
+async function deleteEnrollReservation(slotKey){
+  let paired=false;
+  await updateScheduleTx(ctx=>{
+    const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+    const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+    if(!enroll[slotKey]){ctx.abort('등록 예약이 이미 없습니다');return;}
+    paired=_deleteReserveMovePair(retire,enroll,'enroll',slotKey);
+    if(paired) ctx.set(STORAGE_KEYS.RETIRE,retire);
+    ctx.set(STORAGE_KEYS.ENROLL,enroll);
+    return true;
+  });
+  return paired;
 }
 
 function _slotParts(slotKey){
@@ -1687,10 +1782,14 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         ctx.set(STORAGE_KEYS.DISABLED,disabled);
 
         const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        if(_reserveMoveAtSlot(srcKey,retire,enroll)||_reserveMoveAtSlot(dstKey,retire,enroll)){
+          ctx.abort(_reserveMoveLockedMessage());
+          return;
+        }
         _swapMapKey(retire,srcKey,dstKey);
         ctx.set(STORAGE_KEYS.RETIRE,retire);
 
-        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
         _swapMapKey(enroll,srcKey,dstKey);
         ctx.set(STORAGE_KEYS.ENROLL,enroll);
 
@@ -1703,7 +1802,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         _swapFutureHyuwon(hyuwon,srcKey,dstKey,todayStr);
         ctx.set(STORAGE_KEYS.休원,hyuwon);
         return true;
-      });
+      }, {type:'move', label:'자리바꾸기', detail:`${srcKey} → ${dstKey}`});
       const srcLabel=srcStu.n+(srcStu.a||'');
       const dstLabel=dstStu?dstStu.n+(dstStu.a||''):'빈 셀';
       _finishMove(`${srcLabel} ↔ ${dstLabel} 자리바꾸기 완료`);
@@ -1736,7 +1835,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         marks[dstKey+'/'+newDs]=markData;
         ctx.set(STORAGE_KEYS.MARK,marks);
         return true;
-      });
+      }, {type:'move', label:(markType==='bogang'?'보강 이동':'샘플 이동'), detail:`${srcKey}/${srcDs} → ${dstKey}/${newDs}`});
     };
     // 요일이 다르면 날짜 선택 모달
     if(sD!==dstDay){
@@ -1777,11 +1876,12 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         if(retire[dstKey]){ctx.abort('목적지에 제외 예약이 있습니다');return;}
         const srcEnroll=enroll[srcKey];
         if(!srcEnroll){ctx.abort('원본 등록 예약이 이미 변경되었습니다');return;}
+        if(_isReserveMoveEntry(srcEnroll)){ctx.abort(_reserveMoveLockedMessage());return;}
         delete enroll[srcKey];
         enroll[dstKey]={...srcEnroll, ...enrData, ds:newDs};
         ctx.set(STORAGE_KEYS.ENROLL,enroll);
         return true;
-      });
+      }, {type:'move', label:'등록 예약 이동', detail:`${srcKey} → ${dstKey}`});
     };
     // 요일이 다르면 날짜 선택
     if(sD!==dstDay){
@@ -1810,13 +1910,19 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   // 예약 이동 (전체) → RETIRE(출발) + ENROLL(도착) 조합
   if(type==='reserve'){
     const {stu}=_moveMode;
+    const [,srcDay]=srcKey.split('/');
     // 날짜 선택
     askDateForDay(dstDay, async function(newDs){
       if(!newDs){return;}
+      const sourceDs=_sameWeekDateForDay(newDs,srcDay);
+      const moveId='reserve-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);
       const enrollEntry={
         ds:newDs,
         name:stu.n,
         age:stu.a||null,
+        moveType:'reserve',
+        moveId,
+        pairKey:srcKey,
       };
       if(stu.p) enrollEntry.p=stu.p;
       if(stu.v) enrollEntry.v=true;
@@ -1830,13 +1936,14 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
           if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 예약 가능합니다');return;}
           if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
+          if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
           if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
-          retire[srcKey]={ds:newDs, name:stu.n};
+          retire[srcKey]={ds:sourceDs, name:stu.n, moveType:'reserve', moveId, pairKey:dstKey};
           enroll[dstKey]=enrollEntry;
           ctx.set(STORAGE_KEYS.RETIRE,retire);
           ctx.set(STORAGE_KEYS.ENROLL,enroll);
           return true;
-        });
+        }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`});
         const label=newDs.slice(5).replace('-','/');
         _finishMove(stu.n+(stu.a||'')+' 예약 이동 ('+label+')');
       }catch(err){
@@ -1868,7 +1975,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         delete disabled[dstKey];
         ctx.set(STORAGE_KEYS.DISABLED,disabled);
         return true;
-      });
+      }, {type:'edit', label:'원생 복사', detail:`${srcKey} → ${dstKey}`});
       _finishMove(stu.n+(stu.a||'')+' 복사 완료');
     }catch(err){
       toast(err?.message||'복사 실패','err');
@@ -1892,6 +1999,10 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
       const marks=ctx.get(STORAGE_KEYS.MARK,{});
       const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+      if(_isReserveMoveLockedMoveType(type)&&(_reserveMoveAtSlot(srcKey,retire,enroll)||_reserveMoveAtSlot(dstKey,retire,enroll))){
+        ctx.abort(_reserveMoveLockedMessage());
+        return;
+      }
 
       if(type==='all'){
         const hasFutureMark=Object.keys(marks).some(k=>{
@@ -1929,7 +2040,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         ctx.set(STORAGE_KEYS.休원,hyuwon);
       }
       return true;
-    });
+    }, {type:'move', label:type==='all'?'전체 이동':'원생 이동', detail:`${srcKey} → ${dstKey}`});
     _finishMove(movedName+' 이동 완료');
   }catch(err){
     toast(err?.message||'이동 실패','err');
