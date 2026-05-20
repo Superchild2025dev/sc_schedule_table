@@ -290,7 +290,10 @@
     }
     root.querySelectorAll('[data-perm]').forEach(function(el){
       const perms = String(el.getAttribute('data-perm')||'').split(/\s+/).filter(Boolean);
-      const ok = !perms.length || perms.some(hasPermission);
+      const shouldBlock = perms.some(function(p){
+        return p === 'editSchedule' || p === 'resetData';
+      });
+      const ok = !shouldBlock || perms.some(hasPermission);
       el.hidden = false;
       if('disabled' in el) el.disabled = !ok;
       el.setAttribute('aria-disabled', ok ? 'false' : 'true');

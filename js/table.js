@@ -579,6 +579,7 @@ async function markAllPresentForDate(){
 // 오늘 스냅샷 저장 (과거 날짜 동결용)
 let _snapshotTimer=null;
 function _ensureTodaySnapshot(){
+  if(window.SCAuth && !SCAuth.can('editSchedule') && !SCAuth.can('attendanceCheck')) return;
   const today=toDateStr(getToday());
   if(_snapshotTimer) clearTimeout(_snapshotTimer);
   _snapshotTimer=setTimeout(()=>{
@@ -1725,7 +1726,6 @@ let _flashKey=null;
  * 엑셀 저장 (SheetJS)
  * ════════════════════════════════════════════════════════════════ */
 function exportExcel(){
-  if(window.SCAuth && !SCAuth.requirePermission('exportData','엑셀 내보내기')) return;
   if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
 
   const DAYS=getDays(),TIMES=getTimes(),LANE_COUNT=getLanes(),HAS_NUM=getHasNum();

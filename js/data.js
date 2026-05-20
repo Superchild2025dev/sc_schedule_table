@@ -21,7 +21,6 @@ if(!SCHEDULE_PERIODS||!Array.isArray(SCHEDULE_PERIODS)||!SCHEDULE_PERIODS.length
 function savePeriods(){ saveJSON(STORAGE_KEYS.PERIODS, SCHEDULE_PERIODS, true); }
 
 function openPeriodModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('manageCalendar','기간 관리')) return;
   document.getElementById('period-modal').style.display='flex';
   const sel=document.getElementById('pm-year');
   sel.innerHTML='';
@@ -423,7 +422,6 @@ function isClosedDateFull(dateObj){
  * SECTION: 모달 공통 (탭 추가/시간머신/휴관일 등)
  * ════════════════════════════════════════════════════════════════ */
 function openClosedModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('manageCalendar','휴관일 관리')) return;
   document.getElementById('closed-modal').style.display='flex';
   const sel=document.getElementById('cm-year');
   sel.innerHTML='';
@@ -1099,7 +1097,6 @@ function changeRecordFilter(){
   renderRecordManager();
 }
 function openRecordManagerModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('manageRecords','기록관리')) return;
   document.getElementById('record-manager-modal').style.display='flex';
   renderRecordManager();
 }
@@ -1343,6 +1340,7 @@ function renderRetireHistoryList(){
   wrap.innerHTML = html;
 }
 function deleteRetireHistory(idx){
+  if(window.SCAuth && !SCAuth.requirePermission('manageRecords','퇴원 기록 삭제')) return;
   if(!Array.isArray(RETIRE_HISTORY)||idx<0||idx>=RETIRE_HISTORY.length) return;
   const r = RETIRE_HISTORY[idx];
   if(!confirm(`${r.n||''} 학생의 퇴원 기록을 삭제하시겠습니까?\n\n(${r.retiredAt} 퇴원)`)) return;

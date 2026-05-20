@@ -61,7 +61,6 @@ function updateTeacherStyles(){
 
 /* [v115] 선생님 관리 모달 */
 function openTeacherModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('manageTeachers','선생님 관리')) return;
   document.getElementById('teacher-modal').style.display='flex';
   renderTeacherList();
 }
