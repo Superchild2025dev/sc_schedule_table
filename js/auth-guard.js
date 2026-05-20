@@ -68,10 +68,29 @@
     }, fallback || {});
   }
 
+  function normalizeBranchId(branchId){
+    const v = String(branchId||'').trim();
+    if(!v || /^\d+$/.test(v)) return '';
+    if(v === '가경점' || v === '가경동' || v === 'gagyeong') return 'gagyeong';
+    if(v === '용암점' || v === '용암동' || v === 'yongam') return 'yongam';
+    return v;
+  }
+
   function normalizeBranchIds(branchIds){
-    if(Array.isArray(branchIds)) return branchIds.filter(Boolean);
+    if(Array.isArray(branchIds)){
+      return branchIds.map(normalizeBranchId).filter(Boolean);
+    }
+    if(typeof branchIds === 'string'){
+      return branchIds.split(/[,\s]+/).map(normalizeBranchId).filter(Boolean);
+    }
     if(branchIds && typeof branchIds === 'object'){
-      return Object.keys(branchIds).filter(function(k){ return !!branchIds[k]; });
+      return Object.keys(branchIds).map(function(k){
+        const v = branchIds[k];
+        if(v === true) return normalizeBranchId(k);
+        if(typeof v === 'string') return normalizeBranchId(v);
+        if(v && typeof v === 'object') return normalizeBranchId(v.id || v.branchId || v.name);
+        return '';
+      }).filter(Boolean);
     }
     return [];
   }

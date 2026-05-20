@@ -4,6 +4,48 @@
 let _stuPopup={key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,showEnroll:false,showBogang:false,showSample:false,showHyuwon:false};
 let _stuBusy=false;
 
+function stuPopupCanEdit(){
+  return !(window.SCAuth && !SCAuth.can('editSchedule'));
+}
+function stuPopupCanView(){
+  return !(window.SCAuth && !SCAuth.can('viewSchedule'));
+}
+function isStuPopupReadOnly(){
+  return !stuPopupCanEdit();
+}
+
+function applyStuPopupReadOnlyState(){
+  if(!isStuPopupReadOnly()) return;
+  const popup=document.getElementById('stu-popup');
+  if(!popup) return;
+  popup.classList.add('stu-popup-readonly');
+  popup.querySelectorAll('input, textarea, select').forEach(el=>{
+    if(el.type==='checkbox' || el.tagName==='SELECT') el.disabled=true;
+    else el.readOnly=true;
+  });
+  popup.querySelectorAll('.sp-vt-col').forEach(el=>{
+    el.classList.add('readonly');
+    el.style.pointerEvents='none';
+  });
+  popup.querySelectorAll('button').forEach(btn=>{
+    if(btn.id==='sp-gender-m' || btn.id==='sp-gender-f'){
+      btn.disabled=true;
+    } else {
+      btn.hidden=true;
+    }
+  });
+}
+
+function handleReadOnlyDateBoxClick(dateBox){
+  const ds=dateBox.dataset.ds;
+  _stuPopup.selDate=(_stuPopup.selDate===ds)?null:ds;
+  _stuPopup.showEnroll=false;
+  _stuPopup.showBogang=false;
+  _stuPopup.showSample=false;
+  _stuPopup.showHyuwon=false;
+  renderStuPopup();
+}
+
 // [v118] 승하차 장소: 승차/하차/자가등하원 분리 입출력 헬퍼
 //   기존 loc 문자열과 호환 (UI만 분리, 저장은 loc 한 줄로 합침)
 function _parseLoc(loc){
@@ -68,7 +110,11 @@ function _locUsesVehicle(loc){
 // _tabFocusTime → data.js (cross-file shared state)
 
 function openStuPopup(td,t,day,lane,row){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','인원 편집')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('viewSchedule','인원 조회')) return;
+  if((_instSwapMode || _moveMode) && !stuPopupCanEdit()){
+    if(typeof toast==='function') toast('편집 권한이 없습니다','err');
+    return;
+  }
   // 담임 교환 모드면 해당 레인의 담임 교환으로 처리
   if(_instSwapMode){
     executeInstSwap(t,day,lane);
@@ -158,6 +204,7 @@ function openStuPopup(td,t,day,lane,row){
   popup.classList.add('show');
   // [v97] 팝업 열림 직후 이름 input에 자동 포커스 (v95 동작 복원)
   setTimeout(()=>{
+    if(!stuPopupCanEdit()) return;
     const nameInput=document.getElementById('sp-name');
     if(nameInput && document.getElementById('stu-popup').classList.contains('show')){
       nameInput.focus();
@@ -321,6 +368,9 @@ function buildEnrollFormHtml(existing){
  */
 function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, hasStu){
   if(!selDate) return '';
+  if(isStuPopupReadOnly()){
+    return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px;font-size:10px;font-weight:700;color:#6B7280;text-align:center">조회 전용</div>`;
+  }
 
   const curMark=getMark(slotKey,selDate);
   const isRetire=retireDate===selDate;
@@ -550,6 +600,7 @@ function renderStuPopup(freshOpen){
   `;
   // [v105] 입력값 복원
   if(draft) restoreStuFormDraft(draft);
+  applyStuPopupReadOnlyState();
 }
 
 // 이벤트 위임 (학생 팝업)
@@ -1304,11 +1355,20 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
   const ctx=makeStuPopupCtx();
   if(!ctx) return;
 
+  const dateBox=e.target.closest('.stu-date-box');
+
   // [스냅샷] 읽기 전용 — 닫기 버튼만 허용, 변경 액션은 모두 차단
   const isSnap=typeof isSnapshotTab==='function'&&isSnapshotTab();
   if(isSnap){
     if(e.target.closest('#sp-close')){ closeStuPopup(); return; }
     // 다른 클릭은 무시 (보기 전용)
+    return;
+  }
+
+  if(isStuPopupReadOnly()){
+    if(dateBox&&!dateBox.classList.contains('closed')){
+      handleReadOnlyDateBoxClick(dateBox);
+    }
     return;
   }
 
@@ -1318,7 +1378,6 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
   }
 
   // 날짜 박스 클릭
-  const dateBox=e.target.closest('.stu-date-box');
   if(dateBox&&!dateBox.classList.contains('closed')){
     handleDateBoxClick(dateBox, ctx);
     return;
@@ -1343,6 +1402,7 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
 
 // Enter 키 저장
 document.getElementById('stu-popup').addEventListener('keydown',function(e){
+  if(isStuPopupReadOnly()) return;
   if(e.key==='Enter'){
     // [v96 #2] textarea에서 Enter는 항상 줄바꿈. 저장은 저장 버튼 클릭만.
     //   (이전엔 plain Enter가 저장+팝업닫힘으로 동작해서 사용자가 텍스트 사라진 것처럼 느꼈음)
