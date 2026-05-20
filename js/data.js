@@ -184,6 +184,7 @@ function _studentKeysForAnnualAgeUpdate(){
 function applyAnnualAgeIncrement(){
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.resolve(false);
   if(typeof _fakeDate!=='undefined' && _fakeDate) return Promise.resolve(false);
+  if(window.SCAuth && !SCAuth.canWriteKey(STORAGE_KEYS.AGE_YEAR)) return Promise.resolve(false);
   const currentYear=getToday().getFullYear();
   if(!currentYear) return Promise.resolve(false);
 
