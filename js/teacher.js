@@ -131,7 +131,9 @@ function initFirebase(){
   if(!branch){ openBranchModal(); return; }
   try{
     if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    _fb=firebase.database().ref(branch.fbPath);
+    _fb=window.SCFirebaseStore
+      ? SCFirebaseStore.createBranchRef(branch)
+      : firebase.database().ref(branch.fbPath);
     _fbReady=true;
     // 헤더 타이틀에 지점명 반영
     const brand=document.querySelector('#teacher-select-screen h1');

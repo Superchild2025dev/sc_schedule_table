@@ -46,28 +46,32 @@ function initFirebaseStore(){
   if(!_selectedBranch || !FIREBASE_CONFIG.apiKey) return false;
   try{
     if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    _fb=firebase.database().ref(getBranchInfo().fbPath);
+    _fb=window.SCFirebaseStore
+      ? SCFirebaseStore.createBranchRef(getBranchInfo())
+      : firebase.database().ref(getBranchInfo().fbPath);
     _fbReady=true;
     console.log('✅ Firebase 연결됨');
     // 실시간 연결 상태 모니터링 (5초 이상 끊겼을 때만 경고)
     let _disconnectTimer=null;
-    firebase.database().ref('.info/connected').on('value',snap=>{
-      _fbConnected=!!snap.val();
-      if(_fbConnected){
-        console.log('🟢 Firebase 온라인');
-        if(_disconnectTimer){clearTimeout(_disconnectTimer);_disconnectTimer=null;}
-        _hideOfflineWarning();
-      } else {
-        console.warn('🔴 Firebase 일시적 끊김 (5초 후 확인)');
-        if(_disconnectTimer) clearTimeout(_disconnectTimer);
-        _disconnectTimer=setTimeout(()=>{
-          if(!_fbConnected){
-            console.error('🔴 Firebase 5초 이상 끊김 — 경고 표시');
-            _showOfflineWarning();
-          }
-        },5000);
-      }
-    });
+    if(!window.SCFirebaseStore || !SCFirebaseStore.useFirestore()){
+      firebase.database().ref('.info/connected').on('value',snap=>{
+        _fbConnected=!!snap.val();
+        if(_fbConnected){
+          console.log('🟢 Firebase 온라인');
+          if(_disconnectTimer){clearTimeout(_disconnectTimer);_disconnectTimer=null;}
+          _hideOfflineWarning();
+        } else {
+          console.warn('🔴 Firebase 일시적 끊김 (5초 후 확인)');
+          if(_disconnectTimer) clearTimeout(_disconnectTimer);
+          _disconnectTimer=setTimeout(()=>{
+            if(!_fbConnected){
+              console.error('🔴 Firebase 5초 이상 끊김 — 경고 표시');
+              _showOfflineWarning();
+            }
+          },5000);
+        }
+      });
+    }
   }catch(e){
     console.warn('Firebase 초기화 실패:',e);
     _fbReady=false;
