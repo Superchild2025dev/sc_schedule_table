@@ -34,11 +34,39 @@ function applyStuPopupReadOnlyState(){
 
 function handleReadOnlyDateBoxClick(dateBox){
   const ds=dateBox.dataset.ds;
-  _stuPopup.selDate=(_stuPopup.selDate===ds)?null:ds;
+  const {t,day,lane,row}= _stuPopup;
+  const slotKey=t+'/'+day+'/'+lane+'/'+row;
+  if(_stuPopup.selDate===ds){
+    _stuPopup.selDate=null;
+    _stuPopup.showEnroll=false;
+    _stuPopup.showBogang=false;
+    _stuPopup.showSample=false;
+    _stuPopup.showHyuwon=false;
+    renderStuPopup();
+    return;
+  }
+  _stuPopup.selDate=ds;
   _stuPopup.showEnroll=false;
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
   _stuPopup.showHyuwon=false;
+
+  const mark=getMark(slotKey,ds);
+  const sub=mark?.sub||null;
+  const hyuwon=HYUWON_MAP[slotKey];
+  const isHyuwon=!!(hyuwon && (
+    (hyuwon.dates && hyuwon.dates.includes(ds)) ||
+    (hyuwon.from && !hyuwon.dates && ds>=hyuwon.from && ds<=hyuwon.to)
+  ));
+  if(ENROLL_MAP[slotKey]?.ds===ds){
+    _stuPopup.showEnroll=true;
+  } else if(mark?.type==='bogang'||(mark?.type==='absent'&&sub?.type==='bogang')){
+    _stuPopup.showBogang=true;
+  } else if(mark?.type==='sample'||(mark?.type==='absent'&&sub?.type==='sample')){
+    _stuPopup.showSample=true;
+  } else if(isHyuwon){
+    _stuPopup.showHyuwon=true;
+  }
   renderStuPopup();
 }
 

@@ -70,7 +70,7 @@
   <button onclick="setAttToday()" style="background:rgba(255,255,255,0.25);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">오늘</button>
   <span id="att-bar-date-label" style="font-size:16px;font-weight:900;margin-left:8px;padding:4px 12px;background:#fff;color:#059669;border-radius:8px"></span>
   <span id="att-bar-stats" style="margin-left:auto;font-size:13px;font-weight:700"></span>
-  <button id="att-edit-btn" data-perm="editSchedule" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
+  <button id="att-edit-btn" data-perm="attendanceCheck" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
   <button onclick="toggleAttendanceMode()" style="background:rgba(0,0,0,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✕ 닫기</button>
 </div>
 
@@ -129,7 +129,7 @@
       <button id="att-modal-present" style="padding:12px;font-size:15px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:10px;cursor:pointer">✓ 출석</button>
       <button id="att-modal-absent" style="padding:12px;font-size:15px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:10px;cursor:pointer">✗ 결석</button>
       <button id="att-modal-cancel" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#6B7280;border:2px solid #D1D5DB;border-radius:10px;cursor:pointer">○ 취소 (미체크)</button>
-      <button id="att-modal-delete" data-perm="editSchedule" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
+      <button id="att-modal-delete" data-perm="attendanceCheck" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
     </div>
     <button id="att-modal-close" style="width:100%;margin-top:12px;padding:8px;font-size:12px;background:transparent;color:#9CA3AF;border:none;cursor:pointer">닫기</button>
   </div>

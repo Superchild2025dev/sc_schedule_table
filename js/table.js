@@ -22,7 +22,7 @@ let _attendanceDate=null;  // YYYY-MM-DD
 let _attEditMode=false;     // true면 셀 클릭 시 출석체크 대신 편집
 
 function toggleAttEditMode(){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','출석부 편집')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 편집')) return;
   _attEditMode=!_attEditMode;
   const btn=document.getElementById('att-edit-btn');
   if(btn){
@@ -45,7 +45,7 @@ let _editModalCtx=null;
 
 // 원생 추가 모달 (출석부 + 버튼) - 특정 레인에서 첫 빈 row 찾아서 모달 열기
 function _openAttAddModalForLane(t, day, lane, cellDs){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','원생 추가')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 원생 추가')) return;
   // row 1~8에서 빈 자리 찾기
   for(let r=1; r<=8; r++){
     const sk=t+'/'+day+'/'+lane+'/'+r;
@@ -80,7 +80,7 @@ function _closeAttAddModal(){
 }
 
 async function _saveAttAdd(status){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','원생 추가')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 원생 추가')) return;
   if(!_addModalCtx) return;
   const {slotKey, cellDs}=_addModalCtx;
   const name=document.getElementById('att-add-name').value.trim();
@@ -179,7 +179,7 @@ async function _saveAttAdd(status){
 
 // 과거 날짜 스냅샷 or 현재 STUDENTS 학생 편집 (모달)
 function _editAttCell(slotKey, cellDs){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 편집')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 편집')) return;
   const [t,d,l,r]=slotKey.split('/');
   const li=parseInt(l), ri=parseInt(r);
   const targetDs=cellDs||_attendanceDate;
@@ -209,7 +209,7 @@ function _closeEditModal(){
 }
 
 async function _saveEditModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 편집')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 편집')) return;
   if(!_editModalCtx) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
@@ -246,7 +246,7 @@ async function _saveEditModal(){
 }
 
 async function _deleteEditModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학생 삭제')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
   if(!_editModalCtx) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const {slotKey, usingSnapshot, ds}=_editModalCtx;
@@ -462,7 +462,7 @@ async function _setAttModal(value){
 
 // 출석 모달에서 학생 삭제
 async function _deleteFromAttModal(){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','출석부 학생 삭제')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
   if(!_attModalCtx) return;
   const {slotKey, isSub, ds}=_attModalCtx;
   if(!confirm('이 학생을 출석부에서 삭제하시겠습니까?')) return;
@@ -954,7 +954,7 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
       // 출석 모드 + 이 요일에 해당하는 + 버튼을 inst 셀에 추가하는 헬퍼
       const _addAttPlusBtn=(td, laneNum)=>{
         if(!_attendanceMode || !_attendanceDate) return;
-        if(window.SCAuth && !SCAuth.can('editSchedule')) return;
+        if(window.SCAuth && !SCAuth.can('attendanceCheck')) return;
         const cellDs=_dayToCellDs(day);
         const btn=document.createElement('span');
         btn.className='att-add-inst';
