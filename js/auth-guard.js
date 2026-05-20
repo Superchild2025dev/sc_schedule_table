@@ -126,13 +126,7 @@
     if(!user) return Promise.resolve(null);
     try{
       ensureFirebaseApp();
-      if(!firebase.database) return Promise.resolve(defaultProfile(user));
-      return firebase.database().ref('staff_users/'+user.uid).once('value').then(function(snap){
-        return normalizeProfile(snap.val(), user);
-      }).catch(function(e){
-        console.warn('[AUTH] staff profile load failed', e);
-        return defaultProfile(user);
-      });
+      return Promise.resolve(defaultProfile(user));
     }catch(e){
       console.warn('[AUTH] staff profile init failed', e);
       return Promise.resolve(defaultProfile(user));
