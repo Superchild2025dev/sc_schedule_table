@@ -237,10 +237,18 @@ async function handleTeacherDelete(idx){
 
 let _instPopup={el:null,key:null};
 
+function instPopupCanEdit(){
+  return !(window.SCAuth && !SCAuth.can('editSchedule'));
+}
+
 function openInstPopup(td,t,day,lane){
-  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','담임 편집')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('viewSchedule','담임/대기자 조회')) return;
   // 출석부 모드면 담임 팝업 무반응 (+ 버튼만 동작)
   if(typeof _attendanceMode!=='undefined' && _attendanceMode) return;
+  if(_instSwapMode && !instPopupCanEdit()){
+    if(typeof toast==='function') toast('담임 편집 권한이 없습니다','err');
+    return;
+  }
   // 교환 모드 → 목적지로 실행
   if(_instSwapMode){
     executeInstSwap(t,day,lane);
@@ -311,56 +319,68 @@ function renderInstPopup(){
   const key=_instPopup.key;
   if(!key) return;
   const cur=INST_MAP[key]||null;
+  const canEdit=instPopupCanEdit();
 
   let html=`<div class="inst-popup-hd">${_instPopup.day} ${_instPopup.t} ${_instPopup.lane}레인 담임<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeInstPopup()">✕</span></div>`;
-  html+=`<div class="inst-btn-grid">`;
-  TEACHERS.forEach(teacher=>{
-    const isActive=cur&&cur.n===teacher.n;
-    html+=`<button class="inst-btn${isActive?' active':''}" data-name="${teacher.n}" style="background:${teacher.color}">
-      ${teacher.n}
-    </button>`;
-  });
-  html+=`</div>`;
+  if(canEdit){
+    html+=`<div class="inst-btn-grid">`;
+    TEACHERS.forEach(teacher=>{
+      const isActive=cur&&cur.n===teacher.n;
+      html+=`<button class="inst-btn${isActive?' active':''}" data-name="${teacher.n}" style="background:${teacher.color}">
+        ${teacher.n}
+      </button>`;
+    });
+    html+=`</div>`;
 
-  html+=`<div class="inst-popup-bottom">`;
-  html+=`<label><input type="checkbox" id="ip-lead" ${cur?.lead?'checked':''}> 1번레인</label>`;
-  html+=`<label><input type="checkbox" id="ip-youth" ${cur?.youth?'checked':''}> 유아</label>`;
-  // [v117] 반 분류: 엘/마, 엘리트, 마스터 (셋 중 하나만)
-  const _curCls = (typeof getInstCls==='function') ? getInstCls(cur) : (cur?.elma?'elma':null);
-  html+=`<label><input type="checkbox" id="ip-elma" ${_curCls==='elma'?'checked':''}> 엘/마</label>`;
-  html+=`<label><input type="checkbox" id="ip-elite" ${_curCls==='elite'?'checked':''}> 엘리트</label>`;
-  html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
-  if(cur) html+=`<button class="inst-btn-clear" data-name="__clear__">선생님 삭제</button>`;
-  html+=`</div>`;
-  html+=`<div style="padding:6px 0 2px;border-top:1px solid #E5E7EB;margin-top:6px"><button class="btn btn-o" id="ip-swap" style="width:100%;font-size:11px;padding:5px;color:#F59E0B;border-color:#F59E0B">↔ 위치 교환</button></div>`;
+    html+=`<div class="inst-popup-bottom">`;
+    html+=`<label><input type="checkbox" id="ip-lead" ${cur?.lead?'checked':''}> 1번레인</label>`;
+    html+=`<label><input type="checkbox" id="ip-youth" ${cur?.youth?'checked':''}> 유아</label>`;
+    // [v117] 반 분류: 엘/마, 엘리트, 마스터 (셋 중 하나만)
+    const _curCls = (typeof getInstCls==='function') ? getInstCls(cur) : (cur?.elma?'elma':null);
+    html+=`<label><input type="checkbox" id="ip-elma" ${_curCls==='elma'?'checked':''}> 엘/마</label>`;
+    html+=`<label><input type="checkbox" id="ip-elite" ${_curCls==='elite'?'checked':''}> 엘리트</label>`;
+    html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
+    if(cur) html+=`<button class="inst-btn-clear" data-name="__clear__">선생님 삭제</button>`;
+    html+=`</div>`;
+    html+=`<div style="padding:6px 0 2px;border-top:1px solid #E5E7EB;margin-top:6px"><button class="btn btn-o" id="ip-swap" style="width:100%;font-size:11px;padding:5px;color:#F59E0B;border-color:#F59E0B">↔ 위치 교환</button></div>`;
+  } else {
+    html+=`<div style="padding:8px 2px 6px;font-size:11px;color:#6B7280;border-bottom:1px solid #E5E7EB">
+      <b style="color:#111">${cur?esc(instDisplay(cur)):'담임 없음'}</b>
+    </div>`;
+  }
 
   // 예약 목록
   const reserves=getReserves(key);
   html+=`<div class="inst-reserve-list">`;
-  html+=`<div style="font-weight:700;font-size:11px;margin-bottom:4px">예약 (${reserves.length})</div>`;
+  html+=`<div style="font-weight:700;font-size:11px;margin-bottom:4px">대기자 (${reserves.length})</div>`;
   reserves.forEach((r,i)=>{
     const dateLabel=r.d?`<span style="font-size:9px;color:#0F9D58;margin-left:auto">${parseInt(r.d.split('-')[1])}/${parseInt(r.d.split('-')[2])}</span>`:'';
     const teacherLabel=r.teacher?`<span style="font-size:9px;color:#3B82F6;margin-left:4px">[${esc(r.teacher)}]</span>`:'';
-    html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}<span class="rdel" data-rdel="${i}">✕</span></div>`;
+    html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}${canEdit?`<span class="rdel" data-rdel="${i}">✕</span>`:''}</div>`;
     if(r.m) html+=`<div style="font-size:9px;color:#888;padding-left:4px;margin-top:-2px;margin-bottom:2px">📝 ${esc(r.m)}</div>`;
   });
-  html+=`<div style="display:flex;gap:4px;margin-top:4px">`;
-  const todayVal=toDateStr(getToday());
-  html+=`<input class="fi" id="ip-rname" placeholder="이름" style="width:70px;margin:0;padding:3px 6px;font-size:11px">`;
-  html+=`<input class="fi" id="ip-rphone" placeholder="전화번호" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
-  html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rtoday" checked> 오늘</label>`;
-  html+=`<input class="fi" id="ip-rdate" type="date" value="${todayVal}" style="width:100px;margin:0;padding:3px 4px;font-size:10px;display:none">`;
+  if(canEdit){
+    html+=`<div style="display:flex;gap:4px;margin-top:4px">`;
+    const todayVal=toDateStr(getToday());
+    html+=`<input class="fi" id="ip-rname" placeholder="이름" style="width:70px;margin:0;padding:3px 6px;font-size:11px">`;
+    html+=`<input class="fi" id="ip-rphone" placeholder="전화번호" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
+    html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rtoday" checked> 오늘</label>`;
+    html+=`<input class="fi" id="ip-rdate" type="date" value="${todayVal}" style="width:100px;margin:0;padding:3px 4px;font-size:10px;display:none">`;
+    html+=`</div>`;
+    html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
+    html+=`<input class="fi" id="ip-rmemo" placeholder="메모" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
+    html+=`</div>`;
+    // 선생님 지정/무관
+    const teacherOpts=TEACHERS.map(t=>`<option value="${esc(t.n)}">${esc(t.n)}</option>`).join('');
+    html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
+    html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rany" checked> 무관</label>`;
+    html+=`<select class="fi" id="ip-rteacher" style="flex:1;margin:0;padding:3px 4px;font-size:10px;display:none"><option value="">선생님 선택</option>${teacherOpts}</select>`;
+    html+=`<button class="btn btn-p" id="ip-radd" style="padding:3px 8px;font-size:10px">대기 추가</button>`;
+    html+=`</div>`;
+  } else if(!reserves.length){
+    html+=`<div style="font-size:10px;color:#9CA3AF;padding:4px 0">등록된 대기자가 없습니다</div>`;
+  }
   html+=`</div>`;
-  html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
-  html+=`<input class="fi" id="ip-rmemo" placeholder="메모" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
-  html+=`</div>`;
-  // 선생님 지정/무관
-  const teacherOpts=TEACHERS.map(t=>`<option value="${esc(t.n)}">${esc(t.n)}</option>`).join('');
-  html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
-  html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rany" checked> 무관</label>`;
-  html+=`<select class="fi" id="ip-rteacher" style="flex:1;margin:0;padding:3px 4px;font-size:10px;display:none"><option value="">선생님 선택</option>${teacherOpts}</select>`;
-  html+=`<button class="btn btn-p" id="ip-radd" style="padding:3px 8px;font-size:10px">대기 추가</button>`;
-  html+=`</div></div>`;
 
   popup.innerHTML=html;
 }
@@ -374,6 +394,7 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
     if(e.target.closest('#ip-close')){ e.stopPropagation(); closeInstPopup(); return; }
     return;
   }
+  if(!instPopupCanEdit()) return;
   // 예약 삭제
   const rdel=e.target.closest('[data-rdel]');
   if(rdel){
@@ -452,6 +473,7 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
 });
 
 document.getElementById('inst-popup').addEventListener('keydown',function(e){
+  if(!instPopupCanEdit()) return;
   if(e.key==='Enter'&&(e.target.id==='ip-rname'||e.target.id==='ip-rphone'||e.target.id==='ip-rmemo'||e.target.id==='ip-rdate')){
     e.preventDefault();
     document.getElementById('ip-radd')?.click();
@@ -459,6 +481,7 @@ document.getElementById('inst-popup').addEventListener('keydown',function(e){
 });
 
 document.getElementById('inst-popup').addEventListener('change',async function(e){
+  if(!instPopupCanEdit()) return;
   if(e.target.id==='ip-rtoday'){
     const datePicker=document.getElementById('ip-rdate');
     if(datePicker){
