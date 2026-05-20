@@ -59,10 +59,27 @@
     return '';
   }
 
+  function inferStaffProfileByEmail(email){
+    email = normalizeEmail(email);
+    if(STAFF_EMAIL_PROFILES[email]) return STAFF_EMAIL_PROFILES[email];
+    const branchIds = [];
+    if(email.includes('gagyeong') || email.includes('gagyung') || email.includes('가경')) branchIds.push('gagyeong');
+    if(email.includes('yongam') || email.includes('용암')) branchIds.push('yongam');
+    if(email.includes('desk') || email.includes('admin') || email.includes('manager')){
+      return {
+        name: branchIds.includes('yongam') ? '용암점 데스크' : '가경점 데스크',
+        role: 'desk',
+        branchIds: branchIds.length ? branchIds : ['gagyeong','yongam'],
+        teacherName: '',
+      };
+    }
+    return null;
+  }
+
   function defaultProfile(user){
     const email = normalizeEmail(user && user.email);
     const isSuper = SUPER_ADMIN_EMAILS.includes(email);
-    const fallback = isSuper ? null : STAFF_EMAIL_PROFILES[email];
+    const fallback = isSuper ? null : inferStaffProfileByEmail(email);
     return Object.assign({
       uid: user && user.uid || '',
       email,
@@ -107,7 +124,7 @@
     const base = defaultProfile(user);
     if(!raw || typeof raw !== 'object') return base;
     const email = normalizeEmail(raw.email || user && user.email);
-    const fallback = STAFF_EMAIL_PROFILES[email];
+    const fallback = inferStaffProfileByEmail(email);
     const role = fallback && fallback.role === 'desk'
       ? 'desk'
       : (normalizeRole(raw.role) || base.role);

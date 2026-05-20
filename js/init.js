@@ -39,6 +39,10 @@ function startScheduleApp(){
           }
         })
         .catch(err=>{
+          if(String(err&&err.message||err).includes('permission_denied')){
+            console.warn('나이 자동 증가 건너뜀:',err);
+            return;
+          }
           console.error('나이 자동 증가 실패:',err);
           toast(err?.message||'나이 자동 증가 실패','err');
         })
