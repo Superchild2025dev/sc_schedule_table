@@ -7,6 +7,22 @@
   let _loginReady = false;
 
   const SUPER_ADMIN_EMAILS = ['2025superchild@gmail.com'];
+  const STAFF_EMAIL_PROFILES = {
+    'gagyeong.desk@scswim.local': {name:'가경점 데스크', role:'desk', branchIds:['gagyeong'], teacherName:''},
+    'gagyeong.son@scswim.local': {name:'손용곤', role:'teacher', branchIds:['gagyeong'], teacherName:'손용곤'},
+    'gagyeong.park@scswim.local': {name:'박형진', role:'teacher', branchIds:['gagyeong'], teacherName:'박형진'},
+    'gagyeong.lee1@scswim.local': {name:'이수성', role:'teacher', branchIds:['gagyeong'], teacherName:'이수성'},
+    'gagyeong.kimjy@scswim.local': {name:'김재용', role:'teacher', branchIds:['gagyeong'], teacherName:'김재용'},
+    'gagyeong.kimms@scswim.local': {name:'김민승', role:'teacher', branchIds:['gagyeong'], teacherName:'김민승'},
+    'gagyeong.yoo@scswim.local': {name:'유정희', role:'teacher', branchIds:['gagyeong'], teacherName:'유정희'},
+    'yongam.desk@scswim.local': {name:'용암점 데스크', role:'desk', branchIds:['yongam'], teacherName:''},
+    'yongam.lee1@scswim.local': {name:'이수재', role:'teacher', branchIds:['yongam'], teacherName:'이수재'},
+    'yongam.jung@scswim.local': {name:'정연재', role:'teacher', branchIds:['yongam'], teacherName:'정연재'},
+    'yongam.kimsh@scswim.local': {name:'김성현', role:'teacher', branchIds:['yongam'], teacherName:'김성현'},
+    'yongam.kimey@scswim.local': {name:'김은영', role:'teacher', branchIds:['yongam'], teacherName:'김은영'},
+    'yongam.kimjs@scswim.local': {name:'김지수', role:'teacher', branchIds:['yongam'], teacherName:'김지수'},
+    'yongam.lee2@scswim.local': {name:'이시종', role:'teacher', branchIds:['yongam'], teacherName:'이시종'},
+  };
   const ROLE_PERMISSIONS = {
     superAdmin: ['*'],
     desk: [
@@ -21,9 +37,6 @@
     ],
     teacher: [
       'viewSchedule',
-      'teacherRequests',
-      'attendanceCheck',
-      'registerMakeup',
     ],
   };
 
@@ -41,7 +54,8 @@
   function defaultProfile(user){
     const email = normalizeEmail(user && user.email);
     const isSuper = SUPER_ADMIN_EMAILS.includes(email);
-    return {
+    const fallback = isSuper ? null : STAFF_EMAIL_PROFILES[email];
+    return Object.assign({
       uid: user && user.uid || '',
       email,
       name: user && (user.displayName || user.email) || '',
@@ -49,8 +63,9 @@
       branchIds: isSuper ? ['gagyeong','yongam'] : [],
       teacherName: '',
       active: true,
-      missingProfile: !isSuper,
-    };
+      missingProfile: !isSuper && !fallback,
+      fallbackProfile: !!fallback,
+    }, fallback || {});
   }
 
   function normalizeBranchIds(branchIds){
@@ -71,9 +86,10 @@
       uid: user && user.uid || raw.uid || '',
       email: normalizeEmail(raw.email || user && user.email),
       role,
-      branchIds: normalizeBranchIds(raw.branchIds),
+      branchIds: normalizeBranchIds(Object.prototype.hasOwnProperty.call(raw, 'branchIds') ? raw.branchIds : base.branchIds),
       active: raw.active !== false,
       missingProfile: false,
+      fallbackProfile: false,
     });
   }
 
@@ -175,7 +191,7 @@
     const p = _currentProfile;
     if(!p || p.active === false) return false;
     if(p.missingProfile && permission !== 'viewSchedule') return false;
-    if(!canAccessBranch(currentBranchId())) return false;
+    if(permission !== 'viewSchedule' && !canAccessBranch(currentBranchId())) return false;
     const role = p.role || 'teacher';
     const list = ROLE_PERMISSIONS[role] || [];
     return list.includes('*') || list.includes(permission);
