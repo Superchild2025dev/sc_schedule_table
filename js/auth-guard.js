@@ -51,6 +51,14 @@
     return '미설정';
   }
 
+  function normalizeRole(role){
+    const v = String(role||'').trim();
+    if(v === 'superAdmin' || v === 'superadmin' || v === '최고관리자') return 'superAdmin';
+    if(v === 'desk' || v === 'admin' || v === 'manager' || v === '데스크' || v === '관리자') return 'desk';
+    if(v === 'teacher' || v === '선생님' || v === '강사') return 'teacher';
+    return '';
+  }
+
   function defaultProfile(user){
     const email = normalizeEmail(user && user.email);
     const isSuper = SUPER_ADMIN_EMAILS.includes(email);
@@ -98,12 +106,14 @@
   function normalizeProfile(raw,user){
     const base = defaultProfile(user);
     if(!raw || typeof raw !== 'object') return base;
-    const role = raw.role === 'superAdmin' || raw.role === 'desk' || raw.role === 'teacher'
-      ? raw.role
-      : base.role;
+    const email = normalizeEmail(raw.email || user && user.email);
+    const fallback = STAFF_EMAIL_PROFILES[email];
+    const role = fallback && fallback.role === 'desk'
+      ? 'desk'
+      : (normalizeRole(raw.role) || base.role);
     return Object.assign({}, base, raw, {
       uid: user && user.uid || raw.uid || '',
-      email: normalizeEmail(raw.email || user && user.email),
+      email,
       role,
       branchIds: normalizeBranchIds(Object.prototype.hasOwnProperty.call(raw, 'branchIds') ? raw.branchIds : base.branchIds),
       active: raw.active !== false,
@@ -209,8 +219,8 @@
   function hasPermission(permission){
     const p = _currentProfile;
     if(!p || p.active === false) return false;
-    if(p.missingProfile && permission !== 'viewSchedule') return false;
-    if(permission !== 'viewSchedule' && !canAccessBranch(currentBranchId())) return false;
+    if(permission === 'viewSchedule') return true;
+    if(p.missingProfile) return false;
     const role = p.role || 'teacher';
     const list = ROLE_PERMISSIONS[role] || [];
     return list.includes('*') || list.includes(permission);
@@ -219,7 +229,6 @@
   function canWriteKey(key){
     if(!_currentUser || !_currentProfile) return true;
     if(_currentProfile.active === false) return false;
-    if(!canAccessBranch(currentBranchId())) return false;
     if(hasPermission('*') || _currentProfile.role === 'superAdmin') return true;
     key = String(key||'');
     if(!key) return true;
@@ -271,8 +280,11 @@
     root.querySelectorAll('[data-perm]').forEach(function(el){
       const perms = String(el.getAttribute('data-perm')||'').split(/\s+/).filter(Boolean);
       const ok = !perms.length || perms.some(hasPermission);
-      el.hidden = !ok;
-      el.classList.toggle('perm-hidden', !ok);
+      el.hidden = false;
+      if('disabled' in el) el.disabled = !ok;
+      el.setAttribute('aria-disabled', ok ? 'false' : 'true');
+      el.classList.toggle('perm-hidden', false);
+      el.classList.toggle('perm-disabled', !ok);
     });
     root.querySelectorAll('[data-auth-role]').forEach(function(el){
       el.textContent = _currentProfile ? roleLabel(_currentProfile.role) : '';

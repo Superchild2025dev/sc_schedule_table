@@ -184,7 +184,7 @@ function _studentKeysForAnnualAgeUpdate(){
 function applyAnnualAgeIncrement(){
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.resolve(false);
   if(typeof _fakeDate!=='undefined' && _fakeDate) return Promise.resolve(false);
-  if(window.SCAuth && !SCAuth.canWriteKey(STORAGE_KEYS.AGE_YEAR)) return Promise.resolve(false);
+  if(window.SCAuth && !SCAuth.can('editSchedule')) return Promise.resolve(false);
   const currentYear=getToday().getFullYear();
   if(!currentYear) return Promise.resolve(false);
 
@@ -1403,9 +1403,6 @@ function _parseJSONValue(raw,fallback){
   }
 }
 function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
-  if(window.SCAuth && !SCAuth.canWriteKey(storageKey)){
-    return Promise.reject(new Error('저장 권한이 없습니다'));
-  }
   if(!_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
   if(typeof isSnapshotTab==='function' && isSnapshotTab()
      && storageKey!==STORAGE_KEYS.TAB_LIST && !storageKey.startsWith('swim_snap_')){
@@ -1499,11 +1496,6 @@ function updateScheduleTx(mutator,meta){
     keys.forEach(key=>{localRoot[_storageSafeKey(key)]=dbGet(key);});
     const next=mutator(makeCtx(localRoot));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
-    for(const key of touched){
-      if(window.SCAuth && !SCAuth.canWriteKey(key)){
-        return Promise.reject(new Error('저장 권한이 없습니다'));
-      }
-    }
     touched.forEach(key=>{
       const val=_parseJSONValue(localRoot[_storageSafeKey(key)],{});
       _applyStoredValue(key,val);
@@ -1517,12 +1509,6 @@ function updateScheduleTx(mutator,meta){
     abortReason='';
     const result=mutator(makeCtx(root));
     if(result===undefined) return;
-    for(const key of touched){
-      if(window.SCAuth && !SCAuth.canWriteKey(key)){
-        abortReason='저장 권한이 없습니다';
-        return;
-      }
-    }
     return root;
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');

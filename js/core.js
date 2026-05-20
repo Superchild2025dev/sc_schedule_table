@@ -82,12 +82,6 @@ if(!window.SCAuth){
 }
 
 function dbSet(key,val){
-  const auditBypass=(typeof _auditLock!=='undefined' && _auditLock);
-  if(!auditBypass && window.SCAuth && !SCAuth.canWriteKey(key)){
-    if(typeof toast==='function') toast('저장 권한이 없습니다','err');
-    console.warn('[AUTH] dbSet blocked:', key);
-    return;
-  }
   const json=typeof val==='string'?val:JSON.stringify(val);
   _dbCache[key]=json;
   try{localStorage.setItem(_lsKey(key),json);}catch(e){}
@@ -126,12 +120,6 @@ function dbGet(key){
   try{return localStorage.getItem(_lsKey(key));}catch(e){return null;}
 }
 function dbRemove(key){
-  const auditBypass=(typeof _auditLock!=='undefined' && _auditLock);
-  if(!auditBypass && window.SCAuth && !SCAuth.canWriteKey(key)){
-    if(typeof toast==='function') toast('삭제 권한이 없습니다','err');
-    console.warn('[AUTH] dbRemove blocked:', key);
-    return;
-  }
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
   if(_fbReady) _fb.child(key.replace(/[.#$/\[\]]/g,'_')).remove();
@@ -195,11 +183,6 @@ let _snapshotWarnedAt=0;
 let _timeMachineWarnedAt=0;
 
 function saveJSON(key, val, skipUndo){
-  if(window.SCAuth && !SCAuth.canWriteKey(key)){
-    console.warn('[AUTH] saveJSON blocked:', key);
-    if(typeof toast==='function') toast('저장 권한이 없습니다','err');
-    return;
-  }
   // [v98 SAFETY] Firebase 로드 전 저장 차단
   if(!_firebaseLoaded){
     console.warn('[v98 SAFETY] Firebase 로드 전 saveJSON 차단:', key);

@@ -35,8 +35,7 @@ function staffTeacherName(){
   return window.SCAuth && typeof SCAuth.teacherName==='function' ? (SCAuth.teacherName()||'') : '';
 }
 function canEnterTeacher(teacherName){
-  if(!isTeacherAccount()) return true;
-  return !!teacherName && teacherName===staffTeacherName();
+  return true;
 }
 
 /* [v118] 지점 선택 (가경/용암) — 메인 앱과 동일 */
@@ -329,31 +328,17 @@ function setRequestStatus(reqId,status){
 function populateTeachers(){
   const sel=document.getElementById('teacher-pick');
   sel.innerHTML='<option value="">선택하세요</option>';
-  const lockedTeacher=isTeacherAccount()?staffTeacherName():'';
-  if(isTeacherAccount()&&!lockedTeacher){
-    sel.innerHTML='<option value="">계정에 담당 선생님 이름이 없습니다</option>';
-    sel.disabled=true;
-    const enter=document.getElementById('teacher-enter');
-    if(enter) enter.disabled=true;
-    const wrap=document.getElementById('pending-teachers');
-    if(wrap) wrap.innerHTML='<div class="req-warning">관리자가 이 계정에 teacherName을 등록해야 입장할 수 있습니다.</div>';
-    return;
-  }
   // INST_MAP에서 이름 수집 (중복 제거)
   const names=new Set();
-  if(lockedTeacher){
-    names.add(lockedTeacher);
-  } else {
-    Object.values(INST_MAP).forEach(inst=>{
-      if(inst?.n) names.add(inst.n);
-    });
-    // TEACHERS 목록에서도 추가
-    TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
-  }
+  Object.values(INST_MAP).forEach(inst=>{
+    if(inst?.n) names.add(inst.n);
+  });
+  // TEACHERS 목록에서도 추가
+  TEACHERS.forEach(t=>{ if(t?.n) names.add(t.n); });
   // [v118] 선생님별 대기 요청 카운트 (REQUESTS 중 status==='pending' or 없음)
   const pendingCounts = _countPendingByTeacher();
   Object.keys(pendingCounts).forEach(n=>{
-    if(!lockedTeacher || n===lockedTeacher) names.add(n);
+    names.add(n);
   });
   [...names].sort().forEach(n=>{
     const opt=document.createElement('option');
@@ -362,8 +347,7 @@ function populateTeachers(){
     opt.textContent = cnt > 0 ? `${n}  🔴 ${cnt}건` : n;
     sel.appendChild(opt);
   });
-  sel.disabled=!!lockedTeacher;
-  if(lockedTeacher) sel.value=lockedTeacher;
+  sel.disabled=false;
   const enter=document.getElementById('teacher-enter');
   if(enter) enter.disabled=false;
   _renderPendingTeacherChips(pendingCounts);
@@ -382,9 +366,8 @@ function _countPendingByTeacher(){
 function _renderPendingTeacherChips(counts){
   const wrap = document.getElementById('pending-teachers');
   if(!wrap) return;
-  const lockedTeacher=isTeacherAccount()?staffTeacherName():'';
   const entries = Object.entries(counts)
-    .filter(([n,c]) => c > 0 && (!lockedTeacher || n===lockedTeacher))
+    .filter(([n,c]) => c > 0)
     .sort((a,b)=>b[1]-a[1]);
   if(!entries.length){ wrap.innerHTML=''; return; }
   let html = `<div class="pending-label">🔔 대기 요청 있는 선생님 (${entries.reduce((s,[,c])=>s+c,0)}건)</div>`;
@@ -397,7 +380,6 @@ function _renderPendingTeacherChips(counts){
 
 function enterAsTeacher(teacherName){
   if(!canEnterTeacher(teacherName)){
-    toast('이 계정은 담당 선생님으로만 입장할 수 있습니다','err');
     return;
   }
   _currentTeacher=teacherName;  // '' = 전체
@@ -1274,26 +1256,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   }catch(e){toast('연결 실패','err');return;}
 
   populateTeachers();
-  const allBtn=document.getElementById('teacher-all');
-  if(allBtn && isTeacherAccount()) allBtn.style.display='none';
 
   // 세션 복구
   try{
     const saved=sessionStorage.getItem('teacher_name');
-    if(isTeacherAccount()){
-      const name=staffTeacherName();
-      if(name) enterAsTeacher(name);
-    } else if(saved!==null) enterAsTeacher(saved);
+    if(saved!==null) enterAsTeacher(saved);
   }catch(e){}
 
   // 이벤트
   document.getElementById('teacher-enter').addEventListener('click',()=>{
-    const name=isTeacherAccount()?staffTeacherName():document.getElementById('teacher-pick').value;
+    const name=document.getElementById('teacher-pick').value;
     if(!name){toast('선생님을 선택해주세요','err');return;}
     enterAsTeacher(name);
   });
   document.getElementById('teacher-all').addEventListener('click',()=>{
-    if(isTeacherAccount()){toast('전체 보기 권한이 없습니다','err');return;}
     enterAsTeacher('');
   });
   document.getElementById('teacher-logout').addEventListener('click',()=>{

@@ -28,11 +28,7 @@ function applyStuPopupReadOnlyState(){
     el.style.pointerEvents='none';
   });
   popup.querySelectorAll('button').forEach(btn=>{
-    if(btn.id==='sp-gender-m' || btn.id==='sp-gender-f'){
-      btn.disabled=true;
-    } else {
-      btn.hidden=true;
-    }
+    btn.disabled=true;
   });
 }
 
@@ -368,9 +364,6 @@ function buildEnrollFormHtml(existing){
  */
 function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, hasStu){
   if(!selDate) return '';
-  if(isStuPopupReadOnly()){
-    return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px;font-size:10px;font-weight:700;color:#6B7280;text-align:center">조회 전용</div>`;
-  }
 
   const curMark=getMark(slotKey,selDate);
   const isRetire=retireDate===selDate;

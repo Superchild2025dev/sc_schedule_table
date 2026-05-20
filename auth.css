@@ -120,3 +120,7 @@
 .perm-hidden{
   display:none!important;
 }
+.perm-disabled{
+  opacity:.55;
+  cursor:not-allowed!important;
+}
