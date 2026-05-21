@@ -1,0 +1,450 @@
+(function(){
+  const SETTINGS_KEY='swim_aligo_settings';
+  const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
+  const BRANCHES={
+    gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule'},
+    yongam:{id:'yongam',name:'용암점',fbPath:'schedule_yongam'},
+  };
+  const TEMPLATE_META=[
+    {
+      key:'absentRequest',
+      label:'결석 신청',
+      subject:'결석 신청',
+      message:'{지점} {학생명} {날짜}({요일}) {시간} 결석 신청이 접수되었습니다.',
+    },
+    {
+      key:'absentCancelRequest',
+      label:'결석 취소 신청',
+      subject:'결석 취소 신청',
+      message:'{지점} {학생명} {날짜}({요일}) {시간} 결석 취소 신청이 접수되었습니다.',
+    },
+    {
+      key:'makeupRequest',
+      label:'보강 신청',
+      subject:'보강 신청',
+      message:'{지점} {학생명} 보강 신청이 접수되었습니다. 후보: {후보수}개',
+    },
+    {
+      key:'makeupAccepted',
+      label:'보강 확정',
+      subject:'보강 확정',
+      message:'{학생명} 보강이 확정되었습니다. {날짜}({요일}) {시간}',
+    },
+    {
+      key:'makeupRejected',
+      label:'보강 거절',
+      subject:'보강 거절',
+      message:'{학생명} 보강 신청이 거절되었습니다. 데스크로 문의해주세요.',
+    },
+  ];
+  const SAMPLE={
+    지점:'가경점',
+    학생명:'홍길동',
+    날짜:'5/25',
+    요일:'월',
+    시간:'4시',
+    선생님:'김선생',
+    후보수:'3',
+  };
+
+  let activeBranch='gagyeong';
+  let activePanel='menu';
+  let settingsByBranch={};
+  let rootByBranch={};
+
+  function $(id){return document.getElementById(id);}
+  function clone(obj){return JSON.parse(JSON.stringify(obj));}
+  function toast(msg,type){
+    const el=$('settings-toast');
+    if(!el) return;
+    el.textContent=msg;
+    el.className='settings-toast show '+(type||'');
+    clearTimeout(toast._t);
+    toast._t=setTimeout(()=>{el.classList.remove('show');},2200);
+  }
+  function productionUrl(path){
+    return PUBLIC_BASE_URL.replace(/\/$/,'')+'/'+String(path||'').replace(/^\//,'');
+  }
+  function defaultSettings(branchId){
+    const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
+    const aligoTemplates={};
+    const smsTemplates={};
+    TEMPLATE_META.forEach(item=>{
+      aligoTemplates[item.key]={
+        enabled:true,
+        tplCode:'',
+        subject:item.subject,
+        message:item.message,
+      };
+      smsTemplates[item.key]={
+        enabled:true,
+        subject:item.subject,
+        message:item.message,
+      };
+    });
+    return {
+      branchId:branch.id,
+      branchName:branch.name,
+      pages:{
+        parent:productionUrl('parent.html?branch='+branch.id),
+        teacher:productionUrl('teacher.html?branch='+branch.id),
+      },
+      aligo:{
+        enabled:false,
+        testMode:true,
+        proxyUrl:'/aligo',
+        userid:'',
+        apiKeyEnv:'ALIGO_KEY',
+        senderKey:'',
+        sender:'',
+        remainPath:'/akv10/heartinfo/',
+        templates:aligoTemplates,
+      },
+      sms:{
+        enabled:false,
+        fallback:true,
+        proxyUrl:'/aligo',
+        userid:'',
+        apiKeyEnv:'ALIGO_KEY',
+        sender:'',
+        sendPath:'/send/',
+        remainPath:'/remain/',
+        targets:{parent:true,teacher:true,desk:true},
+        templates:smsTemplates,
+      },
+      updatedAt:'',
+      updatedBy:'',
+    };
+  }
+  function mergeSettings(base, saved){
+    const out=clone(base);
+    saved=saved&&typeof saved==='object'?saved:{};
+    Object.assign(out,saved);
+    out.pages=Object.assign({},base.pages,saved.pages||{});
+    out.aligo=Object.assign({},base.aligo,saved.aligo||{});
+    out.sms=Object.assign({},base.sms,saved.sms||{});
+    out.aligo.templates=Object.assign({},base.aligo.templates,(saved.aligo||{}).templates||{});
+    out.sms.targets=Object.assign({},base.sms.targets,(saved.sms||{}).targets||{});
+    out.sms.templates=Object.assign({},base.sms.templates,(saved.sms||{}).templates||{});
+    TEMPLATE_META.forEach(item=>{
+      out.aligo.templates[item.key]=Object.assign({},base.aligo.templates[item.key],out.aligo.templates[item.key]||{});
+      out.sms.templates[item.key]=Object.assign({},base.sms.templates[item.key],out.sms.templates[item.key]||{});
+    });
+    return out;
+  }
+  function parseStored(v){
+    if(!v) return null;
+    if(typeof v==='string'){
+      try{return JSON.parse(v);}catch(e){return null;}
+    }
+    return v;
+  }
+  function ensureFirebase(){
+    if(!window.firebase) throw new Error('Firebase SDK가 로드되지 않았습니다');
+    if(!firebase.apps.length) firebase.initializeApp(window.SC_FIREBASE_CONFIG);
+    return firebase.app();
+  }
+  function branchRoot(branchId){
+    if(rootByBranch[branchId]) return rootByBranch[branchId];
+    ensureFirebase();
+    const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
+    rootByBranch[branchId]=window.SCFirebaseStore
+      ? SCFirebaseStore.createBranchRef(branch)
+      : firebase.database().ref(branch.fbPath);
+    return rootByBranch[branchId];
+  }
+  function can(permission){
+    return !window.SCAuth || typeof SCAuth.can!=='function' || SCAuth.can(permission);
+  }
+  function canAccessBranch(branchId){
+    return !window.SCAuth || typeof SCAuth.canAccessBranch!=='function' || SCAuth.canAccessBranch(branchId);
+  }
+  function setPermissionStates(){
+    document.querySelectorAll('[data-perm]').forEach(el=>{
+      const perms=String(el.getAttribute('data-perm')||'').split(/\s+/).filter(Boolean);
+      const ok=!perms.length || perms.some(can);
+      if('disabled' in el) el.disabled=!ok;
+      el.classList.toggle('perm-disabled',!ok);
+    });
+  }
+  async function loadSettings(branchId){
+    const base=defaultSettings(branchId);
+    try{
+      const snap=await branchRoot(branchId).child(SETTINGS_KEY).once('value');
+      settingsByBranch[branchId]=mergeSettings(base,parseStored(snap.val()));
+    }catch(e){
+      console.error(e);
+      settingsByBranch[branchId]=base;
+      toast('설정 로드 실패','err');
+    }
+    renderAll();
+  }
+  async function saveSettings(kind){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','설정 저장')) return;
+    const data=collectCurrentSettings(kind);
+    const user=window.SCAuth&&SCAuth.currentUser&&SCAuth.currentUser();
+    data.updatedAt=new Date().toISOString();
+    data.updatedBy=user&&user.email||'';
+    settingsByBranch[activeBranch]=data;
+    try{
+      await branchRoot(activeBranch).child(SETTINGS_KEY).set(JSON.stringify(data));
+      toast('설정 저장 완료','ok');
+    }catch(e){
+      console.error(e);
+      toast('설정 저장 실패','err');
+    }
+  }
+  function currentSettings(){
+    if(!settingsByBranch[activeBranch]) settingsByBranch[activeBranch]=defaultSettings(activeBranch);
+    return settingsByBranch[activeBranch];
+  }
+  function setPanel(panel){
+    activePanel=panel||'menu';
+    document.querySelectorAll('.nav-btn').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.panel===activePanel);
+    });
+    document.querySelectorAll('.settings-panel').forEach(panelEl=>{
+      panelEl.classList.toggle('active',panelEl.id==='panel-'+activePanel);
+    });
+  }
+  function setBranch(branchId){
+    if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
+    activeBranch=branchId;
+    try{localStorage.setItem('selected_branch',branchId);}catch(e){}
+    document.querySelectorAll('.branch-tab').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.branch===activeBranch);
+      btn.disabled=!canAccessBranch(btn.dataset.branch);
+    });
+    $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
+    if(settingsByBranch[activeBranch]) renderAll();
+    else loadSettings(activeBranch);
+  }
+  function renderAll(){
+    const data=currentSettings();
+    $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
+    $('parent-page-link').textContent=data.pages.parent||'';
+    $('teacher-page-link').textContent=data.pages.teacher||'';
+    renderAligo(data);
+    renderSms(data);
+    setPermissionStates();
+  }
+  function setValue(id,value){
+    const el=$(id);
+    if(el) el.value=value||'';
+  }
+  function setChecked(id,value){
+    const el=$(id);
+    if(el) el.checked=!!value;
+  }
+  function renderAligo(data){
+    const a=data.aligo||defaultSettings(activeBranch).aligo;
+    setChecked('aligo-enabled',a.enabled);
+    setChecked('aligo-test-mode',a.testMode);
+    setValue('aligo-proxy-url',a.proxyUrl);
+    setValue('aligo-userid',a.userid);
+    setValue('aligo-api-key-env',a.apiKeyEnv);
+    setValue('aligo-sender-key',a.senderKey);
+    setValue('aligo-sender',a.sender);
+    setValue('aligo-remain-path',a.remainPath);
+    renderTemplates('aligo-template-list','aligo',a.templates||{});
+  }
+  function renderSms(data){
+    const s=data.sms||defaultSettings(activeBranch).sms;
+    setChecked('sms-enabled',s.enabled);
+    setChecked('sms-fallback',s.fallback);
+    setValue('sms-proxy-url',s.proxyUrl);
+    setValue('sms-userid',s.userid);
+    setValue('sms-api-key-env',s.apiKeyEnv);
+    setValue('sms-sender',s.sender);
+    setValue('sms-send-path',s.sendPath);
+    setValue('sms-remain-path',s.remainPath);
+    setChecked('sms-target-parent',(s.targets||{}).parent);
+    setChecked('sms-target-teacher',(s.targets||{}).teacher);
+    setChecked('sms-target-desk',(s.targets||{}).desk);
+    renderTemplates('sms-template-list','sms',s.templates||{});
+  }
+  function renderTemplates(containerId,kind,templates){
+    const container=$(containerId);
+    if(!container) return;
+    container.innerHTML=TEMPLATE_META.map(item=>{
+      const tpl=templates[item.key]||{};
+      const codeField=kind==='aligo'
+        ? `<label>템플릿 코드<input type="text" data-field="tplCode" value="${escAttr(tpl.tplCode||'')}" autocomplete="off"></label>`
+        : `<label>문자 제목<input type="text" data-field="subject" value="${escAttr(tpl.subject||item.subject)}" autocomplete="off"></label>`;
+      const subjectField=kind==='aligo'
+        ? `<label>제목<input type="text" data-field="subject" value="${escAttr(tpl.subject||item.subject)}" autocomplete="off"></label>`
+        : '';
+      return `
+        <div class="template-item" data-template="${item.key}">
+          <div class="template-title">
+            <label><input type="checkbox" data-field="enabled" ${tpl.enabled!==false?'checked':''}> ${esc(item.label)}</label>
+            <span>${esc(item.key)}</span>
+          </div>
+          <div class="template-body">
+            ${codeField}
+            ${subjectField}
+            <label>내용<textarea data-field="message">${esc(tpl.message||item.message)}</textarea></label>
+          </div>
+        </div>`;
+    }).join('');
+  }
+  function collectTemplates(containerId,kind){
+    const out={};
+    document.querySelectorAll('#'+containerId+' .template-item').forEach(row=>{
+      const key=row.dataset.template;
+      const item=TEMPLATE_META.find(x=>x.key===key)||{};
+      out[key]={
+        enabled:!!row.querySelector('[data-field="enabled"]')?.checked,
+        subject:row.querySelector('[data-field="subject"]')?.value.trim()||item.subject||'',
+        message:row.querySelector('[data-field="message"]')?.value||'',
+      };
+      if(kind==='aligo'){
+        out[key].tplCode=row.querySelector('[data-field="tplCode"]')?.value.trim()||'';
+      }
+    });
+    return out;
+  }
+  function collectCurrentSettings(kind){
+    const data=mergeSettings(defaultSettings(activeBranch),currentSettings());
+    data.branchId=activeBranch;
+    data.branchName=BRANCHES[activeBranch].name;
+    data.pages={
+      parent:$('parent-page-link').textContent||defaultSettings(activeBranch).pages.parent,
+      teacher:$('teacher-page-link').textContent||defaultSettings(activeBranch).pages.teacher,
+    };
+    if(!kind||kind==='aligo'){
+      data.aligo={
+        enabled:$('aligo-enabled').checked,
+        testMode:$('aligo-test-mode').checked,
+        proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
+        userid:$('aligo-userid').value.trim(),
+        apiKeyEnv:$('aligo-api-key-env').value.trim()||'ALIGO_KEY',
+        senderKey:$('aligo-sender-key').value.trim(),
+        sender:$('aligo-sender').value.trim(),
+        remainPath:$('aligo-remain-path').value.trim()||'/akv10/heartinfo/',
+        templates:collectTemplates('aligo-template-list','aligo'),
+      };
+    }
+    if(!kind||kind==='sms'){
+      data.sms={
+        enabled:$('sms-enabled').checked,
+        fallback:$('sms-fallback').checked,
+        proxyUrl:$('sms-proxy-url').value.trim()||'/aligo',
+        userid:$('sms-userid').value.trim(),
+        apiKeyEnv:$('sms-api-key-env').value.trim()||'ALIGO_KEY',
+        sender:$('sms-sender').value.trim(),
+        sendPath:$('sms-send-path').value.trim()||'/send/',
+        remainPath:$('sms-remain-path').value.trim()||'/remain/',
+        targets:{
+          parent:$('sms-target-parent').checked,
+          teacher:$('sms-target-teacher').checked,
+          desk:$('sms-target-desk').checked,
+        },
+        templates:collectTemplates('sms-template-list','sms'),
+      };
+    }
+    return data;
+  }
+  function applySample(text){
+    return String(text||'').replace(/\{([^}]+)\}/g,(m,key)=>{
+      return Object.prototype.hasOwnProperty.call(SAMPLE,key) ? SAMPLE[key] : m;
+    });
+  }
+  function preview(kind){
+    const containerId=kind==='aligo'?'aligo-template-list':'sms-template-list';
+    const box=$(kind==='aligo'?'aligo-preview-box':'sms-preview-box');
+    const templates=collectTemplates(containerId,kind);
+    box.textContent=TEMPLATE_META.map(item=>{
+      const tpl=templates[item.key]||{};
+      const code=kind==='aligo'&&tpl.tplCode ? ` / ${tpl.tplCode}` : '';
+      return `[${item.label}${code}]\n${applySample(tpl.subject)}\n${applySample(tpl.message)}`;
+    }).join('\n\n');
+    box.classList.add('show');
+  }
+  function resetForm(kind){
+    const fresh=defaultSettings(activeBranch);
+    if(kind==='aligo') renderAligo(fresh);
+    if(kind==='sms') renderSms(fresh);
+    toast('기본값을 불러왔어요. 저장을 누르면 반영됩니다.');
+  }
+  function esc(s){
+    return String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+  function escAttr(s){return esc(s).replace(/`/g,'&#96;');}
+  function actionUrl(action){
+    if(action==='schedule') return `index.html?branch=${activeBranch}`;
+    if(action==='teacherPage') return `teacher.html?branch=${activeBranch}`;
+    if(action==='parentPage') return `parent.html?branch=${activeBranch}`;
+    return `index.html?branch=${activeBranch}&settings=${action}`;
+  }
+  function openAction(action){
+    if(!action) return;
+    location.href=actionUrl(action);
+  }
+  async function copyLink(kind){
+    const data=currentSettings();
+    const link=kind==='teacher' ? data.pages.teacher : data.pages.parent;
+    try{
+      await navigator.clipboard.writeText(link);
+      toast('링크 복사 완료');
+    }catch(e){
+      window.prompt('링크 복사',link);
+    }
+  }
+  function bindEvents(){
+    document.querySelectorAll('.nav-btn').forEach(btn=>{
+      btn.addEventListener('click',()=>setPanel(btn.dataset.panel));
+    });
+    document.querySelectorAll('.branch-tab').forEach(btn=>{
+      btn.addEventListener('click',()=>setBranch(btn.dataset.branch));
+    });
+    document.querySelectorAll('[data-open-action]').forEach(btn=>{
+      btn.addEventListener('click',()=>openAction(btn.dataset.openAction));
+    });
+    document.querySelectorAll('[data-copy-link]').forEach(btn=>{
+      btn.addEventListener('click',()=>copyLink(btn.dataset.copyLink));
+    });
+    $('aligo-save').addEventListener('click',()=>saveSettings('aligo'));
+    $('sms-save').addEventListener('click',()=>saveSettings('sms'));
+    $('aligo-reset').addEventListener('click',()=>resetForm('aligo'));
+    $('sms-reset').addEventListener('click',()=>resetForm('sms'));
+    $('aligo-preview').addEventListener('click',()=>preview('aligo'));
+    $('sms-preview').addEventListener('click',()=>preview('sms'));
+  }
+  function initialBranch(){
+    try{
+      const p=new URLSearchParams(location.search).get('branch');
+      if(BRANCHES[p]&&canAccessBranch(p)) return p;
+      const saved=localStorage.getItem('selected_branch');
+      if(BRANCHES[saved]&&canAccessBranch(saved)) return saved;
+    }catch(e){}
+    return canAccessBranch('gagyeong')?'gagyeong':'yongam';
+  }
+  function initialPanel(){
+    try{
+      const p=new URLSearchParams(location.search).get('panel');
+      if(p==='aligo'||p==='sms'||p==='menu') return p;
+    }catch(e){}
+    const hash=String(location.hash||'').replace('#','');
+    return hash==='aligo'||hash==='sms'?hash:'menu';
+  }
+  document.addEventListener('DOMContentLoaded',()=>{
+    const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'
+      ? SCAuth.requireAuth()
+      : Promise.resolve();
+    authReady.then(()=>{
+      bindEvents();
+      activePanel=initialPanel();
+      setPanel(activePanel);
+      activeBranch=initialBranch();
+      document.querySelectorAll('.branch-tab').forEach(btn=>{
+        btn.disabled=!canAccessBranch(btn.dataset.branch);
+      });
+      setBranch(activeBranch);
+      if(window.SCAuth&&typeof SCAuth.applyPagePermissions==='function'){
+        SCAuth.applyPagePermissions(document);
+      }
+      setPermissionStates();
+    });
+  });
+})();

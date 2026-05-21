@@ -19,6 +19,12 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
  *  - localStorage 키도 'yongam_' prefix로 분리 → 같은 브라우저에서 충돌 X
  * ════════════════════════════════════════════════════════════════ */
 const SELECTED_BRANCH_KEY='selected_branch';
+try{
+  const branchParam=new URLSearchParams(location.search).get('branch');
+  if(branchParam==='gagyeong'||branchParam==='yongam'){
+    localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);
+  }
+}catch(e){}
 let _selectedBranch=null;
 try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
 function getBranchInfo(){

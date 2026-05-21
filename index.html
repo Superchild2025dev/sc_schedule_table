@@ -50,13 +50,7 @@
     <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
     <button class="hbtn" id="attendance-toggle-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">📋 출석부</button>
     <button class="hbtn" id="parent-req-btn" data-perm="teacherRequests" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
-    <button class="hbtn" data-perm="manageRecords" onclick="openRecordManagerModal()">📋 기록관리</button>
-    <button class="hbtn" data-perm="manageTeachers" onclick="openTeacherModal()">👥 선생님 관리</button>
-    <button class="hbtn" data-perm="manageCalendar" onclick="openPeriodModal()">📆 기간 관리</button>
-    <button class="hbtn" data-perm="manageCalendar" onclick="openClosedModal()">📅 휴관일 관리</button>
-    <button class="hbtn" data-perm="resetData" onclick="if(confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')){Object.keys(_dbCache).forEach(k=>dbRemove(k));try{localStorage.clear();}catch(e){}if(_fbReady)_fb.remove();location.reload();}">🔄 초기화</button>
-    <button class="hbtn" data-perm="exportData" onclick="exportExcel()">📥 엑셀</button>
-    <button class="hbtn" onclick="window.print()">🖨️ 인쇄</button>
+    <button class="hbtn" data-perm="manageSettings" onclick="window.open('settings.html','_blank')">⚙️ 설정</button>
     <span class="staff-auth-role" data-auth-role></span>
     <span class="staff-auth-email" data-auth-email></span>
     <button class="hbtn staff-auth-logout" onclick="SCAuth.signOut()" title="계정 로그아웃">로그아웃</button>
@@ -322,15 +316,15 @@
 <div class="toasts" id="toasts"></div>
 
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
-<script src="js/auth-guard.js?v=20260521-5"></script>
-<script src="js/core.js?v=20260521-5"></script>
+<script src="js/auth-guard.js?v=20260521-7"></script>
+<script src="js/core.js?v=20260521-7"></script>
 <script src="js/tabs.js?v=20260521-5"></script>
 <script src="js/data.js?v=20260521-5"></script>
 <script src="js/teachers.js?v=20260521-5"></script>
 <script src="js/popup-stu.js?v=20260521-5"></script>
 <script src="js/table.js?v=20260521-5"></script>
 <script src="js/defaults.js?v=20260521-5"></script>
-<script src="js/init.js?v=20260521-5"></script>
+<script src="js/init.js?v=20260521-7"></script>
 
 </body>
 </html>

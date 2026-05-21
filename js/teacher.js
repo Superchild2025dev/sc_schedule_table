@@ -42,6 +42,12 @@ function canEnterTeacher(teacherName){
 
 /* [v118] 지점 선택 (가경/용암) — 메인 앱과 동일 */
 const SELECTED_BRANCH_KEY='selected_branch';
+try{
+  const branchParam=new URLSearchParams(location.search).get('branch');
+  if(branchParam==='gagyeong'||branchParam==='yongam'){
+    localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);
+  }
+}catch(e){}
 let _selectedBranch=null;
 try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
 function getBranchInfo(){

@@ -29,6 +29,7 @@ function startScheduleApp(){
       if(window.SCAuth && typeof SCAuth.applyPagePermissions==='function'){
         SCAuth.applyPagePermissions(document);
       }
+      runSettingsActionFromUrl();
     };
     if(typeof applyAnnualAgeIncrement==='function'){
       applyAnnualAgeIncrement()
@@ -51,6 +52,36 @@ function startScheduleApp(){
       render();
     }
   });
+}
+
+function resetAllScheduleData(){
+  if(window.SCAuth && !SCAuth.requirePermission('resetData','초기화')) return;
+  if(!confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')) return;
+  Object.keys(_dbCache).forEach(k=>dbRemove(k));
+  try{localStorage.clear();}catch(e){}
+  if(_fbReady)_fb.remove();
+  location.reload();
+}
+
+function runSettingsActionFromUrl(){
+  let action='';
+  try{
+    const params=new URLSearchParams(location.search);
+    action=params.get('settings')||'';
+  }catch(e){}
+  if(!action) return;
+  const openers={
+    records:()=>openRecordManagerModal(),
+    teachers:()=>openTeacherModal(),
+    periods:()=>openPeriodModal(),
+    closed:()=>openClosedModal(),
+    export:()=>exportExcel(),
+    print:()=>window.print(),
+    reset:()=>resetAllScheduleData(),
+  };
+  const fn=openers[action];
+  try{history.replaceState(null,'',location.pathname+(location.hash||''));}catch(e){}
+  if(typeof fn==='function') setTimeout(fn,80);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

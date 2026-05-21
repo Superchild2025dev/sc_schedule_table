@@ -33,11 +33,13 @@
       'manageCalendar',
       'manageRecords',
       'manageTeachers',
+      'manageSettings',
       'exportData',
     ],
     teacher: [
       'viewSchedule',
       'attendanceCheck',
+      'teacherRequests',
     ],
   };
 
