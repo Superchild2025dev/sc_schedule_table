@@ -125,10 +125,11 @@ async function readJSON(branch, key, fallback) {
   return parseJSON(await readStoredValue(branch, key), fallback);
 }
 
-async function readBaseData(branch) {
+async function readBaseData(branch, dataKeys) {
+  const keys = normalizeDataKeys(dataKeys);
   const [students, inst, mark, closed, periods, hyuwon, requests] = await Promise.all([
-    readJSON(branch, "swim_students", []),
-    readJSON(branch, "swim_inst", {}),
+    readJSON(branch, keys.stuKey, []),
+    readJSON(branch, keys.instKey, {}),
     readJSON(branch, "swim_mark", {}),
     readJSON(branch, "swim_closed", []),
     readJSON(branch, "swim_periods", null),
@@ -143,7 +144,68 @@ async function readBaseData(branch) {
     periods: Array.isArray(periods) && periods.length ? periods : clone(DEFAULT_PERIODS),
     hyuwon: hyuwon || {},
     requests: requests || {},
+    dataKeys: keys,
   };
+}
+
+function tabDataKeys(tab) {
+  const id = String(tab && tab.id || "regular");
+  if (tab && tab.type === "snapshot") return null;
+  if (tab && tab.type === "bangteuk") {
+    return {tabId: id, tabName: tab.name || "", stuKey: `swim_bt_${id}_stu`, instKey: `swim_bt_${id}_inst`};
+  }
+  return {
+    tabId: id,
+    tabName: tab && tab.name || "",
+    stuKey: id === "regular" ? "swim_students" : `swim_stu_${id}`,
+    instKey: id === "regular" ? "swim_inst" : `swim_inst_${id}`,
+  };
+}
+
+function tabRank(tab, index) {
+  const id = String(tab && tab.id || "");
+  const match = id.match(/_(\d{10,})$/);
+  return (match ? Number(match[1]) : 0) * 1000 + index;
+}
+
+function normalizeDataKeys(keys) {
+  return {
+    tabId: keys && keys.tabId || "regular",
+    tabName: keys && keys.tabName || "",
+    stuKey: keys && keys.stuKey || "swim_students",
+    instKey: keys && keys.instKey || "swim_inst",
+  };
+}
+
+function sessionDataKeys(session) {
+  return normalizeDataKeys(session);
+}
+
+async function readScheduleTabs(branch) {
+  const tabs = await readJSON(branch, "swim_tab_list", []);
+  const list = Array.isArray(tabs) && tabs.length ? tabs : [{id: "regular", name: "정규시간표", type: "regular"}];
+  const candidates = [];
+  list.forEach((tab, index) => {
+    const keys = tabDataKeys(tab);
+    if (!keys) return;
+    candidates.push({...keys, rank: tabRank(tab, index)});
+  });
+  if (!candidates.some(item => item.tabId === "regular")) {
+    candidates.push({...tabDataKeys({id: "regular", name: "정규시간표", type: "regular"}), rank: -1});
+  }
+  candidates.sort((a, b) => b.rank - a.rank);
+  return candidates;
+}
+
+async function findParentStudentSet(branch, name, phone) {
+  const tabs = await readScheduleTabs(branch);
+  const reads = await Promise.all(tabs.map(async tab => {
+    const students = await readJSON(branch, tab.stuKey, []);
+    const matches = (Array.isArray(students) ? students : [])
+      .filter(s => s.n === name && normalizePhone(s.p) === phone);
+    return {...tab, students: matches};
+  }));
+  return reads.find(item => item.students.length) || null;
 }
 
 function slotKeyOf(student) {
@@ -189,15 +251,20 @@ function sessionRef(token) {
   return db.collection("parentSessions").doc(token);
 }
 
-async function createSession(branch, students) {
+async function createSession(branch, students, dataKeys) {
   const token = makeSessionId();
   const first = students[0];
   const expiresAt = Timestamp.fromMillis(Date.now() + 1000 * 60 * 60 * 12);
+  const keys = normalizeDataKeys(dataKeys);
   await sessionRef(token).set({
     branch: branch.id,
     name: first.n || "",
     phone: normalizePhone(first.p),
     slotKeys: students.map(slotKeyOf),
+    tabId: keys.tabId,
+    tabName: keys.tabName,
+    stuKey: keys.stuKey,
+    instKey: keys.instKey,
     expiresAt,
     createdAt: FieldValue.serverTimestamp(),
   });
@@ -213,6 +280,23 @@ async function loadSession(branch, token) {
   if (session.expiresAt && session.expiresAt.toMillis() < Date.now()) {
     await sessionRef(token).delete();
     throw new HttpsError("unauthenticated", "로그인이 만료되었습니다");
+  }
+  if ((!session.stuKey || !session.instKey) && session.name && session.phone) {
+    const found = await findParentStudentSet(branch, session.name, normalizePhone(session.phone));
+    if (found) {
+      session.slotKeys = found.students.map(slotKeyOf);
+      session.tabId = found.tabId;
+      session.tabName = found.tabName;
+      session.stuKey = found.stuKey;
+      session.instKey = found.instKey;
+      await sessionRef(token).set({
+        slotKeys: session.slotKeys,
+        tabId: session.tabId,
+        tabName: session.tabName,
+        stuKey: session.stuKey,
+        instKey: session.instKey,
+      }, {merge: true});
+    }
   }
   return session;
 }
@@ -254,7 +338,7 @@ function filterBundle(base, slotKeys) {
 }
 
 async function bundleForSession(branch, session) {
-  const base = await readBaseData(branch);
+  const base = await readBaseData(branch, sessionDataKeys(session));
   return filterBundle(base, session.slotKeys || []);
 }
 
@@ -378,10 +462,12 @@ async function login(branch, data) {
   const name = String(data.name || "").trim();
   const phone = normalizePhone(data.phone);
   if (!name || !phone) throw new HttpsError("invalid-argument", "이름과 전화번호를 입력해주세요");
-  const base = await readBaseData(branch);
-  const students = base.students.filter(s => s.n === name && normalizePhone(s.p) === phone);
+  const found = await findParentStudentSet(branch, name, phone);
+  if (!found) throw new HttpsError("not-found", "일치하는 정보가 없습니다");
+  const base = await readBaseData(branch, found);
+  const students = found.students;
   if (!students.length) throw new HttpsError("not-found", "일치하는 정보가 없습니다");
-  const token = await createSession(branch, students);
+  const token = await createSession(branch, students, found);
   const session = {slotKeys: students.map(slotKeyOf)};
   return {sessionToken: token, bundle: filterBundle(base, session.slotKeys), dates: bogangDateOptions(base, todayString())};
 }
@@ -393,11 +479,12 @@ async function refresh(branch, data) {
 
 async function submitAbsent(branch, data) {
   const session = await loadSession(branch, data.sessionToken);
+  const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
   await db.runTransaction(async tx => {
     const base = {
-      students: parseJSON(await readStoredValue(branch, "swim_students", tx), []),
+      students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
       mark: parseJSON(await readStoredValue(branch, "swim_mark", tx), {}),
     };
     findSessionStudent(base, session, slotKey);
@@ -413,11 +500,12 @@ async function submitAbsent(branch, data) {
 
 async function submitAbsentCancel(branch, data) {
   const session = await loadSession(branch, data.sessionToken);
+  const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
   await db.runTransaction(async tx => {
-    const students = parseJSON(await readStoredValue(branch, "swim_students", tx), []);
-    const inst = parseJSON(await readStoredValue(branch, "swim_inst", tx), {});
+    const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
+    const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
     const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
     const stu = findSessionStudent({students}, session, slotKey);
     const exists = Object.values(requests).some(req =>
@@ -447,7 +535,7 @@ async function submitAbsentCancel(branch, data) {
 
 async function getBogangSlots(branch, data) {
   const session = await loadSession(branch, data.sessionToken);
-  const base = await readBaseData(branch);
+  const base = await readBaseData(branch, sessionDataKeys(session));
   return {
     slots: availableSlotsFor(base, session, String(data.sourceSlotKey || ""), String(data.ds || ""), data.teacherMode === "other" ? "other" : "mine"),
     dates: bogangDateOptions(base, String(data.sourceDs || data.ds || todayString())),
@@ -457,14 +545,15 @@ async function getBogangSlots(branch, data) {
 
 async function submitBogang(branch, data) {
   const session = await loadSession(branch, data.sessionToken);
+  const keys = sessionDataKeys(session);
   const sourceSlotKey = String(data.sourceSlotKey || "");
   const sourceDs = data.sourceDs || null;
   const selected = Array.isArray(data.slots) ? data.slots : [];
   if (!selected.length) throw new HttpsError("invalid-argument", "수업을 선택해주세요");
   await db.runTransaction(async tx => {
     const base = {
-      students: parseJSON(await readStoredValue(branch, "swim_students", tx), []),
-      inst: parseJSON(await readStoredValue(branch, "swim_inst", tx), {}),
+      students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
+      inst: parseJSON(await readStoredValue(branch, keys.instKey, tx), {}),
       mark: parseJSON(await readStoredValue(branch, "swim_mark", tx), {}),
       closed: parseJSON(await readStoredValue(branch, "swim_closed", tx), []),
       periods: parseJSON(await readStoredValue(branch, "swim_periods", tx), DEFAULT_PERIODS),
