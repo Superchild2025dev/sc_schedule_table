@@ -14,7 +14,7 @@
 <script src="js/firebase-store.js?v=20260521-7"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="auth.css?v=20260521-7">
-<link rel="stylesheet" href="settings.css?v=20260521-3">
+<link rel="stylesheet" href="settings.css?v=20260521-4">
 </head>
 <body>
 <header class="settings-topbar">
@@ -161,6 +161,7 @@
           <button type="button" class="ghost-btn" id="aligo-reset">기본값</button>
           <button type="button" class="ghost-btn" id="aligo-health">연결 확인</button>
           <button type="button" class="ghost-btn" id="aligo-remain">잔여건수</button>
+          <button type="button" class="ghost-btn" id="aligo-send-test">테스트 발송</button>
           <button type="button" class="primary-btn" id="aligo-save">저장</button>
         </div>
       </div>
@@ -183,6 +184,21 @@
         <label>발신 프로파일 키<input id="aligo-sender-key" type="text" autocomplete="off"></label>
         <label>발신번호<input id="aligo-sender" type="tel" inputmode="numeric" autocomplete="off"></label>
         <label>잔여건수 확인 경로<input id="aligo-remain-path" type="text" placeholder="/remain/"></label>
+        <label>알림톡 발송 경로<input id="aligo-send-path" type="text" placeholder="/alimtalk/send/"></label>
+        <label>템플릿 코드<input id="aligo-template-code" type="text" autocomplete="off"></label>
+      </div>
+
+      <div class="send-test-card">
+        <div class="subsection-head">
+          <h2>알림톡 테스트 발송</h2>
+          <span>승인된 템플릿 내용과 완전히 같아야 발송됩니다.</span>
+        </div>
+        <div class="form-grid test-grid">
+          <label>테스트 수신번호<input id="aligo-test-receiver" type="tel" inputmode="numeric" autocomplete="off" placeholder="01012345678"></label>
+          <label>수신자 이름<input id="aligo-test-recvname" type="text" autocomplete="off" placeholder="홍길동"></label>
+          <label>알림톡 제목<input id="aligo-test-subject" type="text" autocomplete="off" placeholder="슈퍼차일드 알림"></label>
+          <label class="wide-field">알림톡 내용<textarea id="aligo-test-message" rows="5" placeholder="알리고에서 승인된 템플릿 내용을 그대로 입력"></textarea></label>
+        </div>
       </div>
       <pre id="aligo-test-result" class="test-result" hidden></pre>
 
@@ -242,6 +258,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260521-3"></script>
+<script src="js/settings.js?v=20260521-4"></script>
 </body>
 </html>

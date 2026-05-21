@@ -24,7 +24,7 @@ button,input,textarea,select{font-family:inherit}
 .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;border-bottom:1px solid #E8EDF4;padding-bottom:12px}
 .panel-head h1{font-size:18px;font-weight:900;color:#111827;margin-bottom:3px}
 .panel-head p{font-size:12px;color:#6B7280}
-.panel-actions{display:flex;gap:8px}
+.panel-actions{display:flex;gap:8px;flex-wrap:wrap}
 .primary-btn,.ghost-btn,.mini-btn{height:34px;border-radius:7px;font-size:12px;font-weight:900;cursor:pointer;padding:0 12px}
 .primary-btn{background:#0F9D58;border:1px solid #0F9D58;color:#fff}
 .ghost-btn,.mini-btn{background:#fff;border:1px solid #D1D8E5;color:#374151}
@@ -48,8 +48,14 @@ button,input,textarea,select{font-family:inherit}
 .toggle-row input,.target-row input{width:16px;height:16px;accent-color:#0F9D58}
 .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
 .form-grid label{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:900;color:#4B5563}
-.form-grid input{height:36px;border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;color:#172033;font-size:13px;background:#fff}
+.form-grid input,.form-grid textarea{border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;color:#172033;font-size:13px;background:#fff}
+.form-grid input{height:36px}
+.form-grid textarea{min-height:112px;padding:9px 10px;resize:vertical;line-height:1.45}
 .form-grid input:focus,textarea:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
+.wide-field{grid-column:1/-1}
+.send-test-card{border:1px solid #DDE3EC;border-radius:8px;background:#FBFCFE;padding:12px;margin:2px 0 16px}
+.send-test-card .subsection-head{margin-top:0}
+.test-grid{margin-bottom:0}
 .target-row{display:flex;gap:12px;flex-wrap:wrap;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:10px;margin-bottom:16px}
 .target-row label{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:900;color:#172033}
 .test-result{margin:-4px 0 16px;background:#111827;color:#E5E7EB;border:1px solid #1F2937;border-radius:8px;padding:10px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.45}
