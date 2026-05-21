@@ -6,7 +6,7 @@ const {setGlobalOptions} = require("firebase-functions/v2");
 const {initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore");
 
-initializeApp();
+initializeApp({projectId: "scswimming-schedule"});
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
 
 const db = getFirestore();
@@ -519,7 +519,9 @@ async function submitBogang(branch, data) {
   return {bundle: await bundleForSession(branch, session)};
 }
 
-exports.parentPortal = onCall(async request => {
+exports.parentPortal = onCall({
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async request => {
   const data = request.data || {};
   const branch = safeBranch(data.branch);
   const action = String(data.action || "");
