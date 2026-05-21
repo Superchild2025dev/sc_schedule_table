@@ -1,55 +1,44 @@
 (function(){
   const SETTINGS_KEY='swim_aligo_settings';
+  const TEACHERS_KEY='swim_teachers';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
   const BRANCHES={
     gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule'},
     yongam:{id:'yongam',name:'용암점',fbPath:'schedule_yongam'},
   };
-  const TEMPLATE_META=[
-    {
-      key:'absentRequest',
-      label:'결석 신청',
-      subject:'결석 신청',
-      message:'{지점} {학생명} {날짜}({요일}) {시간} 결석 신청이 접수되었습니다.',
-    },
-    {
-      key:'absentCancelRequest',
-      label:'결석 취소 신청',
-      subject:'결석 취소 신청',
-      message:'{지점} {학생명} {날짜}({요일}) {시간} 결석 취소 신청이 접수되었습니다.',
-    },
-    {
-      key:'makeupRequest',
-      label:'보강 신청',
-      subject:'보강 신청',
-      message:'{지점} {학생명} 보강 신청이 접수되었습니다. 후보: {후보수}개',
-    },
-    {
-      key:'makeupAccepted',
-      label:'보강 확정',
-      subject:'보강 확정',
-      message:'{학생명} 보강이 확정되었습니다. {날짜}({요일}) {시간}',
-    },
-    {
-      key:'makeupRejected',
-      label:'보강 거절',
-      subject:'보강 거절',
-      message:'{학생명} 보강 신청이 거절되었습니다. 데스크로 문의해주세요.',
-    },
-  ];
-  const SAMPLE={
-    지점:'가경점',
-    학생명:'홍길동',
-    날짜:'5/25',
-    요일:'월',
-    시간:'4시',
-    선생님:'김선생',
-    후보수:'3',
+  const DEFAULT_TEACHERS={
+    gagyeong:['손용곤','박형진','이수성','김재용','김민승','유정희'],
+    yongam:['이수재','정연재','김성현','김은영','김지수','이시종'],
   };
+  const FIXED_RECIPIENTS=[
+    {key:'desk',label:'슈퍼차일드 데스크',memo:'데스크 공용 알림'},
+    {key:'bus1',label:'차량 1호차',memo:'차량/승하차 알림'},
+    {key:'bus2',label:'차량 2호차',memo:'차량/승하차 알림'},
+    {key:'bus3',label:'차량 3호차',memo:'차량/승하차 알림'},
+  ];
+  const VARIABLE_GUIDE=[
+    {name:'#{branch_name}',label:'지점명',sample:'가경점'},
+    {name:'#{student_name}',label:'원생 이름',sample:'홍길동'},
+    {name:'#{parent_phone_last4}',label:'학부모 전화 뒷 4자리',sample:'1234'},
+    {name:'#{class_date}',label:'수업/결석 날짜',sample:'5/25'},
+    {name:'#{class_day}',label:'수업 요일',sample:'월'},
+    {name:'#{class_time}',label:'수업 시간',sample:'4시'},
+    {name:'#{teacher_name}',label:'담당 선생님',sample:'김선생'},
+    {name:'#{request_type}',label:'요청 종류',sample:'결석 신청'},
+    {name:'#{candidate_count}',label:'보강 후보 수',sample:'3'},
+    {name:'#{makeup_date}',label:'확정 보강 날짜',sample:'5/27'},
+    {name:'#{makeup_day}',label:'확정 보강 요일',sample:'수'},
+    {name:'#{makeup_time}',label:'확정 보강 시간',sample:'5시'},
+    {name:'#{parent_url}',label:'학부모 페이지 링크',sample:'parent.html'},
+    {name:'#{teacher_url}',label:'선생님 승인 링크',sample:'teacher.html'},
+    {name:'#{desk_phone}',label:'데스크 번호',sample:'0430000000'},
+    {name:'#{bus_name}',label:'차량명',sample:'차량 1호차'},
+  ];
 
   let activeBranch='gagyeong';
   let activePanel='menu';
   let settingsByBranch={};
+  let teacherNamesByBranch={};
   let rootByBranch={};
 
   function $(id){return document.getElementById(id);}
@@ -65,23 +54,15 @@
   function productionUrl(path){
     return PUBLIC_BASE_URL.replace(/\/$/,'')+'/'+String(path||'').replace(/^\//,'');
   }
+  function defaultRecipients(){
+    const fixed={};
+    FIXED_RECIPIENTS.forEach(item=>{
+      fixed[item.key]={label:item.label,phone:'',enabled:true,memo:item.memo};
+    });
+    return {teachers:{},fixed};
+  }
   function defaultSettings(branchId){
     const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
-    const aligoTemplates={};
-    const smsTemplates={};
-    TEMPLATE_META.forEach(item=>{
-      aligoTemplates[item.key]={
-        enabled:true,
-        tplCode:'',
-        subject:item.subject,
-        message:item.message,
-      };
-      smsTemplates[item.key]={
-        enabled:true,
-        subject:item.subject,
-        message:item.message,
-      };
-    });
     return {
       branchId:branch.id,
       branchName:branch.name,
@@ -89,6 +70,7 @@
         parent:productionUrl('parent.html?branch='+branch.id),
         teacher:productionUrl('teacher.html?branch='+branch.id),
       },
+      recipients:defaultRecipients(),
       aligo:{
         enabled:false,
         testMode:true,
@@ -98,7 +80,6 @@
         senderKey:'',
         sender:'',
         remainPath:'/akv10/heartinfo/',
-        templates:aligoTemplates,
       },
       sms:{
         enabled:false,
@@ -110,26 +91,35 @@
         sendPath:'/send/',
         remainPath:'/remain/',
         targets:{parent:true,teacher:true,desk:true},
-        templates:smsTemplates,
       },
       updatedAt:'',
       updatedBy:'',
     };
+  }
+  function mergeRecipients(base,saved){
+    const out=clone(base);
+    saved=saved&&typeof saved==='object'?saved:{};
+    out.teachers=Object.assign({},base.teachers,saved.teachers||{});
+    out.fixed=Object.assign({},base.fixed,saved.fixed||{});
+    FIXED_RECIPIENTS.forEach(item=>{
+      out.fixed[item.key]=Object.assign({},base.fixed[item.key],out.fixed[item.key]||{},{
+        label:item.label,
+        memo:item.memo,
+      });
+    });
+    return out;
   }
   function mergeSettings(base, saved){
     const out=clone(base);
     saved=saved&&typeof saved==='object'?saved:{};
     Object.assign(out,saved);
     out.pages=Object.assign({},base.pages,saved.pages||{});
+    out.recipients=mergeRecipients(base.recipients,saved.recipients||{});
     out.aligo=Object.assign({},base.aligo,saved.aligo||{});
     out.sms=Object.assign({},base.sms,saved.sms||{});
-    out.aligo.templates=Object.assign({},base.aligo.templates,(saved.aligo||{}).templates||{});
     out.sms.targets=Object.assign({},base.sms.targets,(saved.sms||{}).targets||{});
-    out.sms.templates=Object.assign({},base.sms.templates,(saved.sms||{}).templates||{});
-    TEMPLATE_META.forEach(item=>{
-      out.aligo.templates[item.key]=Object.assign({},base.aligo.templates[item.key],out.aligo.templates[item.key]||{});
-      out.sms.templates[item.key]=Object.assign({},base.sms.templates[item.key],out.sms.templates[item.key]||{});
-    });
+    delete out.aligo.templates;
+    delete out.sms.templates;
     return out;
   }
   function parseStored(v){
@@ -167,14 +157,28 @@
       el.classList.toggle('perm-disabled',!ok);
     });
   }
-  async function loadSettings(branchId){
+  function normalizeTeacherNames(list,branchId){
+    const names=[];
+    (Array.isArray(list)?list:[]).forEach(item=>{
+      const name=String(item&&typeof item==='object'?item.n:item||'').trim();
+      if(name&&!names.includes(name)) names.push(name);
+    });
+    if(!names.length) return clone(DEFAULT_TEACHERS[branchId]||[]);
+    return names;
+  }
+  async function loadBranchBundle(branchId){
     const base=defaultSettings(branchId);
     try{
-      const snap=await branchRoot(branchId).child(SETTINGS_KEY).once('value');
-      settingsByBranch[branchId]=mergeSettings(base,parseStored(snap.val()));
+      const [settingsSnap,teachersSnap]=await Promise.all([
+        branchRoot(branchId).child(SETTINGS_KEY).once('value'),
+        branchRoot(branchId).child(TEACHERS_KEY).once('value'),
+      ]);
+      settingsByBranch[branchId]=mergeSettings(base,parseStored(settingsSnap.val()));
+      teacherNamesByBranch[branchId]=normalizeTeacherNames(parseStored(teachersSnap.val()),branchId);
     }catch(e){
       console.error(e);
       settingsByBranch[branchId]=base;
+      teacherNamesByBranch[branchId]=clone(DEFAULT_TEACHERS[branchId]||[]);
       toast('설정 로드 실패','err');
     }
     renderAll();
@@ -198,6 +202,9 @@
     if(!settingsByBranch[activeBranch]) settingsByBranch[activeBranch]=defaultSettings(activeBranch);
     return settingsByBranch[activeBranch];
   }
+  function currentTeacherNames(){
+    return teacherNamesByBranch[activeBranch]||clone(DEFAULT_TEACHERS[activeBranch]||[]);
+  }
   function setPanel(panel){
     activePanel=panel||'menu';
     document.querySelectorAll('.nav-btn').forEach(btn=>{
@@ -216,16 +223,18 @@
       btn.disabled=!canAccessBranch(btn.dataset.branch);
     });
     $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
-    if(settingsByBranch[activeBranch]) renderAll();
-    else loadSettings(activeBranch);
+    if(settingsByBranch[activeBranch]&&teacherNamesByBranch[activeBranch]) renderAll();
+    else loadBranchBundle(activeBranch);
   }
   function renderAll(){
     const data=currentSettings();
     $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
     $('parent-page-link').textContent=data.pages.parent||'';
     $('teacher-page-link').textContent=data.pages.teacher||'';
+    renderRecipients(data);
     renderAligo(data);
     renderSms(data);
+    renderVariableGuide();
     setPermissionStates();
   }
   function setValue(id,value){
@@ -235,6 +244,31 @@
   function setChecked(id,value){
     const el=$(id);
     if(el) el.checked=!!value;
+  }
+  function renderRecipients(data){
+    const recipients=data.recipients||defaultRecipients();
+    const teachers=recipients.teachers||{};
+    const teacherRows=currentTeacherNames().map(name=>{
+      const saved=teachers[name]||{};
+      return `<tr data-recipient-teacher="${escAttr(name)}">
+        <td><input type="checkbox" data-field="enabled" ${saved.enabled===false?'':'checked'}></td>
+        <td><strong>${esc(name)}</strong></td>
+        <td><input type="tel" inputmode="numeric" autocomplete="off" data-field="phone" value="${escAttr(saved.phone||'')}" placeholder="01012345678"></td>
+        <td>담당 선생님 알림</td>
+      </tr>`;
+    }).join('');
+    $('recipient-teachers').innerHTML=teacherRows||'<tr><td colspan="4">선생님 목록이 없습니다.</td></tr>';
+
+    const fixed=recipients.fixed||{};
+    $('recipient-fixed').innerHTML=FIXED_RECIPIENTS.map(item=>{
+      const saved=fixed[item.key]||{};
+      return `<tr data-recipient-fixed="${escAttr(item.key)}">
+        <td><input type="checkbox" data-field="enabled" ${saved.enabled===false?'':'checked'}></td>
+        <td><strong>${esc(item.label)}</strong></td>
+        <td><input type="tel" inputmode="numeric" autocomplete="off" data-field="phone" value="${escAttr(saved.phone||'')}" placeholder="01012345678"></td>
+        <td><span class="recipient-key">${esc(item.key)}</span></td>
+      </tr>`;
+    }).join('');
   }
   function renderAligo(data){
     const a=data.aligo||defaultSettings(activeBranch).aligo;
@@ -246,7 +280,6 @@
     setValue('aligo-sender-key',a.senderKey);
     setValue('aligo-sender',a.sender);
     setValue('aligo-remain-path',a.remainPath);
-    renderTemplates('aligo-template-list','aligo',a.templates||{});
   }
   function renderSms(data){
     const s=data.sms||defaultSettings(activeBranch).sms;
@@ -261,48 +294,42 @@
     setChecked('sms-target-parent',(s.targets||{}).parent);
     setChecked('sms-target-teacher',(s.targets||{}).teacher);
     setChecked('sms-target-desk',(s.targets||{}).desk);
-    renderTemplates('sms-template-list','sms',s.templates||{});
   }
-  function renderTemplates(containerId,kind,templates){
-    const container=$(containerId);
-    if(!container) return;
-    container.innerHTML=TEMPLATE_META.map(item=>{
-      const tpl=templates[item.key]||{};
-      const codeField=kind==='aligo'
-        ? `<label>템플릿 코드<input type="text" data-field="tplCode" value="${escAttr(tpl.tplCode||'')}" autocomplete="off"></label>`
-        : `<label>문자 제목<input type="text" data-field="subject" value="${escAttr(tpl.subject||item.subject)}" autocomplete="off"></label>`;
-      const subjectField=kind==='aligo'
-        ? `<label>제목<input type="text" data-field="subject" value="${escAttr(tpl.subject||item.subject)}" autocomplete="off"></label>`
-        : '';
-      return `
-        <div class="template-item" data-template="${item.key}">
-          <div class="template-title">
-            <label><input type="checkbox" data-field="enabled" ${tpl.enabled!==false?'checked':''}> ${esc(item.label)}</label>
-            <span>${esc(item.key)}</span>
-          </div>
-          <div class="template-body">
-            ${codeField}
-            ${subjectField}
-            <label>내용<textarea data-field="message">${esc(tpl.message||item.message)}</textarea></label>
-          </div>
-        </div>`;
-    }).join('');
+  function renderVariableGuide(){
+    const container=$('variable-guide');
+    if(!container||container.dataset.ready==='1') return;
+    container.innerHTML=VARIABLE_GUIDE.map(item=>`
+      <div class="variable-item">
+        <code>${esc(item.name)}</code>
+        <strong>${esc(item.label)}</strong>
+        <span>예: ${esc(item.sample)}</span>
+      </div>
+    `).join('');
+    container.dataset.ready='1';
   }
-  function collectTemplates(containerId,kind){
-    const out={};
-    document.querySelectorAll('#'+containerId+' .template-item').forEach(row=>{
-      const key=row.dataset.template;
-      const item=TEMPLATE_META.find(x=>x.key===key)||{};
-      out[key]={
+  function normalizePhone(value){
+    return String(value||'').replace(/[^\d]/g,'');
+  }
+  function collectRecipients(){
+    const recipients=defaultRecipients();
+    document.querySelectorAll('#recipient-teachers tr[data-recipient-teacher]').forEach(row=>{
+      const name=row.dataset.recipientTeacher;
+      recipients.teachers[name]={
+        phone:normalizePhone(row.querySelector('[data-field="phone"]')?.value),
         enabled:!!row.querySelector('[data-field="enabled"]')?.checked,
-        subject:row.querySelector('[data-field="subject"]')?.value.trim()||item.subject||'',
-        message:row.querySelector('[data-field="message"]')?.value||'',
       };
-      if(kind==='aligo'){
-        out[key].tplCode=row.querySelector('[data-field="tplCode"]')?.value.trim()||'';
-      }
     });
-    return out;
+    document.querySelectorAll('#recipient-fixed tr[data-recipient-fixed]').forEach(row=>{
+      const key=row.dataset.recipientFixed;
+      const meta=FIXED_RECIPIENTS.find(item=>item.key===key);
+      recipients.fixed[key]={
+        label:meta?.label||key,
+        memo:meta?.memo||'',
+        phone:normalizePhone(row.querySelector('[data-field="phone"]')?.value),
+        enabled:!!row.querySelector('[data-field="enabled"]')?.checked,
+      };
+    });
+    return recipients;
   }
   function collectCurrentSettings(kind){
     const data=mergeSettings(defaultSettings(activeBranch),currentSettings());
@@ -312,6 +339,9 @@
       parent:$('parent-page-link').textContent||defaultSettings(activeBranch).pages.parent,
       teacher:$('teacher-page-link').textContent||defaultSettings(activeBranch).pages.teacher,
     };
+    if(!kind||kind==='recipients'){
+      data.recipients=collectRecipients();
+    }
     if(!kind||kind==='aligo'){
       data.aligo={
         enabled:$('aligo-enabled').checked,
@@ -322,7 +352,6 @@
         senderKey:$('aligo-sender-key').value.trim(),
         sender:$('aligo-sender').value.trim(),
         remainPath:$('aligo-remain-path').value.trim()||'/akv10/heartinfo/',
-        templates:collectTemplates('aligo-template-list','aligo'),
       };
     }
     if(!kind||kind==='sms'){
@@ -340,29 +369,15 @@
           teacher:$('sms-target-teacher').checked,
           desk:$('sms-target-desk').checked,
         },
-        templates:collectTemplates('sms-template-list','sms'),
       };
     }
+    delete data.aligo.templates;
+    delete data.sms.templates;
     return data;
-  }
-  function applySample(text){
-    return String(text||'').replace(/\{([^}]+)\}/g,(m,key)=>{
-      return Object.prototype.hasOwnProperty.call(SAMPLE,key) ? SAMPLE[key] : m;
-    });
-  }
-  function preview(kind){
-    const containerId=kind==='aligo'?'aligo-template-list':'sms-template-list';
-    const box=$(kind==='aligo'?'aligo-preview-box':'sms-preview-box');
-    const templates=collectTemplates(containerId,kind);
-    box.textContent=TEMPLATE_META.map(item=>{
-      const tpl=templates[item.key]||{};
-      const code=kind==='aligo'&&tpl.tplCode ? ` / ${tpl.tplCode}` : '';
-      return `[${item.label}${code}]\n${applySample(tpl.subject)}\n${applySample(tpl.message)}`;
-    }).join('\n\n');
-    box.classList.add('show');
   }
   function resetForm(kind){
     const fresh=defaultSettings(activeBranch);
+    if(kind==='recipients') renderRecipients(fresh);
     if(kind==='aligo') renderAligo(fresh);
     if(kind==='sms') renderSms(fresh);
     toast('기본값을 불러왔어요. 저장을 누르면 반영됩니다.');
@@ -395,6 +410,9 @@
     document.querySelectorAll('.nav-btn').forEach(btn=>{
       btn.addEventListener('click',()=>setPanel(btn.dataset.panel));
     });
+    document.querySelectorAll('[data-panel-jump]').forEach(btn=>{
+      btn.addEventListener('click',()=>setPanel(btn.dataset.panelJump));
+    });
     document.querySelectorAll('.branch-tab').forEach(btn=>{
       btn.addEventListener('click',()=>setBranch(btn.dataset.branch));
     });
@@ -404,12 +422,12 @@
     document.querySelectorAll('[data-copy-link]').forEach(btn=>{
       btn.addEventListener('click',()=>copyLink(btn.dataset.copyLink));
     });
+    $('recipients-save').addEventListener('click',()=>saveSettings('recipients'));
     $('aligo-save').addEventListener('click',()=>saveSettings('aligo'));
     $('sms-save').addEventListener('click',()=>saveSettings('sms'));
+    $('recipients-reset').addEventListener('click',()=>resetForm('recipients'));
     $('aligo-reset').addEventListener('click',()=>resetForm('aligo'));
     $('sms-reset').addEventListener('click',()=>resetForm('sms'));
-    $('aligo-preview').addEventListener('click',()=>preview('aligo'));
-    $('sms-preview').addEventListener('click',()=>preview('sms'));
   }
   function initialBranch(){
     try{
@@ -423,10 +441,10 @@
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='aligo'||p==='sms'||p==='menu') return p;
+      if(p==='recipients'||p==='aligo'||p==='sms'||p==='menu') return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='aligo'||hash==='sms'?hash:'menu';
+    return hash==='recipients'||hash==='aligo'||hash==='sms'?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'
