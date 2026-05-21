@@ -10,6 +10,8 @@ initializeApp();
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
 
 const db = getFirestore();
+const CHUNK_THRESHOLD = 650000;
+const CHUNK_SIZE = 600000;
 
 const BRANCHES = {
   gagyeong: {id: "gagyeong", name: "가경점"},
@@ -62,6 +64,21 @@ function clone(value) {
   return value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+function splitChunks(text) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += CHUNK_SIZE) chunks.push(text.slice(i, i + CHUNK_SIZE));
+  return chunks.length ? chunks : [""];
+}
+
+function encodeStoredValue(value) {
+  const isString = typeof value === "string";
+  const text = isString ? value : JSON.stringify(value);
+  return {
+    isString,
+    text: text === undefined ? "null" : text,
+  };
+}
+
 async function readStoredValue(branch, key, tx) {
   const ref = kvDoc(branch, key);
   const snap = tx ? await tx.get(ref) : await ref.get();
@@ -81,6 +98,21 @@ async function readStoredValue(branch, key, tx) {
 }
 
 function writeStoredValue(tx, branch, key, value) {
+  const encoded = encodeStoredValue(value);
+  if (encoded.text.length > CHUNK_THRESHOLD) {
+    const chunks = splitChunks(encoded.text);
+    tx.set(kvDoc(branch, key), {
+      key,
+      chunked: true,
+      chunkCount: chunks.length,
+      valueType: encoded.isString ? "string" : "json",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: false});
+    chunks.forEach((text, index) => {
+      tx.set(chunkDoc(branch, key, index), {text}, {merge: false});
+    });
+    return;
+  }
   tx.set(kvDoc(branch, key), {
     key,
     value,
