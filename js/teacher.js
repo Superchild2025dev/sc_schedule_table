@@ -20,6 +20,8 @@ let STUDENTS=[], INST_MAP={}, MARK_MAP={}, REQUESTS={}, TEACHERS=[], ATTENDANCE=
 let _currentTeacher=null;
 let _activeTab='bogang';
 let _attWeekStart=null;
+let _teacherStuKey='swim_students';
+let _teacherInstKey='swim_inst';
 const UNASSIGNED_TEACHER_LABEL='담당 미확인';
 
 function staffRole(){
@@ -60,6 +62,19 @@ function openBranchModal(){
 function parseJSON(v,def){
   if(!v) return def;
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
+}
+
+function teacherDataKeys(data){
+  const setting=parseJSON(data&&data.swim_parent_tab,null);
+  const stuKey=setting&&setting.stuKey ? setting.stuKey : 'swim_students';
+  const instKey=setting&&setting.instKey ? setting.instKey : 'swim_inst';
+  return {stuKey, instKey};
+}
+
+function applyTeacherDataKeys(data){
+  const keys=teacherDataKeys(data||{});
+  _teacherStuKey=keys.stuKey;
+  _teacherInstKey=keys.instKey;
 }
 
 function instKind(inst){
@@ -146,8 +161,9 @@ function loadAllData(){
     if(!_fbReady){reject('not ready');return;}
     _fb.once('value').then(snap=>{
       const data=snap.val()||{};
-      STUDENTS=parseJSON(data.swim_students,[]);
-      INST_MAP=parseJSON(data.swim_inst,{});
+      applyTeacherDataKeys(data);
+      STUDENTS=parseJSON(data[_teacherStuKey],[]);
+      INST_MAP=parseJSON(data[_teacherInstKey],{});
       MARK_MAP=parseJSON(data.swim_mark,{});
       REQUESTS=parseJSON(data.swim_requests,{});
       TEACHERS=parseJSON(data.swim_teachers,[]);
@@ -163,10 +179,18 @@ function subscribeChanges(){
   if(!_fbReady) return;
   _fb.on('child_changed',snap=>{
     const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
+    if(snap.key==='swim_parent_tab'){
+      loadAllData().then(()=>{
+        if(_currentTeacher!==null) render();
+        const selScreen = document.getElementById('teacher-select-screen');
+        if(selScreen && selScreen.style.display !== 'none' && typeof populateTeachers === 'function') populateTeachers();
+      }).catch(e=>console.warn('teacher data reload failed',e));
+      return;
+    }
     if(snap.key==='swim_requests') REQUESTS=parseJSON(asStr,{});
     else if(snap.key==='swim_mark') MARK_MAP=parseJSON(asStr,{});
-    else if(snap.key==='swim_students') STUDENTS=parseJSON(asStr,[]);
-    else if(snap.key==='swim_inst') INST_MAP=parseJSON(asStr,{});
+    else if(snap.key===_teacherStuKey) STUDENTS=parseJSON(asStr,[]);
+    else if(snap.key===_teacherInstKey) INST_MAP=parseJSON(asStr,{});
     else if(snap.key==='swim_teachers') TEACHERS=parseJSON(asStr,[]);
     else if(snap.key==='swim_attendance') ATTENDANCE=parseJSON(asStr,{});
     else if(snap.key==='swim_att_guests') ATT_GUESTS=parseJSON(asStr,{});
@@ -174,7 +198,7 @@ function subscribeChanges(){
     if(_currentTeacher!==null) render();
     // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신 (REQUESTS / INST_MAP / TEACHERS 변경 반응)
     const selScreen = document.getElementById('teacher-select-screen');
-    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key==='swim_inst' || snap.key==='swim_teachers')){
+    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key===_teacherInstKey || snap.key==='swim_teachers')){
       if(typeof populateTeachers === 'function') populateTeachers();
     }
   });
