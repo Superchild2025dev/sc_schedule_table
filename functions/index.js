@@ -612,6 +612,43 @@ async function submitBogang(branch, data) {
   return {bundle: await bundleForSession(branch, session)};
 }
 
+async function cancelBogang(branch, data) {
+  const session = await loadSession(branch, data.sessionToken);
+  const keys = sessionDataKeys(session);
+  const sourceSlotKey = String(data.sourceSlotKey || "");
+  const sourceDs = String(data.sourceDs || "");
+  if (!sourceSlotKey || !sourceDs) throw new HttpsError("invalid-argument", "취소할 보강 신청 정보가 없습니다");
+  await db.runTransaction(async tx => {
+    const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
+    const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
+    findSessionStudent({students}, session, sourceSlotKey);
+    const matched = Object.values(requests).filter(req =>
+      req && req.type === "bogang" &&
+      (!req.status || req.status === "pending") &&
+      req.parent && req.parent.studentSlotKey === sourceSlotKey &&
+      req.parent.absentDs === sourceDs
+    );
+    if (!matched.length) throw new HttpsError("not-found", "취소할 보강 신청이 없습니다");
+    const cancelledAt = new Date().toISOString();
+    Object.entries(requests).forEach(([id, req]) => {
+      if (
+        req && req.type === "bogang" &&
+        (!req.status || req.status === "pending") &&
+        req.parent && req.parent.studentSlotKey === sourceSlotKey &&
+        req.parent.absentDs === sourceDs
+      ) {
+        requests[id] = Object.assign({}, req, {
+          status: "cancelled",
+          cancelledAt,
+          cancelledBy: "parent",
+        });
+      }
+    });
+    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
+  });
+  return {bundle: await bundleForSession(branch, session)};
+}
+
 exports.parentPortal = onCall({
   serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
 }, async request => {
@@ -624,5 +661,6 @@ exports.parentPortal = onCall({
   if (action === "submitAbsentCancel") return submitAbsentCancel(branch, data);
   if (action === "getBogangSlots") return getBogangSlots(branch, data);
   if (action === "submitBogang") return submitBogang(branch, data);
+  if (action === "cancelBogang") return cancelBogang(branch, data);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
 });

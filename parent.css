@@ -80,6 +80,8 @@ input,textarea{font-family:inherit;outline:none}
 .btn-bogang{padding:5px 7px;font-size:10px;font-weight:700;background:#EDE9FE;color:#6D28D9;border-radius:6px;transition:all 0.15s}
 .btn-bogang:hover{background:#DDD6FE}
 .btn-bogang.done{background:#DCFCE7;color:#166534;cursor:default}
+.btn-bogang-cancel{padding:5px 7px;font-size:10px;font-weight:700;background:#F3F4F6;color:#4B5563;border-radius:6px;transition:all 0.15s}
+.btn-bogang-cancel:hover{background:#E5E7EB;color:#111827}
 .btn-absent.is-disabled,.btn-bogang:disabled{opacity:.9;cursor:default}
 .action-note{font-size:10px;font-weight:800;line-height:1.25;text-align:right}
 .action-note.wait{color:#F59E0B}

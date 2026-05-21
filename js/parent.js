@@ -494,7 +494,8 @@ function renderMyRequests(students){
     const accepted=group.items.find(([,req])=>req.status==='accepted');
     const pending=group.items.filter(([,req])=>!req.status || req.status==='pending');
     const rejected=group.items.filter(([,req])=>req.status==='rejected');
-    const visiblePair=accepted || pending[0] || rejected[0];
+    const cancelled=group.items.filter(([,req])=>req.status==='cancelled');
+    const visiblePair=accepted || pending[0] || rejected[0] || cancelled[0];
     if(!visiblePair) return;
     const req=visiblePair[1];
     const ds=req.target?.ds || req.parent?.absentDs || '';
@@ -509,6 +510,9 @@ function renderMyRequests(students){
       const labels=group.items.map(([,r])=>formatParentBogangTarget(r)).filter(Boolean);
       status='⏳ 선생님 승인 대기';
       sub=`후보 ${group.items.length}개: ${labels.slice(0,3).join(' / ')}${labels.length>3?' 외':''}`;
+    }else if(cancelled.length){
+      status='↩️ 신청 취소';
+      sub=group.items.length>1 ? `후보 ${group.items.length}개 취소` : `${formatParentBogangTarget(req)} 취소`;
     }else{
       status='⛔ 거절';
       sub=group.items.length>1 ? `후보 ${group.items.length}개 거절` : `${formatParentBogangTarget(req)} 거절`;
@@ -749,7 +753,8 @@ function renderDateList(slotKey,period,day){
                <span class="action-note muted">보강 불가</span>`
             : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
                ${bogangDone
-                 ? `<button class="btn-bogang done" type="button" disabled>신청완료</button>`
+                 ? `<button class="btn-bogang done" type="button" disabled>신청완료</button>
+                    ${pendingBogangCount>0 ? `<button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>` : ''}`
                  : `<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강신청</button>`}`;
         }
       } else {
@@ -1175,6 +1180,24 @@ async function submitBogang(){
   }
 }
 
+async function cancelBogangRequest(ds, slotKey){
+  if(!ds || !slotKey) return;
+  if(!confirm('보강 신청을 취소하시겠습니까?')) return;
+  try{
+    const data=await callParent('cancelBogang',{
+      sessionToken:_parentSessionToken,
+      sourceSlotKey:slotKey,
+      sourceDs:ds,
+    });
+    applyParentBundle(data.bundle||{});
+    renderDashboard();
+    toast('보강 신청을 취소했습니다','ok');
+  }catch(e){
+    toast(parentErrorMessage(e,'보강 취소 실패'),'err');
+    console.error(e);
+  }
+}
+
 /* ════════════════════════════════════════════════════════════════
  * 유틸
  * ════════════════════════════════════════════════════════════════ */
@@ -1242,6 +1265,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     if(act==='request-absent') openAbsentModal(ds, slotKey);
     else if(act==='cancel-absent') openAbsentCancelModal(ds, slotKey);
     else if(act==='request-bogang') openBogangModal(ds, slotKey);
+    else if(act==='cancel-bogang') cancelBogangRequest(ds, slotKey);
   });
 
   // 결석 모달
