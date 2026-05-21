@@ -60,6 +60,7 @@ body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;f
 .tab-btn.active{color:#0F9D58;border-bottom-color:#0F9D58}
 .tab-menu-trigger,.tab-folder-menu{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;color:#6B7280;font-size:15px;line-height:1}
 .tab-menu-trigger:hover,.tab-folder-menu:hover{background:#E5E7EB;color:#111}
+.parent-tab-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:6px;background:#DBEAFE;color:#1D4ED8;font-size:10px;font-weight:800}
 .tab-action-menu{position:fixed;z-index:10000;min-width:166px;padding:6px;border:1px solid #D1D5DB;border-radius:8px;background:#fff;box-shadow:0 12px 30px rgba(15,23,42,.18);display:flex;flex-direction:column;gap:2px}
 .tab-action-menu button{height:32px;padding:0 10px;border:none;border-radius:6px;background:#fff;color:#374151;font-size:12px;font-weight:800;text-align:left;cursor:pointer;font-family:inherit}
 .tab-action-menu button:hover{background:#F3F4F6;color:#111827}

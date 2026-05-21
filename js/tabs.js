@@ -242,6 +242,22 @@ function _menuSep(){
 function _menuLabel(label){
   return '<div class="tab-menu-label">'+_tabEsc(label)+'</div>';
 }
+function _tabStorageKeys(tab){
+  const id=String(tab?.id||'regular');
+  if(tab?.type==='bangteuk'){
+    return {tabId:id, tabName:tab.name||'', tabType:tab.type, stuKey:'swim_bt_'+id+'_stu', instKey:'swim_bt_'+id+'_inst'};
+  }
+  return {
+    tabId:id,
+    tabName:tab?.name||'',
+    tabType:tab?.type||'regular',
+    stuKey:id==='regular'?'swim_students':'swim_stu_'+id,
+    instKey:id==='regular'?'swim_inst':'swim_inst_'+id,
+  };
+}
+function _parentTabSetting(){
+  return loadJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', null)||{};
+}
 function _openSingleTabMenu(tabId, anchor){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 기능')) return;
   const tab=_tabList.find(t=>t.id===tabId);
@@ -265,6 +281,7 @@ function _openSingleTabMenu(tabId, anchor){
   if(i<_tabList.length-1) html+=_menuBtn('right',tabId,'오른쪽으로 이동');
   if(!isSnap){
     html+=_menuSep();
+    html+=_menuBtn('parent-public',tabId,'학부모 공개로 지정');
     html+=_menuBtn('copy',tabId,'시간표 복사');
     html+=_menuBtn('snapshot',tabId,'스냅샷 만들기');
   }
@@ -335,6 +352,18 @@ function moveTabOrder(tabId, delta){
   saveTabList();
   renderTabBar();
 }
+function setParentPublicTab(tabId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학부모 공개 시간표 지정')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab||tab.type==='snapshot'){
+    toast('스냅샷은 학부모 공개 시간표로 지정할 수 없습니다','err');
+    return;
+  }
+  const setting={..._tabStorageKeys(tab), setAt:new Date().toISOString()};
+  saveJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', setting, true);
+  renderTabBar();
+  toast('학부모 공개 시간표: '+(tab.name||tab.id),'ok');
+}
 function deleteTab(tabId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 삭제')) return;
   if(!confirm('이 탭을 삭제하시겠습니까?')) return;
@@ -363,6 +392,7 @@ function _handleTabMenuAction(action,id,targetFolder=''){
   else if(action==='folder-new') promptNewTabFolder(id);
   else if(action==='left') moveTabOrder(id,-1);
   else if(action==='right') moveTabOrder(id,1);
+  else if(action==='parent-public') setParentPublicTab(id);
   else if(action==='copy') copyTab(id);
   else if(action==='snapshot') createSnapshot(id);
   else if(action==='delete') deleteTab(id);
@@ -480,8 +510,9 @@ function renderTabBar(){
     const baseCls=isSnap?'tab-btn tab-snapshot':'tab-btn';
     const cls=tab.id===_activeTab?baseCls+' active':baseCls;
     const labelTitle=isSnap?` title="📷 ${tab.capturedAt||''} 스냅샷 — 읽기 전용"`:'';
+    const parentBadge=_parentTabSetting().tabId===tab.id?'<span class="parent-tab-badge">학부모</span>':'';
     const menu=canEditTabs?`<span class="tab-menu-trigger" data-tab-menu="${_tabEsc(tab.id)}" title="시간표 기능">⋯</span>`:'';
-    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${menu}</button>`;
+    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${parentBadge}${menu}</button>`;
   };
   _folderedTabGroups().forEach(group=>{
     if(!group.folder){

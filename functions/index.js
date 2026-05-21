@@ -183,6 +183,8 @@ function sessionDataKeys(session) {
 
 async function readScheduleTabs(branch) {
   const tabs = await readJSON(branch, "swim_tab_list", []);
+  const parentTabSetting = await readJSON(branch, "swim_parent_tab", null);
+  const parentTab = parentTabSetting && parentTabSetting.tabId ? normalizeDataKeys(parentTabSetting) : null;
   const list = Array.isArray(tabs) && tabs.length ? tabs : [{id: "regular", name: "정규시간표", type: "regular"}];
   const candidates = [];
   list.forEach((tab, index) => {
@@ -193,6 +195,8 @@ async function readScheduleTabs(branch) {
   if (!candidates.some(item => item.tabId === "regular")) {
     candidates.push({...tabDataKeys({id: "regular", name: "정규시간표", type: "regular"}), rank: -1});
   }
+  const selected = parentTab && candidates.find(item => item.tabId === parentTab.tabId);
+  if (selected) return [selected];
   candidates.sort((a, b) => b.rank - a.rank);
   return candidates;
 }
