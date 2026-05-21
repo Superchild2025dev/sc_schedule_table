@@ -7,7 +7,7 @@ const _REG_BASE={
   days:['월','화','수','목','금','토'],
   times:[{t:'1시'},{t:'2시'},{t:'3시'},{t:'4시'},{t:'5시'},{t:'6시'},{t:'7시'},{t:'8시'}],
   lanes:5, hasNum:['월','토'],
-  satTimeLabel:{'1시':'10시','2시':'11시','3시':'12시','4시':'13시','5시':'14시'},
+  satTimeLabel:{'1시':'10시','2시':'11시','3시':'12시','4시':'1시','5시':'2시'},
 };
 function getTabConfig(){
   const tab=_tabList.find(t=>t.id===_activeTab);

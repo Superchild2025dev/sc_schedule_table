@@ -95,6 +95,17 @@ function parseJSON(v,def){
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
 }
 
+const SATURDAY_DISPLAY_TIME={'1시':'10시','2시':'11시','3시':'12시','4시':'1시','5시':'2시'};
+function displayTimeForDay(day,t){
+  return String(day||'')==='토' ? (SATURDAY_DISPLAY_TIME[t]||t||'') : (t||'');
+}
+function displayStudentTime(s){
+  return displayTimeForDay(s?.d,s?.t);
+}
+function displayTargetTime(t){
+  return displayTimeForDay(t?.d||t?.day,t?.t);
+}
+
 function applyParentBundle(bundle){
   bundle=bundle||{};
   STUDENTS=Array.isArray(bundle.students)?bundle.students:[];
@@ -336,7 +347,7 @@ function showStudentSelector(groups){
     const slotCount=grp.length;
     const classList=grp.map(x=>{
       const label=instClassText(instOfStudent(x));
-      return `${x.d} ${x.t}${label?' · '+label:''}`;
+      return `${x.d} ${displayStudentTime(x)}${label?' · '+label:''}`;
     }).join(' · ');
     div.innerHTML=`<div class="cname">${esc(s.n)}${s.a?'('+s.a+'살)':''}${slotCount>1?` · ${slotCount}개 수업`:''}</div>
                    <div class="cinfo">${esc(classList)}</div>`;
@@ -410,7 +421,7 @@ function renderDashboard(){
   const classLabel=instClassText(inst);
   document.getElementById('class-info').textContent=
     slotCount===1
-      ? `${s.d}요일 ${s.t} · ${instNameOf(s)} 선생님${classLabel?' · '+classLabel:''}`
+      ? `${s.d}요일 ${displayStudentTime(s)} · ${instNameOf(s)} 선생님${classLabel?' · '+classLabel:''}`
       : `총 ${slotCount}개 수업 · ${s.p?esc(s.p):''}`;
 
   // 이번달/다음달 수업일
@@ -458,7 +469,7 @@ function renderMyRequests(students){
       items.push({
         type: 'absent', ds,
         title: '❌ 결석',
-        sub: `${stu?.d}요일 ${stu?.t}${classLabel?' · '+classLabel:''}`,
+        sub: `${stu?.d}요일 ${displayStudentTime(stu)}${classLabel?' · '+classLabel:''}`,
         status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : '대기',
         color: '#EF4444'
       });
@@ -519,7 +530,7 @@ function renderMyRequests(students){
     items.push({
       type: 'absent-cancel', ds: t.ds,
       title: '✓ 결석 취소',
-      sub: `${t.d}요일 ${t.t}${classLabel?' · '+classLabel:''}`,
+      sub: `${t.d}요일 ${displayTargetTime(t)}${classLabel?' · '+classLabel:''}`,
       status,
       color: '#10B981'
     });
@@ -577,7 +588,7 @@ function formatParentBogangTarget(req){
   if(!t.ds && !t.d && !t.t) return '';
   const teacher=t.instName ? ` · ${t.instName} 선생님` : '';
   const classLabel=instClassText(INST_MAP[req.instKey]) || t.classLabel || '';
-  return `${t.d||''}요일 ${t.t||''}${teacher}${classLabel?' · '+classLabel:''}`;
+  return `${t.d||''}요일 ${displayTargetTime(t)}${teacher}${classLabel?' · '+classLabel:''}`;
 }
 
 function instNameOf(s){
@@ -598,7 +609,7 @@ function renderMultiSlots(students, period){
     const inst=instOfStudent(s);
     const instName=instNameOf(s);
     return `<div class="slot-section">
-      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(s.t)} · ${esc(instName)} 선생님${instClassBadgeHtml(inst)}</div>
+      <div class="slot-title">📍 ${esc(s.d)}요일 ${esc(displayStudentTime(s))} · ${esc(instName)} 선생님${instClassBadgeHtml(inst)}</div>
       <div class="slot-dates">${renderDateList(slotKey,period,s.d)}</div>
     </div>`;
   }).join('');
@@ -756,7 +767,7 @@ function openAbsentModal(ds, slotKey){
   const dow=dowNames[new Date(ds).getDay()];
   // 슬롯 정보 표시
   const [t,day,l,r]=slotKey.split('/');
-  const slotInfo=`${day}요일 ${t}`;
+  const slotInfo=`${day}요일 ${displayTimeForDay(day,t)}`;
   document.getElementById('ab-desc').innerHTML=
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 수업을 결석으로 신청하시겠습니까?`;
   document.getElementById('ab-submit').dataset.ds=ds;
@@ -770,7 +781,7 @@ function openAbsentCancelModal(ds, slotKey){
   const dowNames=['일','월','화','수','목','금','토'];
   const dow=dowNames[new Date(ds).getDay()];
   const [t,day,l,r]=slotKey.split('/');
-  const slotInfo=`${day}요일 ${t}`;
+  const slotInfo=`${day}요일 ${displayTimeForDay(day,t)}`;
   document.getElementById('ac-desc').innerHTML=
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 취소를 신청하시겠습니까?`;
   document.getElementById('ac-submit').dataset.ds=ds;
@@ -958,7 +969,7 @@ function _bgSlotLabel(slot){
   if(!slot) return '';
   const [y,m,d]=(slot.ds||'').split('-');
   const dateLabel=m&&d ? `${parseInt(m)}/${parseInt(d)}` : '';
-  return `${dateLabel} ${slot.day} ${slot.t}`;
+  return `${dateLabel} ${slot.day} ${displayTargetTime(slot)}`;
 }
 
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
@@ -1069,7 +1080,7 @@ async function refreshBogangSlots(ds){
   container.innerHTML=slots.map((x,i)=>`
     <div class="bg-slot-item ${_bgSelectedSlots.some(s=>_bgSlotKey(s)===_bgSlotKey(x))?'selected':''}" data-idx="${i}">
       <div>
-        <div class="slot-main">${x.day}요일 · ${esc(x.t)}</div>
+        <div class="slot-main">${x.day}요일 · ${esc(displayTargetTime(x))}</div>
         <div class="slot-sub">${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
       </div>
     </div>
