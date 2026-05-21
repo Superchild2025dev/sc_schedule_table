@@ -14,7 +14,7 @@
 <script src="js/firebase-store.js?v=20260521-7"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="auth.css?v=20260521-7">
-<link rel="stylesheet" href="settings.css?v=20260521-2">
+<link rel="stylesheet" href="settings.css?v=20260521-3">
 </head>
 <body>
 <header class="settings-topbar">
@@ -159,6 +159,8 @@
         </div>
         <div class="panel-actions">
           <button type="button" class="ghost-btn" id="aligo-reset">기본값</button>
+          <button type="button" class="ghost-btn" id="aligo-health">연결 확인</button>
+          <button type="button" class="ghost-btn" id="aligo-remain">잔여건수</button>
           <button type="button" class="primary-btn" id="aligo-save">저장</button>
         </div>
       </div>
@@ -180,8 +182,9 @@
         <label>API Key 환경변수<input id="aligo-api-key-env" type="text" placeholder="ALIGO_KEY" autocomplete="off"></label>
         <label>발신 프로파일 키<input id="aligo-sender-key" type="text" autocomplete="off"></label>
         <label>발신번호<input id="aligo-sender" type="tel" inputmode="numeric" autocomplete="off"></label>
-        <label>잔여건수 확인 경로<input id="aligo-remain-path" type="text" placeholder="/akv10/heartinfo/"></label>
+        <label>잔여건수 확인 경로<input id="aligo-remain-path" type="text" placeholder="/remain/"></label>
       </div>
+      <pre id="aligo-test-result" class="test-result" hidden></pre>
 
       <div class="variable-card">
         <div class="subsection-head">
@@ -200,6 +203,8 @@
         </div>
         <div class="panel-actions">
           <button type="button" class="ghost-btn" id="sms-reset">기본값</button>
+          <button type="button" class="ghost-btn" id="sms-health">연결 확인</button>
+          <button type="button" class="ghost-btn" id="sms-remain">잔여건수</button>
           <button type="button" class="primary-btn" id="sms-save">저장</button>
         </div>
       </div>
@@ -229,6 +234,7 @@
         <label><input type="checkbox" id="sms-target-teacher"> 담당 선생님</label>
         <label><input type="checkbox" id="sms-target-desk"> 데스크</label>
       </div>
+      <pre id="sms-test-result" class="test-result" hidden></pre>
     </section>
   </section>
 </main>
@@ -236,6 +242,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260521-2"></script>
+<script src="js/settings.js?v=20260521-3"></script>
 </body>
 </html>

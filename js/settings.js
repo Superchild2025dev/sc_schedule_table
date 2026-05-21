@@ -79,7 +79,7 @@
         apiKeyEnv:'ALIGO_KEY',
         senderKey:'',
         sender:'',
-        remainPath:'/akv10/heartinfo/',
+        remainPath:'/remain/',
       },
       sms:{
         enabled:false,
@@ -118,6 +118,7 @@
     out.aligo=Object.assign({},base.aligo,saved.aligo||{});
     out.sms=Object.assign({},base.sms,saved.sms||{});
     out.sms.targets=Object.assign({},base.sms.targets,(saved.sms||{}).targets||{});
+    if(out.aligo.remainPath==='/akv10/heartinfo/') out.aligo.remainPath=base.aligo.remainPath;
     delete out.aligo.templates;
     delete out.sms.templates;
     return out;
@@ -351,7 +352,7 @@
         apiKeyEnv:$('aligo-api-key-env').value.trim()||'ALIGO_KEY',
         senderKey:$('aligo-sender-key').value.trim(),
         sender:$('aligo-sender').value.trim(),
-        remainPath:$('aligo-remain-path').value.trim()||'/akv10/heartinfo/',
+        remainPath:$('aligo-remain-path').value.trim()||'/remain/',
       };
     }
     if(!kind||kind==='sms'){
@@ -374,6 +375,93 @@
     delete data.aligo.templates;
     delete data.sms.templates;
     return data;
+  }
+  function joinProxyUrl(base,path){
+    const cleanBase=String(base||'/aligo').trim()||'/aligo';
+    const cleanPath=String(path||'').trim();
+    if(!cleanPath) return cleanBase;
+    return cleanBase.replace(/\/+$/,'')+'/'+cleanPath.replace(/^\/+/,'');
+  }
+  function testConfig(kind){
+    if(kind==='sms'){
+      return {
+        resultId:'sms-test-result',
+        proxyUrl:$('sms-proxy-url').value.trim()||'/aligo',
+        remainPath:$('sms-remain-path').value.trim()||'/remain/',
+        userid:$('sms-userid').value.trim(),
+        sender:$('sms-sender').value.trim(),
+      };
+    }
+    return {
+      resultId:'aligo-test-result',
+      proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
+      remainPath:$('aligo-remain-path').value.trim()||'/remain/',
+      userid:$('aligo-userid').value.trim(),
+      sender:$('aligo-sender').value.trim(),
+      senderKey:$('aligo-sender-key').value.trim(),
+    };
+  }
+  function showTestResult(resultId,ok,title,data){
+    const el=$(resultId);
+    if(!el) return;
+    const body=typeof data==='string' ? data : JSON.stringify(data,null,2);
+    el.hidden=false;
+    el.className='test-result '+(ok?'ok':'err');
+    el.textContent=`${title}\n\n${body||'응답 본문 없음'}`;
+  }
+  async function readTestResponse(res){
+    const text=await res.text();
+    let body=text;
+    if(text){
+      try{body=JSON.parse(text);}catch(e){}
+    }
+    if(!res.ok){
+      const msg=body&&typeof body==='object'&&(body.message||body.error)
+        ? (body.message||body.error)
+        : (typeof body==='string'&&body)||res.statusText||'요청 실패';
+      const err=new Error(msg);
+      err.body=body;
+      err.status=res.status;
+      throw err;
+    }
+    return body||{ok:true};
+  }
+  async function runProxyTest(kind,type,button){
+    const cfg=testConfig(kind);
+    const titlePrefix=kind==='sms'?'문자':'알림톡';
+    const isHealth=type==='health';
+    const url=joinProxyUrl(cfg.proxyUrl,isHealth?'health':cfg.remainPath);
+    const body=new URLSearchParams();
+    if(cfg.userid) body.set('user_id',cfg.userid);
+    if(cfg.sender) body.set('sender',cfg.sender);
+    if(cfg.senderKey) body.set('senderkey',cfg.senderKey);
+    const label=button&&button.textContent;
+    if(button){
+      button.disabled=true;
+      button.textContent='확인 중';
+    }
+    try{
+      const res=await fetch(url,isHealth?{method:'GET'}:{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+        body,
+      });
+      const data=await readTestResponse(res);
+      showTestResult(cfg.resultId,true,`${titlePrefix} ${isHealth?'연결 확인':'잔여건수 조회'} 성공: ${url}`,data);
+      toast(`${titlePrefix} ${isHealth?'연결':'잔여건수'} 확인 완료`,'ok');
+    }catch(e){
+      showTestResult(cfg.resultId,false,`${titlePrefix} ${isHealth?'연결 확인':'잔여건수 조회'} 실패: ${url}`,{
+        status:e.status||'',
+        message:e.message||String(e),
+        body:e.body||null,
+      });
+      toast(`${titlePrefix} 확인 실패`,'err');
+    }finally{
+      if(button){
+        button.disabled=false;
+        button.textContent=label;
+      }
+    }
   }
   function resetForm(kind){
     const fresh=defaultSettings(activeBranch);
@@ -428,6 +516,10 @@
     $('recipients-reset').addEventListener('click',()=>resetForm('recipients'));
     $('aligo-reset').addEventListener('click',()=>resetForm('aligo'));
     $('sms-reset').addEventListener('click',()=>resetForm('sms'));
+    $('aligo-health').addEventListener('click',e=>runProxyTest('aligo','health',e.currentTarget));
+    $('aligo-remain').addEventListener('click',e=>runProxyTest('aligo','remain',e.currentTarget));
+    $('sms-health').addEventListener('click',e=>runProxyTest('sms','health',e.currentTarget));
+    $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
   }
   function initialBranch(){
     try{
