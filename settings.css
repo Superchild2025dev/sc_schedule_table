@@ -56,6 +56,7 @@ button,input,textarea,select{font-family:inherit}
 .send-test-card{border:1px solid #DDE3EC;border-radius:8px;background:#FBFCFE;padding:12px;margin:2px 0 16px}
 .send-test-card .subsection-head{margin-top:0}
 .test-grid{margin-bottom:0}
+.send-test-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:12px}
 .target-row{display:flex;gap:12px;flex-wrap:wrap;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:10px;margin-bottom:16px}
 .target-row label{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:900;color:#172033}
 .test-result{margin:-4px 0 16px;background:#111827;color:#E5E7EB;border:1px solid #1F2937;border-radius:8px;padding:10px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.45}

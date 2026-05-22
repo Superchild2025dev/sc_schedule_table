@@ -68,6 +68,20 @@
     });
     return {teachers:{},fixed};
   }
+  function defaultTestVars(branchId){
+    const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
+    return [
+      `지점명=${branch.name}`,
+      '학생명=홍길동',
+      '수업일=5월21일',
+      '요일=화요일',
+      '수업시간=7시',
+      '담당선생님=김슈차',
+      '보류사유=일정 조정 필요',
+      '차량명=1호차',
+      '차량시간=7시',
+    ].join('\n');
+  }
   function defaultTemplates(branchId){
     const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
     return TEMPLATE_DEFS.reduce((acc,item)=>{
@@ -107,6 +121,7 @@
         testRecvName:'',
         testSubject:'',
         testMessage:'',
+        testVars:defaultTestVars(branch.id),
       },
       sms:{
         enabled:false,
@@ -384,6 +399,7 @@
     setValue('aligo-test-recvname',a.testRecvName);
     setValue('aligo-test-subject',a.testSubject);
     setValue('aligo-test-message',a.testMessage);
+    setValue('aligo-test-vars',a.testVars||defaultTestVars(activeBranch));
   }
   function renderSms(data){
     const s=data.sms||defaultSettings(activeBranch).sms;
@@ -481,7 +497,8 @@
         testReceiver:normalizePhone($('aligo-test-receiver').value),
         testRecvName:$('aligo-test-recvname').value.trim(),
         testSubject:$('aligo-test-subject').value.trim(),
-        testMessage:$('aligo-test-message').value.trim(),
+        testMessage:$('aligo-test-message').value,
+        testVars:$('aligo-test-vars').value,
       };
     }
     if(!kind||kind==='sms'){
@@ -534,7 +551,8 @@
       testReceiver:normalizePhone($('aligo-test-receiver').value),
       testRecvName:$('aligo-test-recvname').value.trim(),
       testSubject:$('aligo-test-subject').value.trim(),
-      testMessage:$('aligo-test-message').value.trim(),
+      testMessage:$('aligo-test-message').value,
+      testVars:$('aligo-test-vars').value,
       testMode:$('aligo-test-mode').checked,
     };
   }
@@ -610,7 +628,33 @@
     if(!cfg.testMessage) missing.push('알림톡 내용');
     if(missing.length) throw new Error(missing.join(', ')+' 입력이 필요합니다');
   }
-  async function runAlimtalkSendTest(button){
+  function parseTestVars(text){
+    const raw=String(text||'').trim();
+    if(!raw) return {};
+    if(raw.startsWith('{')){
+      try{
+        const parsed=JSON.parse(raw);
+        return parsed&&typeof parsed==='object' ? parsed : {};
+      }catch(e){}
+    }
+    return raw.split(/\r?\n/).reduce((acc,line)=>{
+      const trimmed=line.trim();
+      if(!trimmed||trimmed.startsWith('#')) return acc;
+      const idx=trimmed.indexOf('=')>=0 ? trimmed.indexOf('=') : trimmed.indexOf(':');
+      if(idx<0) return acc;
+      const key=trimmed.slice(0,idx).trim().replace(/^#\{|\}$/g,'');
+      if(!key) return acc;
+      acc[key]=trimmed.slice(idx+1).trim();
+      return acc;
+    },{});
+  }
+  function renderTestVars(text,vars){
+    return String(text||'').replace(/#\{([^}]+)\}/g,(all,name)=>{
+      const key=String(name||'').trim();
+      return vars[key]===undefined||vars[key]===null?'':String(vars[key]);
+    });
+  }
+  async function runAlimtalkSend(button, live){
     const cfg=testConfig('aligo');
     const tpl=cfg.testTemplateId ? getTemplatesForTest()[cfg.testTemplateId] : null;
     if(tpl){
@@ -620,6 +664,11 @@
       cfg.buttonName=tpl.buttonName||'';
       cfg.link=tpl.link||'';
     }
+    const vars=Object.assign({},parseTestVars(defaultTestVars(activeBranch)),parseTestVars(cfg.testVars));
+    cfg.testSubject=renderTestVars(cfg.testSubject,vars);
+    cfg.testMessage=renderTestVars(cfg.testMessage,vars);
+    cfg.buttonName=renderTestVars(cfg.buttonName||'',vars);
+    cfg.link=renderTestVars(cfg.link||'',vars);
     try{
       validateAlimtalkTest(cfg);
     }catch(e){
@@ -627,7 +676,8 @@
       toast('필수값을 확인해주세요','err');
       return;
     }
-    if(!window.confirm('테스트 알림톡 1건을 발송할까요?')) return;
+    const modeText=live?'실제 알림톡':'테스트 검증';
+    if(!window.confirm(`${modeText} 1건을 발송할까요?`)) return;
     const url=joinProxyUrl(cfg.proxyUrl,cfg.sendPath);
     const body=new URLSearchParams();
     body.set('senderkey',cfg.senderKey);
@@ -637,7 +687,7 @@
     if(cfg.testRecvName) body.set('recvname_1',cfg.testRecvName);
     body.set('subject_1',cfg.testSubject);
     body.set('message_1',cfg.testMessage);
-    body.set('testMode',cfg.testMode?'Y':'N');
+    body.set('testMode',live?'N':'Y');
     body.set('failover','N');
     if(cfg.buttonName&&cfg.link){
       body.set('button_1',JSON.stringify({
@@ -660,15 +710,15 @@
         body,
       });
       const data=await readTestResponse(res);
-      showTestResult(cfg.resultId,true,`알림톡 테스트 발송 응답: ${url}`,data);
-      toast('알림톡 테스트 발송 요청 완료','ok');
+      showTestResult(cfg.resultId,true,`알림톡 ${modeText} 응답: ${url}`,data);
+      toast(`알림톡 ${modeText} 요청 완료`,'ok');
     }catch(e){
-      showTestResult(cfg.resultId,false,`알림톡 테스트 발송 실패: ${url}`,{
+      showTestResult(cfg.resultId,false,`알림톡 ${modeText} 실패: ${url}`,{
         status:e.status||'',
         message:e.message||String(e),
         body:e.body||null,
       });
-      toast('알림톡 테스트 발송 실패','err');
+      toast(`알림톡 ${modeText} 실패`,'err');
     }finally{
       if(button){
         button.disabled=false;
@@ -734,7 +784,9 @@
     $('sms-reset').addEventListener('click',()=>resetForm('sms'));
     $('aligo-health').addEventListener('click',e=>runProxyTest('aligo','health',e.currentTarget));
     $('aligo-remain').addEventListener('click',e=>runProxyTest('aligo','remain',e.currentTarget));
-    $('aligo-send-test').addEventListener('click',e=>runAlimtalkSendTest(e.currentTarget));
+    $('aligo-save-test').addEventListener('click',()=>saveSettings('aligo'));
+    $('aligo-send-test').addEventListener('click',e=>runAlimtalkSend(e.currentTarget,false));
+    $('aligo-send-live').addEventListener('click',e=>runAlimtalkSend(e.currentTarget,true));
     $('aligo-test-template').addEventListener('change',e=>applyTestTemplate(e.currentTarget.value,true));
     $('sms-health').addEventListener('click',e=>runProxyTest('sms','health',e.currentTarget));
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
