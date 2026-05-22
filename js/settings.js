@@ -109,10 +109,6 @@
         enabled:false,
         testMode:true,
         proxyUrl:'/aligo',
-        userid:'',
-        apiKeyEnv:'ALIGO_KEY',
-        senderKey:'',
-        sender:'',
         remainPath:'/remain/',
         sendPath:'/alimtalk/send/',
         templateCode:'',
@@ -387,10 +383,6 @@
     setChecked('aligo-enabled',a.enabled);
     setChecked('aligo-test-mode',a.testMode);
     setValue('aligo-proxy-url',a.proxyUrl);
-    setValue('aligo-userid',a.userid);
-    setValue('aligo-api-key-env',a.apiKeyEnv);
-    setValue('aligo-sender-key',a.senderKey);
-    setValue('aligo-sender',a.sender);
     setValue('aligo-remain-path',a.remainPath);
     setValue('aligo-send-path',a.sendPath);
     setValue('aligo-test-template',a.testTemplateId);
@@ -486,10 +478,6 @@
         enabled:$('aligo-enabled').checked,
         testMode:$('aligo-test-mode').checked,
         proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
-        userid:$('aligo-userid').value.trim(),
-        apiKeyEnv:$('aligo-api-key-env').value.trim()||'ALIGO_KEY',
-        senderKey:$('aligo-sender-key').value.trim(),
-        sender:$('aligo-sender').value.trim(),
         remainPath:$('aligo-remain-path').value.trim()||'/remain/',
         sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
         testTemplateId:$('aligo-test-template').value,
@@ -543,9 +531,7 @@
       proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
       remainPath:$('aligo-remain-path').value.trim()||'/remain/',
       sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
-      userid:$('aligo-userid').value.trim(),
-      sender:$('aligo-sender').value.trim(),
-      senderKey:$('aligo-sender-key').value.trim(),
+      branch:activeBranch,
       testTemplateId:$('aligo-test-template').value,
       templateCode:$('aligo-template-code').value.trim(),
       testReceiver:normalizePhone($('aligo-test-receiver').value),
@@ -587,9 +573,9 @@
     const isHealth=type==='health';
     const url=joinProxyUrl(cfg.proxyUrl,isHealth?'health':cfg.remainPath);
     const body=new URLSearchParams();
-    if(cfg.userid) body.set('user_id',cfg.userid);
-    if(cfg.sender) body.set('sender',cfg.sender);
-    if(cfg.senderKey) body.set('senderkey',cfg.senderKey);
+    if(kind==='aligo') body.set('branch',activeBranch);
+    if(kind==='sms'&&cfg.userid) body.set('user_id',cfg.userid);
+    if(kind==='sms'&&cfg.sender) body.set('sender',cfg.sender);
     const label=button&&button.textContent;
     if(button){
       button.disabled=true;
@@ -620,8 +606,7 @@
   }
   function validateAlimtalkTest(cfg){
     const missing=[];
-    if(!cfg.senderKey) missing.push('발신 프로파일 키');
-    if(!cfg.sender) missing.push('발신번호');
+    if(!cfg.branch) missing.push('지점');
     if(!cfg.templateCode) missing.push('템플릿 코드');
     if(!cfg.testReceiver) missing.push('테스트 수신번호');
     if(!cfg.testSubject) missing.push('알림톡 제목');
@@ -680,9 +665,8 @@
     if(!window.confirm(`${modeText} 1건을 발송할까요?`)) return;
     const url=joinProxyUrl(cfg.proxyUrl,cfg.sendPath);
     const body=new URLSearchParams();
-    body.set('senderkey',cfg.senderKey);
+    body.set('branch',cfg.branch);
     body.set('tpl_code',cfg.templateCode);
-    body.set('sender',normalizePhone(cfg.sender));
     body.set('receiver_1',cfg.testReceiver);
     if(cfg.testRecvName) body.set('recvname_1',cfg.testRecvName);
     body.set('subject_1',cfg.testSubject);

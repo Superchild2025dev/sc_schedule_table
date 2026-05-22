@@ -146,7 +146,10 @@ async function readJSON(branch, key, fallback) {
 
 async function readAligoSettings(branch) {
   const raw = parseJSON(await readStoredValue(branch, "swim_aligo_settings"), {});
-  return raw && typeof raw === "object" ? raw : {};
+  const settings = raw && typeof raw === "object" ? raw : {};
+  settings.branchId = branch.id;
+  settings.branchName = branch.name;
+  return settings;
 }
 
 function renderTemplateText(text, vars) {
@@ -198,13 +201,12 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   if (!aligo.enabled) return {skipped: true, reason: "disabled"};
   const tpl = templateById(settings, templateId);
   const phone = normalizePhone(receiverPhone);
-  if (!tpl || !phone || !aligo.senderKey || !aligo.sender) return {skipped: true, reason: "missing-config"};
+  if (!tpl || !phone || !settings.branchId) return {skipped: true, reason: "missing-config"};
   const subject = renderTemplateText(tpl.main || tpl.title || "슈퍼차일드 알림", vars);
   const message = renderTemplateText(tpl.body || "", vars);
   const body = new URLSearchParams();
-  body.set("senderkey", aligo.senderKey);
+  body.set("branch", settings.branchId);
   body.set("tpl_code", tpl.code);
-  body.set("sender", normalizePhone(aligo.sender));
   body.set("receiver_1", phone);
   if (receiverName) body.set("recvname_1", receiverName);
   body.set("subject_1", subject);

@@ -873,11 +873,12 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   const aligo=settings.aligo||{};
   const tpl=settings.templates&&settings.templates[templateId];
   const receiver=normalizeNotifyPhone(phone);
-  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligo.senderKey||!aligo.sender) return;
+  const branch=getBranchInfo();
+  const branchId=branch?.id||settings.branchId||'';
+  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!branchId) return;
   const body=new URLSearchParams();
-  body.set('senderkey',aligo.senderKey);
+  body.set('branch',branchId);
   body.set('tpl_code',tpl.code);
-  body.set('sender',normalizeNotifyPhone(aligo.sender));
   body.set('receiver_1',receiver);
   if(name) body.set('recvname_1',name);
   body.set('subject_1',renderNotifyText(tpl.main||tpl.title||'슈퍼차일드 알림',vars));

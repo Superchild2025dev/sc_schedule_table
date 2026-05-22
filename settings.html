@@ -14,7 +14,7 @@
 <script src="js/firebase-store.js?v=20260521-7"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="auth.css?v=20260521-7">
-<link rel="stylesheet" href="settings.css?v=20260522-3">
+<link rel="stylesheet" href="settings.css?v=20260522-4">
 </head>
 <body>
 <header class="settings-topbar">
@@ -211,8 +211,6 @@
 
       <div class="form-grid">
         <label>프록시 URL<input id="aligo-proxy-url" type="text" placeholder="/aligo"></label>
-        <label>알리고 User ID<input id="aligo-userid" type="text" autocomplete="off"></label>
-        <label>API Key 환경변수<input id="aligo-api-key-env" type="text" placeholder="ALIGO_KEY" autocomplete="off"></label>
         <label>잔여건수 확인 경로<input id="aligo-remain-path" type="text" placeholder="/remain/"></label>
         <label>알림톡 발송 경로<input id="aligo-send-path" type="text" placeholder="/alimtalk/send/"></label>
       </div>
@@ -224,8 +222,6 @@
         </div>
         <div class="form-grid test-grid">
           <label>테스트 템플릿 선택<select id="aligo-test-template"></select></label>
-          <label>발신 프로파일 키<input id="aligo-sender-key" type="text" autocomplete="off"></label>
-          <label>발신번호<input id="aligo-sender" type="tel" inputmode="numeric" autocomplete="off"></label>
           <label>템플릿 코드<input id="aligo-template-code" type="text" autocomplete="off"></label>
           <label>테스트 수신번호<input id="aligo-test-receiver" type="tel" inputmode="numeric" autocomplete="off" placeholder="01012345678"></label>
           <label>수신자 이름<input id="aligo-test-recvname" type="text" autocomplete="off" placeholder="홍길동"></label>
@@ -297,6 +293,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260522-3"></script>
+<script src="js/settings.js?v=20260522-4"></script>
 </body>
 </html>
