@@ -76,6 +76,21 @@ button,input,textarea,select{font-family:inherit}
 .recipient-table input[type="tel"]{width:100%;height:34px;border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;font-size:13px;color:#172033}
 .recipient-table input[type="tel"]:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
 .recipient-key{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:6px;background:#EEF2F7;color:#526173;font-size:11px;font-weight:900}
+.template-table-wrap{border:1px solid #DDE3EC;border-radius:8px;overflow:auto;background:#fff}
+.template-table{width:100%;min-width:1040px;border-collapse:collapse;table-layout:fixed}
+.template-table th{background:#F8FAFC;color:#4B5563;font-size:11px;font-weight:900;text-align:left;padding:8px 10px;border-bottom:1px solid #E8EDF4}
+.template-table td{padding:8px 10px;border-bottom:1px solid #EEF2F7;color:#172033;font-size:12px;vertical-align:top}
+.template-table tr:last-child td{border-bottom:none}
+.template-table th:nth-child(1),.template-table td:nth-child(1){width:56px;text-align:center}
+.template-table th:nth-child(2),.template-table td:nth-child(2){width:170px}
+.template-table th:nth-child(3),.template-table td:nth-child(3){width:130px}
+.template-table th:nth-child(4),.template-table td:nth-child(4){width:210px}
+.template-table th:nth-child(6),.template-table td:nth-child(6){width:190px}
+.template-table input,.template-table textarea{width:100%;border:1px solid #D1D8E5;border-radius:7px;padding:7px 8px;font-size:12px;color:#172033;background:#fff;margin-bottom:6px}
+.template-table input[type="checkbox"]{width:16px;height:16px;margin:3px 0 0;accent-color:#0F9D58}
+.template-table textarea{min-height:112px;resize:vertical;line-height:1.45;white-space:pre-wrap}
+.template-table input:focus,.template-table textarea:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
+.template-target{display:inline-flex;margin-top:6px;padding:2px 7px;border-radius:999px;background:#EEF2F7;color:#526173;font-size:10px;font-weight:900}
 .variable-card{border:1px solid #DDE3EC;border-radius:8px;background:#FBFCFE;padding:12px;margin-top:4px}
 .variable-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .variable-item{background:#fff;border:1px solid #E2E8F0;border-radius:8px;padding:10px}

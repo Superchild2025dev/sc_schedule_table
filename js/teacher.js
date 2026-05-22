@@ -776,6 +776,164 @@ function renderCancelList(reqs){
   }).join('');
 }
 
+function normalizeNotifyPhone(value){
+  return String(value||'').replace(/[^\d]/g,'');
+}
+function joinNotifyProxyUrl(base,path){
+  const cleanBase=String(base||'/aligo').trim()||'/aligo';
+  const cleanPath=String(path||'/alimtalk/send/').trim()||'/alimtalk/send/';
+  return cleanBase.replace(/\/+$/,'')+'/'+cleanPath.replace(/^\/+/,'');
+}
+function notifyDateParts(ds){
+  if(!ds) return {dateText:'',dayText:''};
+  const [y,m,d]=String(ds).split('-');
+  const date=new Date(ds);
+  const dayNames=['일요일','월요일','화요일','수요일','목요일','금요일','토요일'];
+  return {
+    dateText:`${parseInt(m)}월${parseInt(d)}일`,
+    dayText:Number.isNaN(date.getTime())?'':dayNames[date.getDay()],
+  };
+}
+function notifyDisplayTime(day,time){
+  const sat={'1시':'10시','2시':'11시','3시':'12시','4시':'1시','5시':'2시'};
+  return String(day||'').replace('요일','')==='토' ? (sat[time]||time||'') : (time||'');
+}
+function renderNotifyText(text,vars){
+  return String(text||'').replace(/#\{([^}]+)\}/g,(all,name)=>{
+    const key=String(name||'').trim();
+    return vars[key]===undefined||vars[key]===null?'':String(vars[key]);
+  });
+}
+async function loadAligoSettings(){
+  if(!_fbReady) return {};
+  try{
+    const snap=await _fb.child('swim_aligo_settings').once('value');
+    return parseJSON(snap.val(),{});
+  }catch(e){
+    console.warn('aligo settings load failed',e);
+    return {};
+  }
+}
+function notifyRecipientPhone(settings,kind,name){
+  const recipients=settings?.recipients||{};
+  if(kind==='parent') return normalizeNotifyPhone(name);
+  if(kind==='desk'){
+    const desk=recipients.fixed?.desk;
+    return desk&&desk.enabled!==false ? normalizeNotifyPhone(desk.phone) : '';
+  }
+  if(kind&&/^bus\d+$/.test(kind)){
+    const bus=recipients.fixed?.[kind];
+    return bus&&bus.enabled!==false ? normalizeNotifyPhone(bus.phone) : '';
+  }
+  if(kind==='teacher'){
+    const t=recipients.teachers?.[name];
+    return t&&t.enabled!==false ? normalizeNotifyPhone(t.phone) : '';
+  }
+  return '';
+}
+function notifyVehicleKeyOfStudent(stu){
+  const source=[stu?.bus,stu?.vehicleName,stu?.car,stu?.route,stu?.loc].filter(Boolean).join(' ');
+  const m=String(source||'').match(/([1-3])\s*호차/);
+  return m ? `bus${m[1]}` : '';
+}
+function notifyVehicleName(key){
+  const m=String(key||'').match(/^bus([1-3])$/);
+  return m ? `${m[1]}호차` : '';
+}
+function findNotifyStudent(req){
+  const t=req?.target||{};
+  const parentName=req?.parent?.name||'';
+  return STUDENTS.find(s=>
+    s.t===t.t && s.d===t.d
+    && parseInt(s.l)===parseInt(t.l)
+    && parseInt(s.r)===parseInt(t.r)
+  ) || STUDENTS.find(s=>s.n===parentName);
+}
+function requestNotifyVars(req, targetOverride){
+  const branch=getBranchInfo()||{name:''};
+  const p=req?.parent||{};
+  const target=targetOverride || req?.target || {};
+  const ds=target.ds || p.absentDs || '';
+  const parts=notifyDateParts(ds);
+  const teacherName=req?.type==='bogang' ? reqTargetTeacherName(req) : reqAssignedTeacherName(req);
+  return {
+    '지점명':branch.name,
+    '학생명':p.name||'',
+    '수업일':parts.dateText,
+    '요일':parts.dayText,
+    '수업시간':notifyDisplayTime(target.d,target.t),
+    '담당선생님':teacherName===UNASSIGNED_TEACHER_LABEL?'':teacherName,
+    '보류사유':'일정 조정 필요',
+    '차량명':'',
+    '차량시간':notifyDisplayTime(target.d,target.t),
+  };
+}
+async function sendTeacherAlimtalk(templateId,phone,name,vars){
+  const settings=await loadAligoSettings();
+  const aligo=settings.aligo||{};
+  const tpl=settings.templates&&settings.templates[templateId];
+  const receiver=normalizeNotifyPhone(phone);
+  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligo.senderKey||!aligo.sender) return;
+  const body=new URLSearchParams();
+  body.set('senderkey',aligo.senderKey);
+  body.set('tpl_code',tpl.code);
+  body.set('sender',normalizeNotifyPhone(aligo.sender));
+  body.set('receiver_1',receiver);
+  if(name) body.set('recvname_1',name);
+  body.set('subject_1',renderNotifyText(tpl.main||tpl.title||'슈퍼차일드 알림',vars));
+  body.set('message_1',renderNotifyText(tpl.body||'',vars));
+  body.set('failover','N');
+  body.set('testMode',aligo.testMode?'Y':'N');
+  const link=renderNotifyText(tpl.link||'',vars);
+  const buttonName=renderNotifyText(tpl.buttonName||'',vars);
+  if(link&&buttonName){
+    body.set('button_1',JSON.stringify({name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkMo:link,linkPc:link}));
+  }
+  try{
+    const res=await fetch(joinNotifyProxyUrl(aligo.proxyUrl,aligo.sendPath),{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+      body,
+    });
+    if(!res.ok) console.warn('alimtalk send failed',templateId,await res.text());
+  }catch(e){
+    console.warn('alimtalk send error',templateId,e);
+  }
+}
+async function notifyRequestProcessed(req,status){
+  const settings=await loadAligoSettings();
+  const p=req?.parent||{};
+  if(req?.type==='bogang'){
+    if(status==='accepted'){
+      await sendTeacherAlimtalk('parent_makeup_accepted',p.phone,p.name,requestNotifyVars(req,req.target));
+    }else if(status==='rejected'){
+      await sendTeacherAlimtalk('parent_makeup_rejected',p.phone,p.name,requestNotifyVars(req,req.target));
+    }
+    return;
+  }
+  if(req?.type==='absent-cancel' && status==='accepted'){
+    const vars=requestNotifyVars(req,req.target);
+    const teacherName=reqAssignedTeacherName(req);
+    const jobs=[
+      sendTeacherAlimtalk('parent_absent_cancel',p.phone,p.name,vars),
+      sendTeacherAlimtalk('staff_absent_cancel',notifyRecipientPhone(settings,'teacher',teacherName),teacherName,vars),
+      sendTeacherAlimtalk('staff_absent_cancel',notifyRecipientPhone(settings,'desk'),'데스크',vars),
+    ];
+    const stu=findNotifyStudent(req);
+    const vehicleKey=notifyVehicleKeyOfStudent(stu);
+    if(vehicleKey){
+      const vehicleName=notifyVehicleName(vehicleKey);
+      jobs.push(sendTeacherAlimtalk(
+        'vehicle_absent_cancel',
+        notifyRecipientPhone(settings,vehicleKey),
+        vehicleName,
+        Object.assign({},vars,{'차량명':vehicleName})
+      ));
+    }
+    await Promise.all(jobs);
+  }
+}
+
 /* ── 수락/거절 액션 ── */
 async function acceptRequest(reqId){
   if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
@@ -827,6 +985,7 @@ async function acceptRequest(reqId){
       markApplied=true;
     }
     await setRequestStatus(reqId,'accepted');
+    notifyRequestProcessed(req,'accepted').catch(e=>console.warn('notify failed',e));
     toast('수락 완료','ok');
     render();
   }catch(e){
@@ -843,6 +1002,7 @@ async function rejectRequest(reqId){
   if(!confirm('이 요청을 거절하시겠습니까?')) return;
   try{
     await setRequestStatus(reqId,'rejected');
+    notifyRequestProcessed(req,'rejected').catch(e=>console.warn('notify failed',e));
     toast('거절 완료','ok');
     render();
   }catch(e){
@@ -870,6 +1030,7 @@ async function rejectBogangGroup(groupKey){
   const msg=ids.length>1 ? `보강 후보 ${ids.length}개를 모두 거절하시겠습니까?` : '이 요청을 거절하시겠습니까?';
   if(!confirm(msg)) return;
   try{
+    const notifyReq=REQUESTS[ids[0]];
     if(ids.length===1){
       await setRequestStatus(ids[0],'rejected');
     }else{
@@ -895,6 +1056,7 @@ async function rejectBogangGroup(groupKey){
         return reqs;
       });
     }
+    notifyRequestProcessed(notifyReq,'rejected').catch(e=>console.warn('notify failed',e));
     toast('거절 완료','ok');
     render();
   }catch(e){

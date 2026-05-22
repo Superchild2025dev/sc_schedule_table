@@ -17,6 +17,8 @@ const BRANCHES = {
   gagyeong: {id: "gagyeong", name: "가경점"},
   yongam: {id: "yongam", name: "용암점"},
 };
+const ALIGO_PROXY_BASE = "https://adminsuperchild.cloud/aligo";
+const ALIGO_SEND_PATH = "/alimtalk/send/";
 
 const DEFAULT_PERIODS = [
   {month: 2, start: "2026-02-02", end: "2026-03-04"},
@@ -34,6 +36,23 @@ const DEFAULT_PERIODS = [
 
 function normalizePhone(value) {
   return String(value || "").replace(/\D/g, "");
+}
+
+function dateParts(ds) {
+  const date = new Date(ds);
+  const parts = String(ds || "").split("-");
+  const month = Number(parts[1] || 0);
+  const day = Number(parts[2] || 0);
+  const weekdays = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+  return {
+    dateText: month && day ? `${month}월${day}일` : String(ds || ""),
+    dayText: Number.isNaN(date.getTime()) ? "" : weekdays[date.getDay()],
+  };
+}
+
+function displayTimeForDay(day, time) {
+  const sat = {"1시": "10시", "2시": "11시", "3시": "12시", "4시": "1시", "5시": "2시"};
+  return String(day || "").replace("요일", "") === "토" ? (sat[time] || time || "") : (time || "");
 }
 
 function safeBranch(input) {
@@ -123,6 +142,125 @@ function writeStoredValue(tx, branch, key, value) {
 
 async function readJSON(branch, key, fallback) {
   return parseJSON(await readStoredValue(branch, key), fallback);
+}
+
+async function readAligoSettings(branch) {
+  const raw = parseJSON(await readStoredValue(branch, "swim_aligo_settings"), {});
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+function renderTemplateText(text, vars) {
+  return String(text || "").replace(/#\{([^}]+)\}/g, (all, name) => {
+    const key = String(name || "").trim();
+    return vars[key] === undefined || vars[key] === null ? "" : String(vars[key]);
+  });
+}
+
+function joinProxyUrl(base, path) {
+  const b = String(base || ALIGO_PROXY_BASE).trim().replace(/\/+$/, "");
+  const p = String(path || ALIGO_SEND_PATH).trim().replace(/^\/+/, "");
+  if (!/^https?:\/\//i.test(b)) return ALIGO_PROXY_BASE.replace(/\/+$/, "") + "/" + p;
+  return b + "/" + p;
+}
+
+function templateById(settings, id) {
+  const tpl = settings && settings.templates && settings.templates[id];
+  if (!tpl || tpl.enabled === false || !tpl.code) return null;
+  return tpl;
+}
+
+function recipientPhone(settings, kind, name) {
+  const recipients = settings && settings.recipients || {};
+  if (kind === "parent") return normalizePhone(name);
+  if (kind === "desk") {
+    const desk = recipients.fixed && recipients.fixed.desk;
+    return desk && desk.enabled !== false ? normalizePhone(desk.phone) : "";
+  }
+  if (kind === "teacher") {
+    const saved = recipients.teachers && recipients.teachers[name];
+    return saved && saved.enabled !== false ? normalizePhone(saved.phone) : "";
+  }
+  if (kind && /^bus\d+$/.test(kind)) {
+    const bus = recipients.fixed && recipients.fixed[kind];
+    return bus && bus.enabled !== false ? normalizePhone(bus.phone) : "";
+  }
+  return "";
+}
+
+function vehicleKeyOfStudent(stu) {
+  const source = [stu && stu.bus, stu && stu.vehicleName, stu && stu.car, stu && stu.route, stu && stu.loc].filter(Boolean).join(" ");
+  const m = String(source || "").match(/([1-3])\s*호차/);
+  return m ? `bus${m[1]}` : "";
+}
+
+async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, vars) {
+  const aligo = settings && settings.aligo || {};
+  if (!aligo.enabled) return {skipped: true, reason: "disabled"};
+  const tpl = templateById(settings, templateId);
+  const phone = normalizePhone(receiverPhone);
+  if (!tpl || !phone || !aligo.senderKey || !aligo.sender) return {skipped: true, reason: "missing-config"};
+  const subject = renderTemplateText(tpl.main || tpl.title || "슈퍼차일드 알림", vars);
+  const message = renderTemplateText(tpl.body || "", vars);
+  const body = new URLSearchParams();
+  body.set("senderkey", aligo.senderKey);
+  body.set("tpl_code", tpl.code);
+  body.set("sender", normalizePhone(aligo.sender));
+  body.set("receiver_1", phone);
+  if (receiverName) body.set("recvname_1", receiverName);
+  body.set("subject_1", subject);
+  body.set("message_1", message);
+  body.set("failover", "N");
+  body.set("testMode", aligo.testMode ? "Y" : "N");
+  const link = renderTemplateText(tpl.link || "", vars);
+  const buttonName = renderTemplateText(tpl.buttonName || "", vars);
+  if (buttonName && link) {
+    body.set("button_1", JSON.stringify({
+      name: buttonName,
+      linkType: "WL",
+      linkTypeName: "웹링크",
+      linkMo: link,
+      linkPc: link,
+    }));
+  }
+  try {
+    const response = await fetch(joinProxyUrl(aligo.proxyUrl, aligo.sendPath), {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+      body,
+    });
+    const text = await response.text();
+    let result = text;
+    try { result = JSON.parse(text); } catch (error) {}
+    if (!response.ok) console.error("alimtalk failed", templateId, result);
+    return result;
+  } catch (error) {
+    console.error("alimtalk error", templateId, error.message);
+    return {error: error.message};
+  }
+}
+
+function classVars(branch, stu, inst, ds, extra) {
+  const parts = dateParts(ds);
+  const dayText = parts.dayText || (stu && stu.d ? `${stu.d}요일` : "");
+  return Object.assign({
+    "지점명": branch.name,
+    "학생명": stu && stu.n || "",
+    "수업일": parts.dateText,
+    "요일": dayText,
+    "수업시간": displayTimeForDay(stu && stu.d, stu && stu.t),
+    "담당선생님": inst && inst.n || "",
+    "보류사유": "일정 조정 필요",
+    "차량명": "",
+    "차량시간": displayTimeForDay(stu && stu.d, stu && stu.t),
+  }, extra || {});
+}
+
+async function notifyMany(settings, jobs) {
+  await Promise.all((jobs || []).map(job =>
+    sendAlimtalk(settings, job.templateId, job.phone, job.name, job.vars).catch(error => {
+      console.error("notify job failed", job.templateId, error.message);
+    })
+  ));
 }
 
 async function readBaseData(branch, dataKeys) {
@@ -486,19 +624,43 @@ async function submitAbsent(branch, data) {
   const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
+  let notifyCtx = null;
   await db.runTransaction(async tx => {
     const base = {
       students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
+      inst: parseJSON(await readStoredValue(branch, keys.instKey, tx), {}),
       mark: parseJSON(await readStoredValue(branch, "swim_mark", tx), {}),
     };
-    findSessionStudent(base, session, slotKey);
+    const stu = findSessionStudent(base, session, slotKey);
+    const inst = base.inst[instKeyOf(stu)];
     const markKey = `${slotKey}/${ds}`;
     const current = base.mark[markKey];
     base.mark[markKey] = current && (current.type === "bogang" || current.type === "sample")
       ? {type: "absent", sub: current}
       : {type: "absent"};
+    notifyCtx = {stu, inst, ds};
     writeStoredValue(tx, branch, "swim_mark", JSON.stringify(base.mark));
   });
+  if (notifyCtx) {
+    const settings = await readAligoSettings(branch);
+    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
+    const teacherName = notifyCtx.inst && notifyCtx.inst.n || "";
+    const jobs = [
+      {templateId: "parent_absent_done", phone: notifyCtx.stu.p, name: notifyCtx.stu.n, vars},
+      {templateId: "staff_absent_done", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
+      {templateId: "staff_absent_done", phone: recipientPhone(settings, "desk"), name: "데스크", vars},
+    ];
+    const vehicleKey = vehicleKeyOfStudent(notifyCtx.stu);
+    if (vehicleKey) {
+      jobs.push({
+        templateId: "vehicle_absent",
+        phone: recipientPhone(settings, vehicleKey),
+        name: vehicleKey,
+        vars: Object.assign({}, vars, {"차량명": `${vehicleKey.replace("bus", "")}호차`}),
+      });
+    }
+    await notifyMany(settings, jobs);
+  }
   return {bundle: await bundleForSession(branch, session)};
 }
 
@@ -554,6 +716,7 @@ async function submitBogang(branch, data) {
   const sourceDs = data.sourceDs || null;
   const selected = Array.isArray(data.slots) ? data.slots : [];
   if (!selected.length) throw new HttpsError("invalid-argument", "수업을 선택해주세요");
+  let notifyCtx = null;
   await db.runTransaction(async tx => {
     const base = {
       students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
@@ -607,8 +770,18 @@ async function submitBogang(branch, data) {
         requestedAt: now,
       };
     });
+    notifyCtx = {stu: source, inst: sourceInst, ds: sourceDs};
     writeStoredValue(tx, branch, "swim_requests", JSON.stringify(base.requests));
   });
+  if (notifyCtx) {
+    const settings = await readAligoSettings(branch);
+    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
+    const teacherName = notifyCtx.inst && notifyCtx.inst.n || "";
+    await notifyMany(settings, [
+      {templateId: "parent_makeup_pending", phone: notifyCtx.stu.p, name: notifyCtx.stu.n, vars},
+      {templateId: "teacher_makeup_pending", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
+    ]);
+  }
   return {bundle: await bundleForSession(branch, session)};
 }
 
@@ -618,10 +791,13 @@ async function cancelBogang(branch, data) {
   const sourceSlotKey = String(data.sourceSlotKey || "");
   const sourceDs = String(data.sourceDs || "");
   if (!sourceSlotKey || !sourceDs) throw new HttpsError("invalid-argument", "취소할 보강 신청 정보가 없습니다");
+  let notifyCtx = null;
   await db.runTransaction(async tx => {
     const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
+    const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
     const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
-    findSessionStudent({students}, session, sourceSlotKey);
+    const stu = findSessionStudent({students}, session, sourceSlotKey);
+    const sourceInst = inst[instKeyOf(stu)];
     const matched = Object.values(requests).filter(req =>
       req && req.type === "bogang" &&
       (!req.status || req.status === "pending") &&
@@ -644,8 +820,18 @@ async function cancelBogang(branch, data) {
         });
       }
     });
+    notifyCtx = {stu, inst: sourceInst, ds: sourceDs};
     writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
   });
+  if (notifyCtx) {
+    const settings = await readAligoSettings(branch);
+    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
+    const teacherName = notifyCtx.inst && notifyCtx.inst.n || "";
+    await notifyMany(settings, [
+      {templateId: "parent_makeup_cancelled", phone: notifyCtx.stu.p, name: notifyCtx.stu.n, vars},
+      {templateId: "teacher_makeup_cancelled", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
+    ]);
+  }
   return {bundle: await bundleForSession(branch, session)};
 }
 

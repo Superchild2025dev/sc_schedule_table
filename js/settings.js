@@ -16,23 +16,30 @@
     {key:'bus2',label:'차량 2호차',memo:'차량/승하차 알림'},
     {key:'bus3',label:'차량 3호차',memo:'차량/승하차 알림'},
   ];
+  const TEMPLATE_DEFS=[
+    {id:'parent_absent_done',title:'학부모 - 결석완료',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 결석처리 완료입니다.',body:'[슈퍼차일드 #{지점명}]\n#{학생명} 어린이 #{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n\n*결석처리 완료입니다.\n\n*결석 취소 시 꼭 요청이나 문의를 남겨주세요.',buttonName:'보강 신청 바로가기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'parent_makeup_rejected',title:'학부모 - 보강거절 / 보류',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'보강신청이 보류되었습니다.',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이 보강요청이 일정 조정이 필요하여 보류되었습니다.\n\n*보류사유 : #{보류사유}',buttonName:'다른 일정 선택하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'parent_absent_cancel',title:'학부모 - 결석취소',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 결석취소 완료',body:'[슈퍼차일드 #{지점명}]\n#{학생명} 어린이 #{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n\n*결석 요청이 취소되었습니다.',buttonName:'결석/보강 조회하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'parent_makeup_pending',title:'학부모 - 보강접수',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 보강 대기 상태입니다.',body:'[슈퍼차일드 #{지점명}]\n#{학생명} 어린이\n\n*보강 접수 대기 상태입니다.\n*선생님이 보강 요청을 확인 후 확정 도와드리겠습니다.\n*확정/보류 처리 시 알림톡이 발송됩니다.',buttonName:'보강 조회하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'parent_makeup_cancelled',title:'학부모 - 보강취소',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 보강 취소 완료입니다.',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*보강요청이 취소되었습니다.',buttonName:'결석/보강 조회하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'parent_makeup_accepted',title:'학부모 - 보강완료',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 보강수업이 확정되었습니다.',body:'[슈퍼차일드 #{지점명}]\n#{학생명} 어린이 #{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n\n*보강수업이 확정되었습니다.\n\n보강수업 결석 시 자동 소진됩니다.\n수업시간 10분 전 방문 부탁드립니다.',buttonName:'결석/보강 조회하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
+    {id:'staff_absent_done',title:'선생님, 데스크 - 결석완료',target:'선생님/데스크',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 결석 신청 접수',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*#{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n*결석입니다.',buttonName:'',link:''},
+    {id:'staff_absent_cancel',title:'선생님, 데스크 - 결석취소',target:'선생님/데스크',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 결석 취소',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*#{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n*결석 요청이 취소되었습니다.',buttonName:'',link:''},
+    {id:'teacher_makeup_pending',title:'선생님 - 보강접수',target:'선생님',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 보강대기 접수',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*보강 요청이 접수되었습니다.\n\n확인 후 등록해주세요.',buttonName:'조회',link:'https://schedule.adminsuperchild.cloud/teacher.html'},
+    {id:'teacher_makeup_cancelled',title:'선생님 - 보강취소',target:'선생님',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 보강취소',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*#{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n*보강수업이 취소되었습니다.',buttonName:'',link:''},
+    {id:'vehicle_absent',title:'차량 - 결석',target:'차량',subtitle:'슈퍼차일드 #{지점명}',main:'#{차량명} #{학생명} 결석',body:'[슈퍼차일드 #{지점명}]\n#{차량명} #{요일} #{차량시간} #{학생명} #{수업일} 결석\n*차량이용 없습니다.',buttonName:'',link:''},
+    {id:'vehicle_absent_cancel',title:'차량 - 결석취소',target:'차량',subtitle:'슈퍼차일드 #{지점명}',main:'#{차량명} #{학생명} 결석취소',body:'[슈퍼차일드 #{지점명}]\n#{차량명} #{차량시간} #{학생명} #{수업일} #{요일} 결석취소\n*#{학생명} 정상등원, 차량이용 합니다.',buttonName:'',link:''},
+  ];
   const VARIABLE_GUIDE=[
-    {name:'#{branch_name}',label:'지점명',sample:'가경점'},
-    {name:'#{student_name}',label:'원생 이름',sample:'홍길동'},
-    {name:'#{parent_phone_last4}',label:'학부모 전화 뒷 4자리',sample:'1234'},
-    {name:'#{class_date}',label:'수업/결석 날짜',sample:'5/25'},
-    {name:'#{class_day}',label:'수업 요일',sample:'월'},
-    {name:'#{class_time}',label:'수업 시간',sample:'4시'},
-    {name:'#{teacher_name}',label:'담당 선생님',sample:'김선생'},
-    {name:'#{request_type}',label:'요청 종류',sample:'결석 신청'},
-    {name:'#{candidate_count}',label:'보강 후보 수',sample:'3'},
-    {name:'#{makeup_date}',label:'확정 보강 날짜',sample:'5/27'},
-    {name:'#{makeup_day}',label:'확정 보강 요일',sample:'수'},
-    {name:'#{makeup_time}',label:'확정 보강 시간',sample:'5시'},
-    {name:'#{parent_url}',label:'학부모 페이지 링크',sample:'parent.html'},
-    {name:'#{teacher_url}',label:'선생님 승인 링크',sample:'teacher.html'},
-    {name:'#{desk_phone}',label:'데스크 번호',sample:'0430000000'},
-    {name:'#{bus_name}',label:'차량명',sample:'차량 1호차'},
+    {name:'#{지점명}',label:'지점명',sample:'가경점'},
+    {name:'#{학생명}',label:'원생 이름',sample:'홍길동'},
+    {name:'#{수업일}',label:'수업/결석 날짜',sample:'5월21일'},
+    {name:'#{요일}',label:'요일',sample:'화요일'},
+    {name:'#{수업시간}',label:'수업 시간',sample:'7시'},
+    {name:'#{담당선생님}',label:'담당 선생님',sample:'김슈차'},
+    {name:'#{보류사유}',label:'보류/거절 사유',sample:'일정 조정 필요'},
+    {name:'#{차량명}',label:'차량명',sample:'1호차'},
+    {name:'#{차량시간}',label:'차량 시간',sample:'7시'},
   ];
 
   let activeBranch='gagyeong';
@@ -61,6 +68,18 @@
     });
     return {teachers:{},fixed};
   }
+  function defaultTemplates(branchId){
+    const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
+    return TEMPLATE_DEFS.reduce((acc,item)=>{
+      acc[item.id]=Object.assign({},item,{
+        enabled:true,
+        code:'',
+        subtitle:String(item.subtitle||'').replace('#{지점명}',branch.name),
+        link:item.link ? item.link + (item.link.includes('?')?'&':'?') + 'branch=' + branch.id : '',
+      });
+      return acc;
+    },{});
+  }
   function defaultSettings(branchId){
     const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
     return {
@@ -71,6 +90,7 @@
         teacher:productionUrl('teacher.html?branch='+branch.id),
       },
       recipients:defaultRecipients(),
+      templates:defaultTemplates(branch.id),
       aligo:{
         enabled:false,
         testMode:true,
@@ -121,12 +141,28 @@
     Object.assign(out,saved);
     out.pages=Object.assign({},base.pages,saved.pages||{});
     out.recipients=mergeRecipients(base.recipients,saved.recipients||{});
+    out.templates=mergeTemplates(base.templates,saved.templates||{});
     out.aligo=Object.assign({},base.aligo,saved.aligo||{});
     out.sms=Object.assign({},base.sms,saved.sms||{});
     out.sms.targets=Object.assign({},base.sms.targets,(saved.sms||{}).targets||{});
     if(out.aligo.remainPath==='/akv10/heartinfo/') out.aligo.remainPath=base.aligo.remainPath;
     delete out.aligo.templates;
     delete out.sms.templates;
+    return out;
+  }
+  function mergeTemplates(base,saved){
+    const out=clone(base||{});
+    saved=saved&&typeof saved==='object'?saved:{};
+    TEMPLATE_DEFS.forEach(item=>{
+      out[item.id]=Object.assign({},out[item.id]||item,saved[item.id]||{},{
+        id:item.id,
+        title:item.title,
+        target:item.target,
+      });
+    });
+    Object.keys(saved).forEach(id=>{
+      if(!out[id]) out[id]=saved[id];
+    });
     return out;
   }
   function parseStored(v){
@@ -239,6 +275,7 @@
     $('parent-page-link').textContent=data.pages.parent||'';
     $('teacher-page-link').textContent=data.pages.teacher||'';
     renderRecipients(data);
+    renderTemplates(data);
     renderAligo(data);
     renderSms(data);
     renderVariableGuide();
@@ -274,6 +311,31 @@
         <td><strong>${esc(item.label)}</strong></td>
         <td><input type="tel" inputmode="numeric" autocomplete="off" data-field="phone" value="${escAttr(saved.phone||'')}" placeholder="01012345678"></td>
         <td><span class="recipient-key">${esc(item.key)}</span></td>
+      </tr>`;
+    }).join('');
+  }
+  function renderTemplates(data){
+    const templates=mergeTemplates(defaultTemplates(activeBranch),(data&&data.templates)||{});
+    const tbody=$('template-list');
+    if(!tbody) return;
+    tbody.innerHTML=TEMPLATE_DEFS.map(item=>{
+      const tpl=templates[item.id]||item;
+      return `<tr data-template-id="${escAttr(item.id)}">
+        <td><input type="checkbox" data-field="enabled" ${tpl.enabled===false?'':'checked'}></td>
+        <td>
+          <strong>${esc(item.title)}</strong>
+          <span class="template-target">${esc(item.target)}</span>
+        </td>
+        <td><input type="text" data-field="code" value="${escAttr(tpl.code||'')}" placeholder="승인 후 입력"></td>
+        <td>
+          <input type="text" data-field="subtitle" value="${escAttr(tpl.subtitle||'')}" placeholder="서브텍스트">
+          <input type="text" data-field="main" value="${escAttr(tpl.main||'')}" placeholder="메인텍스트">
+        </td>
+        <td><textarea data-field="body" rows="5">${esc(tpl.body||'')}</textarea></td>
+        <td>
+          <input type="text" data-field="buttonName" value="${escAttr(tpl.buttonName||'')}" placeholder="버튼명">
+          <input type="text" data-field="link" value="${escAttr(tpl.link||'')}" placeholder="링크">
+        </td>
       </tr>`;
     }).join('');
   }
@@ -344,6 +406,22 @@
     });
     return recipients;
   }
+  function collectTemplates(){
+    const templates=mergeTemplates(defaultTemplates(activeBranch),currentSettings().templates||{});
+    document.querySelectorAll('#template-list tr[data-template-id]').forEach(row=>{
+      const id=row.dataset.templateId;
+      templates[id]=Object.assign({},templates[id]||{},{
+        enabled:!!row.querySelector('[data-field="enabled"]')?.checked,
+        code:row.querySelector('[data-field="code"]')?.value.trim()||'',
+        subtitle:row.querySelector('[data-field="subtitle"]')?.value.trim()||'',
+        main:row.querySelector('[data-field="main"]')?.value.trim()||'',
+        body:row.querySelector('[data-field="body"]')?.value||'',
+        buttonName:row.querySelector('[data-field="buttonName"]')?.value.trim()||'',
+        link:row.querySelector('[data-field="link"]')?.value.trim()||'',
+      });
+    });
+    return templates;
+  }
   function collectCurrentSettings(kind){
     const data=mergeSettings(defaultSettings(activeBranch),currentSettings());
     data.branchId=activeBranch;
@@ -354,6 +432,9 @@
     };
     if(!kind||kind==='recipients'){
       data.recipients=collectRecipients();
+    }
+    if(!kind||kind==='templates'){
+      data.templates=collectTemplates();
     }
     if(!kind||kind==='aligo'){
       data.aligo={
@@ -550,6 +631,7 @@
   function resetForm(kind){
     const fresh=defaultSettings(activeBranch);
     if(kind==='recipients') renderRecipients(fresh);
+    if(kind==='templates') renderTemplates(fresh);
     if(kind==='aligo') renderAligo(fresh);
     if(kind==='sms') renderSms(fresh);
     toast('기본값을 불러왔어요. 저장을 누르면 반영됩니다.');
@@ -595,9 +677,11 @@
       btn.addEventListener('click',()=>copyLink(btn.dataset.copyLink));
     });
     $('recipients-save').addEventListener('click',()=>saveSettings('recipients'));
+    $('templates-save').addEventListener('click',()=>saveSettings('templates'));
     $('aligo-save').addEventListener('click',()=>saveSettings('aligo'));
     $('sms-save').addEventListener('click',()=>saveSettings('sms'));
     $('recipients-reset').addEventListener('click',()=>resetForm('recipients'));
+    $('templates-reset').addEventListener('click',()=>resetForm('templates'));
     $('aligo-reset').addEventListener('click',()=>resetForm('aligo'));
     $('sms-reset').addEventListener('click',()=>resetForm('sms'));
     $('aligo-health').addEventListener('click',e=>runProxyTest('aligo','health',e.currentTarget));
@@ -618,10 +702,10 @@
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='recipients'||p==='aligo'||p==='sms'||p==='menu') return p;
+      if(p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='recipients'||hash==='aligo'||hash==='sms'?hash:'menu';
+    return hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'
