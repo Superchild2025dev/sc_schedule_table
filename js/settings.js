@@ -102,6 +102,7 @@
         remainPath:'/remain/',
         sendPath:'/alimtalk/send/',
         templateCode:'',
+        testTemplateId:'',
         testReceiver:'',
         testRecvName:'',
         testSubject:'',
@@ -339,8 +340,35 @@
       </tr>`;
     }).join('');
   }
+  function getTemplatesForTest(){
+    const hasRows=!!document.querySelector('#template-list tr[data-template-id]');
+    if(hasRows) return collectTemplates();
+    return mergeTemplates(defaultTemplates(activeBranch),currentSettings().templates||{});
+  }
+  function renderTestTemplateOptions(data){
+    const select=$('aligo-test-template');
+    if(!select) return;
+    const templates=mergeTemplates(defaultTemplates(activeBranch),(data&&data.templates)||{});
+    const selected=(data&&data.aligo&&data.aligo.testTemplateId)||'';
+    select.innerHTML='<option value="">직접 입력</option>'+TEMPLATE_DEFS.map(item=>{
+      const tpl=templates[item.id]||item;
+      const codeText=tpl.code ? ' · 코드 있음' : ' · 코드 미입력';
+      return `<option value="${escAttr(item.id)}">${esc(item.title+codeText)}</option>`;
+    }).join('');
+    select.value=templates[selected] ? selected : '';
+  }
+  function applyTestTemplate(templateId,force){
+    if(!templateId) return;
+    const templates=getTemplatesForTest();
+    const tpl=templates[templateId];
+    if(!tpl) return;
+    if(force||!$('aligo-template-code').value.trim()) setValue('aligo-template-code',tpl.code||'');
+    if(force||!$('aligo-test-subject').value.trim()) setValue('aligo-test-subject',tpl.main||tpl.title||'');
+    if(force||!$('aligo-test-message').value.trim()) setValue('aligo-test-message',tpl.body||'');
+  }
   function renderAligo(data){
     const a=data.aligo||defaultSettings(activeBranch).aligo;
+    renderTestTemplateOptions(data);
     setChecked('aligo-enabled',a.enabled);
     setChecked('aligo-test-mode',a.testMode);
     setValue('aligo-proxy-url',a.proxyUrl);
@@ -350,6 +378,7 @@
     setValue('aligo-sender',a.sender);
     setValue('aligo-remain-path',a.remainPath);
     setValue('aligo-send-path',a.sendPath);
+    setValue('aligo-test-template',a.testTemplateId);
     setValue('aligo-template-code',a.templateCode);
     setValue('aligo-test-receiver',a.testReceiver);
     setValue('aligo-test-recvname',a.testRecvName);
@@ -447,6 +476,7 @@
         sender:$('aligo-sender').value.trim(),
         remainPath:$('aligo-remain-path').value.trim()||'/remain/',
         sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
+        testTemplateId:$('aligo-test-template').value,
         templateCode:$('aligo-template-code').value.trim(),
         testReceiver:normalizePhone($('aligo-test-receiver').value),
         testRecvName:$('aligo-test-recvname').value.trim(),
@@ -499,6 +529,7 @@
       userid:$('aligo-userid').value.trim(),
       sender:$('aligo-sender').value.trim(),
       senderKey:$('aligo-sender-key').value.trim(),
+      testTemplateId:$('aligo-test-template').value,
       templateCode:$('aligo-template-code').value.trim(),
       testReceiver:normalizePhone($('aligo-test-receiver').value),
       testRecvName:$('aligo-test-recvname').value.trim(),
@@ -581,6 +612,14 @@
   }
   async function runAlimtalkSendTest(button){
     const cfg=testConfig('aligo');
+    const tpl=cfg.testTemplateId ? getTemplatesForTest()[cfg.testTemplateId] : null;
+    if(tpl){
+      cfg.templateCode=cfg.templateCode||tpl.code||'';
+      cfg.testSubject=cfg.testSubject||tpl.main||tpl.title||'';
+      cfg.testMessage=cfg.testMessage||tpl.body||'';
+      cfg.buttonName=tpl.buttonName||'';
+      cfg.link=tpl.link||'';
+    }
     try{
       validateAlimtalkTest(cfg);
     }catch(e){
@@ -600,6 +639,15 @@
     body.set('message_1',cfg.testMessage);
     body.set('testMode',cfg.testMode?'Y':'N');
     body.set('failover','N');
+    if(cfg.buttonName&&cfg.link){
+      body.set('button_1',JSON.stringify({
+        name:cfg.buttonName,
+        linkType:'WL',
+        linkTypeName:'웹링크',
+        linkMo:cfg.link,
+        linkPc:cfg.link,
+      }));
+    }
     const label=button&&button.textContent;
     if(button){
       button.disabled=true;
@@ -687,6 +735,7 @@
     $('aligo-health').addEventListener('click',e=>runProxyTest('aligo','health',e.currentTarget));
     $('aligo-remain').addEventListener('click',e=>runProxyTest('aligo','remain',e.currentTarget));
     $('aligo-send-test').addEventListener('click',e=>runAlimtalkSendTest(e.currentTarget));
+    $('aligo-test-template').addEventListener('change',e=>applyTestTemplate(e.currentTarget.value,true));
     $('sms-health').addEventListener('click',e=>runProxyTest('sms','health',e.currentTarget));
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
   }

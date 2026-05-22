@@ -48,10 +48,10 @@ button,input,textarea,select{font-family:inherit}
 .toggle-row input,.target-row input{width:16px;height:16px;accent-color:#0F9D58}
 .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
 .form-grid label{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:900;color:#4B5563}
-.form-grid input,.form-grid textarea{border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;color:#172033;font-size:13px;background:#fff}
-.form-grid input{height:36px}
+.form-grid input,.form-grid textarea,.form-grid select{border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;color:#172033;font-size:13px;background:#fff}
+.form-grid input,.form-grid select{height:36px}
 .form-grid textarea{min-height:112px;padding:9px 10px;resize:vertical;line-height:1.45}
-.form-grid input:focus,textarea:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
+.form-grid input:focus,.form-grid select:focus,textarea:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
 .wide-field{grid-column:1/-1}
 .send-test-card{border:1px solid #DDE3EC;border-radius:8px;background:#FBFCFE;padding:12px;margin:2px 0 16px}
 .send-test-card .subsection-head{margin-top:0}
