@@ -217,16 +217,17 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   body.set("message_1", message);
   body.set("failover", "N");
   body.set("testMode", aligo.testMode ? "Y" : "N");
-  const link = renderTemplateText(tpl.link || "", vars);
+  const linkM = renderTemplateText(tpl.linkM || tpl.link || "", vars);
+  const linkP = renderTemplateText(tpl.linkP || tpl.linkM || tpl.link || "", vars);
   const buttonName = renderTemplateText(tpl.buttonName || "", vars);
-  if (buttonName && link) {
+  if (buttonName && linkM && linkP) {
     body.set("button_1", JSON.stringify({
       button: [{
         name: buttonName,
         linkType: "WL",
         linkTypeName: "웹링크",
-        linkM: link,
-        linkP: link,
+        linkM,
+        linkP,
       }],
     }));
   }

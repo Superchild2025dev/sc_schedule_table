@@ -889,10 +889,11 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   body.set('message_1',renderNotifyText(tpl.body||'',vars));
   body.set('failover','N');
   body.set('testMode',aligo.testMode?'Y':'N');
-  const link=renderNotifyText(tpl.link||'',vars);
+  const linkM=renderNotifyText(tpl.linkM||tpl.link||'',vars);
+  const linkP=renderNotifyText(tpl.linkP||tpl.linkM||tpl.link||'',vars);
   const buttonName=renderNotifyText(tpl.buttonName||'',vars);
-  if(link&&buttonName){
-    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkM:link,linkP:link}]}));
+  if(linkM&&linkP&&buttonName){
+    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkM,linkP}]}));
   }
   try{
     const res=await fetch(joinNotifyProxyUrl(aligo.proxyUrl,aligo.sendPath),{

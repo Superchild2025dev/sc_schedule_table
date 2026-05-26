@@ -124,6 +124,8 @@
         testSubject:'',
         testMessage:'',
         testButtonName:'',
+        testLinkM:'',
+        testLinkP:'',
         testLink:'',
         testVars:defaultTestVars(branch.id),
       },
@@ -354,7 +356,8 @@
         <td><textarea data-field="body" rows="5" placeholder="승인된 본문 그대로 입력">${esc(tpl.body||'')}</textarea></td>
         <td>
           <input type="text" data-field="buttonName" value="${escAttr(tpl.buttonName||'')}" placeholder="승인 버튼명">
-          <input type="text" data-field="link" value="${escAttr(tpl.link||'')}" placeholder="승인 버튼 링크">
+          <input type="text" data-field="linkM" value="${escAttr(tpl.linkM||tpl.link||'')}" placeholder="모바일 링크 linkM">
+          <input type="text" data-field="linkP" value="${escAttr(tpl.linkP||tpl.linkM||tpl.link||'')}" placeholder="PC 링크 linkP">
         </td>
       </tr>`;
     }).join('');
@@ -385,7 +388,8 @@
     if(force||!$('aligo-test-subject').value.trim()) setValue('aligo-test-subject',tpl.emtitle||tpl.main||tpl.title||'');
     if(force||!$('aligo-test-message').value.trim()) setValue('aligo-test-message',tpl.body||'');
     if(force||!$('aligo-test-button-name').value.trim()) setValue('aligo-test-button-name',tpl.buttonName||'');
-    if(force||!$('aligo-test-link').value.trim()) setValue('aligo-test-link',tpl.link||'');
+    if(force||!$('aligo-test-link-m').value.trim()) setValue('aligo-test-link-m',tpl.linkM||tpl.link||'');
+    if(force||!$('aligo-test-link-p').value.trim()) setValue('aligo-test-link-p',tpl.linkP||tpl.linkM||tpl.link||'');
   }
   function renderAligo(data){
     const a=data.aligo||defaultSettings(activeBranch).aligo;
@@ -404,7 +408,8 @@
     setValue('aligo-test-subject',a.testSubject);
     setValue('aligo-test-message',a.testMessage);
     setValue('aligo-test-button-name',a.testButtonName);
-    setValue('aligo-test-link',a.testLink);
+    setValue('aligo-test-link-m',a.testLinkM||a.testLink);
+    setValue('aligo-test-link-p',a.testLinkP||a.testLinkM||a.testLink);
     setValue('aligo-test-vars',a.testVars||defaultTestVars(activeBranch));
     if(a.testTemplateId) applyTestTemplate(a.testTemplateId,false);
   }
@@ -470,7 +475,9 @@
         main:row.querySelector('[data-field="emtitle"]')?.value.trim()||'',
         body:row.querySelector('[data-field="body"]')?.value||'',
         buttonName:row.querySelector('[data-field="buttonName"]')?.value.trim()||'',
-        link:row.querySelector('[data-field="link"]')?.value.trim()||'',
+        linkM:row.querySelector('[data-field="linkM"]')?.value.trim()||'',
+        linkP:row.querySelector('[data-field="linkP"]')?.value.trim()||'',
+        link:row.querySelector('[data-field="linkM"]')?.value.trim()||'',
       });
     });
     return templates;
@@ -505,7 +512,9 @@
         testSubject:$('aligo-test-subject').value.trim(),
         testMessage:$('aligo-test-message').value,
         testButtonName:$('aligo-test-button-name').value.trim(),
-        testLink:$('aligo-test-link').value.trim(),
+        testLinkM:$('aligo-test-link-m').value.trim(),
+        testLinkP:$('aligo-test-link-p').value.trim(),
+        testLink:$('aligo-test-link-m').value.trim(),
         testVars:$('aligo-test-vars').value,
       };
     }
@@ -561,7 +570,8 @@
       testSubject:$('aligo-test-subject').value.trim(),
       testMessage:$('aligo-test-message').value,
       buttonName:$('aligo-test-button-name').value.trim(),
-      link:$('aligo-test-link').value.trim(),
+      linkM:$('aligo-test-link-m').value.trim(),
+      linkP:$('aligo-test-link-p').value.trim(),
       testVars:$('aligo-test-vars').value,
       testMode:$('aligo-test-mode').checked,
     };
@@ -637,7 +647,10 @@
     if(!cfg.testReceiver) missing.push('테스트 수신번호');
     if(!cfg.testSubject) missing.push('강조표기 타이틀');
     if(!cfg.testMessage) missing.push('승인 본문');
-    if((cfg.buttonName&&!cfg.link)||(!cfg.buttonName&&cfg.link)) missing.push('버튼명/버튼 링크');
+    const hasButton = !!(cfg.buttonName || cfg.linkM || cfg.linkP);
+    if(hasButton && !cfg.buttonName) missing.push('버튼명');
+    if(hasButton && !cfg.linkM) missing.push('모바일 링크 linkM');
+    if(hasButton && !cfg.linkP) missing.push('PC 링크 linkP');
     if(missing.length) throw new Error(missing.join(', ')+' 입력이 필요합니다');
   }
   function parseTestVars(text){
@@ -674,13 +687,15 @@
       cfg.testSubject=cfg.testSubject||tpl.emtitle||tpl.main||tpl.title||'';
       cfg.testMessage=cfg.testMessage||tpl.body||'';
       cfg.buttonName=cfg.buttonName||tpl.buttonName||'';
-      cfg.link=cfg.link||tpl.link||'';
+      cfg.linkM=cfg.linkM||tpl.linkM||tpl.link||'';
+      cfg.linkP=cfg.linkP||tpl.linkP||tpl.linkM||tpl.link||'';
     }
     const vars=Object.assign({},parseTestVars(defaultTestVars(activeBranch)),parseTestVars(cfg.testVars));
     cfg.testSubject=renderTestVars(cfg.testSubject,vars);
     cfg.testMessage=renderTestVars(cfg.testMessage,vars);
     cfg.buttonName=renderTestVars(cfg.buttonName||'',vars);
-    cfg.link=renderTestVars(cfg.link||'',vars);
+    cfg.linkM=renderTestVars(cfg.linkM||'',vars);
+    cfg.linkP=renderTestVars(cfg.linkP||'',vars);
     try{
       validateAlimtalkTest(cfg);
     }catch(e){
@@ -703,14 +718,14 @@
     body.set('message_1',cfg.testMessage);
     body.set('testMode',live?'N':'Y');
     body.set('failover','N');
-    if(cfg.buttonName&&cfg.link){
+    if(cfg.buttonName&&cfg.linkM&&cfg.linkP){
       body.set('button_1',JSON.stringify({
         button:[{
           name:cfg.buttonName,
           linkType:'WL',
           linkTypeName:'웹링크',
-          linkM:cfg.link,
-          linkP:cfg.link,
+          linkM:cfg.linkM,
+          linkP:cfg.linkP,
         }],
       }));
     }
