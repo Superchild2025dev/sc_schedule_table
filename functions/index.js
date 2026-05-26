@@ -221,11 +221,12 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   const buttonName = renderTemplateText(tpl.buttonName || "", vars);
   if (buttonName && link) {
     body.set("button_1", JSON.stringify({
-      name: buttonName,
-      linkType: "WL",
-      linkTypeName: "웹링크",
-      linkMo: link,
-      linkPc: link,
+      button: [{
+        name: buttonName,
+        linkType: "WL",
+        linkM: link,
+        linkP: link,
+      }],
     }));
   }
   try {

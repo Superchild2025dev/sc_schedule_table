@@ -892,7 +892,7 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   const link=renderNotifyText(tpl.link||'',vars);
   const buttonName=renderNotifyText(tpl.buttonName||'',vars);
   if(link&&buttonName){
-    body.set('button_1',JSON.stringify({name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkMo:link,linkPc:link}));
+    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkM:link,linkP:link}]}));
   }
   try{
     const res=await fetch(joinNotifyProxyUrl(aligo.proxyUrl,aligo.sendPath),{

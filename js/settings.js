@@ -692,11 +692,12 @@
     body.set('failover','N');
     if(cfg.buttonName&&cfg.link){
       body.set('button_1',JSON.stringify({
-        name:cfg.buttonName,
-        linkType:'WL',
-        linkTypeName:'웹링크',
-        linkMo:cfg.link,
-        linkPc:cfg.link,
+        button:[{
+          name:cfg.buttonName,
+          linkType:'WL',
+          linkM:cfg.link,
+          linkP:cfg.link,
+        }],
       }));
     }
     const label=button&&button.textContent;
