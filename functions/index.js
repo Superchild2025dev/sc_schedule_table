@@ -202,11 +202,13 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   if (!aligo.enabled) return {skipped: true, reason: "disabled"};
   const tpl = templateById(settings, templateId);
   const phone = normalizePhone(receiverPhone);
-  if (!tpl || !phone || !settings.aligoBranch) return {skipped: true, reason: "missing-config"};
+  if (!tpl || !phone || !settings.aligoBranch || !aligo.senderKey || !aligo.sender) return {skipped: true, reason: "missing-config"};
   const subject = renderTemplateText(tpl.main || tpl.title || "슈퍼차일드 알림", vars);
   const message = renderTemplateText(tpl.body || "", vars);
   const body = new URLSearchParams();
   body.set("branch", settings.aligoBranch);
+  body.set("senderkey", aligo.senderKey);
+  body.set("sender", normalizePhone(aligo.sender));
   body.set("tpl_code", tpl.code);
   body.set("receiver_1", phone);
   if (receiverName) body.set("recvname_1", receiverName);

@@ -113,6 +113,8 @@
         enabled:false,
         testMode:true,
         proxyUrl:'/aligo',
+        senderKey:'',
+        sender:'',
         remainPath:'/remain/',
         sendPath:'/alimtalk/send/',
         templateCode:'',
@@ -387,6 +389,8 @@
     setChecked('aligo-enabled',a.enabled);
     setChecked('aligo-test-mode',a.testMode);
     setValue('aligo-proxy-url',a.proxyUrl);
+    setValue('aligo-sender-key',a.senderKey);
+    setValue('aligo-sender',a.sender);
     setValue('aligo-remain-path',a.remainPath);
     setValue('aligo-send-path',a.sendPath);
     setValue('aligo-test-template',a.testTemplateId);
@@ -482,6 +486,8 @@
         enabled:$('aligo-enabled').checked,
         testMode:$('aligo-test-mode').checked,
         proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
+        senderKey:$('aligo-sender-key').value.trim(),
+        sender:$('aligo-sender').value.trim(),
         remainPath:$('aligo-remain-path').value.trim()||'/remain/',
         sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
         testTemplateId:$('aligo-test-template').value,
@@ -536,6 +542,8 @@
       remainPath:$('aligo-remain-path').value.trim()||'/remain/',
       sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
       branch:aligoBranchValue(activeBranch),
+      senderKey:$('aligo-sender-key').value.trim(),
+      sender:$('aligo-sender').value.trim(),
       testTemplateId:$('aligo-test-template').value,
       templateCode:$('aligo-template-code').value.trim(),
       testReceiver:normalizePhone($('aligo-test-receiver').value),
@@ -611,6 +619,8 @@
   function validateAlimtalkTest(cfg){
     const missing=[];
     if(!cfg.branch) missing.push('지점');
+    if(!cfg.senderKey) missing.push('발신 프로파일 키');
+    if(!cfg.sender) missing.push('발신번호');
     if(!cfg.templateCode) missing.push('템플릿 코드');
     if(!cfg.testReceiver) missing.push('테스트 수신번호');
     if(!cfg.testSubject) missing.push('알림톡 제목');
@@ -670,6 +680,8 @@
     const url=joinProxyUrl(cfg.proxyUrl,cfg.sendPath);
     const body=new URLSearchParams();
     body.set('branch',cfg.branch);
+    body.set('senderkey',cfg.senderKey);
+    body.set('sender',normalizePhone(cfg.sender));
     body.set('tpl_code',cfg.templateCode);
     body.set('receiver_1',cfg.testReceiver);
     if(cfg.testRecvName) body.set('recvname_1',cfg.testRecvName);

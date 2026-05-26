@@ -875,9 +875,11 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   const receiver=normalizeNotifyPhone(phone);
   const branch=getBranchInfo();
   const aligoBranch=branch?.aligoBranch||settings.aligoBranch||branch?.name||'';
-  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligoBranch) return;
+  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligoBranch||!aligo.senderKey||!aligo.sender) return;
   const body=new URLSearchParams();
   body.set('branch',aligoBranch);
+  body.set('senderkey',aligo.senderKey);
+  body.set('sender',normalizeNotifyPhone(aligo.sender));
   body.set('tpl_code',tpl.code);
   body.set('receiver_1',receiver);
   if(name) body.set('recvname_1',name);
