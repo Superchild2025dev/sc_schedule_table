@@ -3,8 +3,8 @@
   const TEACHERS_KEY='swim_teachers';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
   const BRANCHES={
-    gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule'},
-    yongam:{id:'yongam',name:'용암점',fbPath:'schedule_yongam'},
+    gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule',aligoBranch:'가경동'},
+    yongam:{id:'yongam',name:'용암점',fbPath:'schedule_yongam',aligoBranch:'용암점'},
   };
   const DEFAULT_TEACHERS={
     gagyeong:['손용곤','박형진','이수성','김재용','김민승','유정희'],
@@ -60,6 +60,10 @@
   }
   function productionUrl(path){
     return PUBLIC_BASE_URL.replace(/\/$/,'')+'/'+String(path||'').replace(/^\//,'');
+  }
+  function aligoBranchValue(branchId){
+    const branch=BRANCHES[branchId]||BRANCHES.gagyeong;
+    return branch.aligoBranch||branch.name;
   }
   function defaultRecipients(){
     const fixed={};
@@ -531,7 +535,7 @@
       proxyUrl:$('aligo-proxy-url').value.trim()||'/aligo',
       remainPath:$('aligo-remain-path').value.trim()||'/remain/',
       sendPath:$('aligo-send-path').value.trim()||'/alimtalk/send/',
-      branch:activeBranch,
+      branch:aligoBranchValue(activeBranch),
       testTemplateId:$('aligo-test-template').value,
       templateCode:$('aligo-template-code').value.trim(),
       testReceiver:normalizePhone($('aligo-test-receiver').value),
@@ -573,7 +577,7 @@
     const isHealth=type==='health';
     const url=joinProxyUrl(cfg.proxyUrl,isHealth?'health':cfg.remainPath);
     const body=new URLSearchParams();
-    if(kind==='aligo') body.set('branch',activeBranch);
+    if(kind==='aligo') body.set('branch',aligoBranchValue(activeBranch));
     if(kind==='sms'&&cfg.userid) body.set('user_id',cfg.userid);
     if(kind==='sms'&&cfg.sender) body.set('sender',cfg.sender);
     const label=button&&button.textContent;

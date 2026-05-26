@@ -51,8 +51,8 @@ try{
 let _selectedBranch=null;
 try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
 function getBranchInfo(){
-  if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam'};
-  if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule'};
+  if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam', aligoBranch:'용암점'};
+  if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule', aligoBranch:'가경동'};
   return null;
 }
 function selectBranch(branch){
@@ -874,10 +874,10 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   const tpl=settings.templates&&settings.templates[templateId];
   const receiver=normalizeNotifyPhone(phone);
   const branch=getBranchInfo();
-  const branchId=branch?.id||settings.branchId||'';
-  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!branchId) return;
+  const aligoBranch=branch?.aligoBranch||settings.aligoBranch||branch?.name||'';
+  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligoBranch) return;
   const body=new URLSearchParams();
-  body.set('branch',branchId);
+  body.set('branch',aligoBranch);
   body.set('tpl_code',tpl.code);
   body.set('receiver_1',receiver);
   if(name) body.set('recvname_1',name);

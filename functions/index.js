@@ -14,8 +14,8 @@ const CHUNK_THRESHOLD = 650000;
 const CHUNK_SIZE = 600000;
 
 const BRANCHES = {
-  gagyeong: {id: "gagyeong", name: "가경점"},
-  yongam: {id: "yongam", name: "용암점"},
+  gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동"},
+  yongam: {id: "yongam", name: "용암점", aligoBranch: "용암점"},
 };
 const ALIGO_PROXY_BASE = "https://adminsuperchild.cloud/aligo";
 const ALIGO_SEND_PATH = "/alimtalk/send/";
@@ -149,6 +149,7 @@ async function readAligoSettings(branch) {
   const settings = raw && typeof raw === "object" ? raw : {};
   settings.branchId = branch.id;
   settings.branchName = branch.name;
+  settings.aligoBranch = branch.aligoBranch || branch.name;
   return settings;
 }
 
@@ -201,11 +202,11 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   if (!aligo.enabled) return {skipped: true, reason: "disabled"};
   const tpl = templateById(settings, templateId);
   const phone = normalizePhone(receiverPhone);
-  if (!tpl || !phone || !settings.branchId) return {skipped: true, reason: "missing-config"};
+  if (!tpl || !phone || !settings.aligoBranch) return {skipped: true, reason: "missing-config"};
   const subject = renderTemplateText(tpl.main || tpl.title || "슈퍼차일드 알림", vars);
   const message = renderTemplateText(tpl.body || "", vars);
   const body = new URLSearchParams();
-  body.set("branch", settings.branchId);
+  body.set("branch", settings.aligoBranch);
   body.set("tpl_code", tpl.code);
   body.set("receiver_1", phone);
   if (receiverName) body.set("recvname_1", receiverName);
