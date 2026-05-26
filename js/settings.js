@@ -123,6 +123,8 @@
         testRecvName:'',
         testSubject:'',
         testMessage:'',
+        testButtonName:'',
+        testLink:'',
         testVars:defaultTestVars(branch.id),
       },
       sms:{
@@ -346,13 +348,13 @@
         </td>
         <td><input type="text" data-field="code" value="${escAttr(tpl.code||'')}" placeholder="승인 후 입력"></td>
         <td>
-          <input type="text" data-field="subtitle" value="${escAttr(tpl.subtitle||'')}" placeholder="서브텍스트">
-          <input type="text" data-field="main" value="${escAttr(tpl.main||'')}" placeholder="메인텍스트">
+          <input type="text" data-field="subtitle" value="${escAttr(tpl.subtitle||'')}" placeholder="서브타이틀 미리보기">
+          <input type="text" data-field="emtitle" value="${escAttr(tpl.emtitle||tpl.main||'')}" placeholder="강조표기 타이틀">
         </td>
-        <td><textarea data-field="body" rows="5">${esc(tpl.body||'')}</textarea></td>
+        <td><textarea data-field="body" rows="5" placeholder="승인된 본문 그대로 입력">${esc(tpl.body||'')}</textarea></td>
         <td>
-          <input type="text" data-field="buttonName" value="${escAttr(tpl.buttonName||'')}" placeholder="버튼명">
-          <input type="text" data-field="link" value="${escAttr(tpl.link||'')}" placeholder="링크">
+          <input type="text" data-field="buttonName" value="${escAttr(tpl.buttonName||'')}" placeholder="승인 버튼명">
+          <input type="text" data-field="link" value="${escAttr(tpl.link||'')}" placeholder="승인 버튼 링크">
         </td>
       </tr>`;
     }).join('');
@@ -380,8 +382,10 @@
     const tpl=templates[templateId];
     if(!tpl) return;
     if(force||!$('aligo-template-code').value.trim()) setValue('aligo-template-code',tpl.code||'');
-    if(force||!$('aligo-test-subject').value.trim()) setValue('aligo-test-subject',tpl.main||tpl.title||'');
+    if(force||!$('aligo-test-subject').value.trim()) setValue('aligo-test-subject',tpl.emtitle||tpl.main||tpl.title||'');
     if(force||!$('aligo-test-message').value.trim()) setValue('aligo-test-message',tpl.body||'');
+    if(force||!$('aligo-test-button-name').value.trim()) setValue('aligo-test-button-name',tpl.buttonName||'');
+    if(force||!$('aligo-test-link').value.trim()) setValue('aligo-test-link',tpl.link||'');
   }
   function renderAligo(data){
     const a=data.aligo||defaultSettings(activeBranch).aligo;
@@ -399,7 +403,10 @@
     setValue('aligo-test-recvname',a.testRecvName);
     setValue('aligo-test-subject',a.testSubject);
     setValue('aligo-test-message',a.testMessage);
+    setValue('aligo-test-button-name',a.testButtonName);
+    setValue('aligo-test-link',a.testLink);
     setValue('aligo-test-vars',a.testVars||defaultTestVars(activeBranch));
+    if(a.testTemplateId) applyTestTemplate(a.testTemplateId,false);
   }
   function renderSms(data){
     const s=data.sms||defaultSettings(activeBranch).sms;
@@ -459,7 +466,8 @@
         enabled:!!row.querySelector('[data-field="enabled"]')?.checked,
         code:row.querySelector('[data-field="code"]')?.value.trim()||'',
         subtitle:row.querySelector('[data-field="subtitle"]')?.value.trim()||'',
-        main:row.querySelector('[data-field="main"]')?.value.trim()||'',
+        emtitle:row.querySelector('[data-field="emtitle"]')?.value.trim()||'',
+        main:row.querySelector('[data-field="emtitle"]')?.value.trim()||'',
         body:row.querySelector('[data-field="body"]')?.value||'',
         buttonName:row.querySelector('[data-field="buttonName"]')?.value.trim()||'',
         link:row.querySelector('[data-field="link"]')?.value.trim()||'',
@@ -496,6 +504,8 @@
         testRecvName:$('aligo-test-recvname').value.trim(),
         testSubject:$('aligo-test-subject').value.trim(),
         testMessage:$('aligo-test-message').value,
+        testButtonName:$('aligo-test-button-name').value.trim(),
+        testLink:$('aligo-test-link').value.trim(),
         testVars:$('aligo-test-vars').value,
       };
     }
@@ -550,6 +560,8 @@
       testRecvName:$('aligo-test-recvname').value.trim(),
       testSubject:$('aligo-test-subject').value.trim(),
       testMessage:$('aligo-test-message').value,
+      buttonName:$('aligo-test-button-name').value.trim(),
+      link:$('aligo-test-link').value.trim(),
       testVars:$('aligo-test-vars').value,
       testMode:$('aligo-test-mode').checked,
     };
@@ -623,8 +635,9 @@
     if(!cfg.sender) missing.push('발신번호');
     if(!cfg.templateCode) missing.push('템플릿 코드');
     if(!cfg.testReceiver) missing.push('테스트 수신번호');
-    if(!cfg.testSubject) missing.push('알림톡 제목');
-    if(!cfg.testMessage) missing.push('알림톡 내용');
+    if(!cfg.testSubject) missing.push('강조표기 타이틀');
+    if(!cfg.testMessage) missing.push('승인 본문');
+    if((cfg.buttonName&&!cfg.link)||(!cfg.buttonName&&cfg.link)) missing.push('버튼명/버튼 링크');
     if(missing.length) throw new Error(missing.join(', ')+' 입력이 필요합니다');
   }
   function parseTestVars(text){
@@ -658,10 +671,10 @@
     const tpl=cfg.testTemplateId ? getTemplatesForTest()[cfg.testTemplateId] : null;
     if(tpl){
       cfg.templateCode=cfg.templateCode||tpl.code||'';
-      cfg.testSubject=cfg.testSubject||tpl.main||tpl.title||'';
+      cfg.testSubject=cfg.testSubject||tpl.emtitle||tpl.main||tpl.title||'';
       cfg.testMessage=cfg.testMessage||tpl.body||'';
-      cfg.buttonName=tpl.buttonName||'';
-      cfg.link=tpl.link||'';
+      cfg.buttonName=cfg.buttonName||tpl.buttonName||'';
+      cfg.link=cfg.link||tpl.link||'';
     }
     const vars=Object.assign({},parseTestVars(defaultTestVars(activeBranch)),parseTestVars(cfg.testVars));
     cfg.testSubject=renderTestVars(cfg.testSubject,vars);
@@ -695,6 +708,7 @@
         button:[{
           name:cfg.buttonName,
           linkType:'WL',
+          linkTypeName:'웹링크',
           linkM:cfg.link,
           linkP:cfg.link,
         }],

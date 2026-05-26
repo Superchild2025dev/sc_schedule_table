@@ -883,7 +883,7 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   body.set('tpl_code',tpl.code);
   body.set('receiver_1',receiver);
   if(name) body.set('recvname_1',name);
-  const subject=renderNotifyText(tpl.main||tpl.title||'슈퍼차일드 알림',vars);
+  const subject=renderNotifyText(tpl.emtitle||tpl.main||tpl.title||'슈퍼차일드 알림',vars);
   body.set('subject_1',subject);
   body.set('emtitle_1',subject);
   body.set('message_1',renderNotifyText(tpl.body||'',vars));
@@ -892,7 +892,7 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   const link=renderNotifyText(tpl.link||'',vars);
   const buttonName=renderNotifyText(tpl.buttonName||'',vars);
   if(link&&buttonName){
-    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkM:link,linkP:link}]}));
+    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkM:link,linkP:link}]}));
   }
   try{
     const res=await fetch(joinNotifyProxyUrl(aligo.proxyUrl,aligo.sendPath),{

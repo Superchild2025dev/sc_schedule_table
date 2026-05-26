@@ -174,9 +174,9 @@
               <th>사용</th>
               <th>템플릿</th>
               <th>템플릿 코드</th>
-              <th>서브/메인</th>
-              <th>본문</th>
-              <th>버튼</th>
+              <th>타이틀</th>
+              <th>승인 본문</th>
+              <th>승인 버튼</th>
             </tr>
           </thead>
           <tbody id="template-list"></tbody>
@@ -220,16 +220,18 @@
       <div class="send-test-card">
         <div class="subsection-head">
           <h2>알림톡 테스트 발송</h2>
-          <span>승인된 템플릿 내용과 완전히 같아야 발송됩니다.</span>
+          <span>승인된 타이틀, 본문, 버튼 정보와 완전히 같아야 발송됩니다.</span>
         </div>
         <div class="form-grid test-grid">
           <label>테스트 템플릿 선택<select id="aligo-test-template"></select></label>
           <label>템플릿 코드<input id="aligo-template-code" type="text" autocomplete="off"></label>
           <label>테스트 수신번호<input id="aligo-test-receiver" type="tel" inputmode="numeric" autocomplete="off" placeholder="01012345678"></label>
           <label>수신자 이름<input id="aligo-test-recvname" type="text" autocomplete="off" placeholder="홍길동"></label>
-          <label>알림톡 제목<input id="aligo-test-subject" type="text" autocomplete="off" placeholder="슈퍼차일드 알림"></label>
+          <label>강조표기 타이틀<input id="aligo-test-subject" type="text" autocomplete="off" placeholder="승인된 강조표기 타이틀"></label>
+          <label>버튼명<input id="aligo-test-button-name" type="text" autocomplete="off" placeholder="승인된 버튼명"></label>
+          <label>버튼 링크<input id="aligo-test-link" type="url" autocomplete="off" placeholder="승인된 버튼 링크"></label>
           <label class="wide-field">테스트 변수값<textarea id="aligo-test-vars" rows="5" placeholder="학생명=홍길동&#10;수업일=5월21일&#10;요일=화요일"></textarea></label>
-          <label class="wide-field">알림톡 내용<textarea id="aligo-test-message" rows="5" placeholder="알리고에서 승인된 템플릿 내용을 그대로 입력"></textarea></label>
+          <label class="wide-field">승인 본문<textarea id="aligo-test-message" rows="5" placeholder="알리고에서 승인된 본문을 개행과 띄어쓰기까지 그대로 입력"></textarea></label>
         </div>
         <div class="send-test-actions">
           <button type="button" class="ghost-btn" id="aligo-save-test">입력값 저장</button>
@@ -295,6 +297,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260526-4"></script>
+<script src="js/settings.js?v=20260526-5"></script>
 </body>
 </html>

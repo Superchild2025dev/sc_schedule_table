@@ -203,7 +203,7 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   const tpl = templateById(settings, templateId);
   const phone = normalizePhone(receiverPhone);
   if (!tpl || !phone || !settings.aligoBranch || !aligo.senderKey || !aligo.sender) return {skipped: true, reason: "missing-config"};
-  const subject = renderTemplateText(tpl.main || tpl.title || "슈퍼차일드 알림", vars);
+  const subject = renderTemplateText(tpl.emtitle || tpl.main || tpl.title || "슈퍼차일드 알림", vars);
   const message = renderTemplateText(tpl.body || "", vars);
   const body = new URLSearchParams();
   body.set("branch", settings.aligoBranch);
@@ -224,6 +224,7 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
       button: [{
         name: buttonName,
         linkType: "WL",
+        linkTypeName: "웹링크",
         linkM: link,
         linkP: link,
       }],
