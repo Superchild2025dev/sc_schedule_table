@@ -213,6 +213,7 @@ async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, v
   body.set("receiver_1", phone);
   if (receiverName) body.set("recvname_1", receiverName);
   body.set("subject_1", subject);
+  body.set("emtitle_1", subject);
   body.set("message_1", message);
   body.set("failover", "N");
   body.set("testMode", aligo.testMode ? "Y" : "N");

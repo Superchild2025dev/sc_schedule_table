@@ -883,7 +883,9 @@ async function sendTeacherAlimtalk(templateId,phone,name,vars){
   body.set('tpl_code',tpl.code);
   body.set('receiver_1',receiver);
   if(name) body.set('recvname_1',name);
-  body.set('subject_1',renderNotifyText(tpl.main||tpl.title||'슈퍼차일드 알림',vars));
+  const subject=renderNotifyText(tpl.main||tpl.title||'슈퍼차일드 알림',vars);
+  body.set('subject_1',subject);
+  body.set('emtitle_1',subject);
   body.set('message_1',renderNotifyText(tpl.body||'',vars));
   body.set('failover','N');
   body.set('testMode',aligo.testMode?'Y':'N');

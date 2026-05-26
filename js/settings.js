@@ -686,6 +686,7 @@
     body.set('receiver_1',cfg.testReceiver);
     if(cfg.testRecvName) body.set('recvname_1',cfg.testRecvName);
     body.set('subject_1',cfg.testSubject);
+    body.set('emtitle_1',cfg.testSubject);
     body.set('message_1',cfg.testMessage);
     body.set('testMode',live?'N':'Y');
     body.set('failover','N');
