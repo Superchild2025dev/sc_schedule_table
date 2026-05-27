@@ -791,7 +791,7 @@ function renderDateList(slotKey,period,day){
       if(absentOn){
         const bogangDone = pendingBogangCount > 0 || mark.sub?.type === 'bogang';
         if(pendingCancel){
-          actions=`<button class="btn-absent active is-disabled" type="button" disabled>✓ 결석 · 취소중</button>
+          actions=`<button class="btn-absent active is-disabled" type="button" disabled>결석 취소 요청중</button>
                    <span class="action-note wait">⏳ 승인 대기</span>`;
         } else {
           // [v118] 결석 누른 상태에서만 보강 신청 가능
@@ -801,22 +801,22 @@ function renderDateList(slotKey,period,day){
                           <span class="action-note wait">보강 취소 승인 대기</span>`;
           } else if(acceptedBogang){
             bogangAction=`<button class="btn-bogang done" type="button" disabled>${esc(formatParentBogangBookedButton(acceptedBogang))}</button>
-                          <button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>`;
+                          <button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 취소 요청</button>`;
           } else if(bogangDone){
-            bogangAction=`<button class="btn-bogang done" type="button" disabled>신청완료</button>
-                          ${pendingBogangCount>0 ? `<button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>` : ''}`;
+            bogangAction=`<button class="btn-bogang done" type="button" disabled>보강 신청 완료</button>
+                          ${pendingBogangCount>0 ? `<button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청 취소</button>` : ''}`;
           } else {
-            bogangAction=`<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강신청</button>`;
+            bogangAction=`<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청하기</button>`;
           }
           actions=sourceNoMakeup
-            ? `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
+            ? `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>
                <span class="action-note muted">보강 불가</span>`
-            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
+            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>
                ${bogangAction}`;
         }
       } else {
         // [v118] 결석 안 한 상태 → 결석 버튼만 (보강 신청 X)
-        actions=`<button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석</button>`;
+        actions=`<button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석 신청</button>`;
       }
     }
 
