@@ -546,6 +546,25 @@ function renderMyRequests(students){
     });
   });
 
+  // 4. 보강 취소 요청
+  Object.entries(REQUESTS||{}).forEach(([id, req])=>{
+    if(!req || req.type !== 'bogang-cancel') return;
+    if(req.parent?.name !== childName) return;
+    if(childPhone && req.parent?.phone && req.parent.phone !== childPhone) return;
+    const ds = req.parent?.absentDs || req.target?.ds || '';
+    if(!ds || ds < todayStr) return;
+    const status = req.status === 'accepted' ? '✅ 보강 취소 완료'
+                 : req.status === 'rejected' ? '⛔ 거절'
+                 : '⏳ 선생님 승인 대기';
+    items.push({
+      type: 'bogang-cancel', ds,
+      title: '↩️ 보강 취소',
+      sub: formatParentBogangTarget(req),
+      status,
+      color: '#6B7280'
+    });
+  });
+
   // 정렬: 날짜순
   items.sort((a,b) => a.ds.localeCompare(b.ds));
 
@@ -599,6 +618,23 @@ function formatParentBogangTarget(req){
   const teacher=t.instName ? ` · ${t.instName} 선생님` : '';
   const classLabel=instClassText(INST_MAP[req.instKey]) || t.classLabel || '';
   return `${t.d||''}요일 ${displayTargetTime(t)}${teacher}${classLabel?' · '+classLabel:''}`;
+}
+function formatParentShortDate(ds){
+  const parts=String(ds||'').split('-');
+  if(parts.length<3) return String(ds||'');
+  return `${parseInt(parts[1],10)}/${parseInt(parts[2],10)}`;
+}
+function parentAcceptedBogangFor(slotKey,ds){
+  return Object.values(REQUESTS||{}).find(req=>
+    req && req.type==='bogang' &&
+    req.status==='accepted' &&
+    req.parent?.studentSlotKey===slotKey &&
+    req.parent?.absentDs===ds
+  ) || null;
+}
+function formatParentBogangBookedButton(req){
+  const date=formatParentShortDate(req?.target?.ds);
+  return `${date||'보강'} 보강 잡힘`;
 }
 
 function instNameOf(s){
@@ -716,16 +752,23 @@ function renderDateList(slotKey,period,day){
     const selfSlot=slotKey;
     let pendingCancel=false;     // 결석 취소 대기 중
     const pendingBogangGroups=new Set();    // 이 날짜에 학부모가 신청한 보강 묶음 수
+    let acceptedBogang=null;
+    let pendingBogangCancel=false;
     for(const [reqId,req] of Object.entries(REQUESTS)){
-      if(req.status && req.status!=='pending') continue;
-      if(req.type==='absent-cancel' && req.parent?.studentSlotKey===selfSlot){
+      if(req.type==='absent-cancel' && (!req.status || req.status==='pending') && req.parent?.studentSlotKey===selfSlot){
         if(req.target?.ds!==ds) continue;
         pendingCancel=true;
       }
-      if(req.type==='bogang' && req.parent?.studentSlotKey===selfSlot){
+      if(req.type==='bogang' && (!req.status || req.status==='pending') && req.parent?.studentSlotKey===selfSlot){
         const requestDs=req.parent?.absentDs || req.sourceDs || req.target?.ds;
         if(requestDs!==ds) continue;
         pendingBogangGroups.add(parentBogangGroupKey(reqId,req));
+      }
+      if(req.type==='bogang' && req.status==='accepted' && req.parent?.studentSlotKey===selfSlot && req.parent?.absentDs===ds){
+        acceptedBogang=req;
+      }
+      if(req.type==='bogang-cancel' && (!req.status || req.status==='pending') && req.parent?.studentSlotKey===selfSlot && req.parent?.absentDs===ds){
+        pendingBogangCancel=true;
       }
     }
 
@@ -733,6 +776,10 @@ function renderDateList(slotKey,period,day){
     const pendingBogangCount=pendingBogangGroups.size;
     if(pendingBogangCount>0){
       status=pendingBogangCount>1 ? `⏳ 보강 ${pendingBogangCount}건 승인 대기` : '⏳ 보강 승인 대기';
+    } else if(pendingBogangCancel){
+      status='⏳ 보강 취소 승인 대기';
+    } else if(acceptedBogang){
+      status=`✅ ${formatParentBogangBookedButton(acceptedBogang)}`;
     } else if(pendingCancel){
       status='⏳ 결석 취소 승인 대기';
     }
@@ -748,14 +795,24 @@ function renderDateList(slotKey,period,day){
                    <span class="action-note wait">⏳ 승인 대기</span>`;
         } else {
           // [v118] 결석 누른 상태에서만 보강 신청 가능
+          let bogangAction='';
+          if(pendingBogangCancel){
+            bogangAction=`<button class="btn-bogang done" type="button" disabled>${esc(formatParentBogangBookedButton(acceptedBogang))}</button>
+                          <span class="action-note wait">보강 취소 승인 대기</span>`;
+          } else if(acceptedBogang){
+            bogangAction=`<button class="btn-bogang done" type="button" disabled>${esc(formatParentBogangBookedButton(acceptedBogang))}</button>
+                          <button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>`;
+          } else if(bogangDone){
+            bogangAction=`<button class="btn-bogang done" type="button" disabled>신청완료</button>
+                          ${pendingBogangCount>0 ? `<button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>` : ''}`;
+          } else {
+            bogangAction=`<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강신청</button>`;
+          }
           actions=sourceNoMakeup
             ? `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
                <span class="action-note muted">보강 불가</span>`
             : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">✓ 결석 · 취소</button>
-               ${bogangDone
-                 ? `<button class="btn-bogang done" type="button" disabled>신청완료</button>
-                    ${pendingBogangCount>0 ? `<button class="btn-bogang-cancel" data-action="cancel-bogang" data-ds="${ds}" data-slot="${slotKey}">보강취소</button>` : ''}`
-                 : `<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강신청</button>`}`;
+               ${bogangAction}`;
         }
       } else {
         // [v118] 결석 안 한 상태 → 결석 버튼만 (보강 신청 X)
@@ -1182,7 +1239,11 @@ async function submitBogang(){
 
 async function cancelBogangRequest(ds, slotKey){
   if(!ds || !slotKey) return;
-  if(!confirm('보강 신청을 취소하시겠습니까?')) return;
+  const accepted=parentAcceptedBogangFor(slotKey,ds);
+  const msg=accepted
+    ? `${formatParentBogangBookedButton(accepted)} 보강수업 취소를 요청하시겠습니까?`
+    : '보강 신청을 취소하시겠습니까?';
+  if(!confirm(msg)) return;
   try{
     const data=await callParent('cancelBogang',{
       sessionToken:_parentSessionToken,
@@ -1191,7 +1252,7 @@ async function cancelBogangRequest(ds, slotKey){
     });
     applyParentBundle(data.bundle||{});
     renderDashboard();
-    toast('보강 신청을 취소했습니다','ok');
+    toast(data.cancelStatus==='requested' ? '보강 취소 요청을 접수했습니다' : '보강 신청을 취소했습니다','ok');
   }catch(e){
     toast(parentErrorMessage(e,'보강 취소 실패'),'err');
     console.error(e);

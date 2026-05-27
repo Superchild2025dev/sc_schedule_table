@@ -126,15 +126,15 @@ function reqTargetTeacherName(req){
   return inst?.n || req?.target?.instName || req?.targetInstName || UNASSIGNED_TEACHER_LABEL;
 }
 function reqSnapshotTeacherName(req){
-  if(req?.type==='bogang') return req?.parent?.sourceInstName || req?.targetInstName || '';
+  if(req?.type==='bogang'||req?.type==='bogang-cancel') return req?.parent?.sourceInstName || req?.targetInstName || '';
   return req?.target?.instName || req?.targetInstName || '';
 }
 function reqAssignedTeacherName(req){
-  const inst=req?.type==='bogang' ? reqSourceInst(req) : reqTargetInst(req);
+  const inst=(req?.type==='bogang'||req?.type==='bogang-cancel') ? reqSourceInst(req) : reqTargetInst(req);
   return inst?.n || reqSnapshotTeacherName(req) || UNASSIGNED_TEACHER_LABEL;
 }
 function reqTeacherWarningHtml(req){
-  const inst=req?.type==='bogang' ? reqSourceInst(req) : reqTargetInst(req);
+  const inst=(req?.type==='bogang'||req?.type==='bogang-cancel') ? reqSourceInst(req) : reqTargetInst(req);
   const currentName=inst?.n || '';
   const snapshotName=reqSnapshotTeacherName(req);
   if(!currentName){
@@ -352,6 +352,18 @@ function setRequestStatus(reqId,status){
         }
       }
     }
+    if(status==='accepted' && reqs[reqId].type==='bogang-cancel'){
+      const sourceId=reqs[reqId].sourceBogangReqId;
+      const source=sourceId ? reqs[sourceId] : null;
+      if(source && source.type==='bogang' && source.status==='accepted'){
+        source.status='cancelled';
+        source.cancelledAt=processedAt;
+        source.cancelledBy='parent-approved';
+        source.cancelledRequestId=reqId;
+        source.processedAt=processedAt;
+        source.processedBy=processedBy;
+      }
+    }
     return reqs;
   });
 }
@@ -469,7 +481,8 @@ function render(){
   }
   const bogangReqs=getMyRequests('bogang');
   const bogangGroupCount=groupBogangRequests(bogangReqs).length;
-  const cancelReqs=getMyRequests('absent-cancel');
+  const cancelReqs=[...getMyRequests('absent-cancel'),...getMyRequests('bogang-cancel')]
+    .sort((a,b)=>(b[1].requestedAt||'').localeCompare(a[1].requestedAt||''));
 
   document.getElementById('cnt-bogang').textContent=bogangGroupCount;
   document.getElementById('cnt-bogang').dataset.n=bogangGroupCount;
@@ -477,7 +490,7 @@ function render(){
   document.getElementById('cnt-cancel').dataset.n=cancelReqs.length;
 
   document.getElementById('teacher-stats').textContent=
-    `승인 대기 — 보강 ${bogangGroupCount}건 · 결석취소 ${cancelReqs.length}건`;
+    `승인 대기 — 보강 ${bogangGroupCount}건 · 취소 ${cancelReqs.length}건`;
 
   renderBogangList(bogangReqs);
   renderCancelList(cancelReqs);
@@ -748,7 +761,7 @@ function _renderClassmatesCompact(t, d, l, ds, targetR){
 function renderCancelList(reqs){
   const container=document.getElementById('cancel-list');
   if(!reqs.length){
-    container.innerHTML='<div class="req-empty">승인 대기 중인 결석 취소 신청이 없습니다.</div>';
+    container.innerHTML='<div class="req-empty">승인 대기 중인 취소 신청이 없습니다.</div>';
     return;
   }
   container.innerHTML=reqs.map(([id,r])=>{
@@ -756,21 +769,28 @@ function renderCancelList(reqs){
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
     const targetInst=reqTargetInst(r);
     const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
-    const targetTeacher=reqAssignedTeacherName(r);
+    const targetTeacher=r.type==='bogang-cancel' ? reqTargetTeacherName(r) : reqAssignedTeacherName(r);
     const warning=reqTeacherWarningHtml(r);
+    const isBogangCancel=r.type==='bogang-cancel';
+    const typeText=isBogangCancel ? '보강 취소 요청' : '결석 취소 요청';
+    const targetText=isBogangCancel
+      ? `📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 보강 취소`
+      : `❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 결석 취소`;
+    const rejectText=isBogangCancel ? '거절 (보강 유지)' : '거절 (결석 유지)';
+    const acceptText=isBogangCancel ? '수락 (보강 취소)' : '수락 (결석 해제)';
     return `<div class="req-card cancel">
       <div class="req-hdr">
-        <span class="req-type cancel">결석 취소 요청</span>
+        <span class="req-type cancel">${typeText}</span>
         <span class="req-time">${fmtTime(r.requestedAt)}</span>
       </div>
       <div class="req-main">
         <div class="parent-name">${esc(parentInfo)}${p.phone?'  '+esc(p.phone):''}</div>
-        <div class="target">❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 결석 취소</div>
+        <div class="target">${targetText}</div>
         ${warning}
       </div>
       <div class="req-actions">
-        <button class="btn-reject" data-act="reject" data-id="${id}">거절 (결석 유지)</button>
-        <button class="btn-accept" data-act="accept" data-id="${id}">수락 (결석 해제)</button>
+        <button class="btn-reject" data-act="reject" data-id="${id}">${rejectText}</button>
+        <button class="btn-accept" data-act="accept" data-id="${id}">${acceptText}</button>
       </div>
     </div>`;
   }).join('');
@@ -917,6 +937,12 @@ async function notifyRequestProcessed(req,status){
     }
     return;
   }
+  if(req?.type==='bogang-cancel'){
+    if(status==='accepted'){
+      await sendTeacherAlimtalk('parent_makeup_cancelled',p.phone,p.name,requestNotifyVars(req,req.target));
+    }
+    return;
+  }
   if(req?.type==='absent-cancel' && status==='accepted'){
     const vars=requestNotifyVars(req,req.target);
     const teacherName=reqAssignedTeacherName(req);
@@ -987,6 +1013,24 @@ async function acceptRequest(reqId){
           else delete marks[markKey];
         }
         return marks;
+      });
+      markApplied=true;
+    } else if(req.type==='bogang-cancel'){
+      const t=req.target;
+      const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
+      await updateMarkTx((marks,abort)=>{
+        const cur=marks[markKey];
+        const parentName=req.parent?.name||'';
+        if(cur?.type==='absent' && cur.sub?.type==='bogang' && (!parentName || cur.sub.n===parentName)){
+          delete cur.sub;
+          marks[markKey]=cur;
+          return marks;
+        }
+        if(cur?.type==='bogang' && (!parentName || cur.n===parentName)){
+          delete marks[markKey];
+          return marks;
+        }
+        abort('보강 마크를 찾을 수 없습니다');
       });
       markApplied=true;
     }

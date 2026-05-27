@@ -811,38 +811,68 @@ async function cancelBogang(branch, data) {
   const sourceDs = String(data.sourceDs || "");
   if (!sourceSlotKey || !sourceDs) throw new HttpsError("invalid-argument", "취소할 보강 신청 정보가 없습니다");
   let notifyCtx = null;
+  let cancelStatus = "cancelled";
   await db.runTransaction(async tx => {
     const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
     const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
     const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
     const stu = findSessionStudent({students}, session, sourceSlotKey);
     const sourceInst = inst[instKeyOf(stu)];
-    const matched = Object.values(requests).filter(req =>
+    const matched = Object.entries(requests).filter(([, req]) =>
       req && req.type === "bogang" &&
       (!req.status || req.status === "pending") &&
       req.parent && req.parent.studentSlotKey === sourceSlotKey &&
       req.parent.absentDs === sourceDs
     );
-    if (!matched.length) throw new HttpsError("not-found", "취소할 보강 신청이 없습니다");
     const cancelledAt = new Date().toISOString();
-    Object.entries(requests).forEach(([id, req]) => {
-      if (
-        req && req.type === "bogang" &&
-        (!req.status || req.status === "pending") &&
-        req.parent && req.parent.studentSlotKey === sourceSlotKey &&
-        req.parent.absentDs === sourceDs
-      ) {
+    if (matched.length) {
+      matched.forEach(([id, req]) => {
         requests[id] = Object.assign({}, req, {
           status: "cancelled",
           cancelledAt,
           cancelledBy: "parent",
         });
-      }
-    });
-    notifyCtx = {stu, inst: sourceInst, ds: sourceDs};
+      });
+      notifyCtx = {stu, inst: sourceInst, ds: sourceDs};
+    } else {
+      const accepted = Object.entries(requests).find(([, req]) =>
+        req && req.type === "bogang" &&
+        req.status === "accepted" &&
+        req.parent && req.parent.studentSlotKey === sourceSlotKey &&
+        req.parent.absentDs === sourceDs
+      );
+      if (!accepted) throw new HttpsError("not-found", "취소할 보강 신청이 없습니다");
+      const [acceptedId, acceptedReq] = accepted;
+      const exists = Object.values(requests).some(req =>
+        req && req.type === "bogang-cancel" &&
+        (!req.status || req.status === "pending") &&
+        req.parent && req.parent.studentSlotKey === sourceSlotKey &&
+        req.parent.absentDs === sourceDs
+      );
+      if (exists) throw new HttpsError("already-exists", "이미 보강 취소 요청이 접수되었습니다");
+      requests[makeReqId()] = {
+        type: "bogang-cancel",
+        status: "pending",
+        parent: Object.assign({}, acceptedReq.parent || {}, {
+          studentSlotKey: sourceSlotKey,
+          name: stu.n,
+          age: stu.a || null,
+          phone: stu.p || null,
+          absentDs: sourceDs,
+          sourceInstKey: instKeyOf(stu),
+          sourceInstName: sourceInst && sourceInst.n || "",
+          sourceClassLabel: instClassText(sourceInst),
+        }),
+        target: Object.assign({}, acceptedReq.target || {}),
+        instKey: acceptedReq.instKey || "",
+        sourceBogangReqId: acceptedId,
+        requestedAt: cancelledAt,
+      };
+      cancelStatus = "requested";
+    }
     writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
   });
-  if (notifyCtx) {
+  if (notifyCtx && cancelStatus === "cancelled") {
     const settings = await readAligoSettings(branch);
     const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
     const teacherName = notifyCtx.inst && notifyCtx.inst.n || "";
@@ -851,7 +881,7 @@ async function cancelBogang(branch, data) {
       {templateId: "teacher_makeup_cancelled", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
     ]);
   }
-  return {bundle: await bundleForSession(branch, session)};
+  return {bundle: await bundleForSession(branch, session), cancelStatus};
 }
 
 exports.parentPortal = onCall({
