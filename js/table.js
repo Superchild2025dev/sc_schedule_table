@@ -1419,7 +1419,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       } else if(stu){
         const prefix=namePrefix[slotKey]||'';
         const display=(prefix?prefix+'.':'')+stu.n+(stu.a||'');
-        let html=`<span style="font-weight:600">${esc(display)}</span>`;
+        let html=`<span class="stu-name-text">${esc(display)}</span>`;
         if(badgeHtml) html+=badgeHtml;
         td.innerHTML=html;
       } else {
