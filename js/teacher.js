@@ -864,33 +864,41 @@ function _renderClassmates(t, d, l, ds, targetR){
 function _renderClassmatesCompact(t, d, l, ds, targetR){
   if(!t||!d||!l||!ds) return '';
   const li=parseInt(l);
+  const targetNo=parseInt(targetR);
   const cells=[];
   for(let r=1; r<=8; r++){
     const stu=STUDENTS.find(s=>s.t===t && s.d===d && s.l===li && s.r===r);
     const markKey=`${t}/${d}/${l}/${r}/${ds}`;
     const mark=MARK_MAP[markKey]||null;
-    cells.push({r,stu,mark,isTarget:r==targetR});
+    cells.push({r,stu,mark,isTarget:r===targetNo});
   }
-  let lastIdx=cells.findIndex((c,i)=>{
-    if(i<targetR-1) return false;
-    return cells.slice(i).every(x=>!x.stu && !x.mark && !x.isTarget);
-  });
-  if(lastIdx<0) lastIdx=cells.length;
-  const visible=cells.slice(0,Math.max(targetR,lastIdx,5));
-  const chips=visible.map(c=>{
+  const visible=cells.slice(0,Math.max(5,targetNo||0));
+  const slots=visible.map(c=>{
     const isAbsent=c.mark?.type==='absent';
     const isBogang=c.mark?.type==='bogang'||c.mark?.sub?.type==='bogang';
     const isSample=c.mark?.type==='sample'||c.mark?.sub?.type==='sample';
-    let cls='cm-chip';
+    let cls='cm-slot';
     if(c.isTarget) cls+=' target';
     if(!c.stu && !c.mark && !c.isTarget) cls+=' empty';
     if(isAbsent) cls+=' absent';
     if(isBogang||isSample) cls+=' guest';
-    const label=c.isTarget ? '보강자리' : (c.stu ? `${c.stu.n}${c.stu.a||''}` : '-');
-    const tag=isAbsent ? '결석' : (isBogang ? '보강' : (isSample ? '샘플' : ''));
-    return `<span class="${cls}"><b>${c.r}</b>${esc(label)}${tag?`<em>${tag}</em>`:''}</span>`;
+    const label=c.stu ? `${c.stu.n}${c.stu.a||''}` : (c.isTarget ? '보강 자리' : '-');
+    const tags=[];
+    if(c.isTarget) tags.push('선택');
+    if(isAbsent) tags.push('결석');
+    else if(isBogang) tags.push('보강');
+    else if(isSample) tags.push('샘플');
+    const tagHtml=tags.length ? `<span class="cm-slot-tag">${tags.join(' · ')}</span>` : '';
+    return `<div class="${cls}">
+      <span class="cm-slot-no">${c.r}</span>
+      <span class="cm-slot-name">${esc(label)}</span>
+      ${tagHtml}
+    </div>`;
   }).join('');
-  return `<div class="cm-compact"><span class="cm-compact-label">같은 반</span>${chips}</div>`;
+  return `<div class="cm-compact cm-slot-stack">
+    <div class="cm-compact-label">같은 반</div>
+    <div class="cm-slot-list">${slots}</div>
+  </div>`;
 }
 
 function renderCancelList(reqs){

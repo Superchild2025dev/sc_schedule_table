@@ -924,14 +924,21 @@ function _periodIndexForDate(ds){
   return idx>=0 ? idx : getCurrentPeriod();
 }
 
+function _addDaysStr(ds,days){
+  const d=new Date(ds+'T12:00:00');
+  d.setDate(d.getDate()+days);
+  return toDateStr(d);
+}
+
 function _getBogangDateOptions(baseDs){
   const baseIdx=_periodIndexForDate(baseDs);
   const periods=[SCHEDULE_PERIODS[baseIdx], SCHEDULE_PERIODS[baseIdx+1]].filter(Boolean);
   const todayStr=toDateStr(new Date());
+  const limitStr=_addDaysStr(todayStr,10);
   const dowNames=['일','월','화','수','목','금','토'];
   if(!periods.length){
     const fallback=[];
-    for(let i=0;i<60;i++){
+    for(let i=0;i<=10;i++){
       const d=new Date();
       d.setDate(d.getDate()+i);
       const ds=toDateStr(d);
@@ -943,14 +950,15 @@ function _getBogangDateOptions(baseDs){
     return fallback;
   }
   const start=periods[0].start>todayStr ? periods[0].start : todayStr;
-  const end=periods[periods.length-1].end || periods[periods.length-1].start;
+  const periodEnd=periods[periods.length-1].end || periods[periods.length-1].start;
+  const end=periodEnd<limitStr ? periodEnd : limitStr;
   const dates=[];
   const cur=new Date(start);
   const last=new Date(end);
   while(cur<=last){
-    const ds=toDateStr(cur);
-    if(!isClosedDate(ds)){
-      const dow=dowNames[cur.getDay()];
+      const ds=toDateStr(cur);
+      if(!isClosedDate(ds)){
+        const dow=dowNames[cur.getDay()];
       if(dow!=='일') dates.push({ds,dow,m:cur.getMonth()+1,d:cur.getDate()});
     }
     cur.setDate(cur.getDate()+1);
@@ -1044,6 +1052,40 @@ function _bgSlotLabel(slot){
   return `${dateLabel} ${slot.day} ${displayTargetTime(slot)}`;
 }
 
+function _bgSlotSortValue(slot){
+  return parseInt(String(slot?.t||'').replace(/\D/g,''),10)||0;
+}
+
+function _sortBogangSlots(slots){
+  return (Array.isArray(slots)?slots:[]).slice().sort((a,b)=>
+    _bgSlotSortValue(a)-_bgSlotSortValue(b) ||
+    String(a.instName||'').localeCompare(String(b.instName||''),'ko') ||
+    Number(a.lane||0)-Number(b.lane||0) ||
+    Number(a.row||0)-Number(b.row||0)
+  );
+}
+
+function _renderBogangSlotOptions(slots){
+  let html='';
+  let lastTime='';
+  slots.forEach((x,i)=>{
+    const timeLabel=displayTargetTime(x);
+    if(_bgTeacherMode==='other' && timeLabel!==lastTime){
+      html+=`<div class="bg-slot-group-title">${esc(timeLabel)}</div>`;
+      lastTime=timeLabel;
+    }
+    html+=`
+      <div class="bg-slot-item ${_bgSelectedSlots.some(s=>_bgSlotKey(s)===_bgSlotKey(x))?'selected':''}" data-idx="${i}">
+        <div>
+          <div class="slot-main">${x.day}요일 · ${esc(timeLabel)}</div>
+          <div class="slot-sub">${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
+        </div>
+      </div>
+    `;
+  });
+  return html;
+}
+
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
 function _parentSlotMaxRows(inst){
   if(inst && (inst.elma || inst.cls==='elma' || inst.cls==='elite' || inst.cls==='master')) return 8;
@@ -1108,7 +1150,7 @@ function findAvailableSlots(ds){
   available.sort((a,b)=>{
     const ta=parseInt(a.t);const tb=parseInt(b.t);
     if(ta!==tb) return ta-tb;
-    return a.lane-b.lane;
+    return String(a.instName||'').localeCompare(String(b.instName||''),'ko') || a.lane-b.lane;
   });
   return available;
 }
@@ -1134,7 +1176,7 @@ async function refreshBogangSlots(ds){
       teacherMode:_bgTeacherMode,
     });
     applyParentBundle(data.bundle||{});
-    slots=Array.isArray(data.slots)?data.slots:[];
+    slots=_sortBogangSlots(data.slots);
   }catch(e){
     container.innerHTML=`<div class="bg-no-slots">${esc(parentErrorMessage(e,'가능한 수업을 불러오지 못했습니다'))}</div>`;
     updateBogangSelCount();
@@ -1149,14 +1191,7 @@ async function refreshBogangSlots(ds){
     updateBogangSelCount();
     return;
   }
-  container.innerHTML=slots.map((x,i)=>`
-    <div class="bg-slot-item ${_bgSelectedSlots.some(s=>_bgSlotKey(s)===_bgSlotKey(x))?'selected':''}" data-idx="${i}">
-      <div>
-        <div class="slot-main">${x.day}요일 · ${esc(displayTargetTime(x))}</div>
-        <div class="slot-sub">${esc(x.instName)} 선생님${instClassBadgeHtml(x.inst)}</div>
-      </div>
-    </div>
-  `).join('');
+  container.innerHTML=_renderBogangSlotOptions(slots);
   // 다중 선택
   container.querySelectorAll('.bg-slot-item').forEach((el,i)=>{
     el.onclick=()=>{

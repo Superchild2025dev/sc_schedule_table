@@ -459,6 +459,16 @@ function todayString() {
   return now.toISOString().slice(0, 10);
 }
 
+function addDaysString(ds, days) {
+  const date = new Date(ds + "T12:00:00+09:00");
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function maxBogangDateString() {
+  return addDaysString(todayString(), 10);
+}
+
 function makeSessionId() {
   return crypto.randomBytes(24).toString("base64url");
 }
@@ -623,8 +633,11 @@ function bogangDateOptions(base, baseDs) {
   const periods = base.periods || DEFAULT_PERIODS;
   const baseIdx = periodIndexForDate(periods, baseDs);
   const visible = [periods[baseIdx], periods[baseIdx + 1]].filter(Boolean);
-  const start = visible.length && visible[0].start > todayString() ? visible[0].start : todayString();
-  const end = visible.length ? (visible[visible.length - 1].end || visible[visible.length - 1].start) : start;
+  const today = todayString();
+  const limit = maxBogangDateString();
+  const start = visible.length && visible[0].start > today ? visible[0].start : today;
+  const periodEnd = visible.length ? (visible[visible.length - 1].end || visible[visible.length - 1].start) : start;
+  const end = periodEnd < limit ? periodEnd : limit;
   const dates = [];
   const current = new Date(start + "T12:00:00+09:00");
   const last = new Date(end + "T12:00:00+09:00");
@@ -644,7 +657,19 @@ function slotMaxRows(inst) {
   return inst && (inst.elma || inst.cls === "elma" || inst.cls === "elite" || inst.cls === "master") ? 8 : 5;
 }
 
+function assertBogangDateAllowed(ds) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ds || ""))) {
+    throw new HttpsError("invalid-argument", "보강 날짜가 올바르지 않습니다");
+  }
+  const today = todayString();
+  const limit = maxBogangDateString();
+  if (ds < today || ds > limit) {
+    throw new HttpsError("failed-precondition", "보강 신청은 오늘부터 10일 이내 날짜만 가능합니다");
+  }
+}
+
 function availableSlotsFor(base, session, sourceSlotKey, ds, teacherMode) {
+  assertBogangDateAllowed(ds);
   const source = findSessionStudent(base, session, sourceSlotKey);
   const sourceInst = base.inst[instKeyOf(source)];
   if (isNoMakeupInst(sourceInst)) throw new HttpsError("failed-precondition", "엘리트반/마스터반은 보강 신청이 불가합니다");
@@ -689,7 +714,12 @@ function availableSlotsFor(base, session, sourceSlotKey, ds, teacherMode) {
       break;
     }
   });
-  candidates.sort((a, b) => Number(a.t) - Number(b.t) || Number(a.lane) - Number(b.lane));
+  candidates.sort((a, b) =>
+    Number(a.t) - Number(b.t) ||
+    String(a.instName || "").localeCompare(String(b.instName || ""), "ko") ||
+    Number(a.lane) - Number(b.lane) ||
+    Number(a.row) - Number(b.row)
+  );
   return candidates;
 }
 

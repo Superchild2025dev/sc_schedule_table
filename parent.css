@@ -113,6 +113,8 @@ input,textarea{font-family:inherit;outline:none}
 .bg-teacher-filter button.active{background:#7C3AED;border-color:#7C3AED;color:#fff}
 .bg-teacher-hint{font-size:11px;color:#6B7280;line-height:1.4;margin-bottom:6px}
 .bg-slots{max-height:240px;overflow-y:auto;border:1.5px solid #E5E7EB;border-radius:8px;padding:6px;margin-bottom:8px}
+.bg-slot-group-title{position:sticky;top:0;z-index:1;margin:8px 0 5px;padding:6px 9px;border:1px solid #DDD6FE;border-radius:8px;background:#F5F3FF;color:#5B21B6;font-size:12px;font-weight:900;text-align:center}
+.bg-slot-group-title:first-child{margin-top:0}
 .bg-slot-item{padding:10px 12px;border:1.5px solid #E5E7EB;border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all 0.15s;display:flex;justify-content:space-between;align-items:center}
 .bg-slot-item:last-child{margin-bottom:0}
 .bg-slot-item:hover{border-color:#7C3AED;background:#F5F3FF}

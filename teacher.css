@@ -66,26 +66,29 @@ html,body{background:#F3F6FA}
 .req-main .sub-info{font-size:13px;color:#6B7280}
 .req-warning{font-size:11px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FCD34D;border-radius:6px;padding:6px 8px;line-height:1.4}
 .candidate-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
-.candidate-row{display:grid;grid-template-columns:82px minmax(0,1fr) 116px;gap:8px 10px;align-items:center;border:1px solid #DBEAFE;background:#F8FBFF;border-radius:8px;padding:9px 10px}
+.candidate-row{display:grid;grid-template-columns:82px minmax(180px,1fr) minmax(124px,150px) 116px;gap:8px 10px;align-items:stretch;border:1px solid #DBEAFE;background:#F8FBFF;border-radius:8px;padding:9px 10px}
 .candidate-row.blocked{border-color:#FECACA;background:#FEF2F2}
 .candidate-meta{display:flex;align-items:flex-start;justify-content:center;gap:5px;flex-direction:column;margin:0}
 .candidate-no{font-size:11px;font-weight:900;color:#1D4ED8;background:#DBEAFE;border-radius:7px;padding:3px 7px;white-space:nowrap}
 .candidate-state{font-size:10px;font-weight:900;border-radius:7px;padding:3px 7px;white-space:nowrap}
 .candidate-state.ok{background:#D1FAE5;color:#047857}
 .candidate-state.danger{background:#FEE2E2;color:#991B1B}
-.candidate-main{display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:#374151;font-size:13px;line-height:1.4;min-width:0}
+.candidate-main{display:flex;align-items:center;align-content:center;gap:9px;flex-wrap:wrap;color:#374151;font-size:13px;line-height:1.4;min-width:0}
 .candidate-main strong{color:#111;font-size:14px}
 .candidate-row .classmates-wrap{margin:10px 0 0;background:#fff}
 .candidate-accept{width:100%;padding:9px 10px;margin:0;border-radius:8px;font-size:13px;font-weight:900}
-.cm-compact{grid-column:1/-1;display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding-top:2px}
-.cm-compact-label{font-size:11px;font-weight:900;color:#6B7280;margin-right:2px}
-.cm-chip{display:inline-flex;align-items:center;gap:3px;min-height:22px;padding:2px 6px;border:1px solid #E5E7EB;border-radius:6px;background:#fff;color:#374151;font-size:11px;font-weight:800;line-height:1}
-.cm-chip b{font-size:10px;color:#9CA3AF}
-.cm-chip em{font-style:normal;font-size:10px;color:#1D4ED8;background:#DBEAFE;border-radius:4px;padding:2px 4px}
-.cm-chip.target{border-color:#3B82F6;background:#EFF6FF;color:#1E40AF}
-.cm-chip.empty{background:#F3F4F6;color:#D1D5DB}
-.cm-chip.absent{background:#FEF2F2;color:#991B1B}
-.cm-chip.guest{background:#F5F3FF;color:#5B21B6}
+.cm-compact{display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0}
+.cm-compact-label{font-size:10px;font-weight:900;color:#6B7280;text-align:center;line-height:1}
+.cm-slot-list{display:grid;grid-template-rows:repeat(5,minmax(22px,auto));gap:2px}
+.cm-slot{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:4px;min-height:23px;padding:2px 5px;border:1px solid #E5E7EB;border-radius:4px;background:#fff;color:#374151;font-size:11px;font-weight:800;line-height:1.15}
+.cm-slot-no{color:#9CA3AF;font-size:10px;text-align:center}
+.cm-slot-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-slot-tag{font-size:9px;font-weight:900;color:#1D4ED8;background:#DBEAFE;border-radius:4px;padding:2px 4px;white-space:nowrap}
+.cm-slot.target{border-color:#3B82F6;background:#EFF6FF;color:#1E40AF}
+.cm-slot.empty{background:#F9FAFB;color:#D1D5DB}
+.cm-slot.absent{background:#FEF2F2;color:#991B1B}
+.cm-slot.guest{background:#F5F3FF;color:#5B21B6}
+.cm-slot.absent .cm-slot-name{text-decoration:line-through}
 .req-actions{display:flex;gap:10px;margin-top:14px}
 .req-actions button{flex:1;padding:12px 14px;font-size:14px;font-weight:800;border-radius:8px;transition:all 0.15s}
 .btn-accept{background:#10B981;color:#fff}
@@ -128,7 +131,9 @@ html,body{background:#F3F6FA}
   .candidate-main strong{font-size:13px}
   .candidate-accept{width:100%}
   .cm-compact{grid-column:auto}
-  .cm-chip{font-size:10px;padding:2px 5px}
+  .cm-slot-list{grid-template-columns:repeat(5,minmax(0,1fr));grid-template-rows:none}
+  .cm-slot{grid-template-columns:1fr;gap:2px;min-height:42px;padding:5px 4px;text-align:center}
+  .cm-slot-tag{font-size:8px;padding:2px 3px}
   .history-row{grid-template-columns:52px minmax(90px,1fr);gap:5px 8px;padding:10px 12px}
   .history-target,.history-source,.history-time{grid-column:2;white-space:normal}
   .classmates-grid{grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px}
