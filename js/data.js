@@ -1576,6 +1576,7 @@ function _applyStoredValue(key,val){
   else if(key===STORAGE_KEYS.DISABLED) DISABLED_MAP=val||{};
   else if(key===STORAGE_KEYS.RESERVE) RESERVE_MAP=val||{};
   else if(key===STORAGE_KEYS.休원) HYUWON_MAP=val||{};
+  else if(key===STORAGE_KEYS.REQUESTS) REQUESTS=val||{};
   else if(key===STORAGE_KEYS.TEACHERS && typeof TEACHERS!=='undefined'){
     TEACHERS=Array.isArray(val)?val:[];
     if(typeof updateTeacherStyles==='function') updateTeacherStyles();

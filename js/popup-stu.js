@@ -1818,6 +1818,79 @@ function _moveFutureHyuwon(map,srcKey,dstKey,todayStr){
     delete map[srcKey];
   }
 }
+function _requestSourceDate(req){
+  const p=req?.parent||{};
+  return p.absentDs || req?.sourceDs || req?.target?.ds || '';
+}
+function _isActiveRequestStatus(status){
+  return !status || status==='pending' || status==='processing' || status==='accepted';
+}
+function _isActiveFutureRequestForSlot(req,slotKey,todayStr){
+  if(!req || req.parent?.studentSlotKey!==slotKey) return false;
+  if(!_isActiveRequestStatus(req.status)) return false;
+  const ds=_requestSourceDate(req);
+  return !ds || ds>=todayStr;
+}
+function _slotInstSnapshot(instMap,slotKey){
+  const [t,d,l]=String(slotKey||'').split('/');
+  const instKey=t&&d&&l ? t+'/'+d+'/'+l : '';
+  const inst=instKey ? instMap[instKey] : null;
+  return {
+    instKey,
+    inst,
+    instName: inst?.n || '',
+    classLabel: typeof instClassText==='function' ? instClassText(inst) : '',
+  };
+}
+function _rememberOriginalRequestSlot(parent,slotKey){
+  if(!parent) return;
+  if(!parent.originalSlotKey) parent.originalSlotKey=slotKey;
+  parent.previousSlotKey=slotKey;
+  parent.slotUpdatedAt=new Date().toISOString();
+}
+function _rewriteRequestSourceSlot(req,oldKey,newKey,instMap){
+  if(!req || req.parent?.studentSlotKey!==oldKey) return false;
+  const parent=req.parent || (req.parent={});
+  _rememberOriginalRequestSlot(parent,oldKey);
+  parent.studentSlotKey=newKey;
+  const snap=_slotInstSnapshot(instMap,newKey);
+  if(req.type==='bogang' || req.type==='bogang-cancel'){
+    parent.sourceInstKey=snap.instKey;
+    parent.sourceInstName=snap.instName;
+    parent.sourceClassLabel=snap.classLabel;
+  } else if(req.type==='absent-cancel'){
+    const [t,d,l,r]=newKey.split('/');
+    req.target=Object.assign({},req.target||{},{
+      t,d,l:parseInt(l,10),r:parseInt(r,10),
+      instName:snap.instName,
+      classLabel:snap.classLabel,
+    });
+    req.instKey=snap.instKey;
+  }
+  return true;
+}
+function _moveActiveFutureRequests(requests,srcKey,dstKey,todayStr,instMap){
+  let moved=0;
+  Object.values(requests||{}).forEach(req=>{
+    if(!_isActiveFutureRequestForSlot(req,srcKey,todayStr)) return;
+    if(_rewriteRequestSourceSlot(req,srcKey,dstKey,instMap)) moved++;
+  });
+  return moved;
+}
+function _swapActiveFutureRequests(requests,srcKey,dstKey,todayStr,instMap){
+  let changed=0;
+  Object.values(requests||{}).forEach(req=>{
+    if(_isActiveFutureRequestForSlot(req,srcKey,todayStr)){
+      if(_rewriteRequestSourceSlot(req,srcKey,dstKey,instMap)) changed++;
+    } else if(_isActiveFutureRequestForSlot(req,dstKey,todayStr)){
+      if(_rewriteRequestSourceSlot(req,dstKey,srcKey,instMap)) changed++;
+    }
+  });
+  return changed;
+}
+function _hasActiveFutureRequest(requests,slotKey,todayStr){
+  return Object.values(requests||{}).some(req=>_isActiveFutureRequestForSlot(req,slotKey,todayStr));
+}
 function _finishMove(msg){
   _moveMode=null;
   document.getElementById('move-bar').style.display='none';
@@ -1841,8 +1914,10 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     const sLi=parseInt(sL),sRi=parseInt(sR);
     try{
       const stuKey=getTabConfig().stuKey;
-      await updateScheduleTx([stuKey,STORAGE_KEYS.DISABLED,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원], ctx=>{
+      const instKey=getTabConfig().instKey;
+      await updateScheduleTx([stuKey,instKey,STORAGE_KEYS.DISABLED,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원,STORAGE_KEYS.REQUESTS], ctx=>{
         const students=ctx.get(stuKey,[]);
+        const instMap=ctx.get(instKey,{});
         const srcIdx=_findStudentIndexAt(students,srcKey);
         if(srcIdx<0){ctx.abort('소스 학생 정보 오류');return;}
         const dstIdx=_findStudentIndexAt(students,dstKey);
@@ -1882,6 +1957,11 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
         _swapFutureHyuwon(hyuwon,srcKey,dstKey,todayStr);
         ctx.set(STORAGE_KEYS.休원,hyuwon);
+
+        const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
+        if(_swapActiveFutureRequests(requests,srcKey,dstKey,todayStr,instMap)){
+          ctx.set(STORAGE_KEYS.REQUESTS,requests);
+        }
         return true;
       }, {type:'move', label:'자리바꾸기', detail:`${srcKey} → ${dstKey}`});
       const srcLabel=srcStu.n+(srcStu.a||'');
@@ -2074,7 +2154,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   try{
     let movedName=stu.n;
     const stuKey=getTabConfig().stuKey;
-    await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED], ctx=>{
+    const instKey=getTabConfig().instKey;
+    await updateScheduleTx([stuKey,instKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED,STORAGE_KEYS.REQUESTS], ctx=>{
       const students=ctx.get(stuKey,[]);
       if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('목적지에 이미 학생이 있습니다');return;}
 
@@ -2083,6 +2164,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
       const marks=ctx.get(STORAGE_KEYS.MARK,{});
       const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+      const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
+      const instMap=ctx.get(instKey,{});
       if(_isReserveMoveLockedMoveType(type)&&(_reserveMoveAtSlot(srcKey,retire,enroll)||_reserveMoveAtSlot(dstKey,retire,enroll))){
         ctx.abort(_reserveMoveLockedMessage());
         return;
@@ -2099,6 +2182,14 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           ctx.abort('목적지에 기존 미래 예약/마크가 있습니다');
           return;
         }
+      }
+      if(type!=='all' && _hasActiveFutureRequest(requests,srcKey,todayStr)){
+        ctx.abort('학부모 요청이 있는 원생은 전체 이동으로 처리해주세요');
+        return;
+      }
+      if(type==='all' && _hasActiveFutureRequest(requests,dstKey,todayStr)){
+        ctx.abort('목적지에 연결된 학부모 요청이 있어 이동할 수 없습니다');
+        return;
       }
 
       const sIdx=_findStudentIndexAt(students,srcKey);
@@ -2118,10 +2209,12 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         if(enroll[srcKey]){enroll[dstKey]=enroll[srcKey];delete enroll[srcKey];}
         _moveFutureMarks(marks,srcKey,dstKey,todayStr);
         _moveFutureHyuwon(hyuwon,srcKey,dstKey,todayStr);
+        _moveActiveFutureRequests(requests,srcKey,dstKey,todayStr,instMap);
         ctx.set(STORAGE_KEYS.RETIRE,retire);
         ctx.set(STORAGE_KEYS.ENROLL,enroll);
         ctx.set(STORAGE_KEYS.MARK,marks);
         ctx.set(STORAGE_KEYS.休원,hyuwon);
+        ctx.set(STORAGE_KEYS.REQUESTS,requests);
       }
       return true;
     }, {type:'move', label:type==='all'?'전체 이동':'원생 이동', detail:`${srcKey} → ${dstKey}`});

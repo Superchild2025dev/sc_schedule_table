@@ -497,27 +497,45 @@ async function loadSession(branch, token) {
     await sessionRef(token).delete();
     throw new HttpsError("unauthenticated", "로그인이 만료되었습니다");
   }
-  if ((!session.stuKey || !session.instKey) && session.name && session.phone) {
-    const found = await findParentStudentSet(branch, session.name, normalizePhone(session.phone));
-    if (found) {
-      session.slotKeys = found.students.map(slotKeyOf);
+  if (session.name && session.phone) {
+    const phone = normalizePhone(session.phone);
+    const found = await findParentStudentSet(branch, session.name, phone);
+    if (found && found.students.length) {
+      const slotKeys = found.students.map(slotKeyOf);
+      const changed =
+        session.stuKey !== found.stuKey ||
+        session.instKey !== found.instKey ||
+        JSON.stringify(session.slotKeys || []) !== JSON.stringify(slotKeys);
+      session.slotKeys = slotKeys;
       session.tabId = found.tabId;
       session.tabName = found.tabName;
       session.stuKey = found.stuKey;
       session.instKey = found.instKey;
-      await sessionRef(token).set({
-        slotKeys: session.slotKeys,
-        tabId: session.tabId,
-        tabName: session.tabName,
-        stuKey: session.stuKey,
-        instKey: session.instKey,
-      }, {merge: true});
+      session.phone = phone;
+      if (changed) {
+        await sessionRef(token).set({
+          slotKeys: session.slotKeys,
+          tabId: session.tabId,
+          tabName: session.tabName,
+          stuKey: session.stuKey,
+          instKey: session.instKey,
+          phone,
+        }, {merge: true});
+      }
     }
   }
   return session;
 }
 
-function filterBundle(base, slotKeys) {
+function requestMatchesSession(req, slotSet, session) {
+  const p = req && req.parent || {};
+  if (slotSet.has(p.studentSlotKey)) return true;
+  const name = String(session && session.name || "").trim();
+  const phone = normalizePhone(session && session.phone);
+  return !!(name && phone && p.name === name && normalizePhone(p.phone) === phone);
+}
+
+function filterBundle(base, slotKeys, session) {
   const slotSet = new Set(slotKeys);
   const students = base.students.filter(s => slotSet.has(slotKeyOf(s)));
   const inst = {};
@@ -536,10 +554,11 @@ function filterBundle(base, slotKeys) {
   });
   const requests = {};
   Object.entries(base.requests || {}).forEach(([id, req]) => {
-    const p = req && req.parent || {};
-    if (slotSet.has(p.studentSlotKey)) {
+    if (requestMatchesSession(req, slotSet, session)) {
       requests[id] = req;
+      const p = req && req.parent || {};
       if (req.instKey && base.inst[req.instKey]) inst[req.instKey] = base.inst[req.instKey];
+      if (p.sourceInstKey && base.inst[p.sourceInstKey]) inst[p.sourceInstKey] = base.inst[p.sourceInstKey];
     }
   });
   return {
@@ -555,7 +574,7 @@ function filterBundle(base, slotKeys) {
 
 async function bundleForSession(branch, session) {
   const base = await readBaseData(branch, sessionDataKeys(session));
-  return filterBundle(base, session.slotKeys || []);
+  return filterBundle(base, session.slotKeys || [], session);
 }
 
 function findSessionStudent(base, session, slotKey) {
@@ -685,7 +704,7 @@ async function login(branch, data) {
   if (!students.length) throw new HttpsError("not-found", "일치하는 정보가 없습니다");
   const token = await createSession(branch, students, found);
   const session = {slotKeys: students.map(slotKeyOf)};
-  return {sessionToken: token, bundle: filterBundle(base, session.slotKeys), dates: bogangDateOptions(base, todayString())};
+  return {sessionToken: token, bundle: filterBundle(base, session.slotKeys, {name, phone}), dates: bogangDateOptions(base, todayString())};
 }
 
 async function refresh(branch, data) {
@@ -809,7 +828,7 @@ async function getBogangSlots(branch, data) {
   return {
     slots: availableSlotsFor(base, session, String(data.sourceSlotKey || ""), String(data.ds || ""), data.teacherMode === "other" ? "other" : "mine"),
     dates: bogangDateOptions(base, String(data.sourceDs || data.ds || todayString())),
-    bundle: filterBundle(base, session.slotKeys || []),
+    bundle: filterBundle(base, session.slotKeys || [], session),
   };
 }
 
