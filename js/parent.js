@@ -101,7 +101,7 @@ function parseJSON(v,def){
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
 }
 
-const SATURDAY_DISPLAY_TIME={'1시':'10시','2시':'11시','3시':'12시','4시':'1시','5시':'2시'};
+const SATURDAY_DISPLAY_TIME={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
 function displayTimeForDay(day,t){
   return String(day||'')==='토' ? (SATURDAY_DISPLAY_TIME[t]||t||'') : (t||'');
 }

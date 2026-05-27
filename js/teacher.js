@@ -950,7 +950,7 @@ function notifyDateParts(ds){
   };
 }
 function notifyDisplayTime(day,time){
-  const sat={'1시':'10시','2시':'11시','3시':'12시','4시':'1시','5시':'2시'};
+  const sat={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
   return String(day||'').replace('요일','')==='토' ? (sat[time]||time||'') : (time||'');
 }
 function renderNotifyText(text,vars){
