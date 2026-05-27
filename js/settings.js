@@ -49,6 +49,7 @@
   let settingsByBranch={};
   let teacherNamesByBranch={};
   let rootByBranch={};
+  let settingsLoadFailedByBranch={};
 
   function $(id){return document.getElementById(id);}
   function clone(obj){return JSON.parse(JSON.stringify(obj));}
@@ -242,23 +243,46 @@
       ]);
       settingsByBranch[branchId]=mergeSettings(base,parseStored(settingsSnap.val()));
       teacherNamesByBranch[branchId]=normalizeTeacherNames(parseStored(teachersSnap.val()),branchId);
+      settingsLoadFailedByBranch[branchId]=false;
     }catch(e){
       console.error(e);
       settingsByBranch[branchId]=base;
       teacherNamesByBranch[branchId]=clone(DEFAULT_TEACHERS[branchId]||[]);
-      toast('설정 로드 실패','err');
+      settingsLoadFailedByBranch[branchId]=true;
+      toast('설정 로드 실패 — 저장은 차단됩니다','err');
     }
     renderAll();
   }
   async function saveSettings(kind){
     if(window.SCAuth && !SCAuth.requirePermission('manageSettings','설정 저장')) return;
-    const data=collectCurrentSettings(kind);
+    if(settingsLoadFailedByBranch[activeBranch]){
+      toast('서버 설정 로드 실패 상태라 저장을 막았어요. 새로고침 후 다시 시도해주세요.','err');
+      return;
+    }
+    const formData=collectCurrentSettings(kind);
     const user=window.SCAuth&&SCAuth.currentUser&&SCAuth.currentUser();
-    data.updatedAt=new Date().toISOString();
-    data.updatedBy=user&&user.email||'';
-    settingsByBranch[activeBranch]=data;
+    const updatedAt=new Date().toISOString();
+    const updatedBy=user&&user.email||'';
     try{
-      await branchRoot(activeBranch).child(SETTINGS_KEY).set(JSON.stringify(data));
+      const res=await branchRoot(activeBranch).child(SETTINGS_KEY).transaction(raw=>{
+        const base=defaultSettings(activeBranch);
+        const current=mergeSettings(base,parseStored(raw));
+        current.branchId=activeBranch;
+        current.branchName=BRANCHES[activeBranch].name;
+        current.pages=formData.pages;
+        if(!kind||kind==='recipients') current.recipients=formData.recipients;
+        if(!kind||kind==='templates') current.templates=formData.templates;
+        if(!kind||kind==='aligo') current.aligo=formData.aligo;
+        if(!kind||kind==='sms') current.sms=formData.sms;
+        current.updatedAt=updatedAt;
+        current.updatedBy=updatedBy;
+        delete current.aligo.templates;
+        delete current.sms.templates;
+        return JSON.stringify(current);
+      });
+      if(!res.committed) throw new Error('설정 저장이 취소되었습니다');
+      settingsByBranch[activeBranch]=mergeSettings(defaultSettings(activeBranch),parseStored(res.snapshot.val()));
+      renderAll();
       toast('설정 저장 완료','ok');
     }catch(e){
       console.error(e);

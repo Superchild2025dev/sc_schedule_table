@@ -38,10 +38,120 @@ function getSnapshotCapturedAt(){
 /* ──── 탭 목록 관리 ──── */
 let _tabList = loadJSON(STORAGE_KEYS.TAB_LIST, []);
 if(!_tabList.length) _tabList=[{id:'regular',name:'정규시간표',type:'regular'}];
-function saveTabList(){ saveJSON(STORAGE_KEYS.TAB_LIST, _tabList, true); }
 let _tabFolderList = loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
 if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
-function saveTabFolders(){ saveJSON(STORAGE_KEYS.TAB_FOLDERS, _tabFolderList, true); }
+function _tabClone(value){
+  return JSON.parse(JSON.stringify(value));
+}
+function _parseTabStored(raw,fallback){
+  if(raw===undefined||raw===null) return _tabClone(fallback);
+  try{
+    const parsed=typeof raw==='string'?JSON.parse(raw):raw;
+    return parsed===undefined||parsed===null?_tabClone(fallback):parsed;
+  }catch(e){
+    return _tabClone(fallback);
+  }
+}
+function _normalizeTabList(list){
+  list=Array.isArray(list)?list:[];
+  if(!list.length) list=[{id:'regular',name:'정규시간표',type:'regular'}];
+  if(!list.some(t=>t&&t.id==='regular')){
+    list.unshift({id:'regular',name:'정규시간표',type:'regular'});
+  }
+  return list.filter(tab=>tab&&tab.id);
+}
+function _normalizeTabFolders(list){
+  return [...new Set((Array.isArray(list)?list:[])
+    .map(f=>String(f||'').trim())
+    .filter(Boolean))];
+}
+function _cacheTabValue(key,val){
+  const json=JSON.stringify(val);
+  _dbCache[key]=json;
+  try{localStorage.setItem(_lsKey(key),json);}catch(e){}
+}
+function _tabStateFromRoot(root){
+  return {
+    tabs:_normalizeTabList(_parseTabStored(root?.[STORAGE_KEYS.TAB_LIST], _tabList)),
+    folders:_normalizeTabFolders(_parseTabStored(root?.[STORAGE_KEYS.TAB_FOLDERS], _tabFolderList)),
+    parent:_parseTabStored(root?.[STORAGE_KEYS.PARENT_TAB], loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{}),
+  };
+}
+function _applyTabState(state,keys){
+  const set=new Set(keys||[]);
+  if(set.has(STORAGE_KEYS.TAB_LIST)){
+    _tabList=_normalizeTabList(state.tabs);
+    _cacheTabValue(STORAGE_KEYS.TAB_LIST,_tabList);
+  }
+  if(set.has(STORAGE_KEYS.TAB_FOLDERS)){
+    _tabFolderList=_normalizeTabFolders(state.folders);
+    _cacheTabValue(STORAGE_KEYS.TAB_FOLDERS,_tabFolderList);
+  }
+  if(set.has(STORAGE_KEYS.PARENT_TAB)){
+    _cacheTabValue(STORAGE_KEYS.PARENT_TAB,state.parent||{});
+  }
+}
+function updateTabSettingsTx(keys,mutator,meta){
+  keys=[...new Set((keys||[]).filter(Boolean))];
+  if(!keys.length) return Promise.resolve(false);
+  if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(keys[0],meta?.label||'시간표 탭 설정')){
+    return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
+  }
+  const auditPoint=(typeof createAuditPoint==='function')
+    ? createAuditPoint(keys,{type:'edit',label:meta?.label||'시간표 탭 설정'})
+    : null;
+  const applyLocal=()=>{
+    const state={
+      tabs:_normalizeTabList(_tabClone(_tabList)),
+      folders:_normalizeTabFolders(_tabClone(_tabFolderList)),
+      parent:loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{},
+    };
+    const result=mutator(state);
+    if(result===undefined) return false;
+    _applyTabState(state,keys);
+    keys.forEach(key=>{
+      if(key===STORAGE_KEYS.TAB_LIST) saveJSON(key,_tabList,true);
+      else if(key===STORAGE_KEYS.TAB_FOLDERS) saveJSON(key,_tabFolderList,true);
+      else if(key===STORAGE_KEYS.PARENT_TAB) saveJSON(key,state.parent||{},true);
+    });
+    if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,keys,meta);
+    return true;
+  };
+  if(!_fbReady||!_fb){
+    return Promise.resolve(applyLocal());
+  }
+  const runTx=typeof _fb.transactionKeys==='function'
+    ? fn=>_fb.transactionKeys(keys,fn)
+    : fn=>_fb.transaction(fn);
+  return runTx(root=>{
+    root=root||{};
+    const state=_tabStateFromRoot(root);
+    const result=mutator(state);
+    if(result===undefined) return;
+    if(keys.includes(STORAGE_KEYS.TAB_LIST)) root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
+    if(keys.includes(STORAGE_KEYS.TAB_FOLDERS)) root[STORAGE_KEYS.TAB_FOLDERS]=JSON.stringify(_normalizeTabFolders(state.folders));
+    if(keys.includes(STORAGE_KEYS.PARENT_TAB)) root[STORAGE_KEYS.PARENT_TAB]=JSON.stringify(state.parent||{});
+    return root;
+  }).then(res=>{
+    if(!res.committed) throw new Error('탭 설정 저장이 취소되었습니다');
+    const state=_tabStateFromRoot(res.snapshot.val()||{});
+    _applyTabState(state,keys);
+    if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,keys,meta);
+    return true;
+  });
+}
+function saveTabList(){
+  return updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+    state.tabs=_normalizeTabList(_tabClone(_tabList));
+    return state;
+  },{label:'시간표 목록 저장'});
+}
+function saveTabFolders(){
+  return updateTabSettingsTx([STORAGE_KEYS.TAB_FOLDERS],state=>{
+    state.folders=_normalizeTabFolders(_tabClone(_tabFolderList));
+    return state;
+  },{label:'시간표 폴더 저장'});
+}
 function _tabEsc(s){
   return String(s??'').replace(/[&<>"']/g,ch=>({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -85,27 +195,33 @@ function _folderedTabGroups(){
   });
   return groups;
 }
-function renameTabFolder(oldName){
+async function renameTabFolder(oldName){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','폴더 이름 변경')) return;
   const name=prompt('폴더 이름:', oldName);
   if(name===null) return;
   const folder=name.trim();
   if(!folder) return;
-  _tabList.forEach(tab=>{ if(_tabFolderName(tab)===oldName) tab.folder=folder; });
-  _tabFolderList=(_tabFolderList||[]).map(f=>f===oldName?folder:f);
-  if(!_tabFolderList.includes(folder)) _tabFolderList.push(folder);
-  _tabFolderList=[...new Set(_tabFolderList.map(f=>String(f||'').trim()).filter(Boolean))];
-  if(_collapsedTabFolders[oldName]){
-    delete _collapsedTabFolders[oldName];
-    _collapsedTabFolders[folder]=true;
-    _saveCollapsedTabFolders();
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.TAB_FOLDERS],state=>{
+      state.tabs.forEach(tab=>{ if(_tabFolderName(tab)===oldName) tab.folder=folder; });
+      state.folders=state.folders.map(f=>f===oldName?folder:f);
+      if(!state.folders.includes(folder)) state.folders.push(folder);
+      state.folders=_normalizeTabFolders(state.folders);
+      return state;
+    },{label:'폴더 이름 변경',target:folder,detail:`${oldName} → ${folder}`});
+    if(_collapsedTabFolders[oldName]){
+      delete _collapsedTabFolders[oldName];
+      _collapsedTabFolders[folder]=true;
+      _saveCollapsedTabFolders();
+    }
+    renderTabBar();
+    toast('폴더 이름 변경: '+folder,'ok');
+  }catch(e){
+    console.error(e);
+    toast('폴더 이름 변경 실패','err');
   }
-  saveTabFolders();
-  saveTabList();
-  renderTabBar();
-  toast('폴더 이름 변경: '+folder,'ok');
 }
-function deleteTabFolder(folder){
+async function deleteTabFolder(folder){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','폴더 삭제')) return;
   folder=String(folder||'').trim();
   if(!folder) return;
@@ -115,12 +231,19 @@ function deleteTabFolder(folder){
     return;
   }
   if(!confirm('빈 폴더를 삭제하시겠습니까?')) return;
-  _tabFolderList=(_tabFolderList||[]).filter(f=>String(f||'').trim()!==folder);
-  delete _collapsedTabFolders[folder];
-  saveTabFolders();
-  _saveCollapsedTabFolders();
-  renderTabBar();
-  toast('폴더 삭제 완료','ok');
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_FOLDERS],state=>{
+      state.folders=state.folders.filter(f=>String(f||'').trim()!==folder);
+      return state;
+    },{label:'빈 폴더 삭제',target:folder});
+    delete _collapsedTabFolders[folder];
+    _saveCollapsedTabFolders();
+    renderTabBar();
+    toast('폴더 삭제 완료','ok');
+  }catch(e){
+    console.error(e);
+    toast('폴더 삭제 실패','err');
+  }
 }
 function _tabFolders(){
   return [...new Set([
@@ -133,7 +256,6 @@ function _ensureTabFolder(folder){
   if(!folder) return false;
   if(!_tabFolderList.includes(folder)){
     _tabFolderList.push(folder);
-    saveTabFolders();
     return true;
   }
   return false;
@@ -176,7 +298,7 @@ function _selectedNewTabFolder(){
   if(val==='__new__') return (folderNameEl?.value||'').trim();
   return val.trim();
 }
-function createTabFromModal(){
+async function createTabFromModal(){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 편집')) return;
   const modal=document.getElementById('tab-modal');
   const name=(document.getElementById('tab-new-name')?.value||'').trim();
@@ -187,29 +309,44 @@ function createTabFromModal(){
   }
   const folder=_selectedNewTabFolder();
   if(!name&&folderEl?.value==='__new__'&&folder){
-    _ensureTabFolder(folder);
-    _collapsedTabFolders[folder]=false;
-    _saveCollapsedTabFolders();
-    if(modal) modal.classList.remove('show');
-    renderTabBar();
-    toast('폴더 생성: '+folder,'ok');
+    try{
+      await updateTabSettingsTx([STORAGE_KEYS.TAB_FOLDERS],state=>{
+        if(!state.folders.includes(folder)) state.folders.push(folder);
+        state.folders=_normalizeTabFolders(state.folders);
+        return state;
+      },{label:'폴더 생성',target:folder});
+      _collapsedTabFolders[folder]=false;
+      _saveCollapsedTabFolders();
+      if(modal) modal.classList.remove('show');
+      renderTabBar();
+      toast('폴더 생성: '+folder,'ok');
+    }catch(e){
+      console.error(e);
+      toast('폴더 생성 실패','err');
+    }
     return;
   }
   if(!name){toast('시간표 이름을 입력하세요','err');return;}
   const type=_newTabType;
   const id=(type==='regular'?'reg':'bt')+'_'+Date.now();
   const newTab={id,name,type};
-  if(folder){
-    _ensureTabFolder(folder);
-    newTab.folder=folder;
+  if(folder) newTab.folder=folder;
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.TAB_FOLDERS],state=>{
+      state.tabs.push(newTab);
+      if(folder&&!state.folders.includes(folder)) state.folders.push(folder);
+      state.folders=_normalizeTabFolders(state.folders);
+      return state;
+    },{label:'시간표 생성',target:name,detail:folder?`폴더 ${folder}`:''});
+    if(folder) _collapsedTabFolders[folder]=false;
+    _saveCollapsedTabFolders();
+    _activeTab=id;
+    if(modal) modal.classList.remove('show');
+    switchTabView();
+  }catch(e){
+    console.error(e);
+    toast('시간표 생성 실패','err');
   }
-  _tabList.push(newTab);
-  saveTabList();
-  if(folder) _collapsedTabFolders[folder]=false;
-  _saveCollapsedTabFolders();
-  _activeTab=id;
-  if(modal) modal.classList.remove('show');
-  switchTabView();
 }
 
 let _tabActionMenu=null;
@@ -306,35 +443,58 @@ function _openFolderActionMenu(folder, anchor){
   }
   _openTabActionMenu(anchor, html);
 }
-function renameTab(tabId){
+async function renameTab(tabId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 이름 변경')) return;
   const tab=_tabList.find(t=>t.id===tabId);
   if(!tab) return;
   const name=prompt('탭 이름:', tab.name);
   if(name&&name.trim()){
-    tab.name=name.trim();
-    saveTabList();
-    renderTabBar();
-    toast('탭 이름 변경: '+tab.name,'ok');
+    const nextName=name.trim();
+    try{
+      await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+        const target=state.tabs.find(t=>t.id===tabId);
+        if(!target) throw new Error('시간표를 찾을 수 없습니다');
+        target.name=nextName;
+        return state;
+      },{label:'시간표 이름 변경',target:nextName});
+      renderTabBar();
+      toast('탭 이름 변경: '+nextName,'ok');
+    }catch(e){
+      console.error(e);
+      toast(e.message||'탭 이름 변경 실패','err');
+    }
   }
 }
-function setTabFolder(tabId, folder){
+async function setTabFolder(tabId, folder){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 폴더 이동')) return;
   const tab=_tabList.find(t=>t.id===tabId);
   if(!tab) return;
   folder=String(folder||'').trim();
-  if(folder){
-    _ensureTabFolder(folder);
-    tab.folder=folder;
-    _collapsedTabFolders[folder]=false;
-    toast('폴더 이동: '+folder,'ok');
-  }else{
-    delete tab.folder;
-    toast('폴더에서 꺼냈어요','ok');
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.TAB_FOLDERS],state=>{
+      const target=state.tabs.find(t=>t.id===tabId);
+      if(!target) throw new Error('시간표를 찾을 수 없습니다');
+      if(folder){
+        target.folder=folder;
+        if(!state.folders.includes(folder)) state.folders.push(folder);
+      }else{
+        delete target.folder;
+      }
+      state.folders=_normalizeTabFolders(state.folders);
+      return state;
+    },{label:'시간표 폴더 이동',target:tab.name||tabId,detail:folder?`폴더 ${folder}`:'폴더 없음'});
+    if(folder){
+      _collapsedTabFolders[folder]=false;
+      toast('폴더 이동: '+folder,'ok');
+    }else{
+      toast('폴더에서 꺼냈어요','ok');
+    }
+    _saveCollapsedTabFolders();
+    renderTabBar();
+  }catch(e){
+    console.error(e);
+    toast(e.message||'폴더 이동 실패','err');
   }
-  saveTabList();
-  _saveCollapsedTabFolders();
-  renderTabBar();
 }
 function promptNewTabFolder(tabId){
   const name=prompt('새 폴더 이름:');
@@ -343,46 +503,79 @@ function promptNewTabFolder(tabId){
   if(!folder) return;
   setTabFolder(tabId, folder);
 }
-function moveTabOrder(tabId, delta){
+async function moveTabOrder(tabId, delta){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 순서 변경')) return;
   const i=_tabList.findIndex(t=>t.id===tabId);
   const ni=i+delta;
   if(i<0||ni<0||ni>=_tabList.length) return;
-  [_tabList[i],_tabList[ni]]=[_tabList[ni],_tabList[i]];
-  saveTabList();
-  renderTabBar();
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+      const idx=state.tabs.findIndex(t=>t.id===tabId);
+      const nextIdx=idx+delta;
+      if(idx<0||nextIdx<0||nextIdx>=state.tabs.length) return;
+      [state.tabs[idx],state.tabs[nextIdx]]=[state.tabs[nextIdx],state.tabs[idx]];
+      return state;
+    },{label:'시간표 순서 변경',target:_tabList[i]?.name||tabId});
+    renderTabBar();
+  }catch(e){
+    console.error(e);
+    toast('순서 변경 실패','err');
+  }
 }
-function setParentPublicTab(tabId){
+async function setParentPublicTab(tabId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','학부모 공개 시간표 지정')) return;
   const tab=_tabList.find(t=>t.id===tabId);
   if(!tab||tab.type==='snapshot'){
     toast('스냅샷은 학부모 공개 시간표로 지정할 수 없습니다','err');
     return;
   }
-  const setting={..._tabStorageKeys(tab), setAt:new Date().toISOString()};
-  saveJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', setting, true);
-  renderTabBar();
-  toast('학부모 공개 시간표: '+(tab.name||tab.id),'ok');
+  try{
+    let label=tab.name||tab.id;
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.PARENT_TAB],state=>{
+      const fresh=state.tabs.find(t=>t.id===tabId);
+      if(!fresh||fresh.type==='snapshot') throw new Error('학부모 공개로 지정할 수 없습니다');
+      label=fresh.name||fresh.id;
+      state.parent={..._tabStorageKeys(fresh), setAt:new Date().toISOString()};
+      return state;
+    },{label:'학부모 공개 시간표 지정',target:label});
+    renderTabBar();
+    toast('학부모 공개 시간표: '+label,'ok');
+  }catch(e){
+    console.error(e);
+    toast(e.message||'학부모 공개 지정 실패','err');
+  }
 }
-function deleteTab(tabId){
+async function deleteTab(tabId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 삭제')) return;
   if(!confirm('이 탭을 삭제하시겠습니까?')) return;
   const id=tabId;
   const tab=_tabList.find(t=>t.id===id);
-  if(tab&&tab.type==='snapshot'){
-    dbRemove(SNAP_KEY_PREFIX+id);
-    if(_activeTab===id) _origGlobalMaps=null;
-  } else if(tab&&tab.type==='bangteuk'){
-    dbRemove('swim_bt_'+id+'_stu');
-    dbRemove('swim_bt_'+id+'_inst');
-  } else if(tab){
-    dbRemove('swim_stu_'+id);
-    dbRemove('swim_inst_'+id);
+  if(!tab) return;
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.PARENT_TAB],state=>{
+      const target=state.tabs.find(t=>t.id===id);
+      if(!target) throw new Error('시간표를 찾을 수 없습니다');
+      if(target.id==='regular') throw new Error('정규시간표는 삭제할 수 없습니다');
+      state.tabs=state.tabs.filter(t=>t.id!==id);
+      if(state.parent?.tabId===id) state.parent={};
+      return state;
+    },{label:'시간표 삭제',target:tab.name||tab.id});
+    if(tab.type==='snapshot'){
+      dbRemove(SNAP_KEY_PREFIX+id);
+      if(_activeTab===id) _origGlobalMaps=null;
+    } else if(tab.type==='bangteuk'){
+      dbRemove('swim_bt_'+id+'_stu');
+      dbRemove('swim_bt_'+id+'_inst');
+    } else {
+      dbRemove('swim_stu_'+id);
+      dbRemove('swim_inst_'+id);
+    }
+    if(_activeTab===id){_activeTab='regular';}
+    switchTabView();
+  }catch(e){
+    console.error(e);
+    toast(e.message||'시간표 삭제 실패','err');
   }
-  _tabList=_tabList.filter(t=>t.id!==id);
-  saveTabList();
-  if(_activeTab===id){_activeTab='regular';}
-  switchTabView();
 }
 function _handleTabMenuAction(action,id,targetFolder=''){
   _closeTabActionMenu();
@@ -414,7 +607,7 @@ function _handleFolderMenuAction(action,folder){
 let _origGlobalMaps=null; // 스냅샷 진입 시 백업, 떠날 때 복원
 const SNAP_KEY_PREFIX='swim_snap_';
 
-function createSnapshot(srcId){
+async function createSnapshot(srcId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','스냅샷 만들기')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
   if(!srcTab) return;
@@ -444,19 +637,26 @@ function createSnapshot(srcId){
   };
   // 직접 dbSet (saveJSON 가드 통과 위해)
   dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
-  // 탭 목록에 추가 (원본 바로 뒤)
-  const srcIdx=_tabList.findIndex(t=>t.id===srcId);
   const newTab={id:newId,name,type:'snapshot',capturedAt:today};
   if(srcTab.folder) newTab.folder=srcTab.folder;
-  _tabList.splice(srcIdx+1,0,newTab);
-  // tab-list만 별도로 저장 (saveTabList는 skipUndo로 직접 저장)
-  saveTabList();
-  _activeTab=newId;
-  switchTabView();
-  toast('📷 스냅샷 생성: '+name,'ok');
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+      const srcIdx=state.tabs.findIndex(t=>t.id===srcId);
+      if(srcIdx<0) throw new Error('원본 시간표를 찾을 수 없습니다');
+      state.tabs.splice(srcIdx+1,0,newTab);
+      return state;
+    },{label:'스냅샷 생성',target:name});
+    _activeTab=newId;
+    switchTabView();
+    toast('📷 스냅샷 생성: '+name,'ok');
+  }catch(e){
+    console.error(e);
+    dbRemove(SNAP_KEY_PREFIX+newId);
+    toast(e.message||'스냅샷 생성 실패','err');
+  }
 }
 
-function copyTab(srcId){
+async function copyTab(srcId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 복사')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
   if(!srcTab) return;
@@ -491,14 +691,24 @@ function copyTab(srcId){
   saveJSON(newInstKey, JSON.parse(JSON.stringify(instData)), true);
 
   // 탭 목록에 추가 (원본 바로 뒤에 삽입)
-  const srcIdx=_tabList.findIndex(t=>t.id===srcId);
   const newTab={id:newId, name, type:srcTab.type};
   if(srcTab.folder) newTab.folder=srcTab.folder;
-  _tabList.splice(srcIdx+1, 0, newTab);
-  saveTabList();
-  _activeTab=newId;
-  switchTabView();
-  toast(srcTab.name+' 복사 완료','ok');
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+      const srcIdx=state.tabs.findIndex(t=>t.id===srcId);
+      if(srcIdx<0) throw new Error('원본 시간표를 찾을 수 없습니다');
+      state.tabs.splice(srcIdx+1, 0, newTab);
+      return state;
+    },{label:'시간표 복사',target:name,detail:`원본 ${srcTab.name||srcId}`});
+    _activeTab=newId;
+    switchTabView();
+    toast(srcTab.name+' 복사 완료','ok');
+  }catch(e){
+    console.error(e);
+    dbRemove(newStuKey);
+    dbRemove(newInstKey);
+    toast(e.message||'시간표 복사 실패','err');
+  }
 }
 
 function renderTabBar(){

@@ -276,6 +276,184 @@ function updateRequestsTx(mutator){
     return REQUESTS;
   });
 }
+function _teacherTxApplyKey(key,raw){
+  if(key==='swim_requests') REQUESTS=parseJSON(raw,{});
+  else if(key==='swim_mark') MARK_MAP=parseJSON(raw,{});
+  else if(key==='swim_attendance') ATTENDANCE=parseJSON(raw,{});
+  else if(key==='swim_att_guests') ATT_GUESTS=parseJSON(raw,{});
+  else if(key==='swim_day_snapshot') DAY_SNAPSHOT=parseJSON(raw,{});
+  else if(key===_teacherStuKey) STUDENTS=parseJSON(raw,[]);
+  else if(key===_teacherInstKey) INST_MAP=parseJSON(raw,{});
+}
+function updateTeacherKeysTx(keys,mutator){
+  if(!_fbReady) return Promise.reject('not ready');
+  const txKeys=[...new Set((keys||[]).filter(Boolean))];
+  if(!txKeys.length) return Promise.reject(new Error('transaction keys are required'));
+  const txKeySet=new Set(txKeys);
+  let abortReason='';
+  const makeCtx=root=>({
+    get(key,fallback){
+      if(!txKeySet.has(key)) throw new Error('트랜잭션 키 누락: '+key);
+      return parseJSON(root[key],fallback);
+    },
+    set(key,val){
+      if(!txKeySet.has(key)) throw new Error('트랜잭션 키 누락: '+key);
+      root[key]=JSON.stringify(val);
+    },
+    abort(reason){ abortReason=reason||''; },
+  });
+  const runTx=typeof _fb.transactionKeys==='function'
+    ? updateFn=>_fb.transactionKeys(txKeys, updateFn)
+    : updateFn=>_fb.transaction(updateFn);
+  return runTx(root=>{
+    root=root||{};
+    const result=mutator(makeCtx(root));
+    if(result===undefined) return;
+    return root;
+  }).then(res=>{
+    if(!res.committed) throw new Error(abortReason||'transaction aborted');
+    const root=res.snapshot.val()||{};
+    txKeys.forEach(key=>{
+      if(Object.prototype.hasOwnProperty.call(root,key)) _teacherTxApplyKey(key,root[key]);
+    });
+    return root;
+  });
+}
+function _teacherAuditId(){
+  return 'log_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+}
+function _teacherAuditUser(){
+  const profile=staffProfile();
+  if(profile?.name) return profile.name;
+  const teacher=staffTeacherName()||_currentTeacher;
+  if(teacher) return teacher;
+  try{
+    const email=firebase?.auth?.().currentUser?.email;
+    if(email) return email;
+  }catch(e){}
+  return '선생님 페이지';
+}
+function _teacherAuditBranchTab(){
+  const branch=getBranchInfo();
+  return branch?.name||'';
+}
+function _teacherAuditStudent(req){
+  const p=req?.parent||{};
+  return `${p.name||'이름없음'}${p.age?`(${p.age})`:''}`;
+}
+function _teacherAuditSlotText(target){
+  const t=target||{};
+  const date=t.ds?fmtDate(t.ds):'';
+  const time=notifyDisplayTime(t.d,t.t)||t.t||'';
+  const lane=t.l?`${t.l}레인`:'';
+  const row=t.r?`${t.r}번`:'';
+  const teacher=t.instName?`${t.instName} 선생님`:'';
+  return [date, t.d?`${t.d}요일`:'', time, lane, row, teacher].filter(Boolean).join(' ');
+}
+function _teacherAuditSourceText(req){
+  const p=req?.parent||{};
+  const [t,d,l,r]=(p.studentSlotKey||'').split('/');
+  const date=p.absentDs?fmtDate(p.absentDs):'';
+  const time=notifyDisplayTime(d,t)||t||'';
+  const teacher=p.sourceInstName?`${p.sourceInstName} 선생님`:'';
+  return [date, d?`${d}요일`:'', time, l?`${l}레인`:'', r?`${r}번`:'', teacher].filter(Boolean).join(' ');
+}
+function _teacherAuditRequestLabel(req,status){
+  const action=status==='accepted'?'수락':status==='rejected'?'거절':'처리';
+  if(req?.type==='bogang') return `선생님 보강 ${action}`;
+  if(req?.type==='absent-cancel') return `선생님 결석취소 ${action}`;
+  if(req?.type==='bogang-cancel') return `선생님 보강취소 ${action}`;
+  return `선생님 요청 ${action}`;
+}
+function recordTeacherAudit(entry){
+  if(!_fbReady||!_fb) return Promise.resolve();
+  const item=Object.assign({
+    id:_teacherAuditId(),
+    at:new Date().toISOString(),
+    type:'edit',
+    label:'선생님 처리',
+    target:'',
+    detail:'',
+    keys:[],
+    tabId:'',
+    tabName:_teacherAuditBranchTab(),
+    user:_teacherAuditUser(),
+    source:'teacher',
+  }, entry||{});
+  return _fb.child('swim_audit_log').transaction(raw=>{
+    const parsed=parseJSON(raw,[]);
+    const list=Array.isArray(parsed)?parsed:[];
+    list.push(item);
+    while(list.length>200) list.shift();
+    return JSON.stringify(list);
+  }).catch(e=>{
+    console.warn('teacher audit save failed',e);
+  });
+}
+function recordTeacherRequestAudit(req,status,extra){
+  if(!req) return Promise.resolve();
+  const detailParts=[];
+  const source=_teacherAuditSourceText(req);
+  const target=_teacherAuditSlotText(req.target);
+  if(source) detailParts.push(`원 수업 ${source}`);
+  if(target) detailParts.push(`대상 ${target}`);
+  if(extra) detailParts.push(extra);
+  return recordTeacherAudit({
+    label:_teacherAuditRequestLabel(req,status),
+    target:_teacherAuditStudent(req),
+    detail:detailParts.join(' · '),
+    keys:req.type==='bogang' || req.type==='absent-cancel' || req.type==='bogang-cancel'
+      ? ['swim_requests','swim_mark']
+      : ['swim_requests'],
+  });
+}
+function _applyRequestStatus(reqs,reqId,status,processedAt,processedBy,abort){
+  if(!reqs[reqId]){abort('요청을 찾을 수 없습니다');return false;}
+  const curStatus=reqs[reqId].status;
+  if(status==='accepted'){
+    if(curStatus && curStatus!=='pending' && curStatus!=='processing'){
+      abort('이미 처리된 요청입니다');
+      return false;
+    }
+  } else if(status==='rejected'){
+    if(curStatus && curStatus!=='pending' && curStatus!=='processing'){
+      abort('이미 처리 중이거나 완료된 요청입니다');
+      return false;
+    }
+  }
+  reqs[reqId].status=status;
+  reqs[reqId].processedAt=processedAt;
+  reqs[reqId].processedBy=processedBy;
+  delete reqs[reqId].processingAt;
+  delete reqs[reqId].processingBy;
+  if(status==='accepted' && reqs[reqId].type==='bogang'){
+    const groupKey=bogangGroupKey(reqId,reqs[reqId]);
+    for(const [id,other] of Object.entries(reqs)){
+      if(id===reqId || other?.type!=='bogang' || bogangGroupKey(id,other)!==groupKey) continue;
+      if(!other.status || other.status==='pending' || other.status==='processing'){
+        other.status='superseded';
+        other.processedAt=processedAt;
+        other.processedBy=processedBy;
+        other.supersededBy=reqId;
+        delete other.processingAt;
+        delete other.processingBy;
+      }
+    }
+  }
+  if(status==='accepted' && reqs[reqId].type==='bogang-cancel'){
+    const sourceId=reqs[reqId].sourceBogangReqId;
+    const source=sourceId ? reqs[sourceId] : null;
+    if(source && source.type==='bogang' && source.status==='accepted'){
+      source.status='cancelled';
+      source.cancelledAt=processedAt;
+      source.cancelledBy='parent-approved';
+      source.cancelledRequestId=reqId;
+      source.processedAt=processedAt;
+      source.processedBy=processedBy;
+    }
+  }
+  return true;
+}
 function claimRequest(reqId){
   const processingAt=new Date().toISOString();
   const processingBy=_currentTeacher||'관리자';
@@ -320,50 +498,7 @@ function setRequestStatus(reqId,status){
   const processedAt=new Date().toISOString();
   const processedBy=_currentTeacher||'관리자';
   return updateRequestsTx((reqs,abort)=>{
-    if(!reqs[reqId]){abort('요청을 찾을 수 없습니다');return;}
-    const curStatus=reqs[reqId].status;
-    if(status==='accepted'){
-      if(curStatus && curStatus!=='pending' && curStatus!=='processing'){
-        abort('이미 처리된 요청입니다');
-        return;
-      }
-    } else if(status==='rejected'){
-      if(curStatus && curStatus!=='pending'){
-        abort('이미 처리 중이거나 완료된 요청입니다');
-        return;
-      }
-    }
-    reqs[reqId].status=status;
-    reqs[reqId].processedAt=processedAt;
-    reqs[reqId].processedBy=processedBy;
-    delete reqs[reqId].processingAt;
-    delete reqs[reqId].processingBy;
-    if(status==='accepted' && reqs[reqId].type==='bogang'){
-      const groupKey=bogangGroupKey(reqId,reqs[reqId]);
-      for(const [id,other] of Object.entries(reqs)){
-        if(id===reqId || other?.type!=='bogang' || bogangGroupKey(id,other)!==groupKey) continue;
-        if(!other.status || other.status==='pending' || other.status==='processing'){
-          other.status='superseded';
-          other.processedAt=processedAt;
-          other.processedBy=processedBy;
-          other.supersededBy=reqId;
-          delete other.processingAt;
-          delete other.processingBy;
-        }
-      }
-    }
-    if(status==='accepted' && reqs[reqId].type==='bogang-cancel'){
-      const sourceId=reqs[reqId].sourceBogangReqId;
-      const source=sourceId ? reqs[sourceId] : null;
-      if(source && source.type==='bogang' && source.status==='accepted'){
-        source.status='cancelled';
-        source.cancelledAt=processedAt;
-        source.cancelledBy='parent-approved';
-        source.cancelledRequestId=reqId;
-        source.processedAt=processedAt;
-        source.processedBy=processedBy;
-      }
-    }
+    if(!_applyRequestStatus(reqs,reqId,status,processedAt,processedBy,abort)) return;
     return reqs;
   });
 }
@@ -400,7 +535,7 @@ function populateTeachers(){
 function _countPendingByTeacher(){
   const counts = {};
   Object.values(REQUESTS||{}).forEach(r => {
-    if(r.status && r.status !== 'pending') return;
+    if(r.status && r.status !== 'pending' && r.status !== 'processing') return;
     const name = reqAssignedTeacherName(r);
     if(name) counts[name] = (counts[name]||0) + 1;
   });
@@ -448,7 +583,7 @@ function getMyRequests(type){
   const results=[];
   for(const [reqId,req] of Object.entries(REQUESTS)){
     if(req.type!==type) continue;
-    if(req.status==='pending' || !req.status){
+    if(req.status==='pending' || req.status==='processing' || !req.status){
       // 선생님 필터
       if(_currentTeacher){
         // bogang/absent-cancel 모두 원생의 원래 담당 선생님 기준
@@ -967,79 +1102,98 @@ async function notifyRequestProcessed(req,status){
 }
 
 /* ── 수락/거절 액션 ── */
-async function acceptRequest(reqId){
-  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
-  const req=REQUESTS[reqId];
-  if(!req) return;
-  let claimed=false;
-  let markApplied=false;
-  try{
-    await claimRequest(reqId);
-    claimed=true;
+function _targetInstFromMap(req,instMap){
+  const t=req?.target||{};
+  return instMap?.[req?.instKey] || instMap?.[t.t+'/'+t.d+'/'+t.l] || reqTargetInst(req);
+}
+async function acceptRequestAtomic(reqId){
+  if(!_canWriteTeacherKey('swim_requests','요청 처리')) throw new Error('저장 권한이 없습니다');
+  if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) throw new Error('저장 권한이 없습니다');
+  const localReq=REQUESTS[reqId];
+  const keys=['swim_requests','swim_mark'];
+  if(localReq?.type==='bogang'){
+    keys.push(_teacherStuKey,_teacherInstKey);
+  }
+  let acceptedReq=null;
+  const processedAt=new Date().toISOString();
+  const processedBy=_currentTeacher||'관리자';
+  await updateTeacherKeysTx(keys,(ctx)=>{
+    const reqs=ctx.get('swim_requests',{});
+    const marks=ctx.get('swim_mark',{});
+    const req=reqs[reqId];
+    if(!req){ctx.abort('요청을 찾을 수 없습니다');return;}
     if(req.type==='bogang'){
-      const t=req.target;
-      if(isNoMakeupInst(reqTargetInst(req))) throw new Error('엘리트반/마스터반은 보강 수락이 불가합니다');
-      const occupied=STUDENTS.some(s=>
+      const groupKey=bogangGroupKey(reqId,req);
+      const busy=Object.entries(reqs).some(([id,other])=>
+        id!==reqId
+        && other?.type==='bogang'
+        && bogangGroupKey(id,other)===groupKey
+        && (other.status==='accepted'||other.status==='processing')
+      );
+      if(busy){ctx.abort('이미 같은 보강 후보 중 하나가 처리 중이거나 확정되었습니다');return;}
+
+      const instMap=ctx.get(_teacherInstKey,{});
+      if(isNoMakeupInst(_targetInstFromMap(req,instMap))){ctx.abort('엘리트반/마스터반은 보강 수락이 불가합니다');return;}
+      const students=ctx.get(_teacherStuKey,[]);
+      const t=req.target||{};
+      const occupied=students.some(s=>
         s.t===t.t && s.d===t.d
         && parseInt(s.l)===parseInt(t.l)
         && parseInt(s.r)===parseInt(t.r)
       );
-      if(occupied) throw new Error('현재 시간표에서 이미 찬 자리입니다');
+      if(occupied){ctx.abort('현재 시간표에서 이미 찬 자리입니다');return;}
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
-      const bogangObj={type:'bogang', n:req.parent.name, a:req.parent.age||null};
-      if(req.parent.phone) bogangObj.p=req.parent.phone;
-
-      await updateMarkTx((marks, abort)=>{
-        const existing=marks[markKey];
-        if(existing?.type==='absent'&&existing.sub){abort('이미 다른 마크가 있습니다');return;}
-        if(existing&&existing.type!=='absent'){abort('이미 다른 마크가 있습니다');return;}
-        // 결석이 있으면 sub로 붙임
-        if(existing?.type==='absent'){
-          marks[markKey]={type:'absent', sub:bogangObj};
-        } else {
-          marks[markKey]=bogangObj;
-        }
-        return marks;
-      });
-      markApplied=true;
-      // 학부모 쪽 원래 슬롯은 자동 결석 처리 안 함 (학부모가 직접 결석 신청해야 함)
+      const bogangObj={type:'bogang', n:req.parent?.name, a:req.parent?.age||null};
+      if(req.parent?.phone) bogangObj.p=req.parent.phone;
+      const existing=marks[markKey];
+      if(existing?.type==='absent'&&existing.sub){ctx.abort('이미 다른 마크가 있습니다');return;}
+      if(existing&&existing.type!=='absent'){ctx.abort('이미 다른 마크가 있습니다');return;}
+      if(existing?.type==='absent') marks[markKey]={type:'absent', sub:bogangObj};
+      else marks[markKey]=bogangObj;
+      ctx.set('swim_mark',marks);
     } else if(req.type==='absent-cancel'){
-      const t=req.target;
+      const t=req.target||{};
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
-      await updateMarkTx(marks=>{
-        const cur=marks[markKey];
-        if(cur?.type==='absent'){
-          if(cur.sub) marks[markKey]=cur.sub;
-          else delete marks[markKey];
-        }
-        return marks;
-      });
-      markApplied=true;
+      const cur=marks[markKey];
+      if(cur?.type==='absent'){
+        if(cur.sub) marks[markKey]=cur.sub;
+        else delete marks[markKey];
+      }
+      ctx.set('swim_mark',marks);
     } else if(req.type==='bogang-cancel'){
-      const t=req.target;
+      const t=req.target||{};
       const markKey=`${t.t}/${t.d}/${t.l}/${t.r}/${t.ds}`;
-      await updateMarkTx((marks,abort)=>{
-        const cur=marks[markKey];
-        const parentName=req.parent?.name||'';
-        if(cur?.type==='absent' && cur.sub?.type==='bogang' && (!parentName || cur.sub.n===parentName)){
-          delete cur.sub;
-          marks[markKey]=cur;
-          return marks;
-        }
-        if(cur?.type==='bogang' && (!parentName || cur.n===parentName)){
-          delete marks[markKey];
-          return marks;
-        }
-        abort('보강 마크를 찾을 수 없습니다');
-      });
-      markApplied=true;
+      const cur=marks[markKey];
+      const parentName=req.parent?.name||'';
+      if(cur?.type==='absent' && cur.sub?.type==='bogang' && (!parentName || cur.sub.n===parentName)){
+        delete cur.sub;
+        marks[markKey]=cur;
+      } else if(cur?.type==='bogang' && (!parentName || cur.n===parentName)){
+        delete marks[markKey];
+      } else {
+        ctx.abort('보강 마크를 찾을 수 없습니다');
+        return;
+      }
+      ctx.set('swim_mark',marks);
     }
-    await setRequestStatus(reqId,'accepted');
-    notifyRequestProcessed(req,'accepted').catch(e=>console.warn('notify failed',e));
+    if(!_applyRequestStatus(reqs,reqId,'accepted',processedAt,processedBy,reason=>ctx.abort(reason))) return;
+    acceptedReq=JSON.parse(JSON.stringify(reqs[reqId]));
+    ctx.set('swim_requests',reqs);
+    return true;
+  });
+  return acceptedReq;
+}
+async function acceptRequest(reqId){
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
+  const req=REQUESTS[reqId];
+  if(!req) return;
+  try{
+    const acceptedReq=await acceptRequestAtomic(reqId);
+    recordTeacherRequestAudit(acceptedReq||req,'accepted').catch(e=>console.warn('audit failed',e));
+    notifyRequestProcessed(acceptedReq||req,'accepted').catch(e=>console.warn('notify failed',e));
     toast('수락 완료','ok');
     render();
   }catch(e){
-    if(claimed && !markApplied) await releaseRequest(reqId).catch(()=>{});
     toast(e?.message==='이미 다른 마크가 있습니다' || e?.message==='현재 시간표에서 이미 찬 자리입니다' ? e.message : (e?.message||'처리 실패'),'err');
     console.error(e);
   }
@@ -1052,6 +1206,7 @@ async function rejectRequest(reqId){
   if(!confirm('이 요청을 거절하시겠습니까?')) return;
   try{
     await setRequestStatus(reqId,'rejected');
+    recordTeacherRequestAudit(REQUESTS[reqId]||req,'rejected').catch(e=>console.warn('audit failed',e));
     notifyRequestProcessed(req,'rejected').catch(e=>console.warn('notify failed',e));
     toast('거절 완료','ok');
     render();
@@ -1068,7 +1223,7 @@ async function rejectBogangGroup(groupKey){
     .filter(([id,req])=>
       req?.type==='bogang'
       && bogangGroupKey(id,req)===groupKey
-      && (!req.status || req.status==='pending')
+      && (!req.status || req.status==='pending' || req.status==='processing')
       && (!_currentTeacher || reqAssignedTeacherName(req)===_currentTeacher)
     )
     .map(([id])=>id);
@@ -1091,7 +1246,7 @@ async function rejectBogangGroup(groupKey){
         for(const id of ids){
           const req=reqs[id];
           if(!req) continue;
-          if(req.status && req.status!=='pending'){
+          if(req.status && req.status!=='pending' && req.status!=='processing'){
             abort('이미 처리 중이거나 완료된 후보가 있습니다');
             return;
           }
@@ -1105,6 +1260,17 @@ async function rejectBogangGroup(groupKey){
         if(!changed){abort('처리할 후보가 없습니다');return;}
         return reqs;
       });
+    }
+    if(ids.length===1){
+      recordTeacherRequestAudit(REQUESTS[ids[0]]||notifyReq,'rejected').catch(e=>console.warn('audit failed',e));
+    }else{
+      const p=notifyReq?.parent||{};
+      recordTeacherAudit({
+        label:'선생님 보강 후보 일괄 거절',
+        target:`${p.name||'이름없음'}${p.age?`(${p.age})`:''}`,
+        detail:`후보 ${ids.length}개 거절${p.absentDs?` · 원 결석일 ${fmtDate(p.absentDs)}`:''}`,
+        keys:['swim_requests'],
+      }).catch(e=>console.warn('audit failed',e));
     }
     notifyRequestProcessed(notifyReq,'rejected').catch(e=>console.warn('notify failed',e));
     toast('거절 완료','ok');
@@ -1149,6 +1315,27 @@ function getDataForDate(ds){
     return {students:snap.students||[], inst:snap.inst||{}};
   }
   return {students:STUDENTS, inst:INST_MAP};
+}
+function attendanceStudentText(slotKey, ds){
+  const [t,d,l,r]=String(slotKey||'').split('/');
+  const {students}=getDataForDate(ds);
+  const stu=students.find(s=>s.t===t&&s.d===d&&parseInt(s.l)===parseInt(l)&&parseInt(s.r)===parseInt(r));
+  if(stu) return `${stu.n||'이름없음'}${stu.a?`(${stu.a})`:''}`;
+  const mark=MARK_MAP[slotKey+'/'+ds];
+  const alt=mark?.type==='absent'?mark.sub:mark;
+  if(alt?.n) return `${alt.n}${alt.a?`(${alt.a})`:''}`;
+  return slotKey||'-';
+}
+function attendanceSlotDetail(slotKey, ds){
+  const [t,d,l,r]=String(slotKey||'').split('/');
+  return [fmtDate(ds), d?`${d}요일`:'', t, l?`${l}레인`:'', r?`${r}번`:'' ].filter(Boolean).join(' ');
+}
+function attendanceGuestSlotDetail(sgk, ds){
+  const [t,d,l]=String(sgk||'').split('/');
+  return [fmtDate(ds), d?`${d}요일`:'', t, l?`${l}레인`:'', '추가학생'].filter(Boolean).join(' ');
+}
+function attendanceStateLabel(state){
+  return state==='present'?'출석':state==='absent'?'결석':'체크 해제';
 }
 
 // 오늘 스냅샷 저장 (디바운스)
@@ -1365,6 +1552,7 @@ function renderAttendanceTimetable(){
 async function cycleAttendance(slotKey, ds){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   const key=slotKey+'/'+ds;
+  let auditState='';
   try{
     await updateAttendanceMapTx(att=>{
       const cur=att[key];
@@ -1373,10 +1561,17 @@ async function cycleAttendance(slotKey, ds){
       if(!curVal) next='present';
       else if(curVal==='present') next='absent';
       else next=null;
+      auditState=next||'clear';
       if(next===null) delete att[key];
       else att[key]={s:next, at:new Date().toISOString(), by:_currentTeacher||null};
       return att;
     });
+    recordTeacherAudit({
+      label:'선생님 출석 체크',
+      target:attendanceStudentText(slotKey,ds),
+      detail:`${attendanceSlotDetail(slotKey,ds)} · ${attendanceStateLabel(auditState)}`,
+      keys:['swim_attendance'],
+    }).catch(e=>console.warn('audit failed',e));
     renderAttendanceTimetable();
   }
   catch(e){toast('저장 실패','err');}
@@ -1385,6 +1580,8 @@ async function cycleAttendance(slotKey, ds){
 async function cycleGuestAttendance(sgk, ds, gid){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   const key=sgk+'/'+ds;
+  let auditState='';
+  let auditName='';
   try{
     await updateAttGuestsMapTx(guests=>{
       const list=[...(guests[key]||[])];
@@ -1395,10 +1592,20 @@ async function cycleGuestAttendance(sgk, ds, gid){
       if(!cur) next='present';
       else if(cur==='present') next='absent';
       else next=null;
+      auditState=next||'clear';
+      auditName=`${list[idx].n||'추가학생'}${list[idx].a?`(${list[idx].a})`:''}`;
       list[idx]={...list[idx], s:next, at:new Date().toISOString(), by:_currentTeacher||null};
       guests[key]=list;
       return guests;
     });
+    if(auditName){
+      recordTeacherAudit({
+        label:'선생님 추가학생 출석 체크',
+        target:auditName,
+        detail:`${attendanceGuestSlotDetail(sgk,ds)} · ${attendanceStateLabel(auditState)}`,
+        keys:['swim_att_guests'],
+      }).catch(e=>console.warn('audit failed',e));
+    }
     renderAttendanceTimetable();
   }
   catch(e){toast('저장 실패','err');}
@@ -1412,6 +1619,7 @@ async function addGuest(sgk, ds){
   const age=parseInt(ageStr)||null;
   const key=sgk+'/'+ds;
   const gid='g_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+  const auditName=`${name.trim()}${age?`(${age})`:''}`;
   try{
     await updateAttGuestsMapTx(guests=>{
       const list=[...(guests[key]||[])];
@@ -1422,6 +1630,12 @@ async function addGuest(sgk, ds){
       guests[key]=list;
       return guests;
     });
+    recordTeacherAudit({
+      label:'선생님 출석부 추가학생 등록',
+      target:auditName,
+      detail:attendanceGuestSlotDetail(sgk,ds),
+      keys:['swim_att_guests'],
+    }).catch(e=>console.warn('audit failed',e));
     toast(name+' 추가','ok'); renderAttendanceTimetable();
   }
   catch(e){toast('저장 실패','err');}
@@ -1431,13 +1645,24 @@ async function deleteGuest(sgk, ds, gid){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 삭제')) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const key=sgk+'/'+ds;
+  let auditName='';
   try{
     await updateAttGuestsMapTx(guests=>{
+      const prev=(guests[key]||[]).find(g=>g.gid===gid);
+      if(prev) auditName=`${prev.n||'추가학생'}${prev.a?`(${prev.a})`:''}`;
       const list=(guests[key]||[]).filter(g=>g.gid!==gid);
       if(list.length) guests[key]=list;
       else delete guests[key];
       return guests;
     });
+    if(auditName){
+      recordTeacherAudit({
+        label:'선생님 출석부 추가학생 삭제',
+        target:auditName,
+        detail:attendanceGuestSlotDetail(sgk,ds),
+        keys:['swim_att_guests'],
+      }).catch(e=>console.warn('audit failed',e));
+    }
     renderAttendanceTimetable();
   }
   catch(e){toast('저장 실패','err');}
@@ -1472,6 +1697,12 @@ async function markAllPresentToday(){
       return att;
     });
     if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
+    recordTeacherAudit({
+      label:'선생님 출석 일괄 체크',
+      target:_currentTeacher||'전체 관리자',
+      detail:`${fmtDate(today)} ${cnt}명 출석`,
+      keys:['swim_attendance'],
+    }).catch(e=>console.warn('audit failed',e));
     toast(cnt+'명 출석','ok'); renderAttendanceTimetable();
   }
   catch(e){toast('저장 실패','err');}

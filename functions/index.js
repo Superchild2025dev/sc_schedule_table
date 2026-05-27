@@ -12,6 +12,8 @@ setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
 const db = getFirestore();
 const CHUNK_THRESHOLD = 650000;
 const CHUNK_SIZE = 600000;
+const AUDIT_LOG_KEY = "swim_audit_log";
+const AUDIT_LOG_MAX = 200;
 
 const BRANCHES = {
   gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동"},
@@ -83,6 +85,45 @@ function clone(value) {
   return value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+function auditId() {
+  return "log_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+}
+
+function auditStudentText(stu) {
+  if (!stu) return "-";
+  return `${stu.n || "이름없음"}${stu.a ? `(${stu.a})` : ""}`;
+}
+
+function auditClassDetail(branch, stu, inst, ds) {
+  const vars = classVars(branch, stu, inst, ds);
+  const teacher = vars["담당선생님"] ? `${vars["담당선생님"]} 선생님` : "";
+  return [vars["수업일"], vars["요일"], vars["수업시간"], teacher, "수업"].filter(Boolean).join(" ");
+}
+
+async function appendAuditLogTx(tx, branch, entry) {
+  const stored = await readStoredValueWithMeta(branch, AUDIT_LOG_KEY, tx);
+  const raw = stored.value;
+  const parsed = parseJSON(raw, []);
+  const list = Array.isArray(parsed) ? parsed : [];
+  const now = new Date().toISOString();
+  list.push(Object.assign({
+    id: auditId(),
+    at: now,
+    type: "edit",
+    label: "학부모 요청",
+    target: "",
+    detail: "",
+    keys: [],
+    tabId: "",
+    tabName: "",
+    user: "학부모 페이지",
+  }, entry || {}, {
+    at: entry && entry.at || now,
+  }));
+  while (list.length > AUDIT_LOG_MAX) list.shift();
+  writeStoredValue(tx, branch, AUDIT_LOG_KEY, JSON.stringify(list), stored.item);
+}
+
 function splitChunks(text) {
   const chunks = [];
   for (let i = 0; i < text.length; i += CHUNK_SIZE) chunks.push(text.slice(i, i + CHUNK_SIZE));
@@ -98,26 +139,48 @@ function encodeStoredValue(value) {
   };
 }
 
-async function readStoredValue(branch, key, tx) {
+async function readStoredValueWithMeta(branch, key, tx) {
   const ref = kvDoc(branch, key);
   const snap = tx ? await tx.get(ref) : await ref.get();
-  if (!snap.exists) return null;
+  if (!snap.exists) return {item: null, value: null};
   const data = snap.data() || {};
-  if (!data.chunked) return data.value ?? null;
+  if (!data.chunked) return {item: data, value: data.value ?? null};
   const chunks = [];
   for (let i = 0; i < Number(data.chunkCount || 0); i++) {
     const chunkSnap = tx ? await tx.get(chunkDoc(branch, key, i)) : await chunkDoc(branch, key, i).get();
     chunks.push((chunkSnap.data() || {}).text || "");
   }
   const text = chunks.join("");
+  let value = text;
   if (data.valueType === "json") {
-    try { return JSON.parse(text); } catch (error) { return null; }
+    try { value = JSON.parse(text); } catch (error) { value = null; }
   }
-  return text;
+  return {item: data, value};
 }
 
-function writeStoredValue(tx, branch, key, value) {
+async function readStoredValue(branch, key, tx) {
+  const stored = await readStoredValueWithMeta(branch, key, tx);
+  return stored.value;
+}
+
+function knownChunkCount(item) {
+  if (!item || !item.chunked) return 0;
+  return Math.max(0, Number(item.chunkCount || 0) || 0);
+}
+
+function deleteChunkRange(tx, branch, key, from, to) {
+  const start = Math.max(0, Number(from || 0) || 0);
+  const end = Math.max(start, Number(to || 0) || 0);
+  for (let i = start; i < end; i++) tx.delete(chunkDoc(branch, key, i));
+}
+
+function deleteKnownChunks(tx, branch, key, item) {
+  deleteChunkRange(tx, branch, key, 0, knownChunkCount(item));
+}
+
+function writeStoredValue(tx, branch, key, value, previousItem) {
   const encoded = encodeStoredValue(value);
+  const previousCount = knownChunkCount(previousItem);
   if (encoded.text.length > CHUNK_THRESHOLD) {
     const chunks = splitChunks(encoded.text);
     tx.set(kvDoc(branch, key), {
@@ -130,6 +193,7 @@ function writeStoredValue(tx, branch, key, value) {
     chunks.forEach((text, index) => {
       tx.set(chunkDoc(branch, key, index), {text}, {merge: false});
     });
+    if (previousCount > chunks.length) deleteChunkRange(tx, branch, key, chunks.length, previousCount);
     return;
   }
   tx.set(kvDoc(branch, key), {
@@ -138,6 +202,7 @@ function writeStoredValue(tx, branch, key, value) {
     chunked: false,
     updatedAt: FieldValue.serverTimestamp(),
   }, {merge: false});
+  deleteKnownChunks(tx, branch, key, previousItem);
 }
 
 async function readJSON(branch, key, fallback) {
@@ -635,10 +700,11 @@ async function submitAbsent(branch, data) {
   const ds = String(data.ds || "");
   let notifyCtx = null;
   await db.runTransaction(async tx => {
+    const markStored = await readStoredValueWithMeta(branch, "swim_mark", tx);
     const base = {
       students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
       inst: parseJSON(await readStoredValue(branch, keys.instKey, tx), {}),
-      mark: parseJSON(await readStoredValue(branch, "swim_mark", tx), {}),
+      mark: parseJSON(markStored.value, {}),
     };
     const stu = findSessionStudent(base, session, slotKey);
     const inst = base.inst[instKeyOf(stu)];
@@ -648,7 +714,16 @@ async function submitAbsent(branch, data) {
       ? {type: "absent", sub: current}
       : {type: "absent"};
     notifyCtx = {stu, inst, ds};
-    writeStoredValue(tx, branch, "swim_mark", JSON.stringify(base.mark));
+    await appendAuditLogTx(tx, branch, {
+      label: "학부모 결석 신청",
+      target: auditStudentText(stu),
+      detail: auditClassDetail(branch, stu, inst, ds),
+      keys: ["swim_mark"],
+      tabId: keys.tabId,
+      tabName: keys.tabName || "학부모 기준 시간표",
+      user: "학부모 페이지",
+    });
+    writeStoredValue(tx, branch, "swim_mark", JSON.stringify(base.mark), markStored.item);
   });
   if (notifyCtx) {
     const settings = await readAligoSettings(branch);
@@ -680,9 +755,10 @@ async function submitAbsentCancel(branch, data) {
   const ds = String(data.ds || "");
   let notifyCtx = null;
   await db.runTransaction(async tx => {
+    const requestsStored = await readStoredValueWithMeta(branch, "swim_requests", tx);
     const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
     const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
-    const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
+    const requests = parseJSON(requestsStored.value, {});
     const stu = findSessionStudent({students}, session, slotKey);
     const exists = Object.values(requests).some(req =>
       req && req.type === "absent-cancel" &&
@@ -705,7 +781,16 @@ async function submitAbsentCancel(branch, data) {
       instKey: instKeyOf(stu),
       requestedAt: new Date().toISOString(),
     };
-    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
+    await appendAuditLogTx(tx, branch, {
+      label: "학부모 결석취소 요청",
+      target: auditStudentText(stu),
+      detail: auditClassDetail(branch, stu, teacher, ds),
+      keys: ["swim_requests"],
+      tabId: keys.tabId,
+      tabName: keys.tabName || "학부모 기준 시간표",
+      user: "학부모 페이지",
+    });
+    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests), requestsStored.item);
   });
   if (notifyCtx) {
     const settings = await readAligoSettings(branch);
@@ -737,13 +822,14 @@ async function submitBogang(branch, data) {
   if (!selected.length) throw new HttpsError("invalid-argument", "수업을 선택해주세요");
   let notifyCtx = null;
   await db.runTransaction(async tx => {
+    const requestsStored = await readStoredValueWithMeta(branch, "swim_requests", tx);
     const base = {
       students: parseJSON(await readStoredValue(branch, keys.stuKey, tx), []),
       inst: parseJSON(await readStoredValue(branch, keys.instKey, tx), {}),
       mark: parseJSON(await readStoredValue(branch, "swim_mark", tx), {}),
       closed: parseJSON(await readStoredValue(branch, "swim_closed", tx), []),
       periods: parseJSON(await readStoredValue(branch, "swim_periods", tx), DEFAULT_PERIODS),
-      requests: parseJSON(await readStoredValue(branch, "swim_requests", tx), {}),
+      requests: parseJSON(requestsStored.value, {}),
     };
     const source = findSessionStudent(base, session, sourceSlotKey);
     const sourceInst = base.inst[instKeyOf(source)];
@@ -790,7 +876,16 @@ async function submitBogang(branch, data) {
       };
     });
     notifyCtx = {stu: source, inst: sourceInst, ds: sourceDs};
-    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(base.requests));
+    await appendAuditLogTx(tx, branch, {
+      label: "학부모 보강 신청",
+      target: auditStudentText(source),
+      detail: `${auditClassDetail(branch, source, sourceInst, sourceDs)} · 후보 ${selected.length}개`,
+      keys: ["swim_requests"],
+      tabId: keys.tabId,
+      tabName: keys.tabName || "학부모 기준 시간표",
+      user: "학부모 페이지",
+    });
+    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(base.requests), requestsStored.item);
   });
   if (notifyCtx) {
     const settings = await readAligoSettings(branch);
@@ -813,9 +908,10 @@ async function cancelBogang(branch, data) {
   let notifyCtx = null;
   let cancelStatus = "cancelled";
   await db.runTransaction(async tx => {
+    const requestsStored = await readStoredValueWithMeta(branch, "swim_requests", tx);
     const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
     const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
-    const requests = parseJSON(await readStoredValue(branch, "swim_requests", tx), {});
+    const requests = parseJSON(requestsStored.value, {});
     const stu = findSessionStudent({students}, session, sourceSlotKey);
     const sourceInst = inst[instKeyOf(stu)];
     const matched = Object.entries(requests).filter(([, req]) =>
@@ -834,6 +930,15 @@ async function cancelBogang(branch, data) {
         });
       });
       notifyCtx = {stu, inst: sourceInst, ds: sourceDs};
+      await appendAuditLogTx(tx, branch, {
+        label: "학부모 보강 신청 취소",
+        target: auditStudentText(stu),
+        detail: `${auditClassDetail(branch, stu, sourceInst, sourceDs)} · 대기 후보 ${matched.length}개 취소`,
+        keys: ["swim_requests"],
+        tabId: keys.tabId,
+        tabName: keys.tabName || "학부모 기준 시간표",
+        user: "학부모 페이지",
+      });
     } else {
       const accepted = Object.entries(requests).find(([, req]) =>
         req && req.type === "bogang" &&
@@ -869,8 +974,17 @@ async function cancelBogang(branch, data) {
         requestedAt: cancelledAt,
       };
       cancelStatus = "requested";
+      await appendAuditLogTx(tx, branch, {
+        label: "학부모 보강취소 요청",
+        target: auditStudentText(stu),
+        detail: `${auditClassDetail(branch, stu, sourceInst, sourceDs)} · 확정 보강 취소 승인 대기`,
+        keys: ["swim_requests"],
+        tabId: keys.tabId,
+        tabName: keys.tabName || "학부모 기준 시간표",
+        user: "학부모 페이지",
+      });
     }
-    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
+    writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests), requestsStored.item);
   });
   if (notifyCtx && cancelStatus === "cancelled") {
     const settings = await readAligoSettings(branch);

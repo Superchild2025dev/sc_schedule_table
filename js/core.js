@@ -44,6 +44,8 @@ let _fb=null;
 let _fbReady=false;
 let _fbConnected=true;
 let _offlineWarningShown=false;
+let _firebaseUsingLocalFallback=false;
+let _writeBlockedWarnedAt=0;
 const _dbCache={};
 
 function initFirebaseStore(){
@@ -92,6 +94,10 @@ if(!window.SCAuth){
 }
 
 function dbSet(key,val){
+  if(_firebaseUsingLocalFallback){
+    _warnBlockedWrite(key,'서버 데이터 로드 실패 상태');
+    return false;
+  }
   const json=typeof val==='string'?val:JSON.stringify(val);
   _dbCache[key]=json;
   try{localStorage.setItem(_lsKey(key),json);}catch(e){}
@@ -105,6 +111,7 @@ function dbSet(key,val){
       _showOfflineWarning();
     });
   }
+  return true;
 }
 
 function _showOfflineWarning(){
@@ -125,6 +132,27 @@ function _hideOfflineWarning(){
   const banner=document.getElementById('fb-offline-banner');
   if(banner) banner.remove();
 }
+function _warnBlockedWrite(key,reason){
+  console.warn('[DATA SAFETY] 저장 차단:', key, reason||'');
+  const now=Date.now();
+  if(now-_writeBlockedWarnedAt>2000){
+    _writeBlockedWarnedAt=now;
+    if(typeof toast==='function'){
+      toast('서버 데이터 로드 실패 상태라 저장을 막았어요. 새로고침 후 다시 시도해주세요.','err');
+    }
+  }
+}
+function canPersistScheduleData(key,label){
+  if(!_firebaseLoaded){
+    console.warn('[v98 SAFETY] Firebase 로드 전 저장 차단:', key);
+    return false;
+  }
+  if(_firebaseUsingLocalFallback){
+    _warnBlockedWrite(key,label||'로컬 fallback 읽기 전용');
+    return false;
+  }
+  return true;
+}
 function dbGet(key){
   if(_dbCache[key]) return _dbCache[key];
   try{return localStorage.getItem(_lsKey(key));}catch(e){return null;}
@@ -137,6 +165,38 @@ function dbRemove(key){
 
 // [FIX] 자기 echo 식별용 큐. key별로 보낸 순서대로 쌓고, echo가 head와 일치하면 shift.
 const _localWriteQueue={};
+
+function _isDeferredStorageKey(key){
+  return key===STORAGE_KEYS.AUDIT_LOG
+      || key===STORAGE_KEYS.RESTORE_POINTS
+      || String(key||'').startsWith('swim_restore_point_');
+}
+function _localStorageKeyToStorageKey(lsKey){
+  const b=typeof getBranchInfo==='function' ? getBranchInfo() : null;
+  const prefix=b?.lsPrefix||'';
+  if(prefix){
+    if(!String(lsKey).startsWith(prefix)) return '';
+    return String(lsKey).slice(prefix.length);
+  }
+  if(String(lsKey).startsWith('yongam_')) return '';
+  return String(lsKey);
+}
+function _pruneMissingRemoteLocalKeys(remoteKeys){
+  const remoteSet=new Set(remoteKeys||[]);
+  try{
+    const remove=[];
+    for(let i=0;i<localStorage.length;i++){
+      const lsKey=localStorage.key(i);
+      const storageKey=_localStorageKeyToStorageKey(lsKey);
+      if(!storageKey || !storageKey.startsWith('swim_')) continue;
+      if(_isDeferredStorageKey(storageKey)) continue;
+      if(!remoteSet.has(storageKey)) remove.push(lsKey);
+    }
+    remove.forEach(lsKey=>localStorage.removeItem(lsKey));
+  }catch(e){
+    console.warn('localStorage stale cleanup failed',e);
+  }
+}
 
 /* 팝업이 열려있는지 (rebuild 보류 판정용) */
 function _popupOpen(){
@@ -195,10 +255,7 @@ let _timeMachineWarnedAt=0;
 
 function saveJSON(key, val, skipUndo){
   // [v98 SAFETY] Firebase 로드 전 저장 차단
-  if(!_firebaseLoaded){
-    console.warn('[v98 SAFETY] Firebase 로드 전 saveJSON 차단:', key);
-    return;
-  }
+  if(!canPersistScheduleData(key,'saveJSON')) return;
   // [스냅샷] 스냅샷 탭에서는 일반 저장 차단. 단 탭 목록 / 스냅샷 자체 키는 허용.
   if(typeof isSnapshotTab==='function' && isSnapshotTab()
      && key!==STORAGE_KEYS.TAB_LIST && !key.startsWith('swim_snap_')){
@@ -229,7 +286,7 @@ function saveJSON(key, val, skipUndo){
     });
   }
   if(!skipUndo) pushUndo();
-  dbSet(key, JSON.stringify(val));
+  if(dbSet(key, JSON.stringify(val))===false) return;
   if(auditPoint && typeof recordAuditPoint==='function'){
     recordAuditPoint(auditPoint, [key]);
   }
@@ -237,15 +294,22 @@ function saveJSON(key, val, skipUndo){
 
 function loadFromFirebase(callback){
   if(_selectedBranch && !_fbReady) initFirebaseStore();
-  // 콜백 래퍼: 로드 완료/실패 후 _firebaseLoaded=true
+  // 콜백 래퍼: 서버 로드 성공 여부와 별도로 렌더는 진행하되, 실패 시 저장은 읽기 전용으로 막는다.
   const wrappedCallback=()=>{
     _firebaseLoaded=true;
     callback();
   };
-  if(!_fbReady){wrappedCallback();return;}
+  if(!_fbReady){
+    _firebaseUsingLocalFallback=true;
+    wrappedCallback();
+    return;
+  }
   _fb.once('value').then(snap=>{
     const data=snap.val();
+    const remoteKeys=data?Object.keys(data):[];
+    _firebaseUsingLocalFallback=false;
     if(data) for(const [k,v] of Object.entries(data)){
+      if(_isDeferredStorageKey(k)) continue;
       const asStr=typeof v==='string'?v:JSON.stringify(v);
       _dbCache[k]=asStr;
       // [FIX] localStorage 백업 — Firebase에 더 큰 데이터가 있을 때만 덮어쓰기
@@ -258,9 +322,16 @@ function loadFromFirebase(callback){
         }
       }catch(e){}
     }
+    _pruneMissingRemoteLocalKeys(remoteKeys);
     wrappedCallback();
-  }).catch(()=>{toast('Firebase 데이터 로드 실패 — 로컬 데이터 사용','err');wrappedCallback();});
+  }).catch(err=>{
+    console.error('Firebase 데이터 로드 실패:',err);
+    _firebaseUsingLocalFallback=true;
+    toast('Firebase 데이터 로드 실패 — 로컬 데이터는 읽기 전용입니다','err');
+    wrappedCallback();
+  });
   _fb.on('child_changed',(snap)=>{
+    if(_isDeferredStorageKey(snap.key)) return;
     const newVal=snap.val();
     // [FIX] setItem은 비-문자열을 강제 변환하므로 방어적 직렬화
     const asStr=typeof newVal==='string'?newVal:JSON.stringify(newVal);
@@ -285,6 +356,7 @@ function loadFromFirebase(callback){
     reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();
   });
   _fb.on('child_removed',(snap)=>{
+    if(_isDeferredStorageKey(snap.key)) return;
     delete _dbCache[snap.key];
     // [FIX] localStorage도 같이 정리 (이전엔 새로고침 시 좀비 데이터 부활)
     try{localStorage.removeItem(_lsKey(snap.key));}catch(e){}

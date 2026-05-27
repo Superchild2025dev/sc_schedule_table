@@ -19,6 +19,13 @@
   };
   const CHUNK_THRESHOLD = 650000;
   const CHUNK_SIZE = 600000;
+  const DEFERRED_ROOT_KEYS = {
+    swim_audit_log: true,
+    swim_restore_points: true,
+  };
+  const DEFERRED_ROOT_PREFIXES = [
+    'swim_restore_point_',
+  ];
 
   function backend(){
     return String(window.SC_DATA_BACKEND || DEFAULT_BACKEND).toLowerCase();
@@ -45,6 +52,19 @@
   }
   function recoverable(error){
     return !!(error && RECOVERABLE_CODES[error.code]);
+  }
+  function deferredRootKey(key){
+    key = String(key || '');
+    if(DEFERRED_ROOT_KEYS[key]) return true;
+    return DEFERRED_ROOT_PREFIXES.some(prefix=>key.startsWith(prefix));
+  }
+  function filterRootData(data, includeDeferred){
+    if(includeDeferred) return data || {};
+    const out = {};
+    Object.entries(data || {}).forEach(([key,value])=>{
+      if(!deferredRootKey(key)) out[key] = value;
+    });
+    return out;
   }
   function chunkId(i){
     return String(i).padStart(4, '0');
@@ -92,17 +112,35 @@
   FirestoreKVRoot.prototype._chunkDoc = function(key, i){
     return this._doc(key).collection('chunks').doc(chunkId(i));
   };
+  FirestoreKVRoot.prototype._knownChunkCount = function(item){
+    if(!item || !item.chunked) return 0;
+    return Math.max(0, Number(item.chunkCount || 0) || 0);
+  };
+  FirestoreKVRoot.prototype._deleteChunkRange = function(writer, key, from, to){
+    const start = Math.max(0, Number(from || 0) || 0);
+    const end = Math.max(start, Number(to || 0) || 0);
+    for(let i=start;i<end;i++) writer.delete(this._chunkDoc(key, i));
+  };
+  FirestoreKVRoot.prototype._deleteKnownChunks = function(writer, key, item){
+    this._deleteChunkRange(writer, key, 0, this._knownChunkCount(item));
+  };
+  FirestoreKVRoot.prototype._deleteKeyValue = function(writer, key, item){
+    writer.delete(this._doc(key));
+    this._deleteKnownChunks(writer, key, item);
+  };
   FirestoreKVRoot.prototype._disable = function(reason){
     if(this.disabled) return;
     this.disabled = true;
     console.warn('[SCFirebaseStore] Firestore disabled, using Realtime Database fallback.', reason || '');
   };
-  FirestoreKVRoot.prototype._list = function(){
+  FirestoreKVRoot.prototype._list = function(opts){
+    opts = opts || {};
     return this.col.get().then(qs=>{
       const reads = [];
       qs.forEach(doc=>{
         const item = doc.data() || {};
         const key = item.key || decodeKey(doc.id);
+        if(!opts.includeDeferred && deferredRootKey(key)) return;
         reads.push(this._readStoredValue(key, item).then(value=>({key,value})));
       });
       return Promise.all(reads).then(items=>{
@@ -112,21 +150,27 @@
       });
     });
   };
-  FirestoreKVRoot.prototype._listKeys = function(){
+  FirestoreKVRoot.prototype._listKeys = function(opts){
+    opts = opts || {};
     return this.col.get().then(qs=>{
       const keys = [];
       qs.forEach(doc=>{
         const item = doc.data() || {};
-        keys.push(item.key || decodeKey(doc.id));
+        const key = item.key || decodeKey(doc.id);
+        if(!opts.includeDeferred && deferredRootKey(key)) return;
+        keys.push(key);
       });
       return keys;
     });
   };
   FirestoreKVRoot.prototype._setFirestore = function(key, value){
-    if(value === undefined) return this._doc(key).delete();
-    const batch = this.db.batch();
-    this._writeStoredValue(batch, key, value);
-    return batch.commit();
+    return this._doc(key).get().then(doc=>{
+      const item = doc.exists ? (doc.data() || {}) : null;
+      const batch = this.db.batch();
+      if(value === undefined) this._deleteKeyValue(batch, key, item);
+      else this._writeStoredValue(batch, key, value, item);
+      return batch.commit();
+    });
   };
   FirestoreKVRoot.prototype._readStoredValue = function(key, item){
     if(!item || !item.chunked) return Promise.resolve(item ? item.value : null);
@@ -148,8 +192,9 @@
       return decodeStoredValue(text, item.valueType !== 'json');
     });
   };
-  FirestoreKVRoot.prototype._writeStoredValue = function(writer, key, value){
+  FirestoreKVRoot.prototype._writeStoredValue = function(writer, key, value, previousItem){
     const encoded = encodeStoredValue(value);
+    const previousCount = this._knownChunkCount(previousItem);
     if(encoded.text.length > CHUNK_THRESHOLD){
       const chunks = splitChunks(encoded.text);
       writer.set(this._doc(key), {
@@ -162,6 +207,9 @@
       chunks.forEach((text, i)=>{
         writer.set(this._chunkDoc(key, i), {text}, {merge:false});
       });
+      if(previousCount > chunks.length){
+        this._deleteChunkRange(writer, key, chunks.length, previousCount);
+      }
       return;
     }
     writer.set(this._doc(key), {
@@ -170,6 +218,7 @@
       chunked: false,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     }, {merge:false});
+    this._deleteKnownChunks(writer, key, previousItem);
   };
   FirestoreKVRoot.prototype._mirrorSet = function(key, value){
     if(!this.mirrorRTDB || !this.fallbackEnabled) return Promise.resolve();
@@ -185,8 +234,9 @@
       console.warn('[SCFirebaseStore] RTDB mirror remove failed:', key, error);
     });
   };
-  FirestoreKVRoot.prototype._copyRTDBIntoFirestore = function(data){
-    const entries = Object.entries(data || {});
+  FirestoreKVRoot.prototype._copyRTDBIntoFirestore = function(data, opts){
+    opts = opts || {};
+    const entries = Object.entries(filterRootData(data, !!opts.includeDeferred));
     if(!entries.length) return Promise.resolve();
     let chain = Promise.resolve();
     entries.forEach(([key,value])=>{
@@ -196,7 +246,9 @@
       console.log('[SCFirebaseStore] RTDB data migrated to Firestore:', this.branchId, entries.length);
     });
   };
-  FirestoreKVRoot.prototype._backfillMissingRTDBKeys = function(firestoreData, fallbackData){
+  FirestoreKVRoot.prototype._backfillMissingRTDBKeys = function(firestoreData, fallbackData, opts){
+    opts = opts || {};
+    fallbackData = filterRootData(fallbackData, !!opts.includeDeferred);
     const updates = {};
     Object.entries(fallbackData || {}).forEach(([key,value])=>{
       const exists = Object.prototype.hasOwnProperty.call(firestoreData, key);
@@ -209,17 +261,22 @@
       ? Object.assign({}, firestoreData, fallbackData)
       : Object.assign({}, fallbackData, firestoreData);
     if(!count) return Promise.resolve(merged);
-    return this._copyRTDBIntoFirestore(updates).then(()=>{
+    return this._copyRTDBIntoFirestore(updates, opts).then(()=>{
       console.log('[SCFirebaseStore] RTDB keys synced into Firestore:', this.branchId, count);
       return merged;
     });
   };
-  FirestoreKVRoot.prototype._readFallbackRoot = function(){
-    return this.fallback.once('value').then(snap=>snap.val() || {});
+  FirestoreKVRoot.prototype._readFallbackRoot = function(opts){
+    opts = opts || {};
+    return this.fallback.once('value').then(snap=>filterRootData(snap.val() || {}, !!opts.includeDeferred));
   };
   FirestoreKVRoot.prototype.once = function(event){
     if(event !== 'value') return Promise.reject(new Error('Unsupported event: '+event));
-    if(this.disabled) return this.fallback.once('value');
+    if(this.disabled){
+      return this.fallback.once('value').then(snap=>{
+        return new StoreSnapshot(null, filterRootData(snap.val() || {}, false));
+      });
+    }
     return this._list().then(data=>{
       if(!this.fallbackEnabled) return new StoreSnapshot(null, data);
       return this._readFallbackRoot().then(fallbackData=>{
@@ -239,7 +296,9 @@
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
-        return this.fallback.once('value');
+        return this.fallback.once('value').then(snap=>{
+          return new StoreSnapshot(null, filterRootData(snap.val() || {}, false));
+        });
       }
       throw error;
     });
@@ -263,7 +322,7 @@
   FirestoreKVRoot.prototype._removeKey = function(key, opts){
     opts = opts || {};
     if(this.disabled) return this.fallback.child(key).remove();
-    return this._doc(key).delete().then(()=>{
+    return this._setFirestore(key, undefined).then(()=>{
       if(!opts.skipMirror) return this._mirrorRemove(key);
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
@@ -289,7 +348,7 @@
           }
           committed = true;
           nextValue = next;
-          this._writeStoredValue(tx, key, next);
+          this._writeStoredValue(tx, key, next, item);
         });
       });
     }).then(()=>{
@@ -315,11 +374,13 @@
       return this.db.runTransaction(tx=>{
         const refs = {};
         const root = {};
+        const items = {};
         keys.forEach(key=>{ refs[key] = this._doc(key); });
         let chain = Promise.resolve();
         keys.forEach(key=>{
           chain = chain.then(()=>tx.get(refs[key]).then(doc=>{
             const item = doc.exists ? (doc.data() || {}) : null;
+            items[key] = item;
             return this._readStoredValueTx(tx, key, item).then(value=>{
               if(doc.exists) root[key] = value;
             });
@@ -340,11 +401,11 @@
             const value = nextRoot[key];
             if(value === undefined || value === null){
               if(before[key] !== undefined){
-                tx.delete(this._doc(key));
+                this._deleteKeyValue(tx, key, items[key]);
                 changed[key] = null;
               }
             } else if(!sameValue(before[key], value)){
-              this._writeStoredValue(tx, key, value);
+              this._writeStoredValue(tx, key, value, items[key]);
               changed[key] = value;
             }
           });
@@ -369,16 +430,100 @@
       throw error;
     });
   };
+  FirestoreKVRoot.prototype.transactionKeys = function(keys, updateFn){
+    keys = [...new Set((keys || []).filter(Boolean))];
+    if(!keys.length) return Promise.resolve({committed:false, snapshot:new StoreSnapshot(null, {})});
+    if(this.disabled){
+      return this.fallback.transaction(root=>{
+        root = root || {};
+        const partial = {};
+        keys.forEach(key=>{ if(root[key] !== undefined) partial[key] = root[key]; });
+        const next = updateFn(partial);
+        if(next === undefined) return;
+        const nextRoot = next || partial;
+        keys.forEach(key=>{
+          if(nextRoot[key] === undefined || nextRoot[key] === null) delete root[key];
+          else root[key] = nextRoot[key];
+        });
+        return root;
+      });
+    }
+    let committed = false;
+    let resultRoot = null;
+    let changed = {};
+    return this.db.runTransaction(tx=>{
+      const refs = {};
+      const root = {};
+      const items = {};
+      keys.forEach(key=>{ refs[key] = this._doc(key); });
+      let chain = Promise.resolve();
+      keys.forEach(key=>{
+        chain = chain.then(()=>tx.get(refs[key]).then(doc=>{
+          const item = doc.exists ? (doc.data() || {}) : null;
+          items[key] = item;
+          return this._readStoredValueTx(tx, key, item).then(value=>{
+            if(doc.exists) root[key] = value;
+          });
+        }));
+      });
+      return chain.then(()=>{
+        const before = Object.assign({}, root);
+        const next = updateFn(root);
+        if(next === undefined){
+          committed = false;
+          return;
+        }
+        const nextRoot = next || root;
+        keys.forEach(key=>{
+          const value = nextRoot[key];
+          if(value === undefined || value === null){
+            if(before[key] !== undefined){
+              this._deleteKeyValue(tx, key, items[key]);
+              changed[key] = null;
+            }
+          } else if(!sameValue(before[key], value)){
+            this._writeStoredValue(tx, key, value, items[key]);
+            changed[key] = value;
+          }
+        });
+        committed = true;
+        resultRoot = nextRoot;
+      });
+    }).then(()=>{
+      if(!committed) return {committed:false, snapshot:new StoreSnapshot(null, null)};
+      const mirrors = Object.entries(changed).map(([key,value])=>{
+        return value === null ? this._mirrorRemove(key) : this._mirrorSet(key, value);
+      });
+      return Promise.all(mirrors).then(()=>({
+        committed:true,
+        snapshot:new StoreSnapshot(null, resultRoot || {}),
+      }));
+    }).catch(error=>{
+      if(recoverable(error) && this.fallbackEnabled){
+        this._disable(error);
+        return this.transactionKeys(keys, updateFn);
+      }
+      throw error;
+    });
+  };
   FirestoreKVRoot.prototype.remove = function(){
     if(this.disabled) return this.fallback.remove();
-    return this._listKeys().then(keys=>{
+    return this.col.get().then(qs=>{
+      const refs = [];
+      qs.forEach(doc=>{
+        const item = doc.data() || {};
+        const key = item.key || decodeKey(doc.id);
+        refs.push(this._doc(key));
+        const count = this._knownChunkCount(item);
+        for(let i=0;i<count;i++) refs.push(this._chunkDoc(key, i));
+      });
       const chunks = [];
-      for(let i=0;i<keys.length;i+=400) chunks.push(keys.slice(i,i+400));
+      for(let i=0;i<refs.length;i+=400) chunks.push(refs.slice(i,i+400));
       let chain = Promise.resolve();
       chunks.forEach(chunk=>{
         chain = chain.then(()=>{
           const batch = this.db.batch();
-          chunk.forEach(key=>batch.delete(this._doc(key)));
+          chunk.forEach(ref=>batch.delete(ref));
           return batch.commit();
         });
       });
@@ -397,6 +542,7 @@
       qs.docChanges().forEach(change=>{
         const item = change.doc.data() || {};
         const key = item.key || decodeKey(change.doc.id);
+        if(deferredRootKey(key)) return;
         if(!initialized) return;
         if(event === 'child_removed' && change.type === 'removed'){
           cb(new StoreSnapshot(key, null));
@@ -423,6 +569,7 @@
     const handler = snap=>{
       const key = snap.key;
       const value = snap.val();
+      if(deferredRootKey(key)) return;
       if(sameValue(this.muteRTDB[key], value)){
         delete this.muteRTDB[key];
         return;
@@ -489,8 +636,8 @@
     if(!branch) throw new Error('branch is required');
     const root = new FirestoreKVRoot(branch);
     return Promise.all([
-      root._readFallbackRoot(),
-      root._list(),
+      root._readFallbackRoot({includeDeferred:true}),
+      root._list({includeDeferred:true}),
       root.col.get(),
     ]).then(([rtdbData, firestoreData, qs])=>{
       const firestoreKeys = [];

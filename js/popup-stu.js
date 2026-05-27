@@ -1720,7 +1720,7 @@ function _deleteReserveMovePair(retire,enroll,kind,slotKey){
 
 async function deleteRetireReservation(slotKey){
   let paired=false;
-  await updateScheduleTx(ctx=>{
+  await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
     if(!retire[slotKey]){ctx.abort('제외 예약이 이미 없습니다');return;}
@@ -1734,7 +1734,7 @@ async function deleteRetireReservation(slotKey){
 
 async function deleteEnrollReservation(slotKey){
   let paired=false;
-  await updateScheduleTx(ctx=>{
+  await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
     if(!enroll[slotKey]){ctx.abort('등록 예약이 이미 없습니다');return;}
@@ -1840,8 +1840,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     const [sT,sD,sL,sR]=srcKey.split('/');
     const sLi=parseInt(sL),sRi=parseInt(sR);
     try{
-      await updateScheduleTx(ctx=>{
-        const stuKey=getTabConfig().stuKey;
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.DISABLED,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원], ctx=>{
         const students=ctx.get(stuKey,[]);
         const srcIdx=_findStudentIndexAt(students,srcKey);
         if(srcIdx<0){ctx.abort('소스 학생 정보 오류');return;}
@@ -1899,8 +1899,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     const {markData, markType, srcDs}=_moveMode;
     const [sT,sD,sL,sR]=srcKey.split('/');
     const moveMarkTo=async(newDs)=>{
-      await updateScheduleTx(ctx=>{
-        const students=ctx.get(getTabConfig().stuKey,[]);
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.MARK], ctx=>{
+        const students=ctx.get(stuKey,[]);
         if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 이동 가능합니다');return;}
         const marks=ctx.get(STORAGE_KEYS.MARK,{});
         const srcMark=marks[srcKey+'/'+srcDs];
@@ -1948,8 +1949,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     const {enrData}=_moveMode;
     const [sT,sD,sL,sR]=srcKey.split('/');
     const moveEnrollTo=async(newDs)=>{
-      await updateScheduleTx(ctx=>{
-        const students=ctx.get(getTabConfig().stuKey,[]);
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE], ctx=>{
+        const students=ctx.get(stuKey,[]);
         const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
         const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
         if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 이동 가능합니다');return;}
@@ -2011,8 +2013,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       if(stu.memo) enrollEntry.memo=stu.memo;
       if(stu.g) enrollEntry.g=stu.g;
       try{
-        await updateScheduleTx(ctx=>{
-          const students=ctx.get(getTabConfig().stuKey,[]);
+        const stuKey=getTabConfig().stuKey;
+        await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
+          const students=ctx.get(stuKey,[]);
           const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
           const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
           if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 예약 가능합니다');return;}
@@ -2046,8 +2049,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     if(stu.loc) newStu.loc=stu.loc;
     if(stu.memo) newStu.memo=stu.memo;
     try{
-      await updateScheduleTx(ctx=>{
-        const stuKey=getTabConfig().stuKey;
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.DISABLED], ctx=>{
         const students=ctx.get(stuKey,[]);
         if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 복사 가능합니다');return;}
         students.push(newStu);
@@ -2070,8 +2073,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
 
   try{
     let movedName=stu.n;
-    await updateScheduleTx(ctx=>{
-      const stuKey=getTabConfig().stuKey;
+    const stuKey=getTabConfig().stuKey;
+    await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED], ctx=>{
       const students=ctx.get(stuKey,[]);
       if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('목적지에 이미 학생이 있습니다');return;}
 

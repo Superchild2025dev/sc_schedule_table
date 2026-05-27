@@ -102,8 +102,8 @@ async function _saveAttAdd(status){
         DAY_SNAPSHOT[cellDs].students.push(newStu);
         saveDaySnapshot();
       } else {
-        await updateScheduleTx(ctx=>{
-          const stuKey=getTabConfig().stuKey;
+        const stuKey=getTabConfig().stuKey;
+        await updateScheduleTx([stuKey,STORAGE_KEYS.ATTENDANCE], ctx=>{
           const students=ctx.get(stuKey,[]);
           if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
             ctx.abort('이미 학생이 있는 자리입니다');
@@ -141,8 +141,8 @@ async function _saveAttAdd(status){
         DAY_SNAPSHOT[cellDs].students.push(newStu);
         saveDaySnapshot();
       } else {
-        await updateScheduleTx(ctx=>{
-          const stuKey=getTabConfig().stuKey;
+        const stuKey=getTabConfig().stuKey;
+        await updateScheduleTx([stuKey,STORAGE_KEYS.休원], ctx=>{
           const students=ctx.get(stuKey,[]);
           if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
             ctx.abort('이미 학생이 있는 자리입니다');
@@ -512,8 +512,8 @@ async function _deleteFromAttModal(){
           return hyuwon;
         });
       } else {
-        await updateScheduleTx(ctx=>{
-          const stuKey=getTabConfig().stuKey;
+        const stuKey=getTabConfig().stuKey;
+        await updateScheduleTx([stuKey,STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.休원], ctx=>{
           const students=ctx.get(stuKey,[]);
           const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
           if(idx>=0) students.splice(idx,1);
@@ -772,8 +772,8 @@ function syncStudentsBeforeRender(){
   });
   if(changed||enrollChanged||retireChanged||hyuwonChanged||flagChanged){
     const periodMonth=cp.month;
-    updateScheduleTx(ctx=>{
-      const stuKey=getTabConfig().stuKey;
+    const stuKey=getTabConfig().stuKey;
+    updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE,STORAGE_KEYS.休원], ctx=>{
       const students=ctx.get(stuKey,[]);
       const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
       const retire=ctx.get(STORAGE_KEYS.RETIRE,{});

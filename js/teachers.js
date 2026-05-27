@@ -164,7 +164,15 @@ async function handleTeacherNameEdit(idx, oldName, newName){
   }
   let renameCount=0;
   try{
-    await updateScheduleTx(ctx=>{
+    const txKeys=new Set([STORAGE_KEYS.TEACHERS,getTabConfig().instKey]);
+    _tabList.forEach(tab=>{
+      if(!tab||tab.type==='snapshot') return;
+      const iKey = tab.type==='bangteuk'
+        ? 'swim_bt_'+tab.id+'_inst'
+        : (tab.id==='regular' ? 'swim_inst' : 'swim_inst_'+tab.id);
+      txKeys.add(iKey);
+    });
+    await updateScheduleTx([...txKeys], ctx=>{
       const teachers=ctx.get(STORAGE_KEYS.TEACHERS,[]);
       const tIdx=teachers.findIndex(t=>t.n===oldName);
       if(tIdx<0){ctx.abort('선생님 정보가 먼저 변경되었습니다');return;}
@@ -175,14 +183,8 @@ async function handleTeacherNameEdit(idx, oldName, newName){
       teachers[tIdx].n=newName;
       ctx.set(STORAGE_KEYS.TEACHERS,teachers);
 
-      const keys=new Set([getTabConfig().instKey]);
-      _tabList.forEach(tab=>{
-        const iKey = tab.type==='bangteuk'
-          ? 'swim_bt_'+tab.id+'_inst'
-          : (tab.id==='regular' ? 'swim_inst' : 'swim_inst_'+tab.id);
-        keys.add(iKey);
-      });
-      keys.forEach(iKey=>{
+      txKeys.forEach(iKey=>{
+        if(iKey===STORAGE_KEYS.TEACHERS) return;
         const inst=ctx.get(iKey,{});
         let changed=false;
         for(const k in inst){
@@ -578,9 +580,9 @@ async function executeInstSwap(dstT,dstDay,dstLane){
   const srcIK=srcT+'/'+srcDay+'/'+srcLane;
   const dstIK=dstT+'/'+dstDay+'/'+dstLane;
   try{
-    await updateScheduleTx(ctx=>{
-      const stuKey=getTabConfig().stuKey;
-      const instKey=getTabConfig().instKey;
+    const stuKey=getTabConfig().stuKey;
+    const instKey=getTabConfig().instKey;
+    await updateScheduleTx([stuKey,instKey,STORAGE_KEYS.RESERVE,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.DISABLED,STORAGE_KEYS.MARK], ctx=>{
       const inst=ctx.get(instKey,{});
       const reserve=ctx.get(STORAGE_KEYS.RESERVE,{});
       const students=ctx.get(stuKey,[]);

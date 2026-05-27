@@ -188,7 +188,7 @@ function applyAnnualAgeIncrement(){
   if(!currentYear) return Promise.resolve(false);
 
   let changed=false;
-  return updateScheduleTx(ctx=>{
+  return updateScheduleTx([STORAGE_KEYS.AGE_YEAR,..._studentKeysForAnnualAgeUpdate()], ctx=>{
     const rawYear=ctx.get(STORAGE_KEYS.AGE_YEAR,null);
     const lastYear=parseInt(rawYear,10);
     if(!lastYear||lastYear>=currentYear){
@@ -702,15 +702,16 @@ let ATT_GUESTS   = loadJSON(STORAGE_KEYS.ATT_GUESTS, {});
 let DAY_SNAPSHOT = loadJSON(STORAGE_KEYS.DAY_SNAPSHOT, {});
 // [v118] RETIRE_HISTORY = [{retiredAt, recordedAt, t, d, l, r, n, a, p, loc, memo, enrolledFrom}, ...] 퇴원 기록 (영구 보관)
 let RETIRE_HISTORY = loadJSON(STORAGE_KEYS.RETIRE_HISTORY, []);
-let AUDIT_LOG = loadJSON(STORAGE_KEYS.AUDIT_LOG, []);
-if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
-let RESTORE_POINTS = loadJSON(STORAGE_KEYS.RESTORE_POINTS, []);
-if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
-const AUDIT_LOG_MAX=400;
-const RESTORE_POINT_MAX=50;
+let AUDIT_LOG = [];
+let RESTORE_POINTS = [];
+const AUDIT_LOG_MAX=200;
+const RESTORE_POINT_MAX=12;
+const AUDIT_STORAGE_LIMIT=8*1024*1024;
 const RECORD_PAGE_SIZE=30;
 let _auditLock=false;
 let _recordPage=1;
+let _auditStorageLoaded=false;
+let _auditStorageLoading=null;
 
 function describeStorageChangeType(key){
   if(key===STORAGE_KEYS.MOVE) return 'move';
@@ -778,8 +779,24 @@ function _auditDataKeys(){
   }catch(e){}
   return [...keys].filter(Boolean);
 }
+function _auditEditKeys(){
+  const keys=new Set([
+    STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.DISABLED,
+    STORAGE_KEYS.RESERVE,STORAGE_KEYS.休원,STORAGE_KEYS.MOVE,STORAGE_KEYS.REQUESTS,
+    STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,STORAGE_KEYS.DAY_SNAPSHOT,
+    STORAGE_KEYS.CLOSED,STORAGE_KEYS.TEACHERS,STORAGE_KEYS.PERIODS,
+    STORAGE_KEYS.RETIRE_HISTORY,STORAGE_KEYS.AGE_YEAR,
+  ]);
+  try{
+    const cfg=getTabConfig();
+    if(cfg?.stuKey) keys.add(cfg.stuKey);
+    if(cfg?.instKey) keys.add(cfg.instKey);
+  }catch(e){}
+  return [...keys].filter(Boolean);
+}
 function _captureRestoreState(extraKeys){
-  const keys=[...new Set([..._auditDataKeys(),...((extraKeys||[]).filter(Boolean))])];
+  const keys=[...new Set((extraKeys||[]).filter(Boolean))]
+    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
   const data={};
   keys.forEach(key=>{
     const raw=dbGet(key);
@@ -1003,9 +1020,88 @@ function _buildAuditSummary(point,keys,meta){
     detail:detail+(changes.length>4?` / 외 ${changes.length-4}건`:''),
   };
 }
+function _auditByteSize(value){
+  let text='';
+  try{text=JSON.stringify(value??null);}catch(e){return AUDIT_STORAGE_LIMIT+1;}
+  try{
+    if(typeof TextEncoder!=='undefined') return new TextEncoder().encode(text).length;
+  }catch(e){}
+  return text.length;
+}
+function _thinRestorePoint(point){
+  if(!point||!point.before?.data) return point;
+  return {
+    ...point,
+    before:{
+      keys:point.before.keys||point.keys||[],
+      data:{},
+      skipped:true,
+      reason:'too-large',
+    },
+    detail:(point.detail||'')+' · 복구 데이터 용량 초과로 상세 복구 제외',
+  };
+}
+function _trimAuditStorage(){
+  let changed=false;
+  if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
+  if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
+  while(AUDIT_LOG.length>AUDIT_LOG_MAX){ AUDIT_LOG.shift(); changed=true; }
+  while(RESTORE_POINTS.length>RESTORE_POINT_MAX){ RESTORE_POINTS.shift(); changed=true; }
+  while(RESTORE_POINTS.length>3&&_auditByteSize(RESTORE_POINTS)>AUDIT_STORAGE_LIMIT){
+    RESTORE_POINTS.shift();
+    changed=true;
+  }
+  let guard=0;
+  while(_auditByteSize(RESTORE_POINTS)>AUDIT_STORAGE_LIMIT&&guard<RESTORE_POINTS.length){
+    RESTORE_POINTS[guard]=_thinRestorePoint(RESTORE_POINTS[guard]);
+    changed=true;
+    guard++;
+  }
+  while(AUDIT_LOG.length>50&&_auditByteSize(AUDIT_LOG)>AUDIT_STORAGE_LIMIT){
+    AUDIT_LOG.shift();
+    changed=true;
+  }
+  return changed;
+}
+function _cacheAuditRaw(key,raw){
+  if(raw===undefined||raw===null) return;
+  const asStr=typeof raw==='string'?raw:JSON.stringify(raw);
+  _dbCache[key]=asStr;
+  try{localStorage.setItem(_lsKey(key),asStr);}catch(e){}
+}
+function _readAuditRaw(key){
+  if(_fbReady&&_fb&&typeof _fb.child==='function'){
+    return _fb.child(key).once('value').then(snap=>snap.val());
+  }
+  return Promise.resolve(dbGet(key));
+}
+function _loadAuditStorage(force){
+  if(_auditStorageLoaded&&!force) return Promise.resolve();
+  if(_auditStorageLoading&&!force) return _auditStorageLoading;
+  _auditStorageLoading=Promise.all([
+    _readAuditRaw(STORAGE_KEYS.AUDIT_LOG),
+    _readAuditRaw(STORAGE_KEYS.RESTORE_POINTS),
+  ]).then(([logRaw,restoreRaw])=>{
+    if(logRaw===undefined||logRaw===null) logRaw=dbGet(STORAGE_KEYS.AUDIT_LOG);
+    if(restoreRaw===undefined||restoreRaw===null) restoreRaw=dbGet(STORAGE_KEYS.RESTORE_POINTS);
+    _cacheAuditRaw(STORAGE_KEYS.AUDIT_LOG,logRaw);
+    _cacheAuditRaw(STORAGE_KEYS.RESTORE_POINTS,restoreRaw);
+    AUDIT_LOG=_auditParseStored(logRaw,[]);
+    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
+    RESTORE_POINTS=_auditParseStored(restoreRaw,[]);
+    if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
+    const trimmed=_trimAuditStorage();
+    _auditStorageLoaded=true;
+    if(trimmed&&_fbReady) _saveAuditRaw();
+  }).finally(()=>{
+    _auditStorageLoading=null;
+  });
+  return _auditStorageLoading;
+}
 function _saveAuditRaw(){
   _auditLock=true;
   try{
+    _trimAuditStorage();
     dbSet(STORAGE_KEYS.AUDIT_LOG, JSON.stringify(AUDIT_LOG));
     dbSet(STORAGE_KEYS.RESTORE_POINTS, JSON.stringify(RESTORE_POINTS));
   }finally{
@@ -1014,6 +1110,16 @@ function _saveAuditRaw(){
 }
 function recordAuditPoint(point,touchedKeys,metaOverride){
   if(!point||_auditLock) return;
+  if(!_auditStorageLoaded){
+    _loadAuditStorage().then(()=>{
+      recordAuditPoint(point,touchedKeys,metaOverride);
+    }).catch(err=>{
+      console.warn('기록 저장 전 기존 기록 로드 실패:',err);
+      _auditStorageLoaded=true;
+      recordAuditPoint(point,touchedKeys,metaOverride);
+    });
+    return;
+  }
   const keys=[...new Set((touchedKeys&&touchedKeys.length?touchedKeys:point.keys||[]).filter(Boolean))]
     .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
   if(!keys.length) return;
@@ -1046,8 +1152,7 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     user:point.user,
   });
   AUDIT_LOG.push(entry);
-  if(AUDIT_LOG.length>AUDIT_LOG_MAX) AUDIT_LOG=AUDIT_LOG.slice(-AUDIT_LOG_MAX);
-  if(RESTORE_POINTS.length>RESTORE_POINT_MAX) RESTORE_POINTS=RESTORE_POINTS.slice(-RESTORE_POINT_MAX);
+  _trimAuditStorage();
   _saveAuditRaw();
   if(document.getElementById('record-manager-modal')?.style.display==='flex'){
     renderRecordManager();
@@ -1098,7 +1203,15 @@ function changeRecordFilter(){
 }
 function openRecordManagerModal(){
   document.getElementById('record-manager-modal').style.display='flex';
-  renderRecordManager();
+  const wrap=document.getElementById('record-list');
+  if(wrap) wrap.innerHTML='<div style="text-align:center;color:#888;padding:40px 12px;font-size:13px">기록을 불러오는 중입니다...</div>';
+  _loadAuditStorage().then(()=>{
+    renderRecordManager();
+  }).catch(err=>{
+    console.error('기록관리 로드 실패:',err);
+    toast('기록관리 로드 실패','err');
+    renderRecordManager();
+  });
 }
 function closeRecordManagerModal(){
   document.getElementById('record-manager-modal').style.display='none';
@@ -1197,15 +1310,18 @@ function restoreRecordPoint(restoreId){
   if(window.SCAuth && !SCAuth.requirePermission('manageRecords','기록 되돌리기')) return;
   const point=(Array.isArray(RESTORE_POINTS)?RESTORE_POINTS:[]).find(p=>p.id===restoreId);
   if(!point||!point.before){toast('복구 지점을 찾을 수 없습니다','err');return;}
+  if(point.before.skipped){toast('이 기록은 용량 제한으로 되돌리기 데이터가 없습니다','err');return;}
   if(!confirm(`"${point.label||'선택한 기록'}" 작업 직전 상태로 되돌릴까요?\n\n현재 상태는 복구 로그로 남겨둡니다.`)) return;
-  const beforeRestore=createAuditPoint(_auditDataKeys(), {
+  const restoreKeys=[...new Set(point.before.keys||point.keys||[])]
+    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+  const beforeRestore=createAuditPoint(restoreKeys, {
     type:'restore',
     label:'기록관리 되돌리기',
     detail:'복구 대상: '+(point.label||restoreId),
   });
   const data=point.before.data||{};
-  const keys=[...new Set([...(point.before.keys||[]),..._auditDataKeys()])]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+  const keys=restoreKeys;
+  if(!keys.length){toast('복구할 데이터 키가 없습니다','err');return;}
   _auditLock=true;
   try{
     keys.forEach(key=>{
@@ -1221,7 +1337,7 @@ function restoreRecordPoint(restoreId){
   closeStuPopup();
   closeInstPopup();
   buildTable();
-  recordAuditPoint(beforeRestore,_auditDataKeys(), {
+  recordAuditPoint(beforeRestore,restoreKeys, {
     type:'restore',
     label:'기록관리 되돌리기',
     detail:'복구 대상: '+(point.label||restoreId),
@@ -1401,7 +1517,10 @@ function _parseJSONValue(raw,fallback){
   }
 }
 function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
-  if(!_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
+  if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(storageKey,'트랜잭션 저장')){
+    return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
+  }
+  if(typeof canPersistScheduleData!=='function' && !_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
   if(typeof isSnapshotTab==='function' && isSnapshotTab()
      && storageKey!==STORAGE_KEYS.TAB_LIST && !storageKey.startsWith('swim_snap_')){
     return Promise.reject(new Error('스냅샷은 읽기 전용입니다'));
@@ -1467,31 +1586,43 @@ function _applyStoredValue(key,val){
   else if(key===STORAGE_KEYS.AUDIT_LOG) AUDIT_LOG=Array.isArray(val)?val:[];
   else if(key===STORAGE_KEYS.RESTORE_POINTS) RESTORE_POINTS=Array.isArray(val)?val:[];
 }
-function updateScheduleTx(mutator,meta){
-  if(!_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
+function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
+  const hasExplicitKeys=Array.isArray(keysOrMutator);
+  const txKeysRaw=hasExplicitKeys ? keysOrMutator : _auditEditKeys();
+  const mutator=hasExplicitKeys ? mutatorOrMeta : keysOrMutator;
+  const meta=hasExplicitKeys ? metaArg : mutatorOrMeta;
+  const txKeys=[...new Set((txKeysRaw||[]).filter(Boolean))]
+    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+  const txSafeKeys=[...new Set(txKeys.map(_storageSafeKey))];
+  const txKeySet=new Set(txSafeKeys);
+  if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(txKeys[0]||'schedule','시간표 저장')){
+    return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
+  }
+  if(typeof canPersistScheduleData!=='function' && !_firebaseLoaded) return Promise.reject(new Error('Firebase 로드 전 저장이 차단되었습니다'));
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.reject(new Error('스냅샷은 읽기 전용입니다'));
   if(typeof _fakeDate !== 'undefined' && _fakeDate) return Promise.reject(new Error('타임머신 모드에서는 저장되지 않습니다'));
+  if(typeof mutator!=='function') return Promise.reject(new Error('transaction mutator is required'));
+  if(!txKeys.length) return Promise.reject(new Error('transaction keys are required'));
   const touched=new Set();
   let abortReason='';
-  const auditPoint=(typeof createAuditPoint==='function')?createAuditPoint(_auditDataKeys(), meta||{type:'edit', label:'시간표 편집'}):null;
+  const auditPoint=(typeof createAuditPoint==='function')?createAuditPoint(txKeys, meta||{type:'edit', label:'시간표 편집'}):null;
   const makeCtx=root=>({
     get(key,fallback){
-      return _parseJSONValue(root[_storageSafeKey(key)],fallback);
+      const safeKey=_storageSafeKey(key);
+      if(!txKeySet.has(safeKey)) throw new Error('트랜잭션 키 누락: '+key);
+      return _parseJSONValue(root[safeKey],fallback);
     },
     set(key,val){
-      root[_storageSafeKey(key)]=JSON.stringify(val);
+      const safeKey=_storageSafeKey(key);
+      if(!txKeySet.has(safeKey)) throw new Error('트랜잭션 키 누락: '+key);
+      root[safeKey]=JSON.stringify(val);
       touched.add(key);
     },
     abort(reason){ abortReason=reason||''; },
   });
   if(!_fbReady){
     const localRoot={};
-    const keys=[
-      getTabConfig().stuKey,getTabConfig().instKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,
-      STORAGE_KEYS.MARK,STORAGE_KEYS.DISABLED,STORAGE_KEYS.RESERVE,STORAGE_KEYS.休원,
-      STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,STORAGE_KEYS.DAY_SNAPSHOT,STORAGE_KEYS.TEACHERS,
-    ];
-    keys.forEach(key=>{localRoot[_storageSafeKey(key)]=dbGet(key);});
+    txKeys.forEach(key=>{localRoot[_storageSafeKey(key)]=dbGet(key);});
     const next=mutator(makeCtx(localRoot));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
     touched.forEach(key=>{
@@ -1501,7 +1632,10 @@ function updateScheduleTx(mutator,meta){
     });
     return Promise.resolve();
   }
-  return _fb.transaction(root=>{
+  const runTx=typeof _fb.transactionKeys==='function'
+    ? updateFn=>_fb.transactionKeys(txSafeKeys, updateFn)
+    : updateFn=>_fb.transaction(updateFn);
+  return runTx(root=>{
     root=root||{};
     touched.clear();
     abortReason='';
@@ -1640,10 +1774,12 @@ function reloadGlobalData(){
     const tf=loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
     _tabFolderList=Array.isArray(tf)?tf:[];
   }
-  AUDIT_LOG=loadJSON(STORAGE_KEYS.AUDIT_LOG, []);
-  if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
-  RESTORE_POINTS=loadJSON(STORAGE_KEYS.RESTORE_POINTS, []);
-  if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
+  if(_auditStorageLoaded){
+    AUDIT_LOG=loadJSON(STORAGE_KEYS.AUDIT_LOG, []);
+    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
+    RESTORE_POINTS=loadJSON(STORAGE_KEYS.RESTORE_POINTS, []);
+    if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
+  }
   // 현재 활성 탭이 삭제됐으면 첫 탭으로
   if(!_tabList.find(t=>t.id===_activeTab)){
     _activeTab=_tabList[0].id;
