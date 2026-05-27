@@ -678,6 +678,7 @@ async function submitAbsentCancel(branch, data) {
   const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
+  let notifyCtx = null;
   await db.runTransaction(async tx => {
     const students = parseJSON(await readStoredValue(branch, keys.stuKey, tx), []);
     const inst = parseJSON(await readStoredValue(branch, keys.instKey, tx), {});
@@ -691,6 +692,7 @@ async function submitAbsentCancel(branch, data) {
     );
     if (exists) throw new HttpsError("already-exists", "이미 취소 신청이 접수되었습니다");
     const teacher = inst[instKeyOf(stu)];
+    notifyCtx = {stu, inst: teacher, ds};
     requests[makeReqId()] = {
       type: "absent-cancel",
       status: "pending",
@@ -705,6 +707,14 @@ async function submitAbsentCancel(branch, data) {
     };
     writeStoredValue(tx, branch, "swim_requests", JSON.stringify(requests));
   });
+  if (notifyCtx) {
+    const settings = await readAligoSettings(branch);
+    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
+    await notifyMany(settings, [
+      {templateId: "parent_absent_cancel_requested", phone: notifyCtx.stu.p, name: notifyCtx.stu.n, vars},
+      {templateId: "desk_absent_cancel_requested", phone: recipientPhone(settings, "desk"), name: "데스크", vars},
+    ]);
+  }
   return {bundle: await bundleForSession(branch, session)};
 }
 
