@@ -103,6 +103,11 @@ input,textarea{font-family:inherit;outline:none}
 .modal-desc{font-size:12px;color:#6B7280;margin-bottom:16px;line-height:1.6}
 .modal-actions{display:flex;gap:8px;margin-top:14px}
 .modal-actions button{flex:1}
+.absent-vehicle-box{margin:12px 0 6px;padding:12px;border:1px solid #E5E7EB;border-radius:12px;background:#F9FAFB;text-align:left}
+.absent-vehicle-title{font-size:12px;font-weight:900;color:#374151;margin-bottom:8px}
+.absent-vehicle-option{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid #E5E7EB;border-radius:9px;background:#fff;font-size:13px;font-weight:900;color:#1F2937;margin-bottom:6px;cursor:pointer}
+.absent-vehicle-option:last-child{margin-bottom:0}
+.absent-vehicle-option input{width:16px;height:16px;accent-color:#3B82F6}
 .feedback-prompt{margin-top:14px;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E5E7EB;text-align:center}
 .feedback-prompt p{font-size:12px;line-height:1.45;color:#374151;margin-bottom:8px}
 .feedback-mini-btn{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:8px 12px;border-radius:9px;background:#EFF6FF;color:#1D4ED8;font-size:12px;font-weight:900}

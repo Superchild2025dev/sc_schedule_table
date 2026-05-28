@@ -22,6 +22,10 @@ const PARENT_SESSION_KEY='parent_session_token';
 
 /* [v118] 지점 선택 (가경점/용암점) — 메인 앱과 동일 */
 const SELECTED_BRANCH_KEY='selected_branch';
+const BRANCH_CONTACTS={
+  gagyeong:{label:'가경점',phone:'043-715-2019'},
+  yongam:{label:'용암점',phone:'043-288-2016'},
+};
 try{
   const branchParam=new URLSearchParams(location.search).get('branch');
   if(branchParam==='gagyeong'||branchParam==='yongam'){
@@ -47,6 +51,14 @@ function openBranchModal(){
 function closeBranchModal(){
   const m=document.getElementById('branch-modal');
   if(m) m.classList.remove('show');
+}
+function branchContactText(){
+  const branch=getBranchInfo();
+  const contact=BRANCH_CONTACTS[branch?.id]||BRANCH_CONTACTS.gagyeong;
+  return `${contact.label} ${contact.phone}`;
+}
+function sameDayCancelMessage(){
+  return `당일 결석취소 요청은 온라인 접수가 불가합니다.\n유선문의 부탁드립니다.\n${branchContactText()}`;
 }
 let _currentStudents=[];  // 로그인된 학생 그룹 (같은 이름+같은 전화번호)
 // 하위 호환: 첫 학생을 _currentStudent로도 노출
@@ -237,6 +249,17 @@ async function submitFeedback(){
 
 function instOfStudent(s){
   return s ? INST_MAP[s.t+'/'+s.d+'/'+s.l] : null;
+}
+function studentSlotKey(s){
+  return s ? [s.t,s.d,s.l,s.r].join('/') : '';
+}
+function studentBySlotKey(slotKey){
+  return (_currentStudents||[]).find(s=>studentSlotKey(s)===slotKey) || null;
+}
+function defaultVehicleModeForSlot(slotKey){
+  const s=studentBySlotKey(slotKey);
+  if(!s) return 'self';
+  return [s.bus,s.vehicleName,s.car,s.route,s.loc].some(v=>String(v||'').trim()) ? 'bus' : 'self';
 }
 function instKind(inst){
   if(!inst) return null;
@@ -815,8 +838,10 @@ function renderDateList(slotKey,period,day){
     else status='수업 예정';
 
     if(mark?.type==='absent'){
-      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강: '+esc(mark.sub.n||'');
-      else status='❌ 결석';
+      const vehicleLabel=mark.vehicleMode==='bus'?'차량이용':(mark.vehicleMode==='self'?'자가등하원':'');
+      const vehicleText=vehicleLabel ? ` · ${vehicleLabel}` : '';
+      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강: '+esc(mark.sub.n||'')+vehicleText;
+      else status='❌ 결석'+vehicleText;
     } else if(mark?.type==='bogang'){
       status='🟣 보강: '+esc(mark.n||'');
     }
@@ -881,10 +906,14 @@ function renderDateList(slotKey,period,day){
           } else {
             bogangAction=`<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청하기</button>`;
           }
+          const cancelAction=isToday
+            ? `<button class="btn-absent active is-disabled" type="button" disabled>당일 취소 유선문의</button>
+               <span class="action-note muted">${esc(branchContactText())}</span>`
+            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>`;
           actions=sourceNoMakeup
-            ? `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>
+            ? `${cancelAction}
                <span class="action-note muted">보강 불가</span>`
-            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>
+            : `${cancelAction}
                ${bogangAction}`;
         }
       } else {
@@ -915,6 +944,9 @@ function openAbsentModal(ds, slotKey){
   const slotInfo=`${day}요일 ${displayTimeForDay(day,t)}`;
   document.getElementById('ab-desc').innerHTML=
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 수업을 결석으로 신청하시겠습니까?`;
+  const defaultVehicleMode=defaultVehicleModeForSlot(slotKey);
+  const vehicleRadio=document.querySelector(`input[name="ab-vehicle-mode"][value="${defaultVehicleMode}"]`);
+  if(vehicleRadio) vehicleRadio.checked=true;
   document.getElementById('ab-submit').dataset.ds=ds;
   document.getElementById('ab-submit').dataset.slot=slotKey;
   document.getElementById('ab-form').style.display='block';
@@ -922,6 +954,10 @@ function openAbsentModal(ds, slotKey){
   document.getElementById('absent-modal').style.display='flex';
 }
 function openAbsentCancelModal(ds, slotKey){
+  if(ds===toDateStr(new Date())){
+    alert(sameDayCancelMessage());
+    return;
+  }
   const [y,m,d]=ds.split('-');
   const dowNames=['일','월','화','수','목','금','토'];
   const dow=dowNames[new Date(ds).getDay()];
@@ -947,9 +983,10 @@ async function submitAbsent(){
   const ds=btn.dataset.ds;
   const slotKey=btn.dataset.slot;
   if(!slotKey) return;
+  const vehicleMode=document.querySelector('input[name="ab-vehicle-mode"]:checked')?.value==='bus' ? 'bus' : 'self';
   try{
     btn.disabled=true;
-    const data=await callParent('submitAbsent',{sessionToken:_parentSessionToken,ds,slotKey});
+    const data=await callParent('submitAbsent',{sessionToken:_parentSessionToken,ds,slotKey,vehicleMode});
     applyParentBundle(data.bundle||{});
     document.getElementById('ab-form').style.display='none';
     document.getElementById('ab-success').style.display='block';
@@ -967,6 +1004,10 @@ async function submitAbsentCancel(){
   const ds=btn.dataset.ds;
   const slotKey=btn.dataset.slot;
   if(!slotKey) return;
+  if(ds===toDateStr(new Date())){
+    alert(sameDayCancelMessage());
+    return;
+  }
   try{
     btn.disabled=true;
     const data=await callParent('submitAbsentCancel',{sessionToken:_parentSessionToken,ds,slotKey});

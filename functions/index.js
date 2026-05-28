@@ -16,8 +16,8 @@ const AUDIT_LOG_KEY = "swim_audit_log";
 const AUDIT_LOG_MAX = 200;
 
 const BRANCHES = {
-  gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동"},
-  yongam: {id: "yongam", name: "용암점", aligoBranch: "용암점"},
+  gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동", phone: "043-715-2019"},
+  yongam: {id: "yongam", name: "용암점", aligoBranch: "용암점", phone: "043-288-2016"},
 };
 const ALIGO_PROXY_BASE = "https://adminsuperchild.cloud/aligo";
 const ALIGO_SEND_PATH = "/alimtalk/send/";
@@ -459,6 +459,10 @@ function todayString() {
   return now.toISOString().slice(0, 10);
 }
 
+function sameDayCancelError(branch) {
+  return `당일 결석취소 요청은 온라인 접수가 불가합니다. 유선문의 부탁드립니다. ${branch.name} ${branch.phone || ""}`.trim();
+}
+
 function addDaysString(ds, days) {
   const date = new Date(ds + "T12:00:00+09:00");
   date.setDate(date.getDate() + days);
@@ -774,6 +778,7 @@ async function submitAbsent(branch, data) {
   const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
+  const vehicleMode = String(data.vehicleMode || "") === "bus" ? "bus" : "self";
   let notifyCtx = null;
   await db.runTransaction(async tx => {
     const markStored = await readStoredValueWithMeta(branch, "swim_mark", tx);
@@ -786,14 +791,18 @@ async function submitAbsent(branch, data) {
     const inst = base.inst[instKeyOf(stu)];
     const markKey = `${slotKey}/${ds}`;
     const current = base.mark[markKey];
-    base.mark[markKey] = current && (current.type === "bogang" || current.type === "sample")
-      ? {type: "absent", sub: current}
-      : {type: "absent"};
-    notifyCtx = {stu, inst, ds};
+    const absentMark = {
+      type: "absent",
+      vehicleMode,
+      vehicleLabel: vehicleMode === "bus" ? "차량이용" : "자가등하원",
+    };
+    if (current && (current.type === "bogang" || current.type === "sample")) absentMark.sub = current;
+    base.mark[markKey] = absentMark;
+    notifyCtx = {stu, inst, ds, vehicleMode};
     await appendAuditLogTx(tx, branch, {
       label: "학부모 결석 신청",
       target: auditStudentText(stu),
-      detail: auditClassDetail(branch, stu, inst, ds),
+      detail: `${auditClassDetail(branch, stu, inst, ds)} / ${absentMark.vehicleLabel}`,
       keys: ["swim_mark"],
       tabId: keys.tabId,
       tabName: keys.tabName || "학부모 기준 시간표",
@@ -803,14 +812,16 @@ async function submitAbsent(branch, data) {
   });
   if (notifyCtx) {
     const settings = await readAligoSettings(branch);
-    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds);
+    const vars = classVars(branch, notifyCtx.stu, notifyCtx.inst, notifyCtx.ds, {
+      "등하원방식": notifyCtx.vehicleMode === "bus" ? "차량이용" : "자가등하원",
+    });
     const teacherName = notifyCtx.inst && notifyCtx.inst.n || "";
     const jobs = [
       {templateId: "parent_absent_done", phone: notifyCtx.stu.p, name: notifyCtx.stu.n, vars},
       {templateId: "staff_absent_done", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
       {templateId: "staff_absent_done", phone: recipientPhone(settings, "desk"), name: "데스크", vars},
     ];
-    const vehicleKey = vehicleKeyOfStudent(notifyCtx.stu);
+    const vehicleKey = notifyCtx.vehicleMode === "bus" ? vehicleKeyOfStudent(notifyCtx.stu) : "";
     if (vehicleKey) {
       jobs.push({
         templateId: "vehicle_absent",
@@ -829,6 +840,7 @@ async function submitAbsentCancel(branch, data) {
   const keys = sessionDataKeys(session);
   const slotKey = String(data.slotKey || "");
   const ds = String(data.ds || "");
+  if (ds === todayString()) throw new HttpsError("failed-precondition", sameDayCancelError(branch));
   let notifyCtx = null;
   await db.runTransaction(async tx => {
     const requestsStored = await readStoredValueWithMeta(branch, "swim_requests", tx);
