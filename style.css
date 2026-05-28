@@ -410,7 +410,7 @@ body.is-snapshot .snap-banner{display:block}
 .stu-date-box.bogang-set .date-bogang-label{display:block}
 .stu-date-box.sample-set{background:#FEF3C7!important;color:#D97706!important;border-color:#F59E0B!important}
 .stu-date-box.sample-set .date-sample-label{display:block}
-.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:8px;font-weight:800;line-height:1.1;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:9px;font-weight:800;line-height:1.1;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .date-retire-label{color:#fff}.date-enroll-label{color:#fff}
 .date-absent-label{color:#DC2626}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
 .stu-date-box.hyuwon-set{background:#E0F2FE!important;color:#0369A1!important;border-color:#0EA5E9!important}
@@ -418,7 +418,7 @@ body.is-snapshot .snap-banner{display:block}
 /* 셀 이벤트 뱃지 (등원 상단 + 나머지 2x2) */
 .cb-top{
   display:block;width:100%;
-  padding:0 2px;font-size:8px;font-weight:800;
+  padding:0 2px;font-size:9px;font-weight:800;
   border-radius:2px;text-align:center;
   white-space:nowrap;
   line-height:1.5;color:#fff;margin-top:1px;
@@ -429,7 +429,7 @@ body.is-snapshot .snap-banner{display:block}
 }
 .cb{
   flex:1 1 calc(50% - 1px);min-width:0;
-  padding:0 2px;font-size:8px;font-weight:800;
+  padding:0 2px;font-size:9px;font-weight:800;
   border-radius:2px;text-align:center;
   white-space:nowrap;
   line-height:1.5;color:#fff;
@@ -550,7 +550,7 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
   .stu-cell{font-size:calc(10px * var(--tbl-scale))!important;line-height:1.15;padding:1px 2px!important}
   .stu-cell .stu-name-text,
   .stu-cell .cb,
-  .stu-cell .cb-top{font-size:calc(8px * var(--tbl-scale))!important}
+  .stu-cell .cb-top{font-size:max(8px, calc(9px * var(--tbl-scale)))!important}
   .stu-cell .stu-name-text{line-height:1.5}
   .inst-lbl,.lh{font-size:calc(9px * var(--tbl-scale))!important}
 
