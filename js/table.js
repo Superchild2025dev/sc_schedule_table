@@ -1043,13 +1043,28 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   if(ri>=baseSlotRows && !hasElmaInTime(t)) stuRow.classList.add('half-row');
   const curMonth=SCHEDULE_PERIODS[getCurrentPeriod()].month;
 
+  const slotHasStoredContent=(day,lane,row)=>{
+    const slotKey=t+'/'+day+'/'+lane+'/'+row;
+    if(getStu(t,day,lane,row)) return true;
+    if(RETIRE_MAP[slotKey]||ENROLL_MAP[slotKey]||DISABLED_MAP[slotKey]||HYUWON_MAP[slotKey]) return true;
+    const markPrefix=slotKey+'/';
+    return Object.keys(MARK_MAP||{}).some(k=>k.startsWith(markPrefix));
+  };
+  const rowHasStoredContent=(day,row)=>{
+    for(let lane=1;lane<=LANE_COUNT;lane++){
+      if(slotHasStoredContent(day,lane,row)) return true;
+    }
+    return false;
+  };
+
   DAYS.forEach((day,di)=>{
     const hasNum=HAS_NUM.includes(day);
     const isSat=day==='토';
     const satEmpty=isSat&&!hasSat;
     const kimhs=getElmaLanes(t,day);
-    const satSkip=isSat&&!satEmpty&&rows>5&&!kimhs&&ri>=5;
-    const dayBlocked=!satSkip&&rows>baseSlotRows&&!kimhs&&ri>=baseSlotRows;
+    const rowHasContent=rowHasStoredContent(day,ri+1);
+    const satSkip=isSat&&!satEmpty&&rows>5&&!kimhs&&ri>=5&&!rowHasContent;
+    const dayBlocked=!satSkip&&rows>baseSlotRows&&!kimhs&&ri>=baseSlotRows&&!rowHasContent;
 
     // 번호 셀
     if(hasNum){
@@ -1087,8 +1102,8 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const _l=li+1, _r=ri+1;
       const slotKey=t+'/'+day+'/'+_l+'/'+_r;
       // 일반 레인 5행 초과는 기본적으로 blocked
-      // 출석 모드에서는: 해당 날짜에 MARK_MAP 내용 or 학생이 있을 때만 활성화
-      let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows;
+      // 단, 실제 저장 데이터가 있는 칸은 6~8번이어도 가리지 않는다.
+      let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows&&!slotHasStoredContent(day,_l,_r);
       if(isBlocked && _attendanceMode && _attendanceDate){
         const _cellDsChk=_dayToCellDs(day);
         const _hasContent=MARK_MAP[slotKey+'/'+_cellDsChk]

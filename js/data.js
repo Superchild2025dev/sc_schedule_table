@@ -321,7 +321,26 @@ const TIMES_REG=[{t:'1시'},{t:'2시'},{t:'3시'},{t:'4시'},{t:'5시'},{t:'6시
 function getTimes(){ return _activeTab==='regular'?TIMES_REG:getTabConfig().times; }
 function getTimeRows(t){ 
   const baseRows=isBangteuk()?6:5;
-  return hasElmaInTime(t)?8:baseRows;
+  const maxRows=isBangteuk()?6:8;
+  let rows=hasElmaInTime(t)?maxRows:baseRows;
+  const useRow=row=>{
+    const n=parseInt(row,10);
+    if(Number.isFinite(n)&&n>rows) rows=n;
+  };
+  try{
+    (STUDENTS||[]).forEach(s=>{ if(s&&s.t===t) useRow(s.r); });
+    [RETIRE_MAP,ENROLL_MAP,DISABLED_MAP,HYUWON_MAP].forEach(map=>{
+      Object.keys(map||{}).forEach(key=>{
+        const p=String(key).split('/');
+        if(p[0]===t) useRow(p[3]);
+      });
+    });
+    Object.keys(MARK_MAP||{}).forEach(key=>{
+      const p=String(key).split('/');
+      if(p[0]===t) useRow(p[3]);
+    });
+  }catch(e){}
+  return Math.min(maxRows, Math.max(baseRows, rows));
 }
 function getSatLabel(){ return getTabConfig().satTimeLabel; }
 function getHasNum(){ return getTabConfig().hasNum; }
