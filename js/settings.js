@@ -1,6 +1,7 @@
 (function(){
   const SETTINGS_KEY='swim_aligo_settings';
   const TEACHERS_KEY='swim_teachers';
+  const FEEDBACK_KEY='swim_parent_feedback';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
   const BRANCHES={
     gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule',aligoBranch:'가경동'},
@@ -48,6 +49,7 @@
   let activePanel='menu';
   let settingsByBranch={};
   let teacherNamesByBranch={};
+  let feedbackByBranch={};
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
 
@@ -197,6 +199,48 @@
     }
     return v;
   }
+  function normalizeFeedbackList(value){
+    if(!Array.isArray(value)) return [];
+    return value.filter(Boolean).map((item,index)=>Object.assign({
+      id:'feedback_'+index,
+      at:'',
+      context:'의견 제출',
+      message:'',
+      name:'',
+      phone:'',
+      status:'new',
+    },item)).sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')));
+  }
+  function feedbackList(branchId){
+    return feedbackByBranch[branchId]||[];
+  }
+  function isNewFeedback(item){
+    return String(item&&item.status||'new')!=='done';
+  }
+  function feedbackNewCount(branchId){
+    return feedbackList(branchId).filter(isNewFeedback).length;
+  }
+  function formatFeedbackDate(iso){
+    if(!iso) return '-';
+    const date=new Date(iso);
+    if(Number.isNaN(date.getTime())) return String(iso);
+    return date.toLocaleString('ko-KR',{
+      month:'2-digit',
+      day:'2-digit',
+      hour:'2-digit',
+      minute:'2-digit',
+      hour12:false,
+    });
+  }
+  function updateFeedbackBadges(){
+    const count=feedbackNewCount(activeBranch);
+    ['feedback-nav-badge','feedback-quick-badge'].forEach(id=>{
+      const el=$(id);
+      if(!el) return;
+      el.textContent=String(count);
+      el.hidden=count<=0;
+    });
+  }
   function ensureFirebase(){
     if(!window.firebase) throw new Error('Firebase SDK가 로드되지 않았습니다');
     if(!firebase.apps.length) firebase.initializeApp(window.SC_FIREBASE_CONFIG);
@@ -244,10 +288,18 @@
       settingsByBranch[branchId]=mergeSettings(base,parseStored(settingsSnap.val()));
       teacherNamesByBranch[branchId]=normalizeTeacherNames(parseStored(teachersSnap.val()),branchId);
       settingsLoadFailedByBranch[branchId]=false;
+      try{
+        const feedbackSnap=await branchRoot(branchId).child(FEEDBACK_KEY).once('value');
+        feedbackByBranch[branchId]=normalizeFeedbackList(parseStored(feedbackSnap.val()));
+      }catch(feedbackError){
+        console.warn('feedback load failed',feedbackError);
+        feedbackByBranch[branchId]=[];
+      }
     }catch(e){
       console.error(e);
       settingsByBranch[branchId]=base;
       teacherNamesByBranch[branchId]=clone(DEFAULT_TEACHERS[branchId]||[]);
+      feedbackByBranch[branchId]=[];
       settingsLoadFailedByBranch[branchId]=true;
       toast('설정 로드 실패 — 저장은 차단됩니다','err');
     }
@@ -326,7 +378,9 @@
     renderTemplates(data);
     renderAligo(data);
     renderSms(data);
+    renderFeedback();
     renderVariableGuide();
+    updateFeedbackBadges();
     setPermissionStates();
   }
   function setValue(id,value){
@@ -815,6 +869,108 @@
       window.prompt('링크 복사',link);
     }
   }
+  function renderFeedback(){
+    const list=feedbackList(activeBranch);
+    const wrap=$('feedback-list');
+    if(!wrap) return;
+    const newCount=list.filter(isNewFeedback).length;
+    const newEl=$('feedback-new-count');
+    const totalEl=$('feedback-total-count');
+    if(newEl) newEl.textContent=String(newCount);
+    if(totalEl) totalEl.textContent=String(list.length);
+    if(!list.length){
+      wrap.innerHTML='<div class="feedback-empty">아직 접수된 의견이 없습니다.</div>';
+      return;
+    }
+    wrap.innerHTML=list.map(item=>{
+      const isNew=isNewFeedback(item);
+      const name=item.name||'이름 없음';
+      const phone=item.phone ? ` · ${item.phone}` : '';
+      const slot=item.studentSlotKey ? ` · ${item.studentSlotKey}` : '';
+      const page=item.page ? ` · ${item.page}` : '';
+      const actionLabel=isNew ? '확인완료' : '새 접수로';
+      const actionStatus=isNew ? 'done' : 'new';
+      return `<article class="feedback-card ${isNew?'is-new':''}">
+        <div class="feedback-card-head">
+          <div class="feedback-meta">
+            <div class="feedback-title">
+              <strong>${esc(item.context||'의견 제출')}</strong>
+              <span class="feedback-status ${isNew?'':'done'}">${isNew?'새 접수':'확인완료'}</span>
+            </div>
+            <div class="feedback-sub">${esc(formatFeedbackDate(item.at))} · ${esc(name)}${esc(phone)}${esc(slot)}${esc(page)}</div>
+          </div>
+          <div class="feedback-actions">
+            <button type="button" class="mini-btn" data-feedback-action="status" data-feedback-id="${escAttr(item.id||'')}" data-feedback-status="${actionStatus}">${actionLabel}</button>
+          </div>
+        </div>
+        <div class="feedback-message">${esc(item.message||'')}</div>
+      </article>`;
+    }).join('');
+  }
+  async function reloadFeedback(silent){
+    try{
+      const snap=await branchRoot(activeBranch).child(FEEDBACK_KEY).once('value');
+      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored(snap.val()));
+      renderFeedback();
+      updateFeedbackBadges();
+      if(!silent) toast('의견접수 새로고침 완료','ok');
+    }catch(e){
+      console.error(e);
+      if(!silent) toast('의견접수 로드 실패','err');
+    }
+  }
+  async function updateFeedbackStatus(id,status){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','의견접수 상태 변경')) return;
+    id=String(id||'');
+    if(!id) return;
+    status=status==='done'?'done':'new';
+    try{
+      const res=await branchRoot(activeBranch).child(FEEDBACK_KEY).transaction(raw=>{
+        const list=normalizeFeedbackList(parseStored(raw));
+        const found=list.find(item=>String(item.id||'')===id);
+        if(!found) return raw;
+        found.status=status;
+        found.checkedAt=status==='done' ? new Date().toISOString() : '';
+        return JSON.stringify(list);
+      });
+      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored(res.snapshot.val()));
+      renderFeedback();
+      updateFeedbackBadges();
+      toast(status==='done'?'확인완료 처리했습니다':'새 접수로 되돌렸습니다','ok');
+    }catch(e){
+      console.error(e);
+      toast('의견 상태 변경 실패','err');
+    }
+  }
+  async function markAllFeedbackDone(){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','의견접수 전체 확인')) return;
+    const count=feedbackNewCount(activeBranch);
+    if(!count){
+      toast('새 접수 의견이 없습니다');
+      return;
+    }
+    if(!confirm(`새 접수 ${count}건을 모두 확인완료로 바꿀까요?`)) return;
+    try{
+      const checkedAt=new Date().toISOString();
+      const res=await branchRoot(activeBranch).child(FEEDBACK_KEY).transaction(raw=>{
+        const list=normalizeFeedbackList(parseStored(raw));
+        list.forEach(item=>{
+          if(isNewFeedback(item)){
+            item.status='done';
+            item.checkedAt=checkedAt;
+          }
+        });
+        return JSON.stringify(list);
+      });
+      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored(res.snapshot.val()));
+      renderFeedback();
+      updateFeedbackBadges();
+      toast('전체 확인완료 처리했습니다','ok');
+    }catch(e){
+      console.error(e);
+      toast('전체 확인 처리 실패','err');
+    }
+  }
   function bindEvents(){
     document.querySelectorAll('.nav-btn').forEach(btn=>{
       btn.addEventListener('click',()=>setPanel(btn.dataset.panel));
@@ -847,6 +1003,15 @@
     $('aligo-test-template').addEventListener('change',e=>applyTestTemplate(e.currentTarget.value,true));
     $('sms-health').addEventListener('click',e=>runProxyTest('sms','health',e.currentTarget));
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
+    $('feedback-refresh').addEventListener('click',()=>reloadFeedback(false));
+    $('feedback-mark-all').addEventListener('click',markAllFeedbackDone);
+    $('feedback-list').addEventListener('click',e=>{
+      const btn=e.target.closest('[data-feedback-action]');
+      if(!btn) return;
+      if(btn.dataset.feedbackAction==='status'){
+        updateFeedbackStatus(btn.dataset.feedbackId,btn.dataset.feedbackStatus);
+      }
+    });
   }
   function initialBranch(){
     try{
@@ -860,10 +1025,10 @@
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
+      if(p==='feedback'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
+    return hash==='feedback'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'
@@ -878,6 +1043,7 @@
         btn.disabled=!canAccessBranch(btn.dataset.branch);
       });
       setBranch(activeBranch);
+      setInterval(()=>reloadFeedback(true),60000);
       if(window.SCAuth&&typeof SCAuth.applyPagePermissions==='function'){
         SCAuth.applyPagePermissions(document);
       }

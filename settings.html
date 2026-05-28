@@ -14,7 +14,7 @@
 <script src="js/firebase-store.js?v=20260527-3"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="auth.css?v=20260521-7">
-<link rel="stylesheet" href="settings.css?v=20260522-4">
+<link rel="stylesheet" href="settings.css?v=20260528-1">
 </head>
 <body>
 <header class="settings-topbar">
@@ -33,6 +33,7 @@
 <main class="settings-shell">
   <aside class="settings-nav">
     <button type="button" class="nav-btn active" data-panel="menu">운영 메뉴</button>
+    <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">의견접수 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
     <button type="button" class="nav-btn" data-panel="recipients" data-perm="manageSettings">수신번호</button>
     <button type="button" class="nav-btn" data-panel="templates" data-perm="manageSettings">템플릿</button>
     <button type="button" class="nav-btn" data-panel="aligo" data-perm="manageSettings">알림톡 설정</button>
@@ -71,6 +72,9 @@
         <button type="button" class="quick-btn" data-open-action="parentPage">
           <span>학부모 페이지</span><small>신청 화면</small>
         </button>
+        <button type="button" class="quick-btn" data-panel-jump="feedback" data-perm="manageSettings">
+          <span>의견접수 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>오류/불편사항</small>
+        </button>
         <button type="button" class="quick-btn" data-panel-jump="recipients" data-perm="manageSettings">
           <span>수신번호</span><small>선생님/차량/데스크</small>
         </button>
@@ -103,6 +107,28 @@
           </div>
           <button type="button" class="mini-btn" data-copy-link="teacher">복사</button>
         </div>
+      </div>
+    </section>
+
+    <section class="settings-panel" id="panel-feedback" data-perm="manageSettings">
+      <div class="panel-head">
+        <div>
+          <h1>의견접수</h1>
+          <p>학부모 페이지에서 남긴 오류 보고와 불편사항을 확인합니다.</p>
+        </div>
+        <div class="panel-actions">
+          <button type="button" class="ghost-btn" id="feedback-refresh">새로고침</button>
+          <button type="button" class="primary-btn" id="feedback-mark-all">전체 확인완료</button>
+        </div>
+      </div>
+
+      <div class="feedback-summary">
+        <div><strong id="feedback-new-count">0</strong><span>새 접수</span></div>
+        <div><strong id="feedback-total-count">0</strong><span>전체</span></div>
+      </div>
+
+      <div class="feedback-list" id="feedback-list">
+        <div class="feedback-empty">의견을 불러오는 중입니다...</div>
       </div>
     </section>
 
@@ -298,6 +324,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260527-3"></script>
+<script src="js/settings.js?v=20260528-1"></script>
 </body>
 </html>
