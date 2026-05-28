@@ -1452,12 +1452,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       // 퇴원
       if(!_skipBadges && retDs&&retDs>=todayStr){
         const dl=_dl(retDs), nm=retEntry?.name||'';
-        badges.push({type:'retire', ds:retDs, text:nm+' '+dl, tip:'제외 '+nm+' '+dl});
+        const label=nm?nm+'~'+dl+'까지':dl+'까지';
+        badges.push({type:'retire', ds:retDs, text:label, tip:'제외 '+label});
       }
       // 등원
       if(!_skipBadges && enrEntry&&enrEntry.ds>todayStr){
         const dl=_dl(enrEntry.ds), nm=enrEntry.name||'';
-        badges.push({type:'enroll', ds:enrEntry.ds, text:nm+' '+dl, tip:'등록 '+nm+(enrEntry.age?' '+enrEntry.age:'')+' '+dl});
+        const label=nm?nm+' '+dl+'부터~':dl+'부터~';
+        badges.push({type:'enroll', ds:enrEntry.ds, text:label, tip:'등록 '+label});
       }
       // 결석/보강/샘플
       if(!_skipBadges) allDates.forEach(d=>{
