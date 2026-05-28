@@ -32,6 +32,8 @@ body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;f
 .tab-type-row{flex-direction:row;margin-bottom:12px}
 .tab-type-btn{flex:1;padding:11px 12px;border:2px solid #E5E7EB;border-radius:8px;background:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s}
 .tab-type-btn:hover,.tab-type-btn.active{border-color:#0F9D58;background:#F0FDF4;color:#0F9D58}
+.tab-period-field{margin-bottom:10px}
+.tab-date-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .tab-modal-label{display:block;font-size:11px;font-weight:800;color:#4B5563;margin:10px 0 4px}
 .tab-modal-input{width:100%;height:36px;border:1.5px solid #D1D5DB;border-radius:8px;padding:0 10px;font-size:13px;font-family:inherit;background:#fff}
 .tab-modal-input:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
@@ -61,6 +63,7 @@ body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;f
 .tab-menu-trigger,.tab-folder-menu{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;color:#6B7280;font-size:15px;line-height:1}
 .tab-menu-trigger:hover,.tab-folder-menu:hover{background:#E5E7EB;color:#111}
 .parent-tab-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:6px;background:#DBEAFE;color:#1D4ED8;font-size:10px;font-weight:800}
+.tab-basis-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:6px;background:#ECFDF5;color:#047857;font-size:10px;font-weight:800}
 .tab-action-menu{position:fixed;z-index:10000;min-width:166px;padding:6px;border:1px solid #D1D5DB;border-radius:8px;background:#fff;box-shadow:0 12px 30px rgba(15,23,42,.18);display:flex;flex-direction:column;gap:2px}
 .tab-action-menu button{height:32px;padding:0 10px;border:none;border-radius:6px;background:#fff;color:#374151;font-size:12px;font-weight:800;text-align:left;cursor:pointer;font-family:inherit}
 .tab-action-menu button:hover{background:#F3F4F6;color:#111827}
@@ -232,6 +235,10 @@ body.is-snapshot .snap-banner{display:block}
 .att-tag.tag-hy{background:#0284C7}
 .att-sub{display:inline-block;font-size:10px;background:#F9FAFB;border:1px solid #D1D5DB;border-radius:4px;padding:1px 3px;margin-left:2px;cursor:pointer;color:#374151}
 .att-sub:hover{background:#E5E7EB}
+.att-batch-on .stu-clickable{cursor:copy!important}
+.att-selected-cell{outline:3px solid #2563EB!important;outline-offset:-3px;box-shadow:inset 0 0 0 999px rgba(37,99,235,.14)!important}
+.att-split .att-row.att-selected-row{outline:2px solid #2563EB;outline-offset:-2px;box-shadow:inset 0 0 0 999px rgba(37,99,235,.14)}
+.att-split .att-row.att-selected-row+.att-row{border-top-color:transparent}
 
 /* 반칸 행 (5행 이후 추가 학생용) */
 .half-row > td{height:12px!important;padding:0 3px!important;font-size:9px!important;line-height:1.1!important}

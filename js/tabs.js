@@ -9,24 +9,41 @@ const _REG_BASE={
   lanes:5, hasNum:['월','토'],
   satTimeLabel:{'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'},
 };
-function getTabConfig(){
-  const tab=_tabList.find(t=>t.id===_activeTab);
+const _BT_BASE={
+  days:['월','화','수','목','금'],
+  times:[{t:'9시'},{t:'10시'},{t:'11시'},{t:'14시'},{t:'15시'}],
+  lanes:5,
+  hasNum:['월'],
+  satTimeLabel:{},
+};
+function _tabById(tabId){
+  return (_tabList||[]).find(t=>t&&t.id===tabId)||null;
+}
+function _tabConfigFor(tab){
   if(!tab||tab.type==='regular'){
-    const isDefault=(!tab||tab.id==='regular');
+    const id=tab?.id||'regular';
+    const isDefault=(!tab||id==='regular');
     return {
       ..._REG_BASE,
-      stuKey:isDefault?'swim_students':'swim_stu_'+tab.id,
-      instKey:isDefault?'swim_inst':'swim_inst_'+tab.id,
+      stuKey:isDefault?'swim_students':'swim_stu_'+id,
+      instKey:isDefault?'swim_inst':'swim_inst_'+id,
     };
   }
   if(tab.type==='bangteuk'){
     return {
-      days:['월수금','화목'], times:[{t:'10시'},{t:'11시'}], lanes:5,
-      hasNum:['월수금'], satTimeLabel:{},
-      stuKey:'swim_bt_'+tab.id+'_stu', instKey:'swim_bt_'+tab.id+'_inst',
+      ..._BT_BASE,
+      stuKey:'swim_bt_'+tab.id+'_stu',
+      instKey:'swim_bt_'+tab.id+'_inst',
     };
   }
   return {..._REG_BASE, stuKey:'swim_students', instKey:'swim_inst'};
+}
+function getTabConfigById(tabId){
+  return _tabConfigFor(_tabById(tabId)||{id:tabId||'regular',type:'regular'});
+}
+function getTabConfig(){
+  const tab=_tabList.find(t=>t.id===_activeTab);
+  return _tabConfigFor(tab);
 }
 function isBangteuk(){ return _tabList.find(t=>t.id===_activeTab)?.type==='bangteuk'; }
 function isSnapshotTab(){ return _tabList.find(t=>t.id===_activeTab)?.type==='snapshot'; }
@@ -43,6 +60,95 @@ if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
 function _tabClone(value){
   return JSON.parse(JSON.stringify(value));
 }
+function _pad2(n){
+  return String(parseInt(n,10)).padStart(2,'0');
+}
+function _monthKeyFromPeriod(period){
+  if(!period||!period.start||!period.month) return '';
+  const year=String(period.start).slice(0,4);
+  return year+'-'+_pad2(period.month);
+}
+function _normalizeMonthKey(value){
+  const text=String(value||'').trim();
+  const m=text.match(/^(\d{4})-(\d{1,2})/);
+  if(m) return m[1]+'-'+_pad2(m[2]);
+  return '';
+}
+function _periodMonthForDate(ds){
+  const periods=(typeof SCHEDULE_PERIODS!=='undefined'&&Array.isArray(SCHEDULE_PERIODS))?SCHEDULE_PERIODS:[];
+  const p=periods.find(x=>x&&x.start<=ds&&x.end>=ds);
+  return _monthKeyFromPeriod(p)||_normalizeMonthKey(ds);
+}
+function _defaultPeriodMonth(){
+  try{return _normalizeMonthKey(_periodMonthForDate(toDateStr(getToday())))||'2026-05';}catch(e){return '2026-05';}
+}
+function _tabPeriodMonth(tab){
+  if(!tab) return '';
+  if(tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
+  const m=String(tab.name||'').match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
+  if(!m) return tab.id==='regular'?'2026-05':'';
+  const year=m[1]||String(_defaultPeriodMonth()).slice(0,4);
+  return year+'-'+_pad2(m[2]);
+}
+function _tabContainsDate(tab,ds){
+  if(!tab||!ds) return false;
+  if(tab.type==='bangteuk'){
+    return !!(tab.seasonStart&&tab.seasonEnd&&tab.seasonStart<=ds&&tab.seasonEnd>=ds);
+  }
+  return _tabPeriodMonth(tab)===_periodMonthForDate(ds);
+}
+function getAttendanceBasisTabForDate(ds){
+  const active=_tabById(_activeTab);
+  if(active?.type==='bangteuk'){
+    if(_tabContainsDate(active,ds) || !active.seasonStart || !active.seasonEnd) return active;
+    return (_tabList||[]).find(t=>t&&t.type==='bangteuk'&&_tabContainsDate(t,ds))||active;
+  }
+  const monthKey=_periodMonthForDate(ds);
+  const match=(_tabList||[]).find(t=>t&&(!t.type||t.type==='regular')&&_tabPeriodMonth(t)===monthKey);
+  if(match) return match;
+  if(active&&(!active.type||active.type==='regular')) return active;
+  return _tabById('regular')||active||null;
+}
+function getAttendanceBasisDataForDate(ds){
+  const tab=getAttendanceBasisTabForDate(ds);
+  const cfg=_tabConfigFor(tab);
+  const snapKey=getAttendanceStorageKeys(tab?.id).daySnapshot;
+  const snapMap=loadJSON(snapKey,{});
+  const todayStr=toDateStr(getToday());
+  const snap=(ds<todayStr&&snapMap&&snapMap[ds]&&Array.isArray(snapMap[ds].students))?snapMap[ds]:null;
+  const fallbackStu=(tab&&tab.id==='regular'&&typeof _DEFAULT_STU!=='undefined')?_DEFAULT_STU:[];
+  const students=snap?snap.students:loadJSON(cfg.stuKey,fallbackStu);
+  const instMap=snap?(snap.inst||{}):loadJSON(cfg.instKey,{});
+  const stuIdx={};
+  (Array.isArray(students)?students:[]).forEach(s=>{
+    if(!s) return;
+    stuIdx[s.t+'/'+s.d+'/'+s.l+'/'+s.r]=s;
+  });
+  return {tab, cfg, students:Array.isArray(students)?students:[], instMap, stuIdx};
+}
+function getAttendanceStorageKeys(tabId){
+  const tab=_tabById(tabId||_activeTab);
+  if(tab?.type==='bangteuk'){
+    return {
+      attendance:'swim_bt_attendance_'+tab.id,
+      attGuests:'swim_bt_att_guests_'+tab.id,
+      daySnapshot:'swim_bt_day_snapshot_'+tab.id,
+    };
+  }
+  return {
+    attendance:STORAGE_KEYS.ATTENDANCE,
+    attGuests:STORAGE_KEYS.ATT_GUESTS,
+    daySnapshot:STORAGE_KEYS.DAY_SNAPSHOT,
+  };
+}
+function _tabBasisBadge(tab){
+  if(!tab||tab.type==='snapshot') return '';
+  if(tab.type==='bangteuk'){
+    if(tab.seasonStart&&tab.seasonEnd) return tab.seasonStart.slice(5).replace('-','/')+'~'+tab.seasonEnd.slice(5).replace('-','/');
+    return '기간 미설정';
+  }
+  return (_tabPeriodMonth(tab)||'월 미설정').replace('-','.');
+}
 function _parseTabStored(raw,fallback){
   if(raw===undefined||raw===null) return _tabClone(fallback);
   try{
@@ -54,11 +160,17 @@ function _parseTabStored(raw,fallback){
 }
 function _normalizeTabList(list){
   list=Array.isArray(list)?list:[];
-  if(!list.length) list=[{id:'regular',name:'정규시간표',type:'regular'}];
+  if(!list.length) list=[{id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'}];
   if(!list.some(t=>t&&t.id==='regular')){
-    list.unshift({id:'regular',name:'정규시간표',type:'regular'});
+    list.unshift({id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'});
   }
-  return list.filter(tab=>tab&&tab.id);
+  return list.filter(tab=>tab&&tab.id).map(tab=>{
+    if(tab.id==='regular'){
+      if(!tab.periodMonth) tab.periodMonth='2026-05';
+      if(tab.name==='정규시간표') tab.name='5월출석부';
+    }
+    return tab;
+  });
 }
 function _normalizeTabFolders(list){
   return [...new Set((Array.isArray(list)?list:[])
@@ -261,6 +373,12 @@ function _ensureTabFolder(folder){
   return false;
 }
 let _newTabType='regular';
+function _syncNewTabPeriodFields(){
+  const reg=document.querySelector('[data-tab-period-regular]');
+  const bt=document.querySelector('[data-tab-period-bangteuk]');
+  if(reg) reg.style.display=_newTabType==='regular'?'block':'none';
+  if(bt) bt.style.display=_newTabType==='bangteuk'?'block':'none';
+}
 function openNewTabModal(){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 편집')) return;
   _newTabType='regular';
@@ -273,7 +391,14 @@ function openNewTabModal(){
   modal.querySelectorAll('[data-tab-type]').forEach(btn=>{
     btn.classList.toggle('active',btn.dataset.tabType===_newTabType);
   });
+  _syncNewTabPeriodFields();
   nameEl.value='';
+  const pm=document.getElementById('tab-period-month');
+  const ss=document.getElementById('tab-season-start');
+  const se=document.getElementById('tab-season-end');
+  if(pm) pm.value=_defaultPeriodMonth();
+  if(ss) ss.value='';
+  if(se) se.value='';
   const activeFolder=_tabFolderName(_tabList.find(t=>t.id===_activeTab));
   const folders=_tabFolders();
   let html='<option value="">폴더 없음</option>';
@@ -330,6 +455,17 @@ async function createTabFromModal(){
   const type=_newTabType;
   const id=(type==='regular'?'reg':'bt')+'_'+Date.now();
   const newTab={id,name,type};
+  if(type==='regular'){
+    const periodMonth=(document.getElementById('tab-period-month')?.value||'').trim();
+    if(!periodMonth){toast('운영 월을 선택하세요','err');return;}
+    newTab.periodMonth=periodMonth;
+  } else if(type==='bangteuk'){
+    const seasonStart=(document.getElementById('tab-season-start')?.value||'').trim();
+    const seasonEnd=(document.getElementById('tab-season-end')?.value||'').trim();
+    if((seasonStart&&!seasonEnd)||(!seasonStart&&seasonEnd)){toast('방특 시작일과 종료일을 모두 선택하세요','err');return;}
+    if(seasonStart&&seasonEnd&&seasonStart>seasonEnd){toast('방특 시작일이 종료일보다 늦습니다','err');return;}
+    if(seasonStart&&seasonEnd){newTab.seasonStart=seasonStart;newTab.seasonEnd=seasonEnd;}
+  }
   if(folder) newTab.folder=folder;
   try{
     await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.TAB_FOLDERS],state=>{
@@ -405,6 +541,7 @@ function _openSingleTabMenu(tabId, anchor){
   const folders=_tabFolders();
   let html='';
   html+=_menuBtn('rename',tabId,'이름 변경');
+  if(!isSnap) html+=_menuBtn('basis',tabId,tab.type==='bangteuk'?'방특 기간 설정':'운영 월 설정');
   html+=_menuSep();
   html+=_menuLabel('폴더 이동');
   if(currentFolder) html+=_menuBtn('folder-none',tabId,'폴더에서 꺼내기');
@@ -463,6 +600,43 @@ async function renameTab(tabId){
       console.error(e);
       toast(e.message||'탭 이름 변경 실패','err');
     }
+  }
+}
+async function configureTabBasis(tabId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','운영 기준 설정')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab||tab.type==='snapshot') return;
+  const patch={};
+  if(tab.type==='bangteuk'){
+    const start=prompt('방특 시작일 (YYYY-MM-DD)', tab.seasonStart||'');
+    if(start===null) return;
+    const end=prompt('방특 종료일 (YYYY-MM-DD)', tab.seasonEnd||'');
+    if(end===null) return;
+    if((start&&!end)||(!start&&end)){toast('시작일과 종료일을 모두 입력하세요','err');return;}
+    if(start&&end&&!/^\d{4}-\d{2}-\d{2}$/.test(start)){toast('시작일 형식은 YYYY-MM-DD 입니다','err');return;}
+    if(start&&end&&!/^\d{4}-\d{2}-\d{2}$/.test(end)){toast('종료일 형식은 YYYY-MM-DD 입니다','err');return;}
+    if(start&&end&&start>end){toast('시작일이 종료일보다 늦습니다','err');return;}
+    patch.seasonStart=start||'';
+    patch.seasonEnd=end||'';
+  } else {
+    const val=prompt('운영 월 (YYYY-MM)', _tabPeriodMonth(tab)||_defaultPeriodMonth());
+    if(val===null) return;
+    if(!/^\d{4}-\d{2}$/.test(val)){toast('운영 월 형식은 YYYY-MM 입니다','err');return;}
+    patch.periodMonth=val;
+  }
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
+      const target=state.tabs.find(t=>t.id===tabId);
+      if(!target) throw new Error('시간표를 찾을 수 없습니다');
+      Object.assign(target,patch);
+      return state;
+    },{label:'운영 기준 설정',target:tab.name||tab.id});
+    renderTabBar();
+    if(typeof buildTable==='function') buildTable();
+    toast('운영 기준 저장 완료','ok');
+  }catch(e){
+    console.error(e);
+    toast(e.message||'운영 기준 저장 실패','err');
   }
 }
 async function setTabFolder(tabId, folder){
@@ -566,6 +740,9 @@ async function deleteTab(tabId){
     } else if(tab.type==='bangteuk'){
       dbRemove('swim_bt_'+id+'_stu');
       dbRemove('swim_bt_'+id+'_inst');
+      dbRemove('swim_bt_attendance_'+id);
+      dbRemove('swim_bt_att_guests_'+id);
+      dbRemove('swim_bt_day_snapshot_'+id);
     } else {
       dbRemove('swim_stu_'+id);
       dbRemove('swim_inst_'+id);
@@ -580,6 +757,7 @@ async function deleteTab(tabId){
 function _handleTabMenuAction(action,id,targetFolder=''){
   _closeTabActionMenu();
   if(action==='rename') renameTab(id);
+  else if(action==='basis') configureTabBasis(id);
   else if(action==='folder-none') setTabFolder(id,'');
   else if(action==='folder-set') setTabFolder(id, targetFolder);
   else if(action==='folder-new') promptNewTabFolder(id);
@@ -692,6 +870,9 @@ async function copyTab(srcId){
 
   // 탭 목록에 추가 (원본 바로 뒤에 삽입)
   const newTab={id:newId, name, type:srcTab.type};
+  if(srcTab.periodMonth) newTab.periodMonth=srcTab.periodMonth;
+  if(srcTab.seasonStart) newTab.seasonStart=srcTab.seasonStart;
+  if(srcTab.seasonEnd) newTab.seasonEnd=srcTab.seasonEnd;
   if(srcTab.folder) newTab.folder=srcTab.folder;
   try{
     await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
@@ -721,8 +902,10 @@ function renderTabBar(){
     const cls=tab.id===_activeTab?baseCls+' active':baseCls;
     const labelTitle=isSnap?` title="📷 ${tab.capturedAt||''} 스냅샷 — 읽기 전용"`:'';
     const parentBadge=_parentTabSetting().tabId===tab.id?'<span class="parent-tab-badge">학부모</span>':'';
+    const basis=_tabBasisBadge(tab);
+    const basisBadge=basis?'<span class="tab-basis-badge">'+_tabEsc(basis)+'</span>':'';
     const menu=canEditTabs?`<span class="tab-menu-trigger" data-tab-menu="${_tabEsc(tab.id)}" title="시간표 기능">⋯</span>`:'';
-    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${parentBadge}${menu}</button>`;
+    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${basisBadge}${parentBadge}${menu}</button>`;
   };
   _folderedTabGroups().forEach(group=>{
     if(!group.folder){
@@ -860,6 +1043,7 @@ document.getElementById('tab-modal').addEventListener('click',function(e){
     document.querySelectorAll('#tab-modal [data-tab-type]').forEach(btn=>{
       btn.classList.toggle('active',btn.dataset.tabType===_newTabType);
     });
+    _syncNewTabPeriodFields();
     const nameEl=document.getElementById('tab-new-name');
     if(nameEl&&!nameEl.value.trim()) nameEl.placeholder=_newTabType==='regular'?'예: 6월 정규반':'예: 여름 방특반';
     return;
@@ -947,6 +1131,7 @@ function switchTabView(){
   }
 
   loadTabData();
+  if(typeof reloadBadgeMaps==='function') reloadBadgeMaps();
   buildTable();
   renderTabBar();
 }

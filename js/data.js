@@ -660,12 +660,13 @@ function toast(msg,type='info'){
 
 // 엘마반(엘/마/엘리트/마스터) 레인 동적 계산
 //   — cls 종류 무관하게 8행 자리 확보 + 라벨/색상은 별도 처리
-function getElmaLanes(t,day){
+function getElmaLanes(t,day,instMapOverride){
+  const instSource=instMapOverride||INST_MAP;
   const elma=[];
   const names={};
   const clss={};
   for(let l=1;l<=getLanes();l++){
-    const inst=INST_MAP[t+'/'+day+'/'+l];
+    const inst=instSource[t+'/'+day+'/'+l];
     const cls=getInstCls(inst);
     if(cls){ elma.push(l-1); names[l-1]=inst.n; clss[l-1]=cls; }
   }
@@ -714,11 +715,11 @@ let MOVE_MAP     = loadJSON(STORAGE_KEYS.MOVE,     {});
 // 학부모 요청 → 선생님 수락/거절 대기
 let REQUESTS     = loadJSON(STORAGE_KEYS.REQUESTS, {});
 // ATTENDANCE[slotKey/date] = { s:'present'|'absent', at:ISO, by?:teacherName }
-let ATTENDANCE   = loadJSON(STORAGE_KEYS.ATTENDANCE, {});
+let ATTENDANCE   = loadJSON(_attendanceStorageKey('attendance'), {});
 // ATT_GUESTS[slotKey/date] = [{gid, n, a, p, s:'present'|'absent', at, by}]
-let ATT_GUESTS   = loadJSON(STORAGE_KEYS.ATT_GUESTS, {});
+let ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
 // DAY_SNAPSHOT[date] = { date, students, inst } — 과거 날짜 동결용
-let DAY_SNAPSHOT = loadJSON(STORAGE_KEYS.DAY_SNAPSHOT, {});
+let DAY_SNAPSHOT = loadJSON(_attendanceStorageKey('daySnapshot'), {});
 // [v118] RETIRE_HISTORY = [{retiredAt, recordedAt, t, d, l, r, n, a, p, loc, memo, enrolledFrom}, ...] 퇴원 기록 (영구 보관)
 let RETIRE_HISTORY = loadJSON(STORAGE_KEYS.RETIRE_HISTORY, []);
 let AUDIT_LOG = [];
@@ -729,6 +730,22 @@ const AUDIT_STORAGE_LIMIT=8*1024*1024;
 const RECORD_PAGE_SIZE=30;
 let _auditLock=false;
 let _recordPage=1;
+
+function _attendanceStorageKeys(tabId){
+  if(typeof getAttendanceStorageKeys==='function') return getAttendanceStorageKeys(tabId);
+  return {attendance:STORAGE_KEYS.ATTENDANCE,attGuests:STORAGE_KEYS.ATT_GUESTS,daySnapshot:STORAGE_KEYS.DAY_SNAPSHOT};
+}
+function _attendanceStorageKey(kind,tabId){
+  const keys=_attendanceStorageKeys(tabId);
+  return keys[kind]||STORAGE_KEYS.ATTENDANCE;
+}
+function _currentAttendanceKeys(){
+  return _attendanceStorageKeys(_activeTab);
+}
+function _isAttendanceStorageKey(key){
+  if(key===STORAGE_KEYS.ATTENDANCE||key===STORAGE_KEYS.ATT_GUESTS||key===STORAGE_KEYS.DAY_SNAPSHOT) return true;
+  return /^swim_bt_(attendance|att_guests|day_snapshot)_/.test(String(key||''));
+}
 let _auditStorageLoaded=false;
 let _auditStorageLoading=null;
 
@@ -749,9 +766,9 @@ function describeStorageChange(key){
   if(key===STORAGE_KEYS.休원) return '휴원 편집';
   if(key===STORAGE_KEYS.MOVE) return '이동 예약 편집';
   if(key===STORAGE_KEYS.REQUESTS) return '학부모 요청 편집';
-  if(key===STORAGE_KEYS.ATTENDANCE) return '출석부 편집';
-  if(key===STORAGE_KEYS.ATT_GUESTS) return '출석부 추가학생 편집';
-  if(key===STORAGE_KEYS.DAY_SNAPSHOT) return '날짜 스냅샷 편집';
+  if(key===STORAGE_KEYS.ATTENDANCE||/^swim_bt_attendance_/.test(key)) return '출석부 편집';
+  if(key===STORAGE_KEYS.ATT_GUESTS||/^swim_bt_att_guests_/.test(key)) return '출석부 추가학생 편집';
+  if(key===STORAGE_KEYS.DAY_SNAPSHOT||/^swim_bt_day_snapshot_/.test(key)) return '날짜 스냅샷 편집';
   if(key===STORAGE_KEYS.CLOSED) return '휴관일 편집';
   if(key===STORAGE_KEYS.TEACHERS) return '선생님 관리 편집';
   if(key===STORAGE_KEYS.PERIODS) return '수업 기간 편집';
@@ -786,6 +803,10 @@ function _auditDataKeys(){
     if(tab.type==='bangteuk'){
       keys.add('swim_bt_'+tab.id+'_stu');
       keys.add('swim_bt_'+tab.id+'_inst');
+      const ak=_attendanceStorageKeys(tab.id);
+      keys.add(ak.attendance);
+      keys.add(ak.attGuests);
+      keys.add(ak.daySnapshot);
     }else{
       keys.add(tab.id==='regular'?'swim_students':'swim_stu_'+tab.id);
       keys.add(tab.id==='regular'?'swim_inst':'swim_inst_'+tab.id);
@@ -795,6 +816,10 @@ function _auditDataKeys(){
     const cfg=getTabConfig();
     if(cfg?.stuKey) keys.add(cfg.stuKey);
     if(cfg?.instKey) keys.add(cfg.instKey);
+    const ak=_currentAttendanceKeys();
+    keys.add(ak.attendance);
+    keys.add(ak.attGuests);
+    keys.add(ak.daySnapshot);
   }catch(e){}
   return [...keys].filter(Boolean);
 }
@@ -802,7 +827,6 @@ function _auditEditKeys(){
   const keys=new Set([
     STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.DISABLED,
     STORAGE_KEYS.RESERVE,STORAGE_KEYS.休원,STORAGE_KEYS.MOVE,STORAGE_KEYS.REQUESTS,
-    STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,STORAGE_KEYS.DAY_SNAPSHOT,
     STORAGE_KEYS.CLOSED,STORAGE_KEYS.TEACHERS,STORAGE_KEYS.PERIODS,
     STORAGE_KEYS.RETIRE_HISTORY,STORAGE_KEYS.AGE_YEAR,
   ]);
@@ -810,6 +834,10 @@ function _auditEditKeys(){
     const cfg=getTabConfig();
     if(cfg?.stuKey) keys.add(cfg.stuKey);
     if(cfg?.instKey) keys.add(cfg.instKey);
+    const ak=_currentAttendanceKeys();
+    keys.add(ak.attendance);
+    keys.add(ak.attGuests);
+    keys.add(ak.daySnapshot);
   }catch(e){}
   return [...keys].filter(Boolean);
 }
@@ -962,7 +990,7 @@ function _auditMapEntryText(storageKey,key,val){
     const date=String(key).split('/').pop();
     return `${type} · ${slot} · ${date||'-'}`;
   }
-  if(storageKey===STORAGE_KEYS.ATTENDANCE){
+  if(storageKey===STORAGE_KEYS.ATTENDANCE||/^swim_bt_attendance_/.test(storageKey)){
     const state=val?.s==='present'?'출석':val?.s==='absent'?'결석':(val?.s||'출석부');
     const date=String(key).split('/').pop();
     return `${state} · ${slot} · ${date||'-'}`;
@@ -1508,9 +1536,9 @@ function saveReserve()  { saveJSON(STORAGE_KEYS.RESERVE,  RESERVE_MAP); }
 function saveHyuwon()   { saveJSON(STORAGE_KEYS.休원,     HYUWON_MAP); }
 function saveMove()     { saveJSON(STORAGE_KEYS.MOVE,     MOVE_MAP); }
 function saveRequests() { saveJSON(STORAGE_KEYS.REQUESTS, REQUESTS); }
-function saveAttendance(){ saveJSON(STORAGE_KEYS.ATTENDANCE, ATTENDANCE); }
-function saveAttGuests(){ saveJSON(STORAGE_KEYS.ATT_GUESTS, ATT_GUESTS); }
-function saveDaySnapshot(){ saveJSON(STORAGE_KEYS.DAY_SNAPSHOT, DAY_SNAPSHOT); }
+function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDANCE); }
+function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
+function saveDaySnapshot(){ saveJSON(_attendanceStorageKey('daySnapshot'), DAY_SNAPSHOT); }
 
 function _cacheJSONOnly(key,val){
   const json=JSON.stringify(val||{});
@@ -1600,9 +1628,9 @@ function _applyStoredValue(key,val){
     TEACHERS=Array.isArray(val)?val:[];
     if(typeof updateTeacherStyles==='function') updateTeacherStyles();
   }
-  else if(key===STORAGE_KEYS.ATTENDANCE) ATTENDANCE=val||{};
-  else if(key===STORAGE_KEYS.ATT_GUESTS) ATT_GUESTS=val||{};
-  else if(key===STORAGE_KEYS.DAY_SNAPSHOT) DAY_SNAPSHOT=val||{};
+  else if(key===_attendanceStorageKey('attendance')) ATTENDANCE=val||{};
+  else if(key===_attendanceStorageKey('attGuests')) ATT_GUESTS=val||{};
+  else if(key===_attendanceStorageKey('daySnapshot')) DAY_SNAPSHOT=val||{};
   else if(key===STORAGE_KEYS.AUDIT_LOG) AUDIT_LOG=Array.isArray(val)?val:[];
   else if(key===STORAGE_KEYS.RESTORE_POINTS) RESTORE_POINTS=Array.isArray(val)?val:[];
 }
@@ -1720,7 +1748,7 @@ function clearMarkEntryTx(markKey){
   return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
 }
 function updateAttendanceMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.ATTENDANCE,ATTENDANCE,next=>{ATTENDANCE=next;},mutator);
+  return _txJSONMap(_attendanceStorageKey('attendance'),ATTENDANCE,next=>{ATTENDANCE=next;},mutator);
 }
 function setAttendanceEntryTx(attKey,val){
   if(val===undefined||val===null) delete ATTENDANCE[attKey];
@@ -1732,7 +1760,7 @@ function setAttendanceEntryTx(attKey,val){
   });
 }
 function updateAttGuestsMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.ATT_GUESTS,ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator);
+  return _txJSONMap(_attendanceStorageKey('attGuests'),ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator);
 }
 function setAttGuestsEntryTx(guestKey,list){
   if(list&&list.length) ATT_GUESTS[guestKey]=list;
@@ -1757,9 +1785,9 @@ function reloadBadgeMaps(){
       _origGlobalMaps.reserve    = loadJSON(STORAGE_KEYS.RESERVE,  {});
       _origGlobalMaps.hyuwon     = loadJSON(STORAGE_KEYS.休원,     {});
       _origGlobalMaps.move       = loadJSON(STORAGE_KEYS.MOVE,     {});
-      _origGlobalMaps.attendance = loadJSON(STORAGE_KEYS.ATTENDANCE, {});
-      _origGlobalMaps.attGuests  = loadJSON(STORAGE_KEYS.ATT_GUESTS, {});
-      _origGlobalMaps.daySnapshot= loadJSON(STORAGE_KEYS.DAY_SNAPSHOT, {});
+      _origGlobalMaps.attendance = loadJSON(_attendanceStorageKey('attendance'), {});
+      _origGlobalMaps.attGuests  = loadJSON(_attendanceStorageKey('attGuests'), {});
+      _origGlobalMaps.daySnapshot= loadJSON(_attendanceStorageKey('daySnapshot'), {});
     }
     // REQUESTS는 글로벌이라 갱신 (스냅샷에 포함 안 됨 — 학부모 요청은 항상 라이브)
     REQUESTS = loadJSON(STORAGE_KEYS.REQUESTS, {});
@@ -1773,9 +1801,9 @@ function reloadBadgeMaps(){
   HYUWON_MAP   = loadJSON(STORAGE_KEYS.休원,     {});
   MOVE_MAP     = loadJSON(STORAGE_KEYS.MOVE,     {});
   REQUESTS     = loadJSON(STORAGE_KEYS.REQUESTS, {});
-  ATTENDANCE   = loadJSON(STORAGE_KEYS.ATTENDANCE, {});
-  ATT_GUESTS   = loadJSON(STORAGE_KEYS.ATT_GUESTS, {});
-  DAY_SNAPSHOT = loadJSON(STORAGE_KEYS.DAY_SNAPSHOT, {});
+  ATTENDANCE   = loadJSON(_attendanceStorageKey('attendance'), {});
+  ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
+  DAY_SNAPSHOT = loadJSON(_attendanceStorageKey('daySnapshot'), {});
 }
 
 // [FIX] Firebase child_changed 시 글로벌 데이터도 메모리에 갱신

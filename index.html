@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>가경 수영장 시간표</title>
+<title>슈퍼차일드 수영장 시간표</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
@@ -15,7 +15,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="auth.css?v=20260521-5">
-<link rel="stylesheet" href="style.css?v=20260528-4">
+<link rel="stylesheet" href="style.css?v=20260528-6">
 </head>
 <body>
 
@@ -66,8 +66,16 @@
   <button onclick="setAttToday()" style="background:rgba(255,255,255,0.25);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">오늘</button>
   <span id="att-bar-date-label" style="font-size:16px;font-weight:900;margin-left:8px;padding:4px 12px;background:#fff;color:#059669;border-radius:8px"></span>
   <span id="att-bar-stats" style="margin-left:auto;font-size:13px;font-weight:700"></span>
-  <button id="att-edit-btn" data-perm="attendanceCheck" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집</button>
-  <button onclick="toggleAttendanceMode()" style="background:rgba(0,0,0,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✕ 닫기</button>
+  <button id="att-batch-btn" data-perm="attendanceCheck" onclick="toggleAttBatchMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">☑ 선택모드 켜기</button>
+  <span id="att-batch-count" style="display:none;font-size:12px;font-weight:900;padding:4px 8px;background:#fff;color:#2563EB;border-radius:8px">0개 선택</span>
+  <span id="att-batch-actions" style="display:none;gap:6px;align-items:center">
+    <button onclick="applyAttBatch('present')" style="background:#FEF08A;color:#713F12;border:none;padding:6px 10px;border-radius:6px;font-weight:800;cursor:pointer">선택 출석</button>
+    <button onclick="applyAttBatch('absent')" style="background:#FCA5A5;color:#7F1D1D;border:none;padding:6px 10px;border-radius:6px;font-weight:800;cursor:pointer">선택 결석</button>
+    <button onclick="applyAttBatch(null)" style="background:#fff;color:#4B5563;border:none;padding:6px 10px;border-radius:6px;font-weight:800;cursor:pointer">미체크</button>
+    <button onclick="clearAttBatchSelection()" style="background:rgba(0,0,0,0.18);color:#fff;border:none;padding:6px 10px;border-radius:6px;font-weight:800;cursor:pointer">비우기</button>
+  </span>
+  <button id="att-edit-btn" data-perm="attendanceCheck" onclick="toggleAttEditMode()" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">✏️ 편집모드 켜기</button>
+  <button onclick="toggleAttendanceMode()" style="background:rgba(127,29,29,0.55);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:900;cursor:pointer">✕ 출석부 닫기</button>
 </div>
 
 <!-- 원생 추가 모달 (출석부 + 버튼) -->
@@ -140,6 +148,19 @@
     </div>
     <label class="tab-modal-label" for="tab-new-name">시간표 이름</label>
     <input id="tab-new-name" class="tab-modal-input" placeholder="예: 6월 초급반">
+    <div id="tab-period-fields">
+      <div class="tab-period-field" data-tab-period-regular>
+        <label class="tab-modal-label" for="tab-period-month">운영 월</label>
+        <input id="tab-period-month" class="tab-modal-input" type="month">
+      </div>
+      <div class="tab-period-field" data-tab-period-bangteuk style="display:none">
+        <label class="tab-modal-label" for="tab-season-start">방특 운영 기간</label>
+        <div class="tab-date-row">
+          <input id="tab-season-start" class="tab-modal-input" type="date">
+          <input id="tab-season-end" class="tab-modal-input" type="date">
+        </div>
+      </div>
+    </div>
     <label class="tab-modal-label" for="tab-new-folder">폴더</label>
     <select id="tab-new-folder" class="tab-modal-input"></select>
     <input id="tab-new-folder-name" class="tab-modal-input" placeholder="새 폴더 이름">
@@ -318,11 +339,11 @@
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
 <script src="js/auth-guard.js?v=20260521-7"></script>
 <script src="js/core.js?v=20260528-4"></script>
-<script src="js/tabs.js?v=20260527-5"></script>
-<script src="js/data.js?v=20260528-1"></script>
+<script src="js/tabs.js?v=20260528-3"></script>
+<script src="js/data.js?v=20260528-2"></script>
 <script src="js/teachers.js?v=20260527-2"></script>
 <script src="js/popup-stu.js?v=20260528-1"></script>
-<script src="js/table.js?v=20260528-3"></script>
+<script src="js/table.js?v=20260528-6"></script>
 <script src="js/defaults.js?v=20260521-5"></script>
 <script src="js/init.js?v=20260528-2"></script>
 
