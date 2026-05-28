@@ -1617,8 +1617,10 @@ function mergeHyuwon(a, b){
  * 특정 요일의 수업일 중 하나를 선택하는 모달
  * @param {string} day - '월'|'화'|...
  * @param {Function} callback - (selectedDs|null) => void
+ * @param {Object=} opts - {title?:string, subtitle?:string}
  */
-function askDateForDay(day, callback){
+function askDateForDay(day, callback, opts){
+  opts=opts||{};
   const classDates=getClassDatesForDay(day);
   const allDates=[...classDates.cur,...classDates.next].filter(d=>!d.closed);
   if(!allDates.length){
@@ -1636,7 +1638,10 @@ function askDateForDay(day, callback){
   const box=document.createElement('div');
   box.style.cssText='background:#fff;padding:14px;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.2);max-width:320px;width:90%';
   const dayTitle=(typeof getDayIndexes==='function'&&getDayIndexes(day).length>1)?day:(day+'요일');
-  box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">📅 ${dayTitle} 날짜 선택</div>
+  const title=opts.title||`📅 ${dayTitle} 날짜 선택`;
+  const subtitle=opts.subtitle?`<div style="font-size:11px;color:#6B7280;line-height:1.4;margin:-2px 0 8px">${esc(opts.subtitle)}</div>`:'';
+  box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">${esc(title)}</div>
+    ${subtitle}
     <div id="dpm-dates" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:300px;overflow-y:auto"></div>
     <div style="margin-top:10px;display:flex;gap:4px">
       <button id="dpm-cancel" class="btn btn-o" style="flex:1;padding:6px;font-size:11px">취소</button>
@@ -1659,17 +1664,10 @@ function askDateForDay(day, callback){
   backdrop.onclick=(e)=>{if(e.target===backdrop){backdrop.remove();callback(null);}};
 }
 
-function _sameWeekDateForDay(anchorDs, dayName){
-  if(typeof getDateForDayInWeek==='function'){
-    return toDateStr(getDateForDayInWeek(dayName,anchorDs));
-  }
-  const target=DAY_INDEX[dayName];
-  if(target===undefined) return anchorDs;
-  const d=new Date(anchorDs+'T00:00:00');
-  if(Number.isNaN(d.getTime())) return anchorDs;
-  const current=d.getDay();
-  d.setDate(d.getDate()+(target-current));
-  return toDateStr(d);
+function _moveDisplayTime(day,t){
+  const cfg=typeof getTabConfig==='function'?getTabConfig():null;
+  const satLabel=cfg&&cfg.satTimeLabel||{};
+  return String(day||'')==='토' ? (satLabel[t]||t||'') : (t||'');
 }
 
 function _isReserveMoveEntry(entry){
@@ -2073,47 +2071,57 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   // 예약 이동 (전체) → RETIRE(출발) + ENROLL(도착) 조합
   if(type==='reserve'){
     const {stu}=_moveMode;
-    const [,srcDay]=srcKey.split('/');
-    // 날짜 선택
-    askDateForDay(dstDay, async function(newDs){
-      if(!newDs){return;}
-      const sourceDs=_sameWeekDateForDay(newDs,srcDay);
-      const moveId='reserve-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);
-      const enrollEntry={
-        ds:newDs,
-        name:stu.n,
-        age:stu.a||null,
-        moveType:'reserve',
-        moveId,
-        pairKey:srcKey,
-      };
-      if(stu.p) enrollEntry.p=stu.p;
-      if(stu.v) enrollEntry.v=true;
-      if(stu.loc) enrollEntry.loc=stu.loc;
-      if(stu.memo) enrollEntry.memo=stu.memo;
-      if(stu.g) enrollEntry.g=stu.g;
-      try{
-        const stuKey=getTabConfig().stuKey;
-        await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
-          const students=ctx.get(stuKey,[]);
-          const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
-          const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
-          if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 예약 가능합니다');return;}
-          if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
-          if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
-          if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
-          retire[srcKey]={ds:sourceDs, name:stu.n, moveType:'reserve', moveId, pairKey:dstKey};
-          enroll[dstKey]=enrollEntry;
-          ctx.set(STORAGE_KEYS.RETIRE,retire);
-          ctx.set(STORAGE_KEYS.ENROLL,enroll);
-          return true;
-        }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`});
-        const label=newDs.slice(5).replace('-','/');
-        _finishMove(stu.n+(stu.a||'')+' 예약 이동 ('+label+')');
-      }catch(err){
-        toast(err?.message||'예약 이동 실패','err');
-        console.error(err);
-      }
+    const [srcT,srcDay]=srcKey.split('/');
+    const srcTime=_moveDisplayTime(srcDay,srcT);
+    const dstTime=_moveDisplayTime(dstDay,dstT);
+    askDateForDay(srcDay, function(sourceDs){
+      if(!sourceDs){return;}
+      askDateForDay(dstDay, async function(newDs){
+        if(!newDs){return;}
+        const moveId='reserve-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);
+        const enrollEntry={
+          ds:newDs,
+          name:stu.n,
+          age:stu.a||null,
+          moveType:'reserve',
+          moveId,
+          pairKey:srcKey,
+        };
+        if(stu.p) enrollEntry.p=stu.p;
+        if(stu.v) enrollEntry.v=true;
+        if(stu.loc) enrollEntry.loc=stu.loc;
+        if(stu.memo) enrollEntry.memo=stu.memo;
+        if(stu.g) enrollEntry.g=stu.g;
+        try{
+          const stuKey=getTabConfig().stuKey;
+          await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
+            const students=ctx.get(stuKey,[]);
+            const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+            const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+            if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 예약 가능합니다');return;}
+            if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
+            if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
+            if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
+            retire[srcKey]={ds:sourceDs, name:stu.n, moveType:'reserve', moveId, pairKey:dstKey};
+            enroll[dstKey]=enrollEntry;
+            ctx.set(STORAGE_KEYS.RETIRE,retire);
+            ctx.set(STORAGE_KEYS.ENROLL,enroll);
+            return true;
+          }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`});
+          const label=newDs.slice(5).replace('-','/');
+          const sourceLabel=sourceDs.slice(5).replace('-','/');
+          _finishMove(stu.n+(stu.a||'')+' 예약 이동 (삭제 '+sourceLabel+' / 등록 '+label+')');
+        }catch(err){
+          toast(err?.message||'예약 이동 실패','err');
+          console.error(err);
+        }
+      }, {
+        title:`📘 등록일 선택 (${dstDay}요일 ${dstTime})`,
+        subtitle:'새 자리에서 시작할 날짜를 선택해주세요.'
+      });
+    }, {
+      title:`🗑️ 삭제일 선택 (${srcDay}요일 ${srcTime})`,
+      subtitle:'기존 자리에서 빠질 날짜를 먼저 선택해주세요.'
     });
     return;
   }
