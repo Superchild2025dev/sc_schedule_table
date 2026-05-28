@@ -742,6 +742,33 @@ async function refresh(branch, data) {
   return {bundle: await bundleForSession(branch, session)};
 }
 
+async function submitFeedback(branch, data) {
+  const message = String(data.message || "").trim();
+  if (!message) throw new HttpsError("invalid-argument", "의견 내용을 입력해주세요");
+  if (message.length > 2000) throw new HttpsError("invalid-argument", "의견은 2000자 이내로 입력해주세요");
+  const feedbackKey = "swim_parent_feedback";
+  await db.runTransaction(async tx => {
+    const stored = await readStoredValueWithMeta(branch, feedbackKey, tx);
+    const feedback = parseJSON(stored.value, []);
+    const list = Array.isArray(feedback) ? feedback : [];
+    list.push({
+      id: "fb_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      at: new Date().toISOString(),
+      context: String(data.context || "의견 제출").slice(0, 80),
+      message,
+      name: String(data.name || "").trim().slice(0, 40),
+      phone: normalizePhone(data.phone).slice(0, 20),
+      studentSlotKey: String(data.studentSlotKey || "").slice(0, 80),
+      page: String(data.page || "").slice(0, 200),
+      userAgent: String(data.userAgent || "").slice(0, 300),
+      status: "new",
+    });
+    while (list.length > 500) list.shift();
+    writeStoredValue(tx, branch, feedbackKey, JSON.stringify(list), stored.item);
+  });
+  return {ok: true};
+}
+
 async function submitAbsent(branch, data) {
   const session = await loadSession(branch, data.sessionToken);
   const keys = sessionDataKeys(session);
@@ -1055,6 +1082,7 @@ exports.parentPortal = onCall({
   const action = String(data.action || "");
   if (action === "login") return login(branch, data);
   if (action === "refresh") return refresh(branch, data);
+  if (action === "submitFeedback") return submitFeedback(branch, data);
   if (action === "submitAbsent") return submitAbsent(branch, data);
   if (action === "submitAbsentCancel") return submitAbsentCancel(branch, data);
   if (action === "getBogangSlots") return getBogangSlots(branch, data);

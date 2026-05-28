@@ -10,7 +10,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script src="js/firebase-config.js?v=20260521-6"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="parent.css?v=20260527-1">
+<link rel="stylesheet" href="parent.css?v=20260528-1">
 </head>
 <body>
 
@@ -39,6 +39,12 @@
     <p class="subtitle">학부모 예약 페이지</p>
     <div style="text-align:center;margin-bottom:8px">
       <button onclick="openBranchModal()" style="background:transparent;border:1px dashed #9CA3AF;color:#6B7280;padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">⇄ 지점 변경</button>
+    </div>
+
+    <div class="test-notice">
+      <strong>현재 테스트 기간입니다.</strong>
+      <p>최대한 오류 없이 운영하기 위해 노력 중입니다.</p>
+      <button type="button" id="open-feedback-login" class="feedback-open-btn">🚨 오류 보고 / 의견 제출하기</button>
     </div>
 
     <div class="form-group">
@@ -120,6 +126,10 @@
       <div style="font-size:48px;margin-bottom:8px">✅</div>
       <h3 style="color:#10B981;margin-bottom:8px">결석 처리 완료</h3>
       <p style="font-size:13px;color:#374151">시간표에 반영되었습니다.</p>
+      <div class="feedback-prompt">
+        <p>감사합니다. 더 나은 서비스를 위해 의견을 남겨주시겠습니까?</p>
+        <button type="button" class="feedback-mini-btn" data-feedback-context="결석 신청 완료">의견 남기기</button>
+      </div>
       <button id="ab-success-close" class="btn-primary" style="margin-top:14px">확인</button>
     </div>
   </div>
@@ -182,7 +192,28 @@
       <h3 style="color:#10B981;margin-bottom:8px">신청 완료</h3>
       <p id="bg-success-msg" style="font-size:13px;color:#374151;line-height:1.6"></p>
       <p style="font-size:11px;color:#6B7280;margin-top:12px">선생님이 확인 후 승인하면 시간표에 반영됩니다.<br>승인/거절 결과는 홈 화면에서 확인하실 수 있습니다.</p>
+      <div class="feedback-prompt">
+        <p>감사합니다. 더 나은 서비스를 위해 의견을 남겨주시겠습니까?</p>
+        <button type="button" class="feedback-mini-btn" data-feedback-context="보강 신청 완료">의견 남기기</button>
+      </div>
       <button id="bg-success-close" class="btn-primary" style="margin-top:14px">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 오류 보고 / 의견 제출 모달 -->
+<div id="feedback-modal" class="modal" style="display:none">
+  <div class="modal-content feedback-modal-content">
+    <h3>오류 보고 / 의견 제출</h3>
+    <p class="modal-desc" id="feedback-context">테스트 기간 중 불편한 점이나 오류를 남겨주세요.</p>
+    <textarea id="feedback-message" class="feedback-textarea" placeholder="예: 결석 신청 버튼을 눌렀는데 화면이 멈췄어요. / 보강 날짜가 더 잘 보이면 좋겠어요."></textarea>
+    <div class="feedback-contact">
+      <input id="feedback-name" type="text" placeholder="아이 이름 (선택)">
+      <input id="feedback-phone" type="tel" inputmode="numeric" placeholder="전화번호 (선택)">
+    </div>
+    <div class="modal-actions">
+      <button id="feedback-cancel" class="btn-secondary">닫기</button>
+      <button id="feedback-submit" class="btn-primary">제출하기</button>
     </div>
   </div>
 </div>
@@ -190,6 +221,6 @@
 <!-- 토스트 -->
 <div id="toast" class="toast"></div>
 
-<script src="js/parent.js?v=20260527-4"></script>
+<script src="js/parent.js?v=20260528-1"></script>
 </body>
 </html>

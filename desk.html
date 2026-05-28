@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>슈퍼차일드 - 데스크 요청 현황</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/favicon.png">
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="js/firebase-config.js?v=20260521-7"></script>
+<script src="js/firebase-store.js?v=20260527-3"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="auth.css?v=20260521-7">
+<link rel="stylesheet" href="parent.css?v=20260527-1">
+<link rel="stylesheet" href="desk.css?v=20260528-1">
+</head>
+<body>
+
+<div id="branch-modal" class="branch-modal">
+  <div class="branch-modal-box">
+    <h2 class="branch-modal-title">지점을 선택하세요</h2>
+    <div class="branch-modal-btns">
+      <button class="branch-btn" onclick="selectBranch('gagyeong')">
+        <span class="branch-name">가경점</span>
+      </button>
+      <button class="branch-btn" onclick="selectBranch('yongam')">
+        <span class="branch-name">용암점</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<main id="desk-app" class="desk-screen" style="display:none">
+  <header class="desk-header">
+    <div>
+      <div class="desk-eyebrow">데스크 요청 현황</div>
+      <h1 id="desk-title">요청 현황</h1>
+      <p id="desk-sync">연결 준비 중</p>
+    </div>
+    <div class="desk-actions">
+      <button type="button" onclick="openBranchModal()">지점 변경</button>
+      <button type="button" onclick="SCAuth.signOut()">로그아웃</button>
+    </div>
+  </header>
+
+  <section class="desk-summary">
+    <div class="desk-stat urgent">
+      <span class="stat-label">결석 취소 대기</span>
+      <strong id="cancel-count">0</strong>
+    </div>
+    <div class="desk-stat">
+      <span class="stat-label">오늘 이후 결석</span>
+      <strong id="absent-count">0</strong>
+    </div>
+  </section>
+
+  <section class="desk-grid">
+    <article class="desk-panel">
+      <div class="panel-head">
+        <h2>결석 취소 요청</h2>
+        <span>승인 대기</span>
+      </div>
+      <div id="cancel-list" class="desk-list"></div>
+    </article>
+
+    <article class="desk-panel">
+      <div class="panel-head">
+        <h2>결석 신청 현황</h2>
+        <span>오늘 이후</span>
+      </div>
+      <div id="absent-list" class="desk-list"></div>
+    </article>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="js/auth-guard.js?v=20260521-7"></script>
+<script src="js/desk.js?v=20260528-1"></script>
+</body>
+</html>

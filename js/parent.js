@@ -51,6 +51,7 @@ function closeBranchModal(){
 let _currentStudents=[];  // 로그인된 학생 그룹 (같은 이름+같은 전화번호)
 // 하위 호환: 첫 학생을 _currentStudent로도 노출
 let _currentStudent=null;
+let _feedbackContext='로그인 화면';
 
 // 기본 수업 기간 (Firebase에 swim_periods가 없을 때 fallback)
 const _DEFAULT_PERIODS=[
@@ -159,6 +160,78 @@ function stopParentRefresh(){
   if(_parentRefreshTimer){
     clearInterval(_parentRefreshTimer);
     _parentRefreshTimer=null;
+  }
+}
+
+function currentFeedbackStudent(){
+  const student=_currentStudent || (_currentStudents&&_currentStudents[0]) || null;
+  if(student){
+    return {
+      name:student.n||'',
+      phone:normalizePhone(student.p||''),
+      slotKey:[student.t,student.d,student.l,student.r].join('/'),
+    };
+  }
+  return {
+    name:String(document.getElementById('login-name')?.value||'').trim(),
+    phone:normalizePhone(document.getElementById('login-phone')?.value||''),
+    slotKey:'',
+  };
+}
+
+function openFeedbackModal(context){
+  _feedbackContext=context||'의견 제출';
+  const modal=document.getElementById('feedback-modal');
+  const ctx=document.getElementById('feedback-context');
+  const msg=document.getElementById('feedback-message');
+  const name=document.getElementById('feedback-name');
+  const phone=document.getElementById('feedback-phone');
+  const student=currentFeedbackStudent();
+  if(ctx) ctx.textContent=`${_feedbackContext}에 대한 오류나 의견을 남겨주세요.`;
+  if(msg) msg.value='';
+  if(name) name.value=student.name||'';
+  if(phone) phone.value=student.phone||'';
+  if(modal) modal.style.display='flex';
+  setTimeout(()=>msg&&msg.focus(),40);
+}
+
+function closeFeedbackModal(){
+  const modal=document.getElementById('feedback-modal');
+  if(modal) modal.style.display='none';
+}
+
+async function submitFeedback(){
+  const btn=document.getElementById('feedback-submit');
+  const msgEl=document.getElementById('feedback-message');
+  const message=String(msgEl?.value||'').trim();
+  if(!message){
+    toast('내용을 입력해주세요','err');
+    msgEl&&msgEl.focus();
+    return;
+  }
+  const student=currentFeedbackStudent();
+  const name=String(document.getElementById('feedback-name')?.value||student.name||'').trim();
+  const phone=normalizePhone(document.getElementById('feedback-phone')?.value||student.phone||'');
+  const original=btn?btn.textContent:'';
+  try{
+    if(btn){btn.disabled=true;btn.textContent='제출 중...';}
+    await callParent('submitFeedback',{
+      sessionToken:_parentSessionToken||'',
+      context:_feedbackContext,
+      message,
+      name,
+      phone,
+      studentSlotKey:student.slotKey||'',
+      page:location.pathname+location.search,
+      userAgent:navigator.userAgent||'',
+    });
+    closeFeedbackModal();
+    toast('의견이 접수되었습니다. 감사합니다!','ok');
+  }catch(e){
+    toast(parentErrorMessage(e,'의견 접수 실패'),'err');
+    console.error(e);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original||'제출하기';}
   }
 }
 
@@ -1388,5 +1461,16 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   });
   document.getElementById('bogang-modal').addEventListener('click',e=>{
     if(e.target.id==='bogang-modal') closeBogangModal();
+  });
+
+  // 오류 보고 / 의견 제출
+  document.getElementById('open-feedback-login')?.addEventListener('click',()=>openFeedbackModal('로그인 화면'));
+  document.querySelectorAll('[data-feedback-context]').forEach(btn=>{
+    btn.addEventListener('click',()=>openFeedbackModal(btn.dataset.feedbackContext||'의견 제출'));
+  });
+  document.getElementById('feedback-cancel')?.addEventListener('click',closeFeedbackModal);
+  document.getElementById('feedback-submit')?.addEventListener('click',submitFeedback);
+  document.getElementById('feedback-modal')?.addEventListener('click',e=>{
+    if(e.target.id==='feedback-modal') closeFeedbackModal();
   });
 });

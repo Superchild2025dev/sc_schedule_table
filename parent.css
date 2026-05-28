@@ -33,6 +33,11 @@ input,textarea{font-family:inherit;outline:none}
 .btn-secondary{width:100%;padding:10px;font-size:13px;background:#F3F4F6;color:#374151;border-radius:8px;margin-top:10px}
 .btn-secondary:hover{background:#E5E7EB}
 .error-msg{margin-top:12px;padding:10px;background:#FEE2E2;color:#991B1B;border-radius:8px;font-size:12px;font-weight:600}
+.test-notice{margin:0 0 16px;padding:12px;border:1px solid #BFDBFE;background:#EFF6FF;border-radius:12px;text-align:left}
+.test-notice strong{display:block;font-size:13px;font-weight:900;color:#1E40AF;margin-bottom:4px}
+.test-notice p{font-size:12px;line-height:1.45;color:#1F2937;margin-bottom:10px}
+.feedback-open-btn{width:100%;padding:10px 12px;border-radius:9px;background:#1E40AF;color:#fff;font-size:13px;font-weight:900}
+.feedback-open-btn:hover{background:#1D4ED8}
 
 /* ═══ 학생 선택 ═══ */
 #student-choices{margin-bottom:16px}
@@ -98,6 +103,16 @@ input,textarea{font-family:inherit;outline:none}
 .modal-desc{font-size:12px;color:#6B7280;margin-bottom:16px;line-height:1.6}
 .modal-actions{display:flex;gap:8px;margin-top:14px}
 .modal-actions button{flex:1}
+.feedback-prompt{margin-top:14px;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E5E7EB;text-align:center}
+.feedback-prompt p{font-size:12px;line-height:1.45;color:#374151;margin-bottom:8px}
+.feedback-mini-btn{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:8px 12px;border-radius:9px;background:#EFF6FF;color:#1D4ED8;font-size:12px;font-weight:900}
+.feedback-mini-btn:hover{background:#DBEAFE}
+.feedback-modal-content{max-width:420px}
+.feedback-textarea{width:100%;min-height:132px;padding:12px;border:1.5px solid #E5E7EB;border-radius:10px;font-size:14px;line-height:1.55;resize:vertical}
+.feedback-textarea:focus{border-color:#3B82F6}
+.feedback-contact{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.feedback-contact input{width:100%;padding:11px 12px;border:1.5px solid #E5E7EB;border-radius:9px;font-size:13px}
+.feedback-contact input:focus{border-color:#3B82F6}
 
 .slot-section{background:transparent;border-radius:0;margin-bottom:10px;overflow:visible;box-shadow:none}
 .slot-section:last-child{margin-bottom:0}
@@ -144,4 +159,5 @@ input,textarea{font-family:inherit;outline:none}
   .btn-absent,.btn-bogang{min-height:40px;font-size:14px}
   .btn-bogang-cancel{min-height:36px;font-size:13px}
   .info-box{font-size:13px}
+  .feedback-contact{grid-template-columns:1fr}
 }
