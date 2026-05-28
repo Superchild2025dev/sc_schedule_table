@@ -100,7 +100,7 @@ body.is-snapshot .snap-banner{display:block}
 .page{padding:12px 10px 20px}
 
 /* ── 테이블 ── */
-/* [v118] 시간표 컨테이너: zoom 대신 max-height 키워서 더 많이 표시 (프레임 크게) */
+/* [v118] 시간표 컨테이너: 세로는 표 내부 스크롤, 가로는 하단 proxy가 담당 */
 .tbl-outer{overflow-x:auto;overflow-y:auto;border-radius:8px;border:2px solid #D1D5DB;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.1);max-height:calc(100vh - 95px);max-height:calc(100dvh - 95px);scrollbar-width:thin;max-width:100%;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 /* 세로 스크롤바는 보이고, 가로 스크롤바만 숨김 (proxy가 대체) */
 .tbl-outer::-webkit-scrollbar{width:8px;height:0}
@@ -132,7 +132,7 @@ body.is-snapshot .snap-banner{display:block}
 }
 .tbl-scroll-proxy::-webkit-scrollbar-thumb:hover{background:#374151}
 .tbl-scroll-proxy-inner{height:1px}
-.sched-tbl{border-collapse:collapse;table-layout:fixed;white-space:nowrap;width:max-content;min-width:max-content}
+.sched-tbl{border-collapse:collapse;table-layout:fixed;white-space:nowrap;width:max-content;min-width:max-content;margin-bottom:26px}
 .sched-tbl *{font-family:'Noto Sans KR',sans-serif}
 
 /* 요일별 시간/번 */
@@ -229,6 +229,7 @@ body.is-snapshot .snap-banner{display:block}
 .att-tag{display:inline-block;font-size:8px;font-weight:800;padding:0 3px;border-radius:3px;margin-left:2px;vertical-align:middle;color:#fff}
 .att-tag.tag-bo{background:#7C3AED}
 .att-tag.tag-sa{background:#EA580C}
+.att-tag.tag-hy{background:#0284C7}
 .att-sub{display:inline-block;font-size:10px;background:#F9FAFB;border:1px solid #D1D5DB;border-radius:4px;padding:1px 3px;margin-left:2px;cursor:pointer;color:#374151}
 .att-sub:hover{background:#E5E7EB}
 

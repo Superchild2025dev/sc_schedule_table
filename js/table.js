@@ -46,32 +46,107 @@ let _editModalCtx=null;
 // 원생 추가 모달 (출석부 + 버튼) - 특정 레인에서 첫 빈 row 찾아서 모달 열기
 function _openAttAddModalForLane(t, day, lane, cellDs){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 원생 추가')) return;
-  // row 1~8에서 빈 자리 찾기
-  for(let r=1; r<=8; r++){
-    const sk=t+'/'+day+'/'+lane+'/'+r;
-    if(getStu(t,day,lane,r)) continue;  // 이미 학생 있음
-    const mk=MARK_MAP[sk+'/'+cellDs];
-    if(mk) continue;  // 이미 보강/샘플/결석 있음
-    _openAttAddModal(sk, cellDs);
-    return;
-  }
-  toast('빈 자리가 없습니다 (1~8행 전부 사용 중)','err');
+  _openAttAddModal({t, d:day, l:parseInt(lane,10), cellDs, mode:'lane'});
 }
 
 // 원생 추가 모달 (출석부 + 버튼)
 let _addModalCtx=null;
-function _openAttAddModal(slotKey, cellDs){
-  _addModalCtx={slotKey, cellDs};
-  const [t,d,l,r]=slotKey.split('/');
+function _openAttAddModal(slotKeyOrCtx, cellDs){
+  if(typeof slotKeyOrCtx==='object'&&slotKeyOrCtx){
+    _addModalCtx=slotKeyOrCtx;
+  } else {
+    _addModalCtx={slotKey:slotKeyOrCtx, cellDs};
+  }
+  const ctx=_addModalCtx;
+  const parts=ctx.slotKey?ctx.slotKey.split('/'):null;
+  const t=parts?parts[0]:ctx.t;
+  const d=parts?parts[1]:ctx.d;
+  const l=parts?parts[2]:ctx.l;
+  const r=parts?parts[3]:null;
+  cellDs=ctx.cellDs;
   const [y,mm,dd]=cellDs.split('-');
   const dateObj=new Date(parseInt(y), parseInt(mm)-1, parseInt(dd));
   const dow=['일','월','화','수','목','금','토'][dateObj.getDay()];
   document.getElementById('att-add-sub').textContent=
-    `${t} ${d}요일 ${l}레인 ${r}번 · ${parseInt(mm)}월 ${parseInt(dd)}일 (${dow})`;
+    `${t} ${d}요일 ${l}레인${r?` ${r}번`:''} · ${parseInt(mm)}월 ${parseInt(dd)}일 (${dow})`;
   document.getElementById('att-add-name').value='';
   document.getElementById('att-add-age').value='';
   document.getElementById('att-add-modal').style.display='flex';
   setTimeout(()=>{document.getElementById('att-add-name').focus();},50);
+}
+
+function _attAddMaxRows(t){
+  const base=typeof isBangteuk==='function'&&isBangteuk()?6:8;
+  return Math.max(base, typeof getTimeRows==='function'?getTimeRows(t):base);
+}
+
+function _attGuestKey(t,d,l,ds){ return t+'/'+d+'/'+l+'/'+ds; }
+function _attGuestsForSlot(t,d,l,slotKey,ds){
+  return (ATT_GUESTS[_attGuestKey(t,d,l,ds)]||[]).filter(g=>g&&g.slotKey===slotKey);
+}
+function _attGuestAtSlot(t,d,l,slotKey,ds){
+  return _attGuestsForSlot(t,d,l,slotKey,ds)[0]||null;
+}
+function _attGuestDisplay(g,t,d,l,slotKey,ds){
+  if(!g) return null;
+  return {
+    type:g.type||'guest',
+    n:g.n||'',
+    a:g.a||null,
+    guest:true,
+    gid:g.gid,
+    sgk:_attGuestKey(t,d,l,ds),
+    slotKey,
+    s:g.s||''
+  };
+}
+function _attDisplayState(item,slotKey,ds,isSub){
+  if(!item) return '';
+  if(item.type==='hyuwon'||item.s==='hyuwon'||item.hyuwon) return 'hyuwon';
+  if(item.absent) return 'absent';
+  if(item.guest) return item.s||'';
+  const a=ATTENDANCE[slotKey+'/'+ds+(isSub?'#sub':'')];
+  return a?(typeof a==='string'?a:a.s):'';
+}
+function _attDisplayBg(item,state){
+  if(!item) return 'att-unchecked';
+  if(item.type==='hyuwon'||state==='hyuwon') return 'att-hyuwon';
+  if(item.type==='bogang') return 'att-bogang';
+  if(item.type==='sample') return 'att-sample';
+  if(state==='present') return 'att-present';
+  if(state==='absent') return 'att-absent';
+  return 'att-unchecked';
+}
+function _attDisplayTag(item){
+  if(!item) return '';
+  if(item.type==='bogang') return '<span class="att-tag tag-bo">보</span>';
+  if(item.type==='sample') return '<span class="att-tag tag-sa">샘</span>';
+  if(item.type==='hyuwon') return '<span class="att-tag tag-hy">휴</span>';
+  return '';
+}
+
+function _resolveAttAddSlot(status){
+  const ctx=_addModalCtx;
+  if(!ctx) return null;
+  if(ctx.slotKey) return ctx.slotKey;
+  const t=ctx.t, d=ctx.d, l=parseInt(ctx.l,10), cellDs=ctx.cellDs;
+  const maxRows=_attAddMaxRows(t);
+  const slotAt=r=>t+'/'+d+'/'+l+'/'+r;
+  if(status==='bogang'||status==='sample'){
+    for(let r=1;r<=maxRows;r++){
+      const sk=slotAt(r);
+      const mk=MARK_MAP[sk+'/'+cellDs];
+      if(getStu(t,d,l,r)&&(!mk||(mk.type==='absent'&&!mk.sub))&&!_attGuestAtSlot(t,d,l,sk,cellDs)) return sk;
+    }
+  }
+  for(let r=1;r<=maxRows;r++){
+    const sk=slotAt(r);
+    if(getStu(t,d,l,r)) continue;
+    if(MARK_MAP[sk+'/'+cellDs]) continue;
+    if(_attGuestAtSlot(t,d,l,sk,cellDs)) continue;
+    return sk;
+  }
+  return null;
 }
 
 function _closeAttAddModal(){
@@ -82,92 +157,47 @@ function _closeAttAddModal(){
 async function _saveAttAdd(status){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 원생 추가')) return;
   if(!_addModalCtx) return;
-  const {slotKey, cellDs}=_addModalCtx;
+  const cellDs=_addModalCtx.cellDs;
+  const slotKey=_resolveAttAddSlot(status);
+  if(!slotKey){
+    toast('빈 자리가 없습니다','err');
+    return;
+  }
+  _addModalCtx.slotKey=slotKey;
   const name=document.getElementById('att-add-name').value.trim();
   const age=parseInt(document.getElementById('att-add-age').value)||null;
   if(!name){toast('이름을 입력하세요','err');return;}
 
   const [t,d,l,r]=slotKey.split('/');
-  const li=parseInt(l), ri=parseInt(r);
-  const isPast=cellDs<toDateStr(getToday());
-  const useSnapshot=isPast && DAY_SNAPSHOT[cellDs];
+  const li=parseInt(l);
+  const guestKey=_attGuestKey(t,d,li,cellDs);
+  const gid='g_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+  const guest={
+    gid,
+    n:name,
+    a:age,
+    slotKey,
+    type:(status==='bogang'||status==='sample'||status==='hyuwon')?status:'guest',
+    s:(status==='present'||status==='absent'||status==='hyuwon')?status:'',
+    at:new Date().toISOString(),
+    by:null
+  };
 
   try{
-    if(status==='present' || status==='absent'){
-      // 정규 학생으로 등록 + 해당 날짜 출석 상태
-      const newStu={n:name, a:age, t, d, l:li, r:ri};
-      if(useSnapshot){
-        // 과거 스냅샷에 추가
-        if(!DAY_SNAPSHOT[cellDs].students) DAY_SNAPSHOT[cellDs].students=[];
-        DAY_SNAPSHOT[cellDs].students.push(newStu);
-        saveDaySnapshot();
-      } else {
-        const stuKey=getTabConfig().stuKey;
-        await updateScheduleTx([stuKey,STORAGE_KEYS.ATTENDANCE], ctx=>{
-          const students=ctx.get(stuKey,[]);
-          if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
-            ctx.abort('이미 학생이 있는 자리입니다');
-            return;
-          }
-          students.push(newStu);
-          const att=ctx.get(STORAGE_KEYS.ATTENDANCE,{});
-          att[slotKey+'/'+cellDs]={s:status, at:new Date().toISOString(), by:null};
-          ctx.set(stuKey,students);
-          ctx.set(STORAGE_KEYS.ATTENDANCE,att);
-          return true;
-        });
+    let duplicate=false;
+    await updateAttGuestsMapTx(guests=>{
+      const list=[...(guests[guestKey]||[])];
+      if(list.some(g=>g&&g.slotKey===slotKey)){
+        duplicate=true;
+        return guests;
       }
-      if(useSnapshot) await setAttendanceEntryTx(slotKey+'/'+cellDs,{s:status, at:new Date().toISOString(), by:null});
-      toast(name+' 등록 + '+(status==='present'?'출석':'결석'),'ok');
-    } else if(status==='bogang' || status==='sample'){
-      // 일회성 MARK_MAP (정규 학생 등록 X)
-      const markKey=slotKey+'/'+cellDs;
-      await updateMarkMapTx(marks=>{
-        const existing=marks[markKey];
-        if(existing && existing.type==='absent'){
-          // 결석 + sub 보강/샘플
-          marks[markKey]={...existing, sub:{type:status, n:name, a:age}};
-        } else {
-          marks[markKey]={type:status, n:name, a:age};
-        }
-        return marks;
-      });
-      toast(name+' '+(status==='bogang'?'보강':'샘플')+' 등록','ok');
-    } else if(status==='hyuwon'){
-      // 정규 학생 등록 + 휴원 날짜
-      const newStu={n:name, a:age, t, d, l:li, r:ri};
-      if(useSnapshot){
-        if(!DAY_SNAPSHOT[cellDs].students) DAY_SNAPSHOT[cellDs].students=[];
-        DAY_SNAPSHOT[cellDs].students.push(newStu);
-        saveDaySnapshot();
-      } else {
-        const stuKey=getTabConfig().stuKey;
-        await updateScheduleTx([stuKey,STORAGE_KEYS.休원], ctx=>{
-          const students=ctx.get(stuKey,[]);
-          if(students.some(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri)){
-            ctx.abort('이미 학생이 있는 자리입니다');
-            return;
-          }
-          students.push(newStu);
-          const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
-          if(!hyuwon[slotKey]) hyuwon[slotKey]={dates:[]};
-          if(!hyuwon[slotKey].dates) hyuwon[slotKey].dates=[];
-          if(!hyuwon[slotKey].dates.includes(cellDs)) hyuwon[slotKey].dates.push(cellDs);
-          ctx.set(stuKey,students);
-          ctx.set(STORAGE_KEYS.休원,hyuwon);
-          return true;
-        });
-      }
-      if(useSnapshot){
-        await updateHyuwonMapTx(hyuwon=>{
-          if(!hyuwon[slotKey]) hyuwon[slotKey]={dates:[]};
-          if(!hyuwon[slotKey].dates) hyuwon[slotKey].dates=[];
-          if(!hyuwon[slotKey].dates.includes(cellDs)) hyuwon[slotKey].dates.push(cellDs);
-          return hyuwon;
-        });
-      }
-      toast(name+' 등록 + 휴원','ok');
-    }
+      list.push(guest);
+      guests[guestKey]=list;
+      return guests;
+    });
+    if(duplicate){toast('이미 추가된 자리입니다','err');return;}
+    const label=status==='bogang'?'보강':status==='sample'?'샘플':status==='hyuwon'?'휴원':status==='present'?'출석':'결석';
+    toast(name+' 출석부 '+label+' 추가','ok');
     _closeAttAddModal();
     buildTable();
     _updateAttBarInfo();
@@ -227,19 +257,8 @@ async function _saveEditModal(){
     saveDaySnapshot();
     toast('과거 시간표 저장','ok');
   } else {
-    try{
-      await updateStudentsTx(students=>{
-        const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
-        if(idx>=0){students[idx].n=newName; students[idx].a=newAge;}
-        else students.push({n:newName, a:newAge, t, d, l:li, r:ri});
-        return students;
-      });
-    }catch(e){
-      toast(e?.message||'저장 실패','err');
-      console.error(e);
-      return;
-    }
-    toast('저장 완료','ok');
+    toast('운영 시간표 원생 수정은 시간표에서 해주세요','err');
+    return;
   }
   _closeEditModal();
   buildTable();
@@ -258,17 +277,8 @@ async function _deleteEditModal(){
     if(idx>=0) arr.splice(idx,1);
     saveDaySnapshot();
   } else {
-    try{
-      await updateStudentsTx(students=>{
-        const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
-        if(idx>=0) students.splice(idx,1);
-        return students;
-      });
-    }catch(e){
-      toast(e?.message||'삭제 실패','err');
-      console.error(e);
-      return;
-    }
+    toast('운영 시간표 원생 삭제는 시간표에서 해주세요','err');
+    return;
   }
   _closeEditModal();
   buildTable();
@@ -352,6 +362,17 @@ function _updateAttBarInfo(){
     if(v==='present') present++;
     else if(v==='absent') absent++;
   }
+  Object.entries(ATT_GUESTS||{}).forEach(([guestKey,list])=>{
+    const parts=guestKey.split('/');
+    const ds=parts[3];
+    if(!ds || ds<monStr || ds>satStr) return;
+    (list||[]).forEach(g=>{
+      if(!g) return;
+      total++;
+      if(g.s==='present') present++;
+      else if(g.s==='absent') absent++;
+    });
+  });
   const statsEl=document.getElementById('att-bar-stats');
   if(statsEl) statsEl.innerHTML=`👥 ${total}명 · ✅ ${present} · ❌ ${absent} · ⚪ ${total-present-absent}`;
 }
@@ -427,11 +448,14 @@ async function _cycleAttendanceSub(slotKey){
 }
 
 // 출석 체크 모달
-let _attModalCtx=null;  // {slotKey, isSub, stu, ds}
+let _attModalCtx=null;  // {slotKey, isSub, stu, ds, isGuest?}
 function _openAttModal(slotKey, isSub, stu, ds){
   const useDs=ds||_attendanceDate;
-  _attModalCtx={slotKey, isSub, stu, ds:useDs};
-  const typeLabel=stu.type==='bogang'?' (보강)':stu.type==='sample'?' (샘플)':'';
+  _attModalCtx={slotKey, isSub, stu, ds:useDs, isGuest:!!stu.guest};
+  const typeLabel=stu.type==='bogang'?' (보강)':
+    stu.type==='sample'?' (샘플)':
+    stu.type==='hyuwon'?' (휴원)':
+    stu.guest?' (추가)':'';
   document.getElementById('att-modal-title').textContent=stu.n+(stu.a?'('+stu.a+')':'')+typeLabel;
   const [,m,d]=useDs.split('-');
   const [y,mm,dd]=useDs.split('-');
@@ -447,10 +471,22 @@ function _closeAttModal(){
 async function _setAttModal(value){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
   if(!_attModalCtx) return;
-  const {slotKey, isSub, ds}=_attModalCtx;
-  const key=slotKey+'/'+ds+(isSub?'#sub':'');
   try{
-    await setAttendanceEntryTx(key,value===null?null:{s:value, at:new Date().toISOString(), by:null});
+    const {slotKey, isSub, ds, stu, isGuest}=_attModalCtx;
+    if(isGuest){
+      await updateAttGuestsMapTx(guests=>{
+        const key=stu.sgk;
+        const list=[...(guests[key]||[])];
+        const idx=list.findIndex(g=>g&&g.gid===stu.gid);
+        if(idx<0) return guests;
+        list[idx]={...list[idx], s:value===null?'':value, at:new Date().toISOString(), by:null};
+        guests[key]=list;
+        return guests;
+      });
+    } else {
+      const key=slotKey+'/'+ds+(isSub?'#sub':'');
+      await setAttendanceEntryTx(key,value===null?null:{s:value, at:new Date().toISOString(), by:null});
+    }
     _closeAttModal();
     buildTable();
     _updateAttBarInfo();
@@ -464,76 +500,24 @@ async function _setAttModal(value){
 async function _deleteFromAttModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
   if(!_attModalCtx) return;
-  const {slotKey, isSub, ds}=_attModalCtx;
+  const {slotKey, isSub, ds, stu, isGuest}=_attModalCtx;
   if(!confirm('이 학생을 출석부에서 삭제하시겠습니까?')) return;
 
   try{
-    const [t,d,l,r]=slotKey.split('/');
-    const li=parseInt(l), ri=parseInt(r);
-    const isPast=ds<toDateStr(getToday());
-    const useSnapshot=isPast && DAY_SNAPSHOT[ds];
-
-    if(isSub){
-      // Sub (결석+대체 보강/샘플 중 sub) 삭제
-      const mark=MARK_MAP[slotKey+'/'+ds];
-      if(mark && mark.sub){
-        const newMark={...mark};
-        delete newMark.sub;
-        await setMarkEntryTx(slotKey+'/'+ds,newMark);
-      }
-      await setAttendanceEntryTx(slotKey+'/'+ds+'#sub',null);
+    if(isGuest){
+      await updateAttGuestsMapTx(guests=>{
+        const key=stu.sgk;
+        const list=(guests[key]||[]).filter(g=>!(g&&g.gid===stu.gid));
+        if(list.length) guests[key]=list;
+        else delete guests[key];
+        return guests;
+      });
     } else {
-      // Primary 삭제
-      const mark=MARK_MAP[slotKey+'/'+ds];
-      if(mark){
-        if(mark.type==='bogang' || mark.type==='sample'){
-          // 단독 보강/샘플 → 통째로 삭제
-          await clearMarkEntryTx(slotKey+'/'+ds);
-        } else if(mark.type==='absent'){
-          // 결석 마크 삭제 (sub가 있어도 함께 삭제 — sub만 남겨두려면 별도 처리)
-          await clearMarkEntryTx(slotKey+'/'+ds);
-        }
-      }
-      // 정규 학생도 삭제 (+ 버튼으로 추가한 경우)
-      if(useSnapshot){
-        const arr=DAY_SNAPSHOT[ds].students||[];
-        const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-        if(idx>=0){arr.splice(idx,1); saveDaySnapshot();}
-        await updateAttendanceMapTx(att=>{
-          delete att[slotKey+'/'+ds];
-          delete att[slotKey+'/'+ds+'#sub'];
-          return att;
-        });
-        await updateHyuwonMapTx(hyuwon=>{
-          if(hyuwon[slotKey]&&hyuwon[slotKey].dates){
-            hyuwon[slotKey].dates=hyuwon[slotKey].dates.filter(x=>x!==ds);
-            if(!hyuwon[slotKey].dates.length) delete hyuwon[slotKey];
-          }
-          return hyuwon;
-        });
-      } else {
-        const stuKey=getTabConfig().stuKey;
-        await updateScheduleTx([stuKey,STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.休원], ctx=>{
-          const students=ctx.get(stuKey,[]);
-          const idx=students.findIndex(s=>s.t===t&&s.d===d&&parseInt(s.l)===li&&parseInt(s.r)===ri);
-          if(idx>=0) students.splice(idx,1);
-          const att=ctx.get(STORAGE_KEYS.ATTENDANCE,{});
-          delete att[slotKey+'/'+ds];
-          delete att[slotKey+'/'+ds+'#sub'];
-          const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
-          if(hyuwon[slotKey]&&hyuwon[slotKey].dates){
-            hyuwon[slotKey].dates=hyuwon[slotKey].dates.filter(x=>x!==ds);
-            if(!hyuwon[slotKey].dates.length) delete hyuwon[slotKey];
-          }
-          ctx.set(stuKey,students);
-          ctx.set(STORAGE_KEYS.ATTENDANCE,att);
-          ctx.set(STORAGE_KEYS.休원,hyuwon);
-          return true;
-        });
-      }
+      const key=slotKey+'/'+ds+(isSub?'#sub':'');
+      await setAttendanceEntryTx(key,null);
     }
 
-    toast('삭제 완료','ok');
+    toast(isGuest?'삭제 완료':'출석 체크 해제','ok');
     _closeAttModal();
     buildTable();
     _updateAttBarInfo();
@@ -1047,6 +1031,10 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
     const slotKey=t+'/'+day+'/'+lane+'/'+row;
     if(getStu(t,day,lane,row)) return true;
     if(RETIRE_MAP[slotKey]||ENROLL_MAP[slotKey]||DISABLED_MAP[slotKey]||HYUWON_MAP[slotKey]) return true;
+    if(_attendanceMode && _attendanceDate){
+      const ds=_dayToCellDs(day);
+      if(ds && _attGuestAtSlot(t,day,lane,slotKey,ds)) return true;
+    }
     const markPrefix=slotKey+'/';
     return Object.keys(MARK_MAP||{}).some(k=>k.startsWith(markPrefix));
   };
@@ -1107,6 +1095,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       if(isBlocked && _attendanceMode && _attendanceDate){
         const _cellDsChk=_dayToCellDs(day);
         const _hasContent=MARK_MAP[slotKey+'/'+_cellDsChk]
+          || _attGuestAtSlot(t,day,_l,slotKey,_cellDsChk)
           || STUDENTS.some(s=>s.t===t&&s.d===day&&s.l===_l&&s.r===_r);
         if(_hasContent) isBlocked=false;
       }
@@ -1184,6 +1173,13 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
             }
           }
         }
+        const _guests=_attGuestsForSlot(t,day,_l,slotKey,_cellDs);
+        _guests.forEach(g=>{
+          const _guest=_attGuestDisplay(g,t,day,_l,slotKey,_cellDs);
+          if(!_guest) return;
+          if(!_attPrimary) _attPrimary=_guest;
+          else if(!_attSub) _attSub=_guest;
+        });
       }
 
       // 클릭 핸들러
@@ -1370,28 +1366,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
           if(_attPrimary && _attSub){
             td.classList.add('att-split');
             // Primary row 상태
-            let ps;
-            if(_attPrimary.hyuwon) ps='hyuwon';
-            else if(_attPrimary.absent) ps='absent';
-            else {
-              const a=ATTENDANCE[slotKey+'/'+_cellDs];
-              ps=a?(typeof a==='string'?a:a.s):'';
-            }
-            const primaryBg=_attPrimary.hyuwon?'att-hyuwon':
-              _attPrimary.type==='bogang'?'att-bogang':
-              _attPrimary.type==='sample'?'att-sample':
-              ps==='present'?'att-present':
-              ps==='absent'?'att-absent':'att-unchecked';
-            const primaryTag=_attPrimary.type==='bogang'?'<span class="att-tag tag-bo">보</span>':
-                             _attPrimary.type==='sample'?'<span class="att-tag tag-sa">샘</span>':'';
+            const ps=_attDisplayState(_attPrimary,slotKey,_cellDs,false);
+            const primaryBg=_attDisplayBg(_attPrimary,ps);
+            const primaryTag=_attDisplayTag(_attPrimary);
 
             // Sub row 상태
-            const sa=ATTENDANCE[slotKey+'/'+_cellDs+'#sub'];
-            const ss=sa?(typeof sa==='string'?sa:sa.s):'';
-            const subBg=_attSub.type==='bogang'?'att-bogang':
-              _attSub.type==='sample'?'att-sample':'att-unchecked';
-            const subTag=_attSub.type==='bogang'?'<span class="att-tag tag-bo">보</span>':
-                         '<span class="att-tag tag-sa">샘</span>';
+            const ss=_attDisplayState(_attSub,slotKey,_cellDs,true);
+            const subBg=_attDisplayBg(_attSub,ss);
+            const subTag=_attDisplayTag(_attSub);
 
             td.innerHTML=
               `<div class="att-row att-row-primary ${primaryBg}" data-pk="primary">`+
@@ -1404,28 +1386,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
             // 단일 렌더링 (Primary 또는 Sub 중 하나만)
             let html='';
             if(_attPrimary){
-              let s;
-              if(_attPrimary.hyuwon) s='hyuwon';
-              else if(_attPrimary.absent) s='absent';
-              else {
-                const a=ATTENDANCE[slotKey+'/'+_cellDs];
-                s=a?(typeof a==='string'?a:a.s):'';
-              }
-              if(s==='hyuwon') td.classList.add('att-hyuwon');
-              else if(_attPrimary.type==='bogang') td.classList.add('att-bogang');
-              else if(_attPrimary.type==='sample') td.classList.add('att-sample');
-              else if(s==='present') td.classList.add('att-present');
-              else if(s==='absent') td.classList.add('att-absent');
-              else td.classList.add('att-unchecked');
-
-              const typeTag=_attPrimary.type==='bogang'?'<span class="att-tag tag-bo">보</span>':
-                            _attPrimary.type==='sample'?'<span class="att-tag tag-sa">샘</span>':'';
+              const s=_attDisplayState(_attPrimary,slotKey,_cellDs,false);
+              td.classList.add(_attDisplayBg(_attPrimary,s));
+              const typeTag=_attDisplayTag(_attPrimary);
               html+=renderIcon(s)+`<span class="att-nm">${esc(_attPrimary.n)}${_attPrimary.a||''}${typeTag}</span>`;
             }
             if(_attSub){
-              const sa=ATTENDANCE[slotKey+'/'+_cellDs+'#sub'];
-              const ss=sa?(typeof sa==='string'?sa:sa.s):'';
-              const subTypeTag=_attSub.type==='bogang'?'보':'샘';
+              const ss=_attDisplayState(_attSub,slotKey,_cellDs,true);
+              const subTypeTag=_attSub.type==='bogang'?'보':_attSub.type==='sample'?'샘':_attSub.type==='hyuwon'?'휴':'';
               html+=` <span class="att-sub" data-pk="sub">[${renderIcon(ss)}${esc(_attSub.n)}${_attSub.a||''}${subTypeTag}]</span>`;
             }
             td.innerHTML=html;
@@ -1571,6 +1539,18 @@ function buildTable(){
           if(parts[4]!==dsStr) continue;
           const ri=parseInt(parts[3]);
           if(ri>maxRi) maxRi=ri;
+        }
+        for(const [guestKey, list] of Object.entries(ATT_GUESTS||{})){
+          if(!guestKey.startsWith(t+'/'+ddKey+'/')) continue;
+          const parts=guestKey.split('/');
+          if(parts.length!==4 || parts[3]!==dsStr) continue;
+          (list||[]).forEach(g=>{
+            if(!g||!g.slotKey) return;
+            const sp=g.slotKey.split('/');
+            if(sp.length!==4) return;
+            const ri=parseInt(sp[3]);
+            if(ri>maxRi) maxRi=ri;
+          });
         }
       });
       rows=Math.max(rows, maxRi);
