@@ -19,17 +19,28 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
  *  - localStorage 키도 'yongam_' prefix로 분리 → 같은 브라우저에서 충돌 X
  * ════════════════════════════════════════════════════════════════ */
 const SELECTED_BRANCH_KEY='selected_branch';
+function _branchParamFromUrl(){
+  const qs=String((window.location&&window.location.search)||'');
+  const m=qs.match(/[?&]branch=(gagyeong|yongam)(?=&|$)/);
+  if(m) return m[1];
+  try{return new URLSearchParams(qs).get('branch')||'';}catch(e){return '';}
+}
+let _selectedBranch=null;
 try{
-  const branchParam=new URLSearchParams(location.search).get('branch');
+  const branchParam=_branchParamFromUrl();
   if(branchParam==='gagyeong'||branchParam==='yongam'){
-    localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);
+    _selectedBranch=branchParam;
+    try{window.localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);}catch(e){}
   }
 }catch(e){}
-let _selectedBranch=null;
-try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
+if(!_selectedBranch){
+  try{ _selectedBranch=window.localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
+}
+try{ window.SC_SELECTED_BRANCH=_selectedBranch||''; }catch(e){}
 function getBranchInfo(){
-  if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam', lsPrefix:'yongam_'};
-  if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule', lsPrefix:''};
+  const selected=_selectedBranch || (window.SC_SELECTED_BRANCH||'');
+  if(selected==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam', lsPrefix:'yongam_'};
+  if(selected==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule', lsPrefix:''};
   return null;
 }
 function _lsKey(key){

@@ -94,8 +94,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // [지점] 선택/변경 함수 (모달 → localStorage → reload)
 function selectBranch(branch){
   if(branch!=='gagyeong' && branch!=='yongam') return;
-  try{localStorage.setItem(SELECTED_BRANCH_KEY, branch);}catch(e){}
-  location.reload();
+  try{window.localStorage.setItem(SELECTED_BRANCH_KEY, branch);}catch(e){}
+  window.location.href='index.html?branch='+branch;
 }
 function openBranchModal(){
   const m=document.getElementById('branch-modal');

@@ -26,23 +26,34 @@ const BRANCH_CONTACTS={
   gagyeong:{label:'가경점',phone:'043-715-2019'},
   yongam:{label:'용암점',phone:'043-288-2016'},
 };
+function _branchParamFromUrl(){
+  const qs=String((window.location&&window.location.search)||'');
+  const m=qs.match(/[?&]branch=(gagyeong|yongam)(?=&|$)/);
+  if(m) return m[1];
+  try{return new URLSearchParams(qs).get('branch')||'';}catch(e){return '';}
+}
+let _selectedBranch=null;
 try{
-  const branchParam=new URLSearchParams(location.search).get('branch');
+  const branchParam=_branchParamFromUrl();
   if(branchParam==='gagyeong'||branchParam==='yongam'){
-    localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);
+    _selectedBranch=branchParam;
+    try{window.localStorage.setItem(SELECTED_BRANCH_KEY,branchParam);}catch(e){}
   }
 }catch(e){}
-let _selectedBranch=null;
-try{ _selectedBranch=localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
+if(!_selectedBranch){
+  try{ _selectedBranch=window.localStorage.getItem(SELECTED_BRANCH_KEY); }catch(e){}
+}
+try{ window.SC_SELECTED_BRANCH=_selectedBranch||''; }catch(e){}
 function getBranchInfo(){
-  if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam'};
-  if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule'};
+  const selected=_selectedBranch || (window.SC_SELECTED_BRANCH||'');
+  if(selected==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam'};
+  if(selected==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule'};
   return null;
 }
 function selectBranch(branch){
   if(branch!=='gagyeong' && branch!=='yongam') return;
-  try{ localStorage.setItem(SELECTED_BRANCH_KEY, branch); }catch(e){}
-  location.reload();
+  try{ window.localStorage.setItem(SELECTED_BRANCH_KEY, branch); }catch(e){}
+  window.location.href='parent.html?branch='+branch;
 }
 function openBranchModal(){
   const m=document.getElementById('branch-modal');
