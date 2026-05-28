@@ -255,6 +255,105 @@
       : firebase.database().ref(branch.fbPath);
     return rootByBranch[branchId];
   }
+  function backupDeferredKey(key){
+    key=String(key||'');
+    return key==='swim_audit_log'
+      || key==='swim_restore_points'
+      || key.startsWith('swim_restore_point_');
+  }
+  function backupStatus(message,type){
+    const el=$('backup-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='backup-status '+(type||'');
+  }
+  async function readBranchBackupData(branchId,includeHistory){
+    const root=branchRoot(branchId);
+    let data={};
+    if(root && typeof root._list==='function'){
+      data=await root._list({includeDeferred:!!includeHistory});
+    }else{
+      const snap=await root.once('value');
+      data=snap.val()||{};
+    }
+    if(!includeHistory){
+      const filtered={};
+      Object.entries(data||{}).forEach(([key,value])=>{
+        if(!backupDeferredKey(key)) filtered[key]=value;
+      });
+      return filtered;
+    }
+    return data||{};
+  }
+  function backupFileStamp(){
+    const d=new Date();
+    const p=n=>String(n).padStart(2,'0');
+    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());
+  }
+  function downloadJsonFile(filename,payload){
+    const text=JSON.stringify(payload,null,2);
+    const blob=new Blob([text],{type:'application/json;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    return blob.size;
+  }
+  async function runBackup(scope,button){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','백업 다운로드')) return;
+    const includeHistory=!!$('backup-include-history')?.checked;
+    const branchIds=(scope==='all'?Object.keys(BRANCHES):[activeBranch]).filter(canAccessBranch);
+    if(!branchIds.length){
+      toast('백업 가능한 지점이 없습니다','err');
+      return;
+    }
+    const originalLabel=button?button.textContent:'';
+    if(button){button.disabled=true;button.textContent='백업 생성 중...';}
+    backupStatus('백업 데이터를 읽는 중입니다...\n대상: '+branchIds.map(id=>BRANCHES[id].name).join(', '));
+    try{
+      const startedAt=new Date().toISOString();
+      const payload={
+        version:1,
+        kind:'sc-schedule-firestore-json-backup',
+        exportedAt:startedAt,
+        exportedBy:(window.SCAuth&&SCAuth.currentUser&&SCAuth.currentUser()?.email)||'',
+        includeHistory,
+        backend:String(window.SC_DATA_BACKEND||''),
+        branches:{},
+      };
+      const summary=[];
+      for(const branchId of branchIds){
+        const branch=BRANCHES[branchId];
+        const data=await readBranchBackupData(branchId,includeHistory);
+        const keys=Object.keys(data||{}).sort();
+        payload.branches[branchId]={
+          id:branch.id,
+          name:branch.name,
+          fbPath:branch.fbPath,
+          aligoBranch:branch.aligoBranch,
+          keyCount:keys.length,
+          keys,
+          data,
+        };
+        summary.push(branch.name+' '+keys.length+'개 키');
+      }
+      const filename='sc-schedule-backup-'+(scope==='all'?'all':activeBranch)+'-'+backupFileStamp()+'.json';
+      const bytes=downloadJsonFile(filename,payload);
+      const sizeMb=(bytes/1024/1024).toFixed(2);
+      backupStatus('백업 다운로드 완료\n파일: '+filename+'\n대상: '+summary.join(' / ')+'\n크기: '+sizeMb+' MB','ok');
+      toast('백업 파일 다운로드 완료','ok');
+    }catch(e){
+      console.error(e);
+      backupStatus('백업 실패\n'+(e.message||String(e)),'err');
+      toast('백업 실패','err');
+    }finally{
+      if(button){button.disabled=false;button.textContent=originalLabel;}
+    }
+  }
   function can(permission){
     return !window.SCAuth || typeof SCAuth.can!=='function' || SCAuth.can(permission);
   }
@@ -1003,6 +1102,8 @@
     $('aligo-test-template').addEventListener('change',e=>applyTestTemplate(e.currentTarget.value,true));
     $('sms-health').addEventListener('click',e=>runProxyTest('sms','health',e.currentTarget));
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
+    $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
+    $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
     $('feedback-refresh').addEventListener('click',()=>reloadFeedback(false));
     $('feedback-mark-all').addEventListener('click',markAllFeedbackDone);
     $('feedback-list').addEventListener('click',e=>{
@@ -1025,10 +1126,10 @@
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='feedback'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
+      if(p==='backup'||p==='feedback'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='feedback'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
+    return hash==='backup'||hash==='feedback'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'

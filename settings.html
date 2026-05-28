@@ -14,7 +14,7 @@
 <script src="js/firebase-store.js?v=20260527-3"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="auth.css?v=20260521-7">
-<link rel="stylesheet" href="settings.css?v=20260528-1">
+<link rel="stylesheet" href="settings.css?v=20260528-2">
 </head>
 <body>
 <header class="settings-topbar">
@@ -33,6 +33,7 @@
 <main class="settings-shell">
   <aside class="settings-nav">
     <button type="button" class="nav-btn active" data-panel="menu">운영 메뉴</button>
+    <button type="button" class="nav-btn" data-panel="backup" data-perm="manageSettings">백업 관리</button>
     <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">의견접수 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
     <button type="button" class="nav-btn" data-panel="recipients" data-perm="manageSettings">수신번호</button>
     <button type="button" class="nav-btn" data-panel="templates" data-perm="manageSettings">템플릿</button>
@@ -75,6 +76,9 @@
         <button type="button" class="quick-btn" data-panel-jump="feedback" data-perm="manageSettings">
           <span>의견접수 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>오류/불편사항</small>
         </button>
+        <button type="button" class="quick-btn" data-panel-jump="backup" data-perm="manageSettings">
+          <span>백업 관리</span><small>JSON 다운로드</small>
+        </button>
         <button type="button" class="quick-btn" data-panel-jump="recipients" data-perm="manageSettings">
           <span>수신번호</span><small>선생님/차량/데스크</small>
         </button>
@@ -107,6 +111,34 @@
           </div>
           <button type="button" class="mini-btn" data-copy-link="teacher">복사</button>
         </div>
+      </div>
+    </section>
+
+    <section class="settings-panel" id="panel-backup" data-perm="manageSettings">
+      <div class="panel-head">
+        <div>
+          <h1>백업 관리</h1>
+          <p>Firebase에 저장된 시간표 데이터를 JSON 파일로 내려받습니다.</p>
+        </div>
+        <div class="panel-actions">
+          <button type="button" class="ghost-btn" id="backup-current">현재 지점 백업</button>
+          <button type="button" class="primary-btn" id="backup-all">전체 지점 백업</button>
+        </div>
+      </div>
+
+      <div class="backup-card">
+        <div>
+          <h2>백업 대상</h2>
+          <p>원생, 담임, 출석부, 학부모 요청, 탭/폴더, 설정, 기록관리 데이터를 포함합니다.</p>
+        </div>
+        <label class="toggle-row">
+          <input type="checkbox" id="backup-include-history" checked>
+          <span>기록관리/복원점 포함</span>
+        </label>
+      </div>
+
+      <div class="backup-status" id="backup-status">
+        아직 백업을 실행하지 않았습니다.
       </div>
     </section>
 
@@ -324,6 +356,6 @@
 <div id="settings-toast" class="settings-toast"></div>
 
 <script src="js/auth-guard.js?v=20260521-7"></script>
-<script src="js/settings.js?v=20260528-1"></script>
+<script src="js/settings.js?v=20260528-3"></script>
 </body>
 </html>

@@ -118,6 +118,12 @@ button,input,textarea,select{font-family:inherit}
 .variable-item code{display:inline-flex;margin-bottom:5px;padding:3px 7px;border-radius:6px;background:#172033;color:#fff;font-size:12px;font-weight:900}
 .variable-item strong{display:block;font-size:12px;font-weight:900;color:#172033;margin-bottom:2px}
 .variable-item span{display:block;font-size:11px;color:#6B7280;line-height:1.35}
+.backup-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border:1px solid #DDE3EC;border-radius:8px;background:#F8FAFC;margin-bottom:12px}
+.backup-card h2{margin:0 0 4px;font-size:14px;font-weight:900;color:#111827}
+.backup-card p{margin:0;font-size:12px;font-weight:700;color:#64748B;line-height:1.45}
+.backup-status{min-height:46px;padding:12px;border:1px solid #DDE3EC;border-radius:8px;background:#fff;color:#334155;font-size:12px;font-weight:800;line-height:1.6;white-space:pre-wrap}
+.backup-status.ok{border-color:#86EFAC;background:#F0FDF4;color:#166534}
+.backup-status.err{border-color:#FCA5A5;background:#FEF2F2;color:#991B1B}
 .settings-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(12px);background:#172033;color:#fff;border-radius:999px;padding:9px 14px;font-size:12px;font-weight:900;opacity:0;pointer-events:none;transition:all .18s;z-index:60;box-shadow:0 8px 24px rgba(15,23,42,.24)}
 .settings-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .settings-toast.err{background:#DC2626}
