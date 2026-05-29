@@ -10,10 +10,10 @@ const _REG_BASE={
   satTimeLabel:{'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'},
 };
 const _BT_BASE={
-  days:['월','화','수','목','금'],
+  days:['월수금','화목'],
   times:[{t:'9시'},{t:'10시'},{t:'11시'},{t:'14시'},{t:'15시'}],
   lanes:5,
-  hasNum:['월'],
+  hasNum:['월수금','화목'],
   satTimeLabel:{},
 };
 function _tabById(tabId){

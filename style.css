@@ -55,6 +55,13 @@ body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;f
 .zoom-pct{font-size:11px;font-weight:700;color:#fff;padding:0 6px;cursor:pointer;min-width:38px;text-align:center;user-select:none}
 .zoom-pct:hover{color:#FCD34D}
 .appbar-r{margin-left:auto;display:flex;gap:8px;align-items:center;min-width:0;white-space:nowrap}
+.schedule-summary{display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border:1px solid rgba(255,255,255,.28);border-radius:7px;background:rgba(255,255,255,.15);flex:0 0 auto}
+.schedule-summary span{display:inline-flex;align-items:center;gap:4px;font-size:10px;line-height:1;color:rgba(255,255,255,.82)}
+.schedule-summary b{font-weight:800}
+.schedule-summary strong{font-size:12px;font-weight:900;color:#fff;letter-spacing:0}
+.schedule-summary-sep{width:1px;height:14px;background:rgba(255,255,255,.24)}
+.schedule-summary-students{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0;border:none;background:transparent;color:rgba(255,255,255,.82);font-family:inherit;cursor:pointer}
+.schedule-summary-students:hover strong{text-decoration:underline;text-underline-offset:2px}
 .hbtn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:4px 11px;font-size:11px;color:#fff;cursor:pointer;font-family:inherit;flex:0 0 auto}
 .tab-bar{display:flex;align-items:stretch;gap:0;background:#fff;border-bottom:2px solid #E5E7EB;padding:0 16px;position:sticky;top:48px;z-index:49;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
 .tab-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px 8px 18px;font-size:13px;font-weight:700;color:#888;border:none;background:none;cursor:pointer;font-family:inherit;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;flex:0 0 auto;white-space:nowrap}
@@ -519,6 +526,40 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .closed-type.t-single{background:#FEF3C7;color:#92400E}
 .closed-dates{font-weight:600;color:#111;flex:1}
 .closed-memo{font-size:10px;color:#888}
+.schedule-student-modal{max-width:920px}
+.schedule-student-toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.schedule-student-list-summary{font-size:11px;color:#4B5563;font-weight:800;margin-bottom:8px}
+.schedule-student-table-wrap{max-height:58vh;overflow:auto;border:1px solid #E5E7EB;border-radius:8px;background:#fff}
+.schedule-student-table{width:100%;border-collapse:collapse;font-size:12px;min-width:760px}
+.schedule-student-table th{position:sticky;top:0;z-index:1;background:#F3F4F6;color:#374151;font-size:10px;font-weight:900;text-align:left;padding:8px;border-bottom:1px solid #D1D5DB;white-space:nowrap}
+.schedule-student-table td{padding:7px 8px;border-bottom:1px solid #F3F4F6;color:#111;vertical-align:top}
+.schedule-student-table tr:last-child td{border-bottom:none}
+.schedule-student-table .muted{color:#9CA3AF}
+.schedule-student-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;font-size:10px;font-weight:900;white-space:nowrap}
+.schedule-student-badge.counted{background:#DCFCE7;color:#047857}
+.schedule-student-badge.excluded{background:#FEE2E2;color:#B91C1C}
+.schedule-student-status{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;background:#E0F2FE;color:#0369A1;font-size:10px;font-weight:900;white-space:nowrap}
+.schedule-student-status.enroll{background:#DBEAFE;color:#1D4ED8}
+.schedule-student-status.exclude{background:#FEF3C7;color:#B45309}
+.schedule-student-status.move{background:#FEF3C7;color:#B45309}
+.schedule-student-status.retire{background:#FEE2E2;color:#B91C1C}
+.schedule-student-slots{line-height:1.45;color:#374151}
+.schedule-student-badge-stack{display:flex;flex-direction:column;align-items:center;gap:3px}
+.schedule-student-members{display:flex;flex-direction:column;gap:4px}
+.schedule-student-member{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.schedule-student-member strong{font-weight:900;color:#111}
+.schedule-student-inline-slot{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:#EEF2FF;color:#1E3A8A;border:1px solid #C7D2FE;font-size:10px;font-weight:900;white-space:nowrap}
+.schedule-student-date-chip{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:#F8FAFC;border:1px solid #E2E8F0;color:#475569;font-size:10px;font-weight:900;white-space:nowrap}
+.schedule-student-slot-person{margin-bottom:4px}
+.schedule-student-slot-person:last-child{margin-bottom:0}
+.schedule-student-slot-person strong{display:inline-block;margin-right:4px;font-weight:900;color:#111}
+.schedule-student-slot-chip-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.schedule-student-slot-chip{display:inline-flex;align-items:center;gap:4px;min-height:22px;padding:2px 7px;border-radius:999px;background:#EEF2FF;color:#1E3A8A;border:1px solid #C7D2FE;font-size:11px;font-weight:900;white-space:nowrap}
+.schedule-student-slot-chip b{font-size:12px;color:#172554}
+.schedule-student-slot-chip em{font-style:normal;color:#047857}
+.schedule-student-slot-chip small{font-size:10px;color:#B45309;font-weight:900}
+.schedule-student-teacher-chip-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.schedule-student-teacher-chip{display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:999px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;font-size:11px;font-weight:900;white-space:nowrap}
 
 @media (max-width:720px){
   .appbar{
@@ -534,6 +575,9 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
     scrollbar-width:thin;-webkit-overflow-scrolling:touch;
   }
   .zoom-ctrl{flex:0 0 auto;margin-right:0}
+  .schedule-summary{height:28px;padding:0 8px;gap:6px}
+  .schedule-summary span{font-size:10px}
+  .schedule-summary strong{font-size:12px}
   .zoom-ctrl .zoom-btn{padding:5px 9px}
   .zoom-pct{min-width:34px;padding:0 5px}
   .hbtn{padding:5px 8px;font-size:10px}

@@ -244,23 +244,61 @@ function _buildAttendanceBasisByDay(days){
   });
   return map;
 }
+function _attendanceSourceDay(data,viewDay){
+  const cfgDays=(data&&data.cfg&&Array.isArray(data.cfg.days))?data.cfg.days:[];
+  if(!cfgDays.length||cfgDays.includes(viewDay)) return viewDay;
+  const viewIndexes=typeof getDayIndexes==='function'?getDayIndexes(viewDay):[];
+  const match=cfgDays.find(day=>{
+    const indexes=typeof getDayIndexes==='function'?getDayIndexes(day):[];
+    return indexes.some(idx=>viewIndexes.includes(idx));
+  });
+  return match||viewDay;
+}
+function _withAttendanceViewDay(stu,viewDay,sourceDay){
+  if(!stu) return null;
+  if(viewDay===sourceDay) return stu;
+  return Object.assign({},stu,{d:viewDay,sourceDay});
+}
 function _ctxStu(ctx,t,day,lane,row){
   const data=ctx?.attendanceBasisByDay?.[day];
-  if(data) return data.stuIdx?.[t+'/'+day+'/'+lane+'/'+row] || null;
+  if(data){
+    const sourceDay=_attendanceSourceDay(data,day);
+    return _withAttendanceViewDay(data.stuIdx?.[t+'/'+sourceDay+'/'+lane+'/'+row] || null,day,sourceDay);
+  }
   return getStu(t,day,lane,row);
 }
 function _ctxInst(ctx,t,day,lane){
   const data=ctx?.attendanceBasisByDay?.[day];
-  if(data) return data.instMap?.[t+'/'+day+'/'+lane] || null;
+  if(data){
+    const sourceDay=_attendanceSourceDay(data,day);
+    return data.instMap?.[t+'/'+sourceDay+'/'+lane] || null;
+  }
   return getInst(t,day,lane);
 }
 function _ctxStudents(ctx,day){
   const data=ctx?.attendanceBasisByDay?.[day];
-  return data?data.students:STUDENTS;
+  if(data){
+    const sourceDay=_attendanceSourceDay(data,day);
+    if(sourceDay===day) return data.students;
+    return (data.students||[])
+      .filter(stu=>stu&&stu.d===sourceDay)
+      .map(stu=>_withAttendanceViewDay(stu,day,sourceDay));
+  }
+  return STUDENTS;
 }
 function _ctxInstMap(ctx,day){
   const data=ctx?.attendanceBasisByDay?.[day];
-  return data?data.instMap:INST_MAP;
+  if(data){
+    const sourceDay=_attendanceSourceDay(data,day);
+    if(sourceDay===day) return data.instMap;
+    const mapped={};
+    Object.entries(data.instMap||{}).forEach(([key,inst])=>{
+      const p=String(key).split('/');
+      if(p.length===3&&p[1]===sourceDay) mapped[p[0]+'/'+day+'/'+p[2]]=inst;
+    });
+    return mapped;
+  }
+  return INST_MAP;
 }
 
 function _resolveAttAddSlot(status){
@@ -269,7 +307,8 @@ function _resolveAttAddSlot(status){
   if(ctx.slotKey) return ctx.slotKey;
   const t=ctx.t, d=ctx.d, l=parseInt(ctx.l,10), cellDs=ctx.cellDs;
   const basis=(cellDs&&typeof getAttendanceBasisDataForDate==='function')?getAttendanceBasisDataForDate(cellDs):null;
-  const stuAt=r=>basis?basis.stuIdx?.[t+'/'+d+'/'+l+'/'+r]:getStu(t,d,l,r);
+  const sourceDay=basis?_attendanceSourceDay(basis,d):d;
+  const stuAt=r=>basis?basis.stuIdx?.[t+'/'+sourceDay+'/'+l+'/'+r]:getStu(t,d,l,r);
   const maxRows=_attAddMaxRows(t);
   const slotAt=r=>t+'/'+d+'/'+l+'/'+r;
   if(status==='bogang'||status==='sample'){
@@ -361,7 +400,8 @@ function _editAttCell(slotKey, cellDs){
     curStu=(DAY_SNAPSHOT[targetDs].students||[]).find(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
   } else {
     const basis=(targetDs&&typeof getAttendanceBasisDataForDate==='function')?getAttendanceBasisDataForDate(targetDs):null;
-    curStu=basis?basis.stuIdx?.[t+'/'+d+'/'+li+'/'+ri]:getStu(t,d,li,ri);
+    const sourceDay=basis?_attendanceSourceDay(basis,d):d;
+    curStu=basis?_withAttendanceViewDay(basis.stuIdx?.[t+'/'+sourceDay+'/'+li+'/'+ri]||null,d,sourceDay):getStu(t,d,li,ri);
   }
 
   _editModalCtx={slotKey, usingSnapshot, exists:!!curStu, ds:targetDs};
@@ -694,7 +734,7 @@ async function markAllPresentForDate(){
   const dow=['일','월','화','수','목','금','토'][new Date(_attendanceDate).getDay()];
   const now=new Date().toISOString();
   const basis=(typeof getAttendanceBasisDataForDate==='function')?getAttendanceBasisDataForDate(_attendanceDate):null;
-  const studentsForDate=basis?.students||STUDENTS;
+  const studentsForDate=basis?_ctxStudents({attendanceBasisByDay:{[dow]:basis}},dow):STUDENTS;
   let cnt=0;
   try{
     await updateAttendanceMapTx(att=>{
@@ -1451,13 +1491,13 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       }
       // 퇴원
       if(!_skipBadges && retDs&&retDs>=todayStr){
-        const dl=_dl(retDs), nm=retEntry?.name||'';
+        const dl=_dl(retDs), nm=_scheduleReservationName(retEntry,stu);
         const label=nm?nm+'~'+dl+'까지':dl+'까지';
         badges.push({type:'retire', ds:retDs, text:label, tip:'제외 '+label});
       }
       // 등원
       if(!_skipBadges && enrEntry&&enrEntry.ds>todayStr){
-        const dl=_dl(enrEntry.ds), nm=enrEntry.name||'';
+        const dl=_dl(enrEntry.ds), nm=_scheduleReservationName(enrEntry);
         const label=nm?nm+' '+dl+'부터~':dl+'부터~';
         badges.push({type:'enroll', ds:enrEntry.ds, text:label, tip:'등록 '+label});
       }
@@ -1807,6 +1847,7 @@ function buildTable(){
   }
 
   // 학부모 요청 대기 카운트 업데이트
+  try{ updateScheduleSummary(); }catch(e){ console.warn('[summary]', e); }
   updateParentReqCount();
 
   // 스냅샷 사용했다면 원복
@@ -1843,6 +1884,385 @@ function updateParentReqCount(){
   } else {
     btn.style.display='none';
   }
+}
+
+function _summaryNumber(n){
+  return Number(n||0).toLocaleString('ko-KR');
+}
+function _summaryInstExists(inst){
+  if(!inst) return false;
+  if(typeof inst==='string') return !!inst.trim();
+  return !!String(inst.n||'').trim();
+}
+function _summaryRowsForInst(inst){
+  if(typeof isBangteuk==='function' && isBangteuk()) return 6;
+  if(typeof getInstCls==='function' && getInstCls(inst)) return 8;
+  return 5;
+}
+function _summaryStudentKey(stu){
+  const person=_summaryRecordPerson(stu,null);
+  const name=String(person.n||'').trim();
+  if(!name) return '';
+  return name+'|'+_summaryNormPhone(person.p);
+}
+function _summaryDate(ds){
+  if(!ds) return '';
+  const p=String(ds).slice(5).split('-');
+  return parseInt(p[0],10)+'/'+parseInt(p[1],10);
+}
+function _summaryTeacherName(inst){
+  if(!inst) return '';
+  if(typeof inst==='string') return inst.replace(/^[\d\)]+\s*/,'').replace(/\(유아\)/g,'').replace(/\(엘\/마\)/g,'').trim();
+  return String(inst.n||'').trim();
+}
+function _summarySlotTeacher(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<3) return '';
+  const inst=INST_MAP&&INST_MAP[p[0]+'/'+p[1]+'/'+p[2]];
+  return _summaryTeacherName(inst);
+}
+function _summaryIsMoveEntry(entry){
+  return !!(entry&&typeof entry==='object'&&entry.moveType==='reserve'&&entry.moveId&&entry.pairKey);
+}
+function _summaryNormPhone(value){
+  const raw=String(value||'').trim();
+  return (typeof normPhone==='function'?normPhone(raw):raw).replace(/\D/g,'');
+}
+function _summaryRecordPerson(entry,fallback){
+  const source=entry&&typeof entry==='object'?entry:{};
+  const fb=fallback||{};
+  const srcName=String(source.n||source.name||'').trim();
+  const fbName=String(fb.n||fb.name||'').trim();
+  const srcAge=String(source.a||source.age||'').trim();
+  const fbAge=String(fb.a||fb.age||'').trim();
+  const srcPhone=source.p||source.phone||source.tel||'';
+  const fbPhone=fb.p||fb.phone||fb.tel||'';
+  const legacyJoined=!!(srcName&&fbName&&fbAge&&srcName===fbName+fbAge);
+  const preferFallback=!!(fbName&&(legacyJoined||(!_summaryNormPhone(srcPhone)&&_summaryNormPhone(fbPhone))));
+  return {
+    n:(preferFallback?fbName:srcName)||fbName,
+    p:srcPhone||fbPhone,
+    a:srcAge||fbAge,
+  };
+}
+function _scheduleReservationName(entry,fallback){
+  return _summaryRecordPerson(entry,fallback).n||'';
+}
+function _summaryRetireStatus(entry,isChange){
+  return isChange||_summaryIsMoveEntry(entry) ? '제외예정' : '퇴원예정';
+}
+function _summaryEnrollStatus(entry){
+  return '등록예정';
+}
+function _summaryPairFallback(entry,pairMap){
+  if(!_summaryIsMoveEntry(entry)) return null;
+  const pair=pairMap&&pairMap[entry.pairKey];
+  if(!pair||typeof pair!=='object') return null;
+  const person=_summaryRecordPerson(pair,entry);
+  return {
+    n:person.n,
+    name:person.n,
+    a:person.a,
+    age:person.a,
+    p:person.p,
+    phone:person.p,
+    tel:person.p,
+  };
+}
+function _summaryEntryPersonKey(entry,fallback){
+  const person=_summaryRecordPerson(entry,fallback);
+  const name=String(person.n||'').trim();
+  if(!name) return '';
+  return name+'|'+_summaryNormPhone(person.p);
+}
+function _summarySlotInfo(slotKey,dateText,teacherName){
+  const p=String(slotKey||'').split('/');
+  const day=p[1]||'';
+  const hour=String(p[0]||'').replace(/[^\d]/g,'')||String(p[0]||'');
+  const badge=day&&hour ? day+hour : (p.length>=4 ? `${p[1]} ${p[0]}` : String(slotKey||''));
+  const teacher=String(teacherName||'').trim();
+  const date=String(dateText||'').trim();
+  const text=[badge,teacher?teacher+' 선생님':'',date].filter(Boolean).join(' ');
+  return {
+    key:[slotKey,date,teacher].join('|'),
+    badge,
+    teacher,
+    date,
+    text,
+  };
+}
+function _summaryRecord(entry,status,slotKey,dateText,fallback){
+  const person=_summaryRecordPerson(entry,fallback);
+  return {
+    n:person.n,
+    p:person.p,
+    status,
+    slot:_summarySlotInfo(slotKey,dateText,_summarySlotTeacher(slotKey))
+  };
+}
+function _summaryAddPerson(map,rec,counted){
+  const key=_summaryStudentKey(rec);
+  if(!key) return;
+  if(!map.has(key)){
+    map.set(key,{key,n:rec.n||'',p:rec.p||'',counted,states:new Set(),slots:[]});
+  }
+  const row=map.get(key);
+  if(rec.n&&!row.n) row.n=rec.n;
+  if(rec.p&&!row.p) row.p=rec.p;
+  row.states.add(rec.status);
+  if(rec.slot&&rec.slot.text&&!row.slots.some(slot=>slot.key===rec.slot.key)) row.slots.push(rec.slot);
+}
+function _summaryRowsFromMap(map){
+  return [...map.values()].map(row=>({
+    key:row.key,
+    n:row.n,
+    p:row.p,
+    counted:row.counted,
+    status:[...row.states].join(', '),
+    slots:row.slots,
+    slotText:row.slots.map(slot=>slot.text).join(' / ')
+  })).sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.p).localeCompare(String(b.p),'ko'));
+}
+function getScheduleSummaryData(){
+  const instRowsByKey={};
+  let capacity=0;
+  const times=(typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean);
+  const days=typeof getDays==='function'?getDays():[];
+  const lanes=typeof getLanes==='function'?getLanes():0;
+
+  times.forEach(t=>{
+    days.forEach(day=>{
+      for(let lane=1;lane<=lanes;lane++){
+        const instKey=t+'/'+day+'/'+lane;
+        const inst=INST_MAP&&INST_MAP[instKey];
+        if(!_summaryInstExists(inst)) continue;
+        const rows=_summaryRowsForInst(inst);
+        instRowsByKey[instKey]=rows;
+        for(let row=1;row<=rows;row++){
+          if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) continue;
+          capacity++;
+        }
+      }
+    });
+  });
+
+  const slotCanCount=slotKey=>{
+    const p=String(slotKey||'').split('/');
+    if(p.length<4) return false;
+    const instKey=p[0]+'/'+p[1]+'/'+p[2];
+    const maxRows=instRowsByKey[instKey];
+    if(!maxRows) return false;
+    const row=parseInt(p[3],10);
+    if(!Number.isFinite(row) || row<1 || row>maxRows) return false;
+    if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) return false;
+    return true;
+  };
+
+  const today=typeof toDateStr==='function'&&typeof getToday==='function'?toDateStr(getToday()):'';
+  const activeRetireSlots=new Map();
+  Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
+    if(!entry) return;
+    const ds=typeof entry==='string'?entry:entry.ds;
+    if(today&&ds&&ds<today) return;
+    activeRetireSlots.set(slotKey,entry);
+  });
+  const enrollPersonKeys=new Set();
+  Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
+    if(!entry) return;
+    const key=_summaryEntryPersonKey(entry,_summaryPairFallback(entry,RETIRE_MAP));
+    if(key) enrollPersonKeys.add(key);
+  });
+
+  const actualBySlot=new Map();
+  (Array.isArray(STUDENTS)?STUDENTS:[]).forEach(stu=>{
+    if(!stu || !stu.n) return;
+    const slotKey=String(stu.t||'')+'/'+String(stu.d||'')+'/'+String(stu.l||'')+'/'+String(stu.r||'');
+    if(slotCanCount(slotKey)) actualBySlot.set(slotKey,stu);
+  });
+
+  const occupiedSlots=new Set();
+  const countedPeople=new Map();
+  const excludedPeople=new Map();
+
+  actualBySlot.forEach((stu,slotKey)=>{
+    const retire=activeRetireSlots.get(slotKey);
+    if(retire){
+      const ds=typeof retire==='string'?retire:retire.ds;
+      const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(retire,stu));
+      _summaryAddPerson(excludedPeople,_summaryRecord(retire,_summaryRetireStatus(retire,isChange),slotKey,_summaryDate(ds)+'까지',stu),false);
+      return;
+    }
+    occupiedSlots.add(slotKey);
+    _summaryAddPerson(countedPeople,_summaryRecord(stu,'재원',slotKey,''),true);
+  });
+
+  Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
+    if(!entry) return;
+    if(slotCanCount(slotKey)) occupiedSlots.add(slotKey);
+    const ds=typeof entry==='string'?entry:entry.ds;
+    _summaryAddPerson(countedPeople,_summaryRecord(entry,_summaryEnrollStatus(entry),slotKey,_summaryDate(ds)+'부터'),true);
+  });
+
+  activeRetireSlots.forEach((entry,slotKey)=>{
+    if(actualBySlot.has(slotKey)) return;
+    const ds=typeof entry==='string'?entry:entry.ds;
+    const fallback=_summaryPairFallback(entry,ENROLL_MAP);
+    const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(entry,fallback));
+    _summaryAddPerson(excludedPeople,_summaryRecord(entry,_summaryRetireStatus(entry,isChange),slotKey,_summaryDate(ds)+'까지',fallback),false);
+  });
+
+  const countedRows=_summaryRowsFromMap(countedPeople);
+  const excludedRows=_summaryRowsFromMap(excludedPeople);
+  const countedKeys=new Set(countedRows.map(row=>row.key));
+  const excludedOnlyRows=excludedRows.filter(row=>!countedKeys.has(row.key));
+  return {
+    hours:occupiedSlots.size,
+    capacity,
+    countedRows,
+    excludedRows,
+    excludedOnlyRows,
+    averageHours:countedRows.length ? occupiedSlots.size/countedRows.length : 0,
+  };
+}
+function updateScheduleSummary(){
+  const hoursEl=document.getElementById('schedule-class-hours');
+  const studentsEl=document.getElementById('schedule-student-total');
+  if(!hoursEl && !studentsEl) return;
+  const data=getScheduleSummaryData();
+  if(hoursEl) hoursEl.textContent=_summaryNumber(data.hours)+'/'+_summaryNumber(data.capacity);
+  if(studentsEl) studentsEl.textContent=_summaryNumber(data.countedRows.length);
+}
+
+function _scheduleStudentRowsForModal(){
+  const data=getScheduleSummaryData();
+  const contactMap=new Map();
+  const addRow=(row,counted)=>{
+    const rawPhone=String(row.p||'').trim();
+    const phone=(typeof normPhone==='function'?normPhone(rawPhone):rawPhone).replace(/\D/g,'');
+    const name=String(row.n||'').trim();
+    const key=name ? 'person:'+name+'|'+phone : (phone ? 'phone:'+phone : '');
+    if(!key) return;
+    if(!contactMap.has(key)){
+      contactMap.set(key,{key,p:row.p||'',countedCount:0,excludedCount:0,members:new Map(),searchParts:[]});
+    }
+    const contact=contactMap.get(key);
+    if(row.p&&!contact.p) contact.p=row.p;
+    if(counted) contact.countedCount++;
+    else contact.excludedCount++;
+    const memberKey=String(row.key||row.n)+'|'+String(row.status||'')+'|'+(counted?'1':'0');
+    if(!contact.members.has(memberKey)){
+      contact.members.set(memberKey,{n:row.n||'',status:row.status||'',counted,dates:new Set(),slots:[]});
+    }
+    const member=contact.members.get(memberKey);
+    const rowSlots=Array.isArray(row.slots)?row.slots:String(row.slots||'').split(' / ').filter(Boolean).map(text=>({key:text,badge:text,teacher:'',date:'',text}));
+    rowSlots.forEach(slot=>{
+      if(slot.date) member.dates.add(slot.date);
+      if(!member.slots.some(saved=>saved.key===slot.key)) member.slots.push(slot);
+    });
+    contact.searchParts.push(row.n,row.p,row.status,row.slotText||'',counted?'집계포함':'집계제외');
+  };
+  data.countedRows.forEach(row=>addRow(row,true));
+  data.excludedRows.forEach(row=>addRow(row,false));
+  const rows=[...contactMap.values()].map(row=>{
+    const members=[...row.members.values()].sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.status).localeCompare(String(b.status),'ko'));
+    const countedCount=row.countedCount||0;
+    return {
+      ...row,
+      countedCount,
+      excludedCount:countedCount?0:(row.excludedCount||0),
+      members,
+      search:row.searchParts.join(' ').toLowerCase()
+    };
+  }).sort((a,b)=>String(a.p||'').localeCompare(String(b.p||''),'ko') || String(a.key).localeCompare(String(b.key),'ko'));
+  return {
+    data,
+    rows
+  };
+}
+function openScheduleStudentList(){
+  const modal=document.getElementById('schedule-student-modal');
+  if(!modal) return;
+  const search=document.getElementById('schedule-student-search');
+  if(search) search.value='';
+  modal.style.display='flex';
+  renderScheduleStudentList();
+}
+function closeScheduleStudentList(){
+  const modal=document.getElementById('schedule-student-modal');
+  if(modal) modal.style.display='none';
+}
+function _scheduleStudentStatusClass(status,counted){
+  if(String(status||'').includes('제외')) return 'exclude';
+  if(String(status||'').includes('이동')) return 'move';
+  if(!counted) return 'retire';
+  return String(status||'').includes('등록')?'enroll':'';
+}
+function _scheduleNormalizeChangeMembers(members){
+  return [...(members||[])];
+}
+function renderScheduleStudentList(){
+  const body=document.getElementById('schedule-student-list-body');
+  const summary=document.getElementById('schedule-student-list-summary');
+  if(!body) return;
+  const {data,rows}=_scheduleStudentRowsForModal();
+  const q=String(document.getElementById('schedule-student-search')?.value||'').trim().toLowerCase();
+  const filtered=rows.filter(row=>{
+    if(!q) return true;
+    return String(row.search||'').includes(q);
+  });
+  if(summary){
+    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
+  }
+  body.innerHTML=filtered.map(row=>{
+    const badges=[
+      row.countedCount?`<span class="schedule-student-badge counted">포함 ${_summaryNumber(row.countedCount)}</span>`:'',
+      row.excludedCount?`<span class="schedule-student-badge excluded">제외 ${_summaryNumber(row.excludedCount)}</span>`:'',
+    ].filter(Boolean).join('');
+    const members=_scheduleNormalizeChangeMembers(row.members||[]).map(member=>{
+      const statusCls=_scheduleStudentStatusClass(member.status,member.counted);
+      const slotBits=[...new Set((member.slots||[]).map(slot=>slot.badge).filter(Boolean))]
+        .map(badge=>`<span class="schedule-student-inline-slot">${esc(badge)}</span>`).join('');
+      const dates=[...(member.dates||[])].map(date=>`<span class="schedule-student-date-chip">${esc(date)}</span>`).join('');
+      return `<div class="schedule-student-member"><strong>${esc(member.n||'')}</strong>${slotBits}<span class="schedule-student-status ${statusCls}">${esc(member.status||'')}</span>${dates}</div>`;
+    }).join('');
+    const displayMembers=_scheduleNormalizeChangeMembers(row.members||[]);
+    const teacherNames=[...new Set(displayMembers.flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
+    const teachers=teacherNames.map(name=>`<span class="schedule-student-teacher-chip">${esc(name)}쌤</span>`).join('');
+    const slotBadges=[...new Set(displayMembers.flatMap(member=>(member.slots||[]).map(slot=>slot.badge).filter(Boolean)))];
+    const slots=slotBadges.map(badge=>`<span class="schedule-student-slot-chip"><b>${esc(badge)}</b></span>`).join('');
+    return `<tr>
+      <td><div class="schedule-student-badge-stack">${badges||'<span class="schedule-student-badge excluded">제외</span>'}</div></td>
+      <td>${row.p?esc(row.p):'<span class="muted">-</span>'}</td>
+      <td><div class="schedule-student-members">${members}</div></td>
+      <td><span class="schedule-student-teacher-chip-row">${teachers||'<span class="muted">-</span>'}</span></td>
+      <td class="schedule-student-slots"><span class="schedule-student-slot-chip-row">${slots||'<span class="muted">-</span>'}</span></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="muted" style="text-align:center;padding:18px">표시할 원생이 없습니다</td></tr>';
+}
+function downloadScheduleStudentListCsv(){
+  const {rows}=_scheduleStudentRowsForModal();
+  const q=String(document.getElementById('schedule-student-search')?.value||'').trim().toLowerCase();
+  const filtered=rows.filter(row=>!q||String(row.search||'').includes(q));
+  const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
+  filtered.forEach(row=>{
+    const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.excludedCount?`제외 ${row.excludedCount}`:''].filter(Boolean).join(' / ');
+    const displayMembers=_scheduleNormalizeChangeMembers(row.members||[]);
+    const memberText=displayMembers.map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
+    const teacherText=[...new Set(displayMembers.flatMap(m=>m.slots.map(slot=>slot.teacher).filter(Boolean)))].join(' / ');
+    const slotText=[...new Set(displayMembers.flatMap(m=>m.slots.map(slot=>slot.badge).filter(Boolean)))].join(' / ');
+    csvRows.push([countText,row.p||'',memberText,teacherText,slotText]);
+  });
+  const csv='\ufeff'+csvRows.map(cols=>cols.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const branch=(typeof getBranchInfo==='function'&&getBranchInfo()?.id)||'schedule';
+  a.href=url;
+  a.download=`${branch}_students_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 /* ════════════════════════════════════════════════════════════════

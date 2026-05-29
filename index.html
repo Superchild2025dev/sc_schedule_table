@@ -15,7 +15,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="auth.css?v=20260521-5">
-<link rel="stylesheet" href="style.css?v=20260528-6">
+<link rel="stylesheet" href="style.css?v=20260529-11">
 </head>
 <body>
 
@@ -40,6 +40,11 @@
   <h1><span id="app-brand">🏊 가경 수영장</span><small id="app-period"></small></h1>
   <button class="hbtn" id="branch-switch-btn" onclick="openBranchModal()" style="margin-left:8px;font-size:11px" title="지점 변경">⇄ 지점 변경</button>
   <div class="appbar-r">
+    <div id="schedule-summary" class="schedule-summary" title="현재 탭 기준 수업 시수와 중복 제외 원생수">
+      <span><b>수업 시수</b> <strong id="schedule-class-hours">0/0</strong></span>
+      <span class="schedule-summary-sep"></span>
+      <button type="button" class="schedule-summary-students" onclick="openScheduleStudentList()" title="원생목록 보기"><b>원생수</b> <strong id="schedule-student-total">0</strong></button>
+    </div>
     <!-- [v118] 시간표 줌 컨트롤 -->
     <div class="zoom-ctrl" title="시간표 크기 조절">
       <button class="hbtn zoom-btn" onclick="tblZoomOut()" title="축소">−</button>
@@ -54,6 +59,36 @@
     <span class="staff-auth-role" data-auth-role></span>
     <span class="staff-auth-email" data-auth-email></span>
     <button class="hbtn staff-auth-logout" onclick="SCAuth.signOut()" title="계정 로그아웃">로그아웃</button>
+  </div>
+</div>
+
+<div id="schedule-student-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeScheduleStudentList()">
+  <div class="modal schedule-student-modal">
+    <div class="modal-hd">
+      <div class="modal-title">원생목록</div>
+      <div class="modal-hd-r schedule-student-toolbar">
+        <input id="schedule-student-search" class="record-search" type="search" placeholder="이름, 전화번호, 상태 검색" oninput="renderScheduleStudentList()">
+        <button class="btn btn-o" onclick="downloadScheduleStudentListCsv()">CSV 다운로드</button>
+        <button class="btn btn-o" onclick="closeScheduleStudentList()">닫기</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div id="schedule-student-list-summary" class="schedule-student-list-summary"></div>
+      <div class="schedule-student-table-wrap">
+        <table class="schedule-student-table">
+          <thead>
+            <tr>
+              <th>집계</th>
+              <th>전화번호</th>
+              <th>원생/상태</th>
+              <th>선생님</th>
+              <th>수업 위치</th>
+            </tr>
+          </thead>
+          <tbody id="schedule-student-list-body"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -343,7 +378,7 @@
 <script src="js/data.js?v=20260528-2"></script>
 <script src="js/teachers.js?v=20260527-2"></script>
 <script src="js/popup-stu.js?v=20260528-1"></script>
-<script src="js/table.js?v=20260528-7"></script>
+<script src="js/table.js?v=20260529-11"></script>
 <script src="js/defaults.js?v=20260521-5"></script>
 <script src="js/init.js?v=20260528-2"></script>
 

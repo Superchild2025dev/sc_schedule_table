@@ -2,7 +2,23 @@
   const SETTINGS_KEY='swim_aligo_settings';
   const TEACHERS_KEY='swim_teachers';
   const FEEDBACK_KEY='swim_parent_feedback';
+  const TAB_LIST_KEY='swim_tab_list';
+  const STUDENTS_KEY='swim_students';
+  const INST_KEY='swim_inst';
+  const ENROLL_KEY='swim_enroll';
+  const RETIRE_KEY='swim_retire';
+  const DISABLED_KEY='swim_disabled';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
+  const REG_BASE={
+    days:['월','화','수','목','금','토'],
+    times:['1시','2시','3시','4시','5시','6시','7시','8시'],
+    lanes:5,
+  };
+  const BT_BASE={
+    days:['월수금','화목'],
+    times:['9시','10시','11시','14시','15시'],
+    lanes:5,
+  };
   const BRANCHES={
     gagyeong:{id:'gagyeong',name:'가경점',fbPath:'schedule',aligoBranch:'가경동'},
     yongam:{id:'yongam',name:'용암점',fbPath:'schedule_yongam',aligoBranch:'용암점'},
@@ -52,6 +68,8 @@
   let feedbackByBranch={};
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
+  let studentDirectoryByBranch={};
+  let studentDirectoryLoadingByBranch={};
 
   function $(id){return document.getElementById(id);}
   function clone(obj){return JSON.parse(JSON.stringify(obj));}
@@ -285,6 +303,347 @@
     }
     return data||{};
   }
+  function studentRootValue(root,key,fallback){
+    const parsed=parseStored(root&&root[key]);
+    return parsed===null||parsed===undefined ? fallback : parsed;
+  }
+  function normalizeStudentTabs(rawTabs){
+    const tabs=Array.isArray(rawTabs)&&rawTabs.length ? rawTabs : [{id:'regular',name:'정규시간표',type:'regular'}];
+    return tabs
+      .filter(tab=>tab&&tab.type!=='snapshot')
+      .map(tab=>Object.assign({id:'regular',name:'정규시간표',type:'regular'},tab));
+  }
+  function studentTabConfig(tab){
+    const id=tab&&tab.id||'regular';
+    if(tab&&tab.type==='bangteuk'){
+      return Object.assign({},BT_BASE,{
+        tabId:id,
+        tabName:tab.name||'방특 시간표',
+        stuKey:'swim_bt_'+id+'_stu',
+        instKey:'swim_bt_'+id+'_inst',
+      });
+    }
+    const isDefault=id==='regular';
+    return Object.assign({},REG_BASE,{
+      tabId:id,
+      tabName:(tab&&tab.name)||'정규시간표',
+      stuKey:isDefault?STUDENTS_KEY:'swim_stu_'+id,
+      instKey:isDefault?INST_KEY:'swim_inst_'+id,
+    });
+  }
+  function studentInstExists(inst){
+    if(!inst) return false;
+    if(typeof inst==='string') return !!inst.trim();
+    return !!String(inst.n||'').trim();
+  }
+  function studentInstClass(inst){
+    if(!inst) return '';
+    if(inst.cls==='elma'||inst.cls==='elite'||inst.cls==='master') return inst.cls;
+    if(inst.elma) return 'elma';
+    return '';
+  }
+  function studentRowsForInst(tab,inst){
+    return tab&&tab.type==='bangteuk' ? 6 : (studentInstClass(inst)?8:5);
+  }
+  function shortDate(ds){
+    if(!ds) return '';
+    const p=String(ds).slice(5).split('-');
+    const m=parseInt(p[0],10), d=parseInt(p[1],10);
+    if(!m||!d) return String(ds);
+    return m+'/'+d;
+  }
+  function displayPhone(value){
+    const d=normalizePhone(value);
+    if(d.length===11) return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7);
+    if(d.length===10) return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+    return String(value||'');
+  }
+  function studentPersonKey(stu){
+    const name=String(stu&&(stu.n||stu.name)||'').trim();
+    if(!name) return '';
+    return name+'|'+normalizePhone(stu.p||stu.phone||stu.tel||'');
+  }
+  function studentPhoneGroupKey(stu){
+    const personKey=studentPersonKey(stu);
+    if(personKey) return 'person:'+personKey;
+    const phone=normalizePhone(stu&&stu.p||stu&&stu.phone||stu&&stu.tel||'');
+    if(phone) return 'phone:'+phone;
+    const name=String(stu&&(stu.n||stu.name)||'').trim();
+    return name ? 'no-phone:'+name : '';
+  }
+  function studentSlotKey(stu){
+    return String(stu&&stu.t||'')+'/'+String(stu&&stu.d||'')+'/'+String(stu&&stu.l||'')+'/'+String(stu&&stu.r||'');
+  }
+  function studentTeacherName(inst){
+    if(!inst) return '';
+    if(typeof inst==='string') return inst.replace(/^[\d\)]+\s*/,'').replace(/\(유아\)/g,'').replace(/\(엘\/마\)/g,'').trim();
+    return String(inst.n||'').trim();
+  }
+  function studentSlotInfo(slotKey,dateLabel,teacherName){
+    const p=String(slotKey||'').split('/');
+    const day=p[1]||'';
+    const hour=String(p[0]||'').replace(/[^\d]/g,'')||String(p[0]||'');
+    const badge=day&&hour ? day+hour : (p.length>=4 ? `${p[1]} ${p[0]}` : String(slotKey||''));
+    const teacher=String(teacherName||'').trim();
+    const date=String(dateLabel||'').trim();
+    const text=[badge,teacher?teacher+' 선생님':'',date].filter(Boolean).join(' ');
+    return {
+      key:[slotKey,date,teacher].join('|'),
+      badge,
+      teacher,
+      date,
+      text,
+    };
+  }
+  function studentIsMoveEntry(entry){
+    return !!(entry&&typeof entry==='object'&&entry.moveType==='reserve'&&entry.moveId&&entry.pairKey);
+  }
+  function studentRecordPerson(entry,fallback){
+    const source=entry&&typeof entry==='object'?entry:{};
+    const fb=fallback||{};
+    const srcName=String(source.n||source.name||'').trim();
+    const fbName=String(fb.n||fb.name||'').trim();
+    const srcAge=String(source.a||source.age||'').trim();
+    const fbAge=String(fb.a||fb.age||'').trim();
+    const srcPhone=source.p||source.phone||source.tel||'';
+    const fbPhone=fb.p||fb.phone||fb.tel||'';
+    const legacyJoined=!!(srcName&&fbName&&fbAge&&srcName===fbName+fbAge);
+    const preferFallback=!!(fbName&&(legacyJoined||(!normalizePhone(srcPhone)&&normalizePhone(fbPhone))));
+    return {
+      n:(preferFallback?fbName:srcName)||fbName,
+      p:srcPhone||fbPhone,
+      a:srcAge||fbAge,
+    };
+  }
+  function studentRetireStatus(entry,isChange){
+    return isChange||studentIsMoveEntry(entry) ? '제외예정' : '퇴원예정';
+  }
+  function studentEnrollStatus(entry){
+    return '등록예정';
+  }
+  function studentPairFallback(entry,pairMap){
+    if(!studentIsMoveEntry(entry)) return null;
+    const pair=pairMap&&pairMap[entry.pairKey];
+    if(!pair||typeof pair!=='object') return null;
+    const person=studentRecordPerson(pair,entry);
+    return {
+      n:person.n,
+      name:person.n,
+      a:person.a,
+      age:person.a,
+      p:person.p,
+      phone:person.p,
+      tel:person.p,
+    };
+  }
+  function studentStatusKey(status){
+    if(status==='재원') return 'current';
+    if(status==='등록예정') return 'enroll';
+    if(status==='제외예정') return 'exclude';
+    if(status==='이동예정') return 'move';
+    return 'retire';
+  }
+  function studentRecord(entry,status,tab,slotKey,dateLabel,fallback,teacherName){
+    const person=studentRecordPerson(entry,fallback);
+    return {
+      n:person.n,
+      p:person.p,
+      status,
+      statusKey:studentStatusKey(status),
+      counted:status!=='퇴원예정',
+      tabId:tab&&tab.id||'reservation',
+      tabName:tab&&tab.name||'예약',
+      slot:studentSlotInfo(slotKey,dateLabel,teacherName),
+    };
+  }
+  function addStudentGroup(map,record){
+    const key=studentPhoneGroupKey(record);
+    if(!key) return;
+    if(!map.has(key)){
+      map.set(key,{
+        key,
+        p:displayPhone(record.p),
+        countedPeople:new Set(),
+        retirePeople:new Set(),
+        movePeople:new Set(),
+        statusKeys:new Set(),
+        tabs:new Set(),
+        members:new Map(),
+      });
+    }
+    const row=map.get(key);
+    if(record.p&&!row.p) row.p=displayPhone(record.p);
+    const personKey=studentPersonKey(record);
+    if(personKey){
+      if(record.counted) row.countedPeople.add(personKey);
+      if(record.statusKey==='retire') row.retirePeople.add(personKey);
+      if(record.statusKey==='exclude'||record.statusKey==='move') row.movePeople.add(personKey);
+    }
+    row.statusKeys.add(record.statusKey);
+    if(record.tabId) row.tabs.add(record.tabId+'|'+record.tabName);
+
+    const memberKey=(personKey||record.n)+'|'+record.statusKey+(record.statusKey==='move'?'':'|'+record.counted);
+    if(!row.members.has(memberKey)){
+      row.members.set(memberKey,{
+        n:record.n||'',
+        status:record.status,
+        statusKey:record.statusKey,
+        counted:record.counted,
+        dates:new Set(),
+        slots:[],
+      });
+    }
+    const member=row.members.get(memberKey);
+    if(record.slot&&record.slot.date) member.dates.add(record.slot.date);
+    if(record.slot&&record.slot.text&&!member.slots.some(slot=>slot.key===record.slot.key)) member.slots.push(record.slot);
+  }
+  function studentEntryPersonKey(entry,fallback){
+    const person=studentRecordPerson(entry,fallback);
+    return studentPersonKey(person);
+  }
+  function studentDirectoryRowsFromRoot(root){
+    const tabs=normalizeStudentTabs(studentRootValue(root,TAB_LIST_KEY,[]));
+    const enrollMap=studentRootValue(root,ENROLL_KEY,{})||{};
+    const retireMap=studentRootValue(root,RETIRE_KEY,{})||{};
+    const disabledMap=studentRootValue(root,DISABLED_KEY,{})||{};
+    const today=new Date().toISOString().slice(0,10);
+    const activeRetireSlots=new Map();
+    Object.entries(retireMap||{}).forEach(([slotKey,entry])=>{
+      if(!entry) return;
+      const ds=typeof entry==='string'?entry:entry.ds;
+      if(ds&&ds<today) return;
+      activeRetireSlots.set(slotKey,entry);
+    });
+    const enrollPersonKeys=new Set();
+    Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
+      if(!entry) return;
+      const key=studentEntryPersonKey(entry,studentPairFallback(entry,retireMap));
+      if(key) enrollPersonKeys.add(key);
+    });
+
+    const groups=new Map();
+    const teacherByInstKey={};
+    const handledRetireSlots=new Set();
+    const tabOptions=[];
+    tabs.forEach(tab=>{
+      const cfg=studentTabConfig(tab);
+      tabOptions.push({id:cfg.tabId,name:cfg.tabName});
+      const instMap=studentRootValue(root,cfg.instKey,{})||{};
+      const students=studentRootValue(root,cfg.stuKey,[])||[];
+      const instRowsByKey={};
+      cfg.times.forEach(t=>{
+        cfg.days.forEach(day=>{
+          for(let lane=1;lane<=cfg.lanes;lane++){
+            const instKey=t+'/'+day+'/'+lane;
+            const inst=instMap[instKey];
+            if(studentInstExists(inst)){
+              instRowsByKey[instKey]=studentRowsForInst(tab,inst);
+              if(!teacherByInstKey[instKey]) teacherByInstKey[instKey]=studentTeacherName(inst);
+            }
+          }
+        });
+      });
+      const canCountSlot=slotKey=>{
+        const p=String(slotKey||'').split('/');
+        if(p.length<4) return false;
+        const instKey=p[0]+'/'+p[1]+'/'+p[2];
+        const maxRows=instRowsByKey[instKey];
+        const row=parseInt(p[3],10);
+        return !!(maxRows&&Number.isFinite(row)&&row>=1&&row<=maxRows&&!disabledMap[instKey+'/'+row]);
+      };
+      const actualBySlot=new Map();
+      (Array.isArray(students)?students:[]).forEach(stu=>{
+        if(!stu||!stu.n) return;
+        const slotKey=studentSlotKey(stu);
+        if(canCountSlot(slotKey)) actualBySlot.set(slotKey,stu);
+      });
+      actualBySlot.forEach((stu,slotKey)=>{
+        const retire=activeRetireSlots.get(slotKey);
+        if(retire){
+          const ds=typeof retire==='string'?retire:retire.ds;
+          const instKey=slotKey.split('/').slice(0,3).join('/');
+          const isChange=enrollPersonKeys.has(studentEntryPersonKey(retire,stu));
+          handledRetireSlots.add(slotKey);
+          addStudentGroup(groups,studentRecord(retire,studentRetireStatus(retire,isChange),{id:cfg.tabId,name:cfg.tabName},slotKey,shortDate(ds)+'까지',stu,teacherByInstKey[instKey]||''));
+        }else{
+          const instKey=slotKey.split('/').slice(0,3).join('/');
+          addStudentGroup(groups,studentRecord(stu,'재원',{id:cfg.tabId,name:cfg.tabName},slotKey,'',null,teacherByInstKey[instKey]||''));
+        }
+      });
+    });
+
+    const reservationTab={id:'reservation',name:'예약'};
+    Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
+      if(!entry) return;
+      const ds=typeof entry==='string'?entry:entry.ds;
+      const instKey=slotKey.split('/').slice(0,3).join('/');
+      addStudentGroup(groups,studentRecord(entry,studentEnrollStatus(entry),reservationTab,slotKey,shortDate(ds)+'부터',null,teacherByInstKey[instKey]||''));
+    });
+    activeRetireSlots.forEach((entry,slotKey)=>{
+      if(handledRetireSlots.has(slotKey)) return;
+      const ds=typeof entry==='string'?entry:entry.ds;
+      const instKey=slotKey.split('/').slice(0,3).join('/');
+      const fallback=studentPairFallback(entry,enrollMap);
+      const isChange=enrollPersonKeys.has(studentEntryPersonKey(entry,fallback));
+      addStudentGroup(groups,studentRecord(entry,studentRetireStatus(entry,isChange),reservationTab,slotKey,shortDate(ds)+'까지',fallback,teacherByInstKey[instKey]||''));
+    });
+
+    const rows=[...groups.values()].map(row=>{
+      const members=[...row.members.values()].sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko')||String(a.status).localeCompare(String(b.status),'ko'));
+      const names=members.map(m=>m.n).filter(Boolean);
+      const slotText=members.map(m=>m.n+' '+m.status+' '+m.slots.map(slot=>slot.text).join(' / ')).join(' / ');
+      const statusKeys=[...new Set(members.map(m=>m.statusKey).filter(Boolean))];
+      const peopleKeys=[...new Set(members.map(m=>studentPersonKey(m)).filter(Boolean))];
+      const peopleCount=peopleKeys.length||row.countedPeople.size||0;
+      const hasCountedStatus=statusKeys.some(k=>k!=='retire');
+      const countedSlotCount=[...new Set(members
+        .filter(m=>m.statusKey==='current'||m.statusKey==='enroll')
+        .flatMap(m=>(m.slots||[]).map(slot=>slot.key).filter(Boolean)))].length;
+      return {
+        key:row.key,
+        p:row.p,
+        counted:hasCountedStatus,
+        countedCount:hasCountedStatus?peopleCount:0,
+        countedSlotCount,
+        retireCount:(!hasCountedStatus&&statusKeys.includes('retire'))?(row.retirePeople.size||peopleCount):0,
+        moveCount:statusKeys.includes('exclude')||statusKeys.includes('move')?peopleCount:0,
+        statusKeys,
+        tabIds:[...row.tabs].map(v=>v.split('|')[0]),
+        tabs:[...row.tabs].map(v=>v.split('|')[1]).join(', '),
+        members,
+        names:names.join(', '),
+        slots:slotText,
+        search:[names.join(' '),row.p,[...row.statusKeys].join(' '),members.map(m=>m.status).join(' '),slotText].join(' ').toLowerCase(),
+      };
+    }).sort((a,b)=>String(a.p||a.names).localeCompare(String(b.p||b.names),'ko'));
+    const counted=rows.reduce((sum,row)=>sum+(row.countedCount||0),0);
+    const classHours=rows.reduce((sum,row)=>sum+(row.countedSlotCount||0),0);
+    const averageHours=counted?classHours/counted:0;
+    const retire=rows.reduce((sum,row)=>sum+(row.retireCount||0),0);
+    const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],counted,classHours,averageHours,retire,move,loadedAt:new Date().toISOString()};
+  }
+  async function loadStudentDirectory(force){
+    const branchId=activeBranch;
+    if(studentDirectoryLoadingByBranch[branchId]) return;
+    if(studentDirectoryByBranch[branchId]&&!force){
+      renderStudentDirectory();
+      return;
+    }
+    studentDirectoryLoadingByBranch[branchId]=true;
+    renderStudentDirectoryLoading();
+    try{
+      const root=await readBranchBackupData(branchId,false);
+      studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
+    }catch(e){
+      console.error(e);
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],counted:0,retire:0,move:0,error:e.message||String(e)};
+      toast('원생목록 로드 실패','err');
+    }finally{
+      studentDirectoryLoadingByBranch[branchId]=false;
+      if(activeBranch===branchId) renderStudentDirectory();
+    }
+  }
   function backupFileStamp(){
     const d=new Date();
     const p=n=>String(n).padStart(2,'0');
@@ -455,6 +814,7 @@
     document.querySelectorAll('.settings-panel').forEach(panelEl=>{
       panelEl.classList.toggle('active',panelEl.id==='panel-'+activePanel);
     });
+    if(activePanel==='students') loadStudentDirectory(false);
   }
   function setBranch(branchId){
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
@@ -467,6 +827,7 @@
     $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
     if(settingsByBranch[activeBranch]&&teacherNamesByBranch[activeBranch]) renderAll();
     else loadBranchBundle(activeBranch);
+    if(activePanel==='students') loadStudentDirectory(false);
   }
   function renderAll(){
     const data=currentSettings();
@@ -478,6 +839,7 @@
     renderAligo(data);
     renderSms(data);
     renderFeedback();
+    renderStudentDirectory();
     renderVariableGuide();
     updateFeedbackBadges();
     setPermissionStates();
@@ -1006,6 +1368,151 @@
       </article>`;
     }).join('');
   }
+  function renderStudentDirectoryLoading(){
+    const body=$('students-list-body');
+    if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
+  }
+  function currentStudentDirectory(){
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],counted:0,retire:0,move:0};
+  }
+  function studentRowTeachers(row){
+    return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
+  }
+  function studentRowSlotBadges(row){
+    return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.badge).filter(Boolean)))];
+  }
+  function studentRowName(row){
+    return (row.members||[]).map(member=>member.n).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b),'ko')).join(', ');
+  }
+  function studentRowStatusRank(row){
+    const keys=row.statusKeys||[];
+    if(keys.includes('current')) return 1;
+    if(keys.includes('enroll')) return 2;
+    if(keys.includes('exclude')) return 3;
+    if(keys.includes('move')) return 4;
+    if(keys.includes('retire')) return 5;
+    return 9;
+  }
+  function renderStudentTeacherOptions(dir){
+    const select=$('students-teacher-filter');
+    if(!select) return;
+    const current=select.value||'all';
+    const names=[...new Set((dir.rows||[]).flatMap(row=>studentRowTeachers(row)))].sort((a,b)=>String(a).localeCompare(String(b),'ko'));
+    const options=['<option value="all">전체 선생님</option>',...names.map(name=>`<option value="${escAttr(name)}">${esc(name)} 선생님</option>`)];
+    select.innerHTML=options.join('');
+    select.value=[...select.options].some(opt=>opt.value===current)?current:'all';
+  }
+  function filteredStudentRows(){
+    const dir=currentStudentDirectory();
+    const q=String($('students-search')?.value||'').trim().toLowerCase();
+    const status=$('students-status-filter')?.value||'all';
+    const teacher=$('students-teacher-filter')?.value||'all';
+    const sort=$('students-sort')?.value||'count';
+    const rows=(dir.rows||[]).filter(row=>{
+      if(status==='counted'&&!row.counted) return false;
+      if(status==='current'&&!(row.statusKeys||[]).includes('current')) return false;
+      if(status==='enroll'&&!(row.statusKeys||[]).includes('enroll')) return false;
+      if(status==='exclude'&&!(row.statusKeys||[]).includes('exclude')) return false;
+      if(status==='move'&&!(row.statusKeys||[]).includes('move')) return false;
+      if(status==='retire'&&!(row.statusKeys||[]).includes('retire')) return false;
+      if(teacher!=='all'&&!studentRowTeachers(row).includes(teacher)) return false;
+      if(q&&!String(row.search||'').includes(q)) return false;
+      return true;
+    });
+    return rows.sort((a,b)=>{
+      const byName=()=>studentRowName(a).localeCompare(studentRowName(b),'ko') || String(a.p||'').localeCompare(String(b.p||''),'ko');
+      if(sort==='phone') return String(a.p||'').localeCompare(String(b.p||''),'ko') || byName();
+      if(sort==='name') return byName();
+      if(sort==='status') return studentRowStatusRank(a)-studentRowStatusRank(b) || byName();
+      if(sort==='teacher'){
+        const at=studentRowTeachers(a).join(', ');
+        const bt=studentRowTeachers(b).join(', ');
+        return at.localeCompare(bt,'ko') || byName();
+      }
+      return (b.countedCount||0)-(a.countedCount||0) || (b.retireCount||0)-(a.retireCount||0) || byName();
+    });
+  }
+  function studentStatusClass(statusKey){
+    if(statusKey==='enroll') return 'enroll';
+    if(statusKey==='exclude') return 'exclude';
+    if(statusKey==='move') return 'move';
+    if(statusKey==='retire') return 'retire';
+    return '';
+  }
+  function renderStudentDirectory(){
+    const dir=currentStudentDirectory();
+    renderStudentTeacherOptions(dir);
+    const rows=filteredStudentRows();
+    const countedEl=$('students-counted-count');
+    const avgEl=$('students-average-hours');
+    const moveEl=$('students-move-count');
+    const retireEl=$('students-retire-count');
+    const visibleEl=$('students-visible-count');
+    if(countedEl) countedEl.textContent=String(dir.counted||0);
+    if(avgEl) avgEl.textContent=(Number(dir.averageHours||0)).toFixed(1);
+    if(moveEl) moveEl.textContent=String(dir.move||0);
+    if(retireEl) retireEl.textContent=String(dir.retire||0);
+    if(visibleEl) visibleEl.textContent=String(rows.length);
+    const body=$('students-list-body');
+    if(!body) return;
+    if(dir.error){
+      body.innerHTML=`<tr><td colspan="5" class="student-empty">원생목록 로드 실패<br>${esc(dir.error)}</td></tr>`;
+      return;
+    }
+    if(!rows.length){
+      body.innerHTML='<tr><td colspan="5" class="student-empty">표시할 원생이 없습니다.</td></tr>';
+      return;
+    }
+    body.innerHTML=rows.map(row=>{
+      const pillHtml=[
+        row.countedCount?`<span class="student-pill counted">포함 ${row.countedCount}</span>`:'',
+        row.moveCount?`<span class="student-pill move">제외 ${row.moveCount}</span>`:'',
+        row.retireCount?`<span class="student-pill excluded">퇴원 ${row.retireCount}</span>`:'',
+      ].filter(Boolean).join('');
+      const memberHtml=(row.members||[]).map(member=>{
+        const slotBits=[...new Set((member.slots||[]).map(slot=>slot.badge).filter(Boolean))]
+          .map(badge=>`<span class="student-inline-slot">${esc(badge)}</span>`).join('');
+        const dates=[...(member.dates||[])].map(date=>`<span class="student-date-chip">${esc(date)}</span>`).join('');
+        return `<div class="student-member-line"><strong>${esc(member.n||'')}</strong>${slotBits}<span class="student-state ${studentStatusClass(member.statusKey)}">${esc(member.status||'')}</span>${dates}</div>`;
+      }).join('');
+      const teacherNames=studentRowTeachers(row);
+      const teacherHtml=teacherNames.map(name=>`<span class="student-teacher-chip">${esc(name)}쌤</span>`).join('');
+      const slotBadges=studentRowSlotBadges(row);
+      const slotHtml=slotBadges.map(badge=>`<span class="student-slot-chip"><b>${esc(badge)}</b></span>`).join('');
+      return `<tr>
+        <td><div class="student-pill-stack">${pillHtml||'<span class="student-pill excluded">제외</span>'}</div></td>
+        <td>${row.p?esc(row.p):'<span class="student-muted">번호 없음</span>'}</td>
+        <td><div class="student-member-list">${memberHtml}</div></td>
+        <td><span class="student-teacher-chip-row">${teacherHtml||'<span class="student-muted">-</span>'}</span></td>
+        <td class="student-slot-list"><span class="student-slot-chip-row">${slotHtml||'<span class="student-muted">-</span>'}</span></td>
+      </tr>`;
+    }).join('');
+  }
+  function downloadStudentDirectoryCsv(){
+    const rows=filteredStudentRows();
+    if(!rows.length){
+      toast('다운로드할 원생이 없습니다','err');
+      return;
+    }
+    const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
+    rows.forEach(row=>{
+      const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.moveCount?`제외 ${row.moveCount}`:'',row.retireCount?`퇴원 ${row.retireCount}`:''].filter(Boolean).join(' / ');
+      const memberText=(row.members||[]).map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
+      const teacherText=studentRowTeachers(row).join(' / ');
+      const slotText=studentRowSlotBadges(row).join(' / ');
+      csvRows.push([countText,row.p||'',memberText,teacherText,slotText]);
+    });
+    const csv='\ufeff'+csvRows.map(cols=>cols.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+    const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`${activeBranch}_students_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
   async function reloadFeedback(silent){
     try{
       const snap=await branchRoot(activeBranch).child(FEEDBACK_KEY).once('value');
@@ -1104,6 +1611,12 @@
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
+    $('students-refresh')?.addEventListener('click',()=>loadStudentDirectory(true));
+    $('students-csv')?.addEventListener('click',downloadStudentDirectoryCsv);
+    $('students-search')?.addEventListener('input',renderStudentDirectory);
+    $('students-teacher-filter')?.addEventListener('change',renderStudentDirectory);
+    $('students-status-filter')?.addEventListener('change',renderStudentDirectory);
+    $('students-sort')?.addEventListener('change',renderStudentDirectory);
     $('feedback-refresh').addEventListener('click',()=>reloadFeedback(false));
     $('feedback-mark-all').addEventListener('click',markAllFeedbackDone);
     $('feedback-list').addEventListener('click',e=>{
@@ -1126,10 +1639,10 @@
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='backup'||p==='feedback'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
+      if(p==='backup'||p==='feedback'||p==='students'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='backup'||hash==='feedback'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
+    return hash==='backup'||hash==='feedback'||hash==='students'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'

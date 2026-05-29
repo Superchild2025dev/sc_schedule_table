@@ -149,8 +149,38 @@ let STUDENTS,INST_MAP;
 // 조회 헬퍼
 const _stuIdx={};
 function rebuildStuIdx(){for(const k in _stuIdx)delete _stuIdx[k];STUDENTS.forEach(s=>{_stuIdx[s.t+'/'+s.d+'/'+s.l+'/'+s.r]=s;});}
-function getStu(time,day,lane,row){ return _stuIdx[time+'/'+day+'/'+lane+'/'+row]||null; }
-function getInst(time,day,lane){ return INST_MAP[time+'/'+day+'/'+lane]||null; }
+function _lookupDayKeys(day){
+  const keys=[String(day||'')].filter(Boolean);
+  try{
+    if(typeof getDayIndexes==='function'){
+      const text=String(day||'');
+      if(text.length>1){
+        text.split('').forEach(ch=>{
+          if(getDayIndexes(ch).length&&!keys.includes(ch)) keys.push(ch);
+        });
+      }else if(typeof isBangteuk==='function'&&isBangteuk()){
+        (getTabConfig().days||[]).forEach(groupDay=>{
+          if(groupDay!==text&&getDayIndexes(groupDay).includes(DAY_INDEX[text])&&!keys.includes(groupDay)) keys.push(groupDay);
+        });
+      }
+    }
+  }catch(e){}
+  return keys;
+}
+function getStu(time,day,lane,row){
+  for(const keyDay of _lookupDayKeys(day)){
+    const found=_stuIdx[time+'/'+keyDay+'/'+lane+'/'+row];
+    if(found) return found;
+  }
+  return null;
+}
+function getInst(time,day,lane){
+  for(const keyDay of _lookupDayKeys(day)){
+    const found=INST_MAP[time+'/'+keyDay+'/'+lane];
+    if(found) return found;
+  }
+  return null;
+}
 
 function loadTabData(){
   // [스냅샷 보호] 활성 탭이 스냅샷이면 메모리에 swap된 스냅샷 데이터를 보호
@@ -315,7 +345,13 @@ document.addEventListener('keydown',function(e){
 let _mouseDownTarget=null;
 document.addEventListener('mousedown',e=>{ _mouseDownTarget=e.target; }, true);
 
-function getDays(){ return getTabConfig().days; }
+function _isAttendanceViewActive(){
+  return typeof _attendanceMode!=='undefined' && !!_attendanceMode;
+}
+function getDays(){
+  if(_isAttendanceViewActive() && typeof isBangteuk==='function' && isBangteuk()) return ['월','화','수','목','금'];
+  return getTabConfig().days;
+}
 function getLanes(){ return getTabConfig().lanes; }
 const TIMES_REG=[{t:'1시'},{t:'2시'},{t:'3시'},{t:'4시'},{t:'5시'},{t:'6시'},{t:'7시'},{t:'8시'}];
 function getTimes(){ return _activeTab==='regular'?TIMES_REG:getTabConfig().times; }
@@ -343,7 +379,10 @@ function getTimeRows(t){
   return Math.min(maxRows, Math.max(baseRows, rows));
 }
 function getSatLabel(){ return getTabConfig().satTimeLabel; }
-function getHasNum(){ return getTabConfig().hasNum; }
+function getHasNum(){
+  if(_isAttendanceViewActive() && typeof isBangteuk==='function' && isBangteuk()) return ['월'];
+  return getTabConfig().hasNum;
+}
 const DAY_NAMES=['일','월','화','수','목','금','토'];
 const DAY_INDEX={'월':1,'화':2,'수':3,'목':4,'금':5,'토':6};
 function getDayIndexes(dayName){
@@ -666,7 +705,7 @@ function getElmaLanes(t,day,instMapOverride){
   const names={};
   const clss={};
   for(let l=1;l<=getLanes();l++){
-    const inst=instSource[t+'/'+day+'/'+l];
+    const inst=instMapOverride?instSource[t+'/'+day+'/'+l]:getInst(t,day,l);
     const cls=getInstCls(inst);
     if(cls){ elma.push(l-1); names[l-1]=inst.n; clss[l-1]=cls; }
   }
@@ -697,7 +736,7 @@ function hasElmaInTime(t){
    각 맵의 키는 'time/day/lane/row' 형식 (slotKey)
    예: '4시/월/2/3' = 4시 월요일 2레인 3번
 
-   RETIRE_MAP[slotKey]    = { ds:'YYYY-MM-DD' }                                       // 퇴원일
+   RETIRE_MAP[slotKey]    = { ds:'YYYY-MM-DD', name, age?, p? }                       // 제외/퇴원 예약
    ENROLL_MAP[slotKey]    = { ds, name, age, p?, isNew?, enrolled? }                   // 등원 예약
    MARK_MAP[slotKey/ds]   = { type:'absent'|'bogang'|'sample', n?, a?, p?, sub? }      // 결석/보강/샘플
    DISABLED_MAP[slotKey]  = true                                                       // 비활성화 셀

@@ -287,12 +287,184 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
  * 보강 폼 HTML
  * @param existBo 기존 보강 데이터({n,a}) 또는 null → 수정 모드 vs 등록 모드 토글
  */
+function _spAttr(s){
+  return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;');
+}
+function _bogangCleanTeacherName(inst){
+  if(!inst) return '';
+  const name=typeof inst==='string'?inst:(inst.n||'');
+  return String(name||'').replace(/^[\d\)]+\s*/,'').replace(/\(유아\)/g,'').replace(/\(엘\/마\)/g,'').trim();
+}
+function _bogangStudentSlotKey(stu){
+  return [stu&&stu.t,stu&&stu.d,stu&&stu.l,stu&&stu.r].map(v=>String(v||'')).join('/');
+}
+function _bogangNormPhone(value){
+  const raw=String(value||'');
+  return (typeof normPhone==='function'?normPhone(raw):raw).replace(/\D/g,'');
+}
+function _bogangStudentCandidate(stu){
+  const slotKey=_bogangStudentSlotKey(stu);
+  const inst=getInst(stu.t,stu.d,stu.l);
+  const teacher=_bogangCleanTeacherName(inst);
+  const time=String(stu.t||'');
+  const day=String(stu.d||'');
+  const slotLabel=[day+(time?time.replace('시',''):''),teacher?teacher+'쌤':''].filter(Boolean).join(' ');
+  return {
+    key:slotKey+'|'+(stu.p||'')+'|'+(stu.n||'')+'|'+(stu.a||''),
+    slotKey,
+    slotKeys:slotKey,
+    n:stu.n||'',
+    a:stu.a||'',
+    p:stu.p||'',
+    teacher,
+    day,
+    time,
+    slotLabel,
+    label:slotLabel||[day,time,teacher?teacher+'쌤':''].filter(Boolean).join(' · '),
+  };
+}
+function _bogangSearchText(c){
+  return [c.n,c.n+c.a,c.p,c.p?String(c.p).slice(-4):'',c.teacher,c.day,c.time,c.label].join(' ').toLowerCase();
+}
+function _bogangGroupCandidates(list){
+  const map=new Map();
+  list.forEach(c=>{
+    const phone=_bogangNormPhone(c.p);
+    const key=phone ? `${c.n}|${phone}` : `${c.n}|${c.a}|${c.slotKey}`;
+    if(!map.has(key)){
+      map.set(key,Object.assign({},c,{
+        key,
+        p:phone||c.p||'',
+        slots:[],
+        teachers:new Set(),
+        days:new Set(),
+        times:new Set(),
+      }));
+    }
+    const row=map.get(key);
+    if(c.a&&!row.a) row.a=c.a;
+    if(c.p&&!row.p) row.p=c.p;
+    row.slots.push({slotKey:c.slotKey,label:c.slotLabel||c.label,teacher:c.teacher,day:c.day,time:c.time});
+    if(c.teacher) row.teachers.add(c.teacher);
+    if(c.day) row.days.add(c.day);
+    if(c.time) row.times.add(c.time);
+  });
+  return [...map.values()].map(row=>{
+    const slots=row.slots.filter((slot,idx,arr)=>arr.findIndex(v=>v.slotKey===slot.slotKey)===idx);
+    const label=slots.map(slot=>slot.label).filter(Boolean).join(' / ');
+    return Object.assign(row,{
+      slotKey:slots[0]?.slotKey||row.slotKey,
+      slotKeys:slots.map(slot=>slot.slotKey).join('|'),
+      teacher:[...row.teachers].join(', '),
+      day:[...row.days].join(', '),
+      time:[...row.times].join(', '),
+      label,
+    });
+  });
+}
+function _bogangStudentCandidates(query){
+  const q=String(query||'').trim().toLowerCase().replace(/\s+/g,'');
+  if(!q) return [];
+  const list=(Array.isArray(STUDENTS)?STUDENTS:[])
+    .filter(stu=>stu&&stu.n)
+    .map(_bogangStudentCandidate)
+    .filter(c=>_bogangSearchText(c).replace(/\s+/g,'').includes(q));
+  return _bogangGroupCandidates(list).sort((a,b)=>{
+    const an=String(a.n||'').toLowerCase();
+    const bn=String(b.n||'').toLowerCase();
+    const ae=an===q?0:an.startsWith(q)?1:2;
+    const be=bn===q?0:bn.startsWith(q)?1:2;
+    return ae-be || an.localeCompare(bn,'ko') || String(a.label).localeCompare(String(b.label),'ko');
+  }).slice(0,8);
+}
+function _bogangSelectedSummary(data){
+  if(!data||!data.slotKey) return '';
+  if(data.label) return data.label;
+  return [data.day,data.time,data.teacher?data.teacher+'쌤':''].filter(Boolean).join(' · ');
+}
+function _renderBogangCandidates(){
+  const input=document.getElementById('sp-bogang-name');
+  const box=document.getElementById('sp-bogang-candidates');
+  if(!input||!box) return;
+  const candidates=_bogangStudentCandidates(input.value);
+  if(!input.value.trim()){
+    box.innerHTML='<div style="padding:5px 6px;color:#9CA3AF;font-size:10px">이름을 입력하면 원생 후보가 표시됩니다.</div>';
+    return;
+  }
+  if(!candidates.length){
+    box.innerHTML='<div style="padding:5px 6px;color:#9CA3AF;font-size:10px">일치하는 원생이 없습니다. 직접 입력도 가능합니다.</div>';
+    return;
+  }
+  box.innerHTML=candidates.map(c=>`<button type="button" class="sp-bogang-candidate"
+    data-key="${_spAttr(c.key)}" data-slot-key="${_spAttr(c.slotKey)}" data-name="${_spAttr(c.n)}" data-age="${_spAttr(c.a)}"
+    data-slot-keys="${_spAttr(c.slotKeys)}" data-phone="${_spAttr(c.p)}" data-teacher="${_spAttr(c.teacher)}" data-day="${_spAttr(c.day)}" data-time="${_spAttr(c.time)}" data-label="${_spAttr(c.label)}"
+    style="width:100%;display:flex;justify-content:space-between;gap:6px;align-items:center;padding:5px 6px;border:0;border-bottom:1px solid #E5E7EB;background:#fff;cursor:pointer;text-align:left;font-family:inherit">
+      <span style="font-size:11px;font-weight:800;color:#111">${esc(c.n)}${c.a?esc(c.a):''}</span>
+      <span style="font-size:10px;color:#4B5563;white-space:nowrap">${esc(c.label||'-')}</span>
+    </button>`).join('');
+}
+function _setBogangSelected(data){
+  const fields={
+    key:'sp-bogang-student-key',
+    slotKey:'sp-bogang-student-slot',
+    slotKeys:'sp-bogang-student-slots',
+    p:'sp-bogang-phone',
+    a:'sp-bogang-age',
+    teacher:'sp-bogang-teacher',
+    day:'sp-bogang-day',
+    time:'sp-bogang-time',
+  };
+  Object.entries(fields).forEach(([k,id])=>{
+    const el=document.getElementById(id);
+    if(el) el.value=data&&data[k]||'';
+  });
+  const selected=document.getElementById('sp-bogang-selected');
+  if(selected){
+    const summary=_bogangSelectedSummary(data);
+    selected.textContent=summary?'선택됨 · '+summary:'원생을 선택하면 요일/담당쌤이 함께 저장됩니다.';
+    selected.style.color=summary?'#5B21B6':'#9CA3AF';
+  }
+}
+function _readBogangSelected(){
+  const slotKey=document.getElementById('sp-bogang-student-slot')?.value||'';
+  if(!slotKey) return null;
+  return {
+    slotKey,
+    slotKeys:document.getElementById('sp-bogang-student-slots')?.value||slotKey,
+    p:document.getElementById('sp-bogang-phone')?.value||'',
+    teacher:document.getElementById('sp-bogang-teacher')?.value||'',
+    day:document.getElementById('sp-bogang-day')?.value||'',
+    time:document.getElementById('sp-bogang-time')?.value||'',
+  };
+}
 function buildBogangFormHtml(existBo){
   const boOn = !!existBo;
+  const selected={
+    key:'',
+    slotKey:existBo?.studentSlotKey||'',
+    slotKeys:Array.isArray(existBo?.studentSlotKeys)?existBo.studentSlotKeys.join('|'):(existBo?.studentSlotKey||''),
+    p:existBo?.p||'',
+    a:existBo?.a||'',
+    teacher:existBo?.studentTeacher||'',
+    day:existBo?.studentDay||'',
+    time:existBo?.studentTime||'',
+  };
+  const selectedSummary=_bogangSelectedSummary(selected);
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
-    <div style="display:flex;gap:4px;margin-bottom:4px">
-      <input class="fi" id="sp-bogang-name" placeholder="이름" value="${existBo?esc(existBo.n||''):''}" style="flex:1;margin:0;padding:4px 6px;font-size:11px">
-      <input class="fi" id="sp-bogang-age" type="number" placeholder="나이" value="${existBo&&existBo.a?existBo.a:''}" style="width:55px;margin:0;padding:4px 6px;font-size:11px">
+    <input class="fi" id="sp-bogang-name" placeholder="이름" value="${existBo?esc(existBo.n||''):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
+    <input type="hidden" id="sp-bogang-student-key" value="">
+    <input type="hidden" id="sp-bogang-student-slot" value="${_spAttr(selected.slotKey)}">
+    <input type="hidden" id="sp-bogang-student-slots" value="${_spAttr(selected.slotKeys)}">
+    <input type="hidden" id="sp-bogang-phone" value="${_spAttr(selected.p)}">
+    <input type="hidden" id="sp-bogang-age" value="${_spAttr(selected.a)}">
+    <input type="hidden" id="sp-bogang-teacher" value="${_spAttr(selected.teacher)}">
+    <input type="hidden" id="sp-bogang-day" value="${_spAttr(selected.day)}">
+    <input type="hidden" id="sp-bogang-time" value="${_spAttr(selected.time)}">
+    <div id="sp-bogang-selected" style="font-size:10px;color:${selectedSummary?'#5B21B6':'#9CA3AF'};font-weight:700;margin:-1px 0 4px;min-height:14px">
+      ${selectedSummary?'선택됨 · '+esc(selectedSummary):'원생을 선택하면 요일/담당쌤이 함께 저장됩니다.'}
+    </div>
+    <div id="sp-bogang-candidates" style="max-height:132px;overflow:auto;border:1px solid #E5E7EB;border-radius:7px;margin:0 0 4px;background:#fff">
+      <div style="padding:5px 6px;color:#9CA3AF;font-size:10px">이름을 입력하면 원생 후보가 표시됩니다.</div>
     </div>
     <div style="display:flex;gap:4px">
       <button class="btn btn-p" id="sp-mark-bogang" style="flex:1;padding:4px;font-size:10px;background:#7C3AED">${boOn?'보강 수정':'보강 등록'}</button>
@@ -924,7 +1096,10 @@ function handleBogangShow(e, ctx){
   _stuPopup.showSample=false;
   _stuPopup.showEnroll=false;
   renderStuPopup();
-  setTimeout(()=>document.getElementById('sp-bogang-name')?.focus(),30);
+  setTimeout(()=>{
+    document.getElementById('sp-bogang-name')?.focus();
+    _renderBogangCandidates();
+  },30);
 }
 
 function handleBogangSet(e, ctx){
@@ -934,7 +1109,16 @@ function handleBogangSet(e, ctx){
   const a=parseInt(document.getElementById('sp-bogang-age')?.value)||null;
   if(!n){toast('이름을 입력하세요','err');return;}
   const cur=getMark(slotKey,ds);
+  const selected=_readBogangSelected();
   const subObj={type:'bogang',n,a};
+  if(selected){
+    if(selected.p) subObj.p=selected.p;
+    subObj.studentSlotKey=selected.slotKey;
+    if(selected.slotKeys) subObj.studentSlotKeys=selected.slotKeys.split('|').filter(Boolean);
+    if(selected.teacher) subObj.studentTeacher=selected.teacher;
+    if(selected.day) subObj.studentDay=selected.day;
+    if(selected.time) subObj.studentTime=selected.time;
+  }
   if(cur?.type==='absent') setMark(slotKey,ds,{type:'absent',sub:subObj});
   else setMark(slotKey,ds,subObj);
   const hasBo=cur?.type==='bogang'||(cur?.type==='absent'&&cur?.sub?.type==='bogang');
@@ -1086,7 +1270,7 @@ function _showRetireChoiceModal({stu, slotKey, ds}){
   // 공통: RETIRE_MAP 저장
   const _setRetire = async (withHistory)=>{
     await updateRetireMapTx(retire=>{
-      retire[slotKey]={ds, name:stu?(stu.n+(stu.a||'')):''};
+      retire[slotKey]=_reservationEntryFromStudent(stu,ds);
       return retire;
     });
     if(withHistory && stu && typeof addRetireHistory==='function') addRetireHistory(stu, ds);
@@ -1393,6 +1577,30 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
     return;
   }
 
+  const bogangCandidate=e.target.closest('.sp-bogang-candidate');
+  if(bogangCandidate){
+    const data={
+      key:bogangCandidate.dataset.key||'',
+      slotKey:bogangCandidate.dataset.slotKey||'',
+      slotKeys:bogangCandidate.dataset.slotKeys||bogangCandidate.dataset.slotKey||'',
+      n:bogangCandidate.dataset.name||'',
+      a:bogangCandidate.dataset.age||'',
+      p:bogangCandidate.dataset.phone||'',
+      teacher:bogangCandidate.dataset.teacher||'',
+      day:bogangCandidate.dataset.day||'',
+      time:bogangCandidate.dataset.time||'',
+      label:bogangCandidate.dataset.label||'',
+    };
+    const nameEl=document.getElementById('sp-bogang-name');
+    const ageEl=document.getElementById('sp-bogang-age');
+    if(nameEl) nameEl.value=data.n;
+    if(ageEl) ageEl.value=data.a||'';
+    _setBogangSelected(data);
+    const box=document.getElementById('sp-bogang-candidates');
+    if(box) box.innerHTML='';
+    return;
+  }
+
   // 단순 핸들러 디스패치
   for(const [sel, fn] of STU_POPUP_SIMPLE_HANDLERS){
     if(e.target.closest(sel)){ fn(e, ctx); return; }
@@ -1443,6 +1651,14 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
       if(enrollBtn) enrollBtn.click();
       else document.getElementById('sp-save')?.click();
     }
+  }
+});
+
+document.getElementById('stu-popup').addEventListener('input',function(e){
+  if(isStuPopupReadOnly()) return;
+  if(e.target?.id==='sp-bogang-name'){
+    _setBogangSelected(null);
+    _renderBogangCandidates();
   }
 });
 
@@ -1678,6 +1894,19 @@ function _reserveMoveDeleteMessage(entry){
   return _isReserveMoveEntry(entry)
     ? '예약 이동을 취소하면 짝으로 연결된 등록/제외 예약도 함께 삭제됩니다. 삭제하시겠습니까?'
     : '삭제하시겠습니까?';
+}
+
+function _reservationEntryFromStudent(stu, ds, extra){
+  const entry=Object.assign({ds, name:stu?(stu.n||''):''}, extra||{});
+  if(stu){
+    if(stu.a) entry.age=stu.a;
+    if(stu.p) entry.p=stu.p;
+    if(stu.v) entry.v=true;
+    if(stu.loc) entry.loc=stu.loc;
+    if(stu.memo) entry.memo=stu.memo;
+    if(stu.g) entry.g=stu.g;
+  }
+  return entry;
 }
 
 function _reserveMoveAtSlot(slotKey,retire,enroll){
@@ -2102,7 +2331,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
             if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
             if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
             if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
-            retire[srcKey]={ds:sourceDs, name:stu.n, moveType:'reserve', moveId, pairKey:dstKey};
+            retire[srcKey]=_reservationEntryFromStudent(stu,sourceDs,{moveType:'reserve', moveId, pairKey:dstKey});
             enroll[dstKey]=enrollEntry;
             ctx.set(STORAGE_KEYS.RETIRE,retire);
             ctx.set(STORAGE_KEYS.ENROLL,enroll);
