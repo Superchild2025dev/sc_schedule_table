@@ -602,6 +602,7 @@
       return {
         key:row.key,
         p:row.p,
+        peopleCount,
         counted:hasCountedStatus,
         countedCount:hasCountedStatus?peopleCount:0,
         countedSlotCount,
@@ -620,8 +621,9 @@
     const classHours=rows.reduce((sum,row)=>sum+(row.countedSlotCount||0),0);
     const averageHours=counted?classHours/counted:0;
     const retire=rows.reduce((sum,row)=>sum+(row.retireCount||0),0);
+    const total=counted+retire;
     const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
-    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],counted,classHours,averageHours,retire,move,loadedAt:new Date().toISOString()};
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,loadedAt:new Date().toISOString()};
   }
   async function loadStudentDirectory(force){
     const branchId=activeBranch;
@@ -637,7 +639,7 @@
       studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
     }catch(e){
       console.error(e);
-      studentDirectoryByBranch[branchId]={rows:[],tabs:[],counted:0,retire:0,move:0,error:e.message||String(e)};
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,error:e.message||String(e)};
       toast('원생목록 로드 실패','err');
     }finally{
       studentDirectoryLoadingByBranch[branchId]=false;
@@ -1373,7 +1375,7 @@
     if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
   }
   function currentStudentDirectory(){
-    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],counted:0,retire:0,move:0};
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0};
   }
   function studentRowTeachers(row){
     return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
@@ -1443,16 +1445,16 @@
     const dir=currentStudentDirectory();
     renderStudentTeacherOptions(dir);
     const rows=filteredStudentRows();
-    const countedEl=$('students-counted-count');
+    const totalEl=$('students-total-count');
+    const classHoursEl=$('students-class-hours');
     const avgEl=$('students-average-hours');
-    const moveEl=$('students-move-count');
     const retireEl=$('students-retire-count');
-    const visibleEl=$('students-visible-count');
-    if(countedEl) countedEl.textContent=String(dir.counted||0);
+    const netEl=$('students-net-count');
+    if(totalEl) totalEl.textContent=String(dir.total||0);
+    if(classHoursEl) classHoursEl.textContent=String(dir.classHours||0);
     if(avgEl) avgEl.textContent=(Number(dir.averageHours||0)).toFixed(1);
-    if(moveEl) moveEl.textContent=String(dir.move||0);
     if(retireEl) retireEl.textContent=String(dir.retire||0);
-    if(visibleEl) visibleEl.textContent=String(rows.length);
+    if(netEl) netEl.textContent=String(dir.counted||0);
     const body=$('students-list-body');
     if(!body) return;
     if(dir.error){
