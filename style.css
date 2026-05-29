@@ -142,7 +142,7 @@ body.is-snapshot .snap-banner{display:block}
 }
 .tbl-scroll-proxy::-webkit-scrollbar-thumb:hover{background:#374151}
 .tbl-scroll-proxy-inner{height:1px}
-.sched-tbl{border-collapse:collapse;table-layout:fixed;white-space:nowrap;width:max-content;min-width:max-content;margin-bottom:26px}
+.sched-tbl{border-collapse:collapse;table-layout:fixed;white-space:nowrap;width:max-content;min-width:max-content;margin-bottom:0}
 .sched-tbl *{font-family:'Noto Sans KR',sans-serif}
 
 /* 요일별 시간/번 */
@@ -519,6 +519,20 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .record-pager button{min-width:28px;height:26px;padding:0 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit}
 .record-pager button:hover:not(:disabled),.record-pager button.active{background:#0F9D58;border-color:#0F9D58;color:#fff}
 .record-pager button:disabled{opacity:.4;cursor:default}
+.schedule-audit-summary{margin:0 0 26px;background:#fff;width:max-content;min-width:100%;box-sizing:border-box}
+.schedule-audit-body{display:flex;align-items:flex-start;overflow:visible;background:#fff;width:max-content;min-width:100%}
+.schedule-audit-day{flex:0 0 auto;min-width:270px;border-right:1px solid #333;background:#fff}
+.schedule-audit-day:last-child{border-right:none}
+.schedule-audit-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:calc(11px * var(--tbl-scale))}
+.schedule-audit-table col{width:var(--w-cell)}
+.schedule-audit-table col.schedule-audit-time-col{width:var(--w-time-col)}
+.schedule-audit-table col.schedule-audit-num-col{width:var(--w-num-col)}
+.schedule-audit-table th{padding:2px 3px;background:#D9D9D9;border:1px solid #333;color:#111;font-size:calc(10px * var(--tbl-scale));font-weight:900;text-align:center;white-space:nowrap}
+.schedule-audit-table td{padding:2px 3px;border:1px solid #333;color:#111;font-size:calc(11px * var(--tbl-scale));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;height:calc(20px * var(--tbl-scale));font-weight:600}
+.schedule-audit-table tr:last-child td{border-bottom:1px solid #333}
+.schedule-audit-table td.schedule-audit-retire{background:#F97316!important;color:#111!important;font-weight:900}
+.schedule-audit-table .schedule-audit-spacer{background:#fff;color:transparent}
+.schedule-audit-empty{padding:8px 12px;font-size:calc(11px * var(--tbl-scale));font-weight:800;color:#9CA3AF;text-align:center;grid-column:1/-1;background:#fff}
 .closed-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #F3F4F6;font-size:12px}
 .closed-item:last-child{border-bottom:none}
 .closed-type{font-size:10px;font-weight:800;border-radius:4px;padding:2px 6px;flex-shrink:0}

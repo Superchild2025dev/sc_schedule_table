@@ -787,6 +787,8 @@ function _isAttendanceStorageKey(key){
 }
 let _auditStorageLoaded=false;
 let _auditStorageLoading=null;
+let _scheduleAuditLoaded=false;
+let _scheduleAuditLoading=null;
 
 function describeStorageChangeType(key){
   if(key===STORAGE_KEYS.MOVE) return 'move';
@@ -1243,6 +1245,7 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
   if(document.getElementById('record-manager-modal')?.style.display==='flex'){
     renderRecordManager();
   }
+  if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
 }
 function _fmtAuditDate(iso){
   if(!iso) return '-';
@@ -1316,6 +1319,273 @@ function _recordItems(){
     _source:'retire',
   }));
   return audit.concat(retire);
+}
+function _loadScheduleAuditLog(){
+  if(_auditStorageLoaded||_scheduleAuditLoaded) return Promise.resolve();
+  if(_scheduleAuditLoading) return _scheduleAuditLoading;
+  _scheduleAuditLoading=_readAuditRaw(STORAGE_KEYS.AUDIT_LOG).then(raw=>{
+    if(raw===undefined||raw===null) raw=dbGet(STORAGE_KEYS.AUDIT_LOG);
+    _cacheAuditRaw(STORAGE_KEYS.AUDIT_LOG,raw);
+    AUDIT_LOG=_auditParseStored(raw,[]);
+    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
+    _trimAuditStorage();
+    _scheduleAuditLoaded=true;
+  }).finally(()=>{
+    _scheduleAuditLoading=null;
+  });
+  return _scheduleAuditLoading;
+}
+function _scheduleAuditMonthKey(){
+  let month='';
+  try{
+    const tab=typeof _tabById==='function'?_tabById(_activeTab):null;
+    if(tab?.type==='bangteuk'&&tab.seasonStart) month=String(tab.seasonStart).slice(0,7);
+    else if(typeof _tabPeriodMonth==='function') month=_tabPeriodMonth(tab);
+  }catch(e){}
+  try{ if(!month&&typeof _defaultPeriodMonth==='function') month=_defaultPeriodMonth(); }catch(e){}
+  try{ if(!month) month=toDateStr(getToday()).slice(0,7); }catch(e){}
+  return month||'';
+}
+function _scheduleAuditDays(){
+  const order=['월','화','수','목','금','토','일'];
+  const set=new Set();
+  let raw=[];
+  try{ raw=typeof getDays==='function'?getDays():[]; }catch(e){}
+  (raw||[]).forEach(day=>{
+    const text=String(day||'');
+    order.forEach(d=>{ if(text.includes(d)) set.add(d); });
+  });
+  if(!set.size) ['월','화','수','목','금','토'].forEach(d=>set.add(d));
+  return order.filter(d=>set.has(d));
+}
+function _scheduleAuditText(item){
+  return [item?.label,item?.target,item?.detail,item?.tabName,item?.user].map(v=>String(v||'')).join(' ');
+}
+function _scheduleAuditExpandDay(token,visibleDays){
+  const order=['월','화','수','목','금','토','일'];
+  const allowed=new Set(visibleDays||order);
+  const days=order.filter(d=>String(token||'').includes(d)&&allowed.has(d));
+  return days.length?days:[String(token||'기타')];
+}
+function _scheduleAuditDayTokens(item,visibleDays){
+  const text=_scheduleAuditText(item);
+  const slot=text.match(/\d{1,2}시\s*(월수금|화목|[월화수목금토일])\s*\d+레인/);
+  if(slot) return _scheduleAuditExpandDay(slot[1],visibleDays);
+  const day=text.match(/(?:^|[\s·/])([월화수목금토일])(?:요일)?(?:$|[\s·/])/);
+  if(day&&visibleDays.includes(day[1])) return [day[1]];
+  return ['기타'];
+}
+function _scheduleAuditDateInfo(item,monthKey){
+  const text=_scheduleAuditText(item);
+  const full=text.match(/(20\d{2})[-./](\d{1,2})[-./](\d{1,2})/);
+  if(full){
+    const key=full[1]+'-'+String(full[2]).padStart(2,'0')+'-'+String(full[3]).padStart(2,'0');
+    return {key,label:parseInt(full[2],10)+'/'+parseInt(full[3],10)};
+  }
+  const md=text.match(/(?:^|[^\d])(\d{1,2})\/(\d{1,2})(?=$|[^\d])/);
+  if(md){
+    const year=String(monthKey||'').slice(0,4)||String(getToday().getFullYear());
+    const key=year+'-'+String(md[1]).padStart(2,'0')+'-'+String(md[2]).padStart(2,'0');
+    return {key,label:parseInt(md[1],10)+'/'+parseInt(md[2],10)};
+  }
+  const key=_recordLocalDateKey(item?.at);
+  return {key,label:key?`${parseInt(key.slice(5,7),10)}/${parseInt(key.slice(8,10),10)}`:'-'};
+}
+function _scheduleAuditTime(item){
+  const text=_scheduleAuditText(item);
+  const m=text.match(/(\d{1,2})시/);
+  return m?m[1]+'시':'-';
+}
+function _scheduleAuditSlotFromText(text){
+  const m=String(text||'').match(/(\d{1,2}시)\s*(월수금|화목|[월화수목금토일])\s*(\d+)레인(?:\s*(\d+)번)?/);
+  if(!m) return null;
+  return {time:m[1], dayToken:m[2], lane:m[3], row:m[4]||'', text:m[0]};
+}
+function _scheduleAuditNameFromSegment(segment,item){
+  const hasSlot=/\d{1,2}시\s*(?:월수금|화목|[월화수목금토일])\s*\d+레인/.test(String(segment||''));
+  const base=hasSlot ? String(segment||'') : String(item?.target||item?.label||'');
+  const src=base.split(':').slice(1).join(':')||base;
+  const beforeSlot=src.split(/\d{1,2}시\s*(?:월수금|화목|[월화수목금토일])\s*\d+레인/)[0]
+    .replace(/[·\s]+$/,'')
+    .trim();
+  if(!beforeSlot||/^(추가|삭제|수정|\d{4})/.test(beforeSlot)) return _scheduleAuditTarget(item);
+  return beforeSlot.replace(/\s*\(.+?\)\s*$/,'')||'-';
+}
+function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
+  const text=[rowText,_scheduleAuditText(item)].join(' ');
+  if(/퇴원/.test(text)) return '퇴원';
+  if(toSlot){
+    const fromDays=_scheduleAuditExpandDay(fromSlot?.dayToken||'', ['월','화','수','목','금','토','일']).join('');
+    const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'', ['월','화','수','목','금','토','일']).join('');
+    if(fromDays!==toDays) return '일정변경';
+    if(fromSlot?.time!==toSlot.time) return '시간변경';
+    if(fromSlot?.lane!==toSlot.lane||fromSlot?.row!==toSlot.row) return '반변경';
+  }
+  if(/삭제/.test(text)) return '삭제';
+  return '횟수줄임';
+}
+function _scheduleAuditTarget(item){
+  const target=String(item?.target||'').trim();
+  if(target){
+    const clean=target.split(/\d{1,2}시\s*(?:월수금|화목|[월화수목금토일])\s*\d+레인/)[0]
+      .replace(/[·\s]+$/,'')
+      .trim();
+    return (clean||target).replace(/\s*\(.+?\)\s*$/,'');
+  }
+  const m=String(item?.detail||'').match(/:\s*([^·/]+)/);
+  return (m?m[1]:'-').trim();
+}
+function _scheduleAuditTeacherFromSlot(slot,day,item){
+  if(slot&&typeof getInst==='function'){
+    const token=slot.dayToken||day;
+    const lookupDay=token.includes(day)?token:day;
+    const inst=getInst(slot.time,lookupDay,slot.lane)||getInst(slot.time,day,slot.lane);
+    const name=typeof inst==='string'?inst:inst?.n;
+    if(String(name||'').trim()) return String(name).trim();
+  }
+  const user=String(item?.user||'').trim();
+  if(!user) return '-';
+  return user.includes('@')?user.split('@')[0]:user;
+}
+function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
+  const detail=String(item?.detail||'');
+  const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
+  const segments=parts.length?parts:[_scheduleAuditText(item)];
+  const rows=[];
+  segments.forEach(segment=>{
+    const text=[item?.label,item?.target,segment].map(v=>String(v||'')).join(' ');
+    const isDisappear=/원생\s*(이동|삭제)|퇴원|제외|→/.test(text);
+    if(!isDisappear) return;
+    if(/등록/.test(text)&&!/원생\s*이동|→|퇴원|제외|삭제/.test(text)) return;
+    const fromText=String(text).split('→')[0];
+    const toText=String(text).split('→').slice(1).join('→');
+    const fromSlot=_scheduleAuditSlotFromText(fromText)||_scheduleAuditSlotFromText(text);
+    if(!fromSlot) return;
+    const toSlot=_scheduleAuditSlotFromText(toText);
+    const date=_scheduleAuditDateInfo({at:item?.at,label:item?.label,target:item?.target,detail:segment,tabName:item?.tabName,user:item?.user},monthKey);
+    if(!date.key||date.key.slice(0,7)!==monthKey) return;
+    const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
+    days.forEach(day=>{
+      rows.push({
+        day,
+        teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,item),
+        target:_scheduleAuditNameFromSegment(segment,item),
+        reason:_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot),
+        date:date.label,
+        time:fromSlot.time||_scheduleAuditTime(item),
+        detail:String(segment||item?.detail||item?.label||''),
+        at:item?.at||'',
+      });
+    });
+  });
+  return rows;
+}
+function _scheduleAuditDayWidth(day){
+  if(day==='기타') return 'calc(var(--w-time-col) + var(--w-cell) + var(--w-cell) + var(--w-cell))';
+  let lanes=5;
+  let hasNum=false;
+  try{ lanes=typeof getLanes==='function'?getLanes():5; }catch(e){}
+  try{ hasNum=(typeof getHasNum==='function'?getHasNum():[]).includes(day); }catch(e){}
+  const parts=['var(--w-time-col)'];
+  if(hasNum) parts.push('var(--w-num-col)');
+  for(let i=0;i<lanes;i++) parts.push('var(--w-cell)');
+  return 'calc('+parts.join(' + ')+')';
+}
+function _scheduleAuditHasNum(day){
+  try{return (typeof getHasNum==='function'?getHasNum():[]).includes(day);}catch(e){return false;}
+}
+function _scheduleAuditColgroup(day){
+  const hasNum=_scheduleAuditHasNum(day);
+  const spacer=hasNum
+    ? '<col class="schedule-audit-time-col"><col class="schedule-audit-num-col">'
+    : '<col class="schedule-audit-time-col">';
+  return `<colgroup>${spacer}<col><col><col><col><col></colgroup>`;
+}
+function _scheduleAuditSpacerCells(day,tag){
+  const hasNum=_scheduleAuditHasNum(day);
+  return `<${tag} class="schedule-audit-spacer"></${tag}>${hasNum?`<${tag} class="schedule-audit-spacer"></${tag}>`:''}`;
+}
+function ensureScheduleAuditSummary(){
+  const wrap=document.getElementById('tbl');
+  if(!wrap) return false;
+  let panel=document.getElementById('schedule-audit-summary');
+  if(panel&&panel.parentElement!==wrap) panel.remove();
+  panel=document.getElementById('schedule-audit-summary');
+  if(!panel){
+    panel=document.createElement('section');
+    panel.id='schedule-audit-summary';
+    panel.className='schedule-audit-summary';
+    panel.setAttribute('aria-live','polite');
+    panel.innerHTML=`<div id="schedule-audit-body" class="schedule-audit-body">
+      <div class="schedule-audit-empty">기록을 불러오는 중입니다...</div>
+    </div>`;
+    wrap.appendChild(panel);
+  }
+  return true;
+}
+function renderScheduleAuditSummary(){
+  if(!ensureScheduleAuditSummary()) return;
+  const panel=document.getElementById('schedule-audit-summary');
+  const body=document.getElementById('schedule-audit-body');
+  if(!panel||!body) return;
+  const monthKey=_scheduleAuditMonthKey();
+  if(!_auditStorageLoaded&&!_scheduleAuditLoaded){
+    body.innerHTML='<div class="schedule-audit-empty">기록을 불러오는 중입니다...</div>';
+    _loadScheduleAuditLog().then(renderScheduleAuditSummary).catch(err=>{
+      console.warn('하단 변경 로그 로드 실패:',err);
+      body.innerHTML='<div class="schedule-audit-empty">변경 로그를 불러오지 못했습니다</div>';
+    });
+    return;
+  }
+  const visibleDays=_scheduleAuditDays();
+  const perDay={};
+  visibleDays.forEach(day=>{ perDay[day]=[]; });
+  const items=_recordItems().sort((a,b)=>(b.at||'').localeCompare(a.at||''));
+  items.forEach(item=>{
+    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(row=>{
+      if(!perDay[row.day]) perDay[row.day]=[];
+      perDay[row.day].push(row);
+    });
+  });
+  const days=[...visibleDays];
+  if(perDay['기타']?.length) days.push('기타');
+  const hasRows=days.some(day=>(perDay[day]||[]).length);
+  if(!hasRows){
+    body.innerHTML='<div class="schedule-audit-empty">해당 월 이탈 기록이 없습니다</div>';
+    return;
+  }
+  body.innerHTML=days.map(day=>{
+    const rows=(perDay[day]||[]).slice(0,10);
+    const total=(perDay[day]||[]).length;
+    const html=rows.length?rows.map(row=>`<tr title="${esc(row.detail).replace(/"/g,'&quot;')}">
+      ${_scheduleAuditSpacerCells(day,'td')}
+      <td>${esc(row.teacher)}</td>
+      <td>${esc(row.target)}</td>
+      <td class="${row.reason==='퇴원'?'schedule-audit-retire':''}">${esc(row.reason)}</td>
+      <td>${esc(row.date)}</td>
+      <td>${esc(row.time)}</td>
+    </tr>`).join(''):`<tr><td colspan="${_scheduleAuditHasNum(day)?7:6}" class="schedule-audit-empty">기록 없음</td></tr>`;
+    return `<section class="schedule-audit-day" style="width:${_scheduleAuditDayWidth(day)}" title="${esc(day==='기타'?'기타':day+'요일')} ${total}건">
+      <table class="schedule-audit-table">
+        ${_scheduleAuditColgroup(day)}
+        <thead><tr>${_scheduleAuditSpacerCells(day,'th')}<th>선생님</th><th>변동자</th><th>사유</th><th>변경일자</th><th>시간</th></tr></thead>
+        <tbody>${html}</tbody>
+      </table>
+    </section>`;
+  }).join('');
+}
+function openScheduleAuditMore(){
+  const monthKey=_scheduleAuditMonthKey();
+  openRecordManagerModal();
+  setTimeout(()=>{
+    const month=document.getElementById('record-month');
+    const date=document.getElementById('record-date');
+    const type=document.getElementById('record-type');
+    if(month) month.value=monthKey;
+    if(date) date.value='';
+    if(type) type.value='all';
+    if(typeof changeRecordFilter==='function') changeRecordFilter();
+  },120);
 }
 function _filteredRecordItems(){
   const q=(document.getElementById('record-search')?.value||'').trim().toLowerCase();

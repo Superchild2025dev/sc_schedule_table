@@ -1849,6 +1849,7 @@ function buildTable(){
   // 학부모 요청 대기 카운트 업데이트
   try{ updateScheduleSummary(); }catch(e){ console.warn('[summary]', e); }
   updateParentReqCount();
+  if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
 
   // 스냅샷 사용했다면 원복
   if(_snapshotSwapped){
