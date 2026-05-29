@@ -9,6 +9,10 @@
   --f-day-hdr:calc(14px * var(--tbl-scale));
   --f-time:calc(13px * var(--tbl-scale));
   --f-small:calc(10px * var(--tbl-scale));
+  --f-student:calc(11px * var(--tbl-scale));
+  --f-badge:calc(9px * var(--tbl-scale));
+  --f-badge-small:calc(8px * var(--tbl-scale));
+  --f-att-plus:calc(13px * var(--tbl-scale));
 }
 body{font-family:'Noto Sans KR',sans-serif;background:#E8EDF3;min-height:100vh;font-size:12px;overflow-x:hidden}
 
@@ -188,7 +192,7 @@ body.is-snapshot .snap-banner{display:block}
 .dh{background:#fff;color:#111;font-weight:900;font-size:var(--f-day-hdr);letter-spacing:1px;border-right:2px solid #D1D5DB!important;border-bottom:2px solid #D1D5DB!important;padding:7px 4px!important}
 .dh-today{background:#0F9D58!important;color:#fff!important}
 .dh-closed{position:relative}
-.dh-closed-tag{display:block;font-size:9px;font-weight:700;color:#DC2626;letter-spacing:0}
+.dh-closed-tag{display:block;font-size:var(--f-badge);font-weight:700;color:#DC2626;letter-spacing:0}
 
 /* [v95 #11 → v96 #5] 상단 요일/날짜 헤더만 sticky (레인 헤더는 같이 안 따라옴) */
 .sched-tbl thead tr.day-hdr-row th{position:sticky;top:0;background:#fff;z-index:5}
@@ -196,18 +200,18 @@ body.is-snapshot .snap-banner{display:block}
 
 /* 레인 헤더 */
 .lh-row th{border-bottom:2px solid #D1D5DB}
-.lh{background:#fff;color:#333;font-weight:700;font-size:10px;border:1px solid #333!important;padding:3px 2px!important}
+.lh{background:#fff;color:#333;font-weight:700;font-size:var(--f-small);border:1px solid #333!important;padding:3px 2px!important}
 
 /* 담임 행 */
 .inst-hdr-row td{border-top:2px solid #333!important;border-bottom:2px solid #333!important;border-right:1px solid #555!important;border-left:1px solid #555!important}
-.inst-lbl{background:#fff!important;color:#333!important;font-size:10px!important;font-weight:700!important}
+.inst-lbl{background:#fff!important;color:#333!important;font-size:var(--f-small)!important;font-weight:700!important}
 
 /* 선생님 색상 */
 /* [v115] 선생님 색상 CSS는 더 이상 하드코딩하지 않음. updateTeacherStyles()가 런타임에 생성. */
 .i-none{background:#F3F4F6!important;color:#9CA3AF!important}
 .inst-cell-kimhs{background:#C7D2FE!important;color:#1E40AF!important;border:1px solid #A5B4FC!important}
 /* 학생 셀 */
-.stu-cell{font-weight:500;font-size:11px;color:#111!important;border:1px solid #333!important;background:#fff!important;text-align:center!important;vertical-align:middle;line-height:1.3;padding:2px 3px!important;overflow:hidden;text-overflow:ellipsis;position:relative}
+.stu-cell{font-weight:500;font-size:var(--f-student);color:#111!important;border:1px solid #333!important;background:#fff!important;text-align:center!important;vertical-align:middle;line-height:1.3;padding:2px 3px!important;overflow:hidden;text-overflow:ellipsis;position:relative}
 .stu-name-text{font-weight:600}
 .stu-vehicle{background:#FFF88D!important}
 .stu-new{background:#FF0000!important;color:#0000FF!important}
@@ -230,17 +234,17 @@ body.is-snapshot .snap-banner{display:block}
 .att-hyuwon .att-nm{color:#0369A1!important;font-style:italic}
 .att-dim{opacity:0.3;filter:grayscale(0.5);cursor:default!important}
 .att-closed-col{opacity:0.3!important;filter:grayscale(0.5);cursor:default!important;background:#F3F4F6!important}
-.att-icon{display:inline-block;width:12px;height:12px;line-height:12px;border-radius:50%;font-size:9px;font-weight:800;margin-right:2px;text-align:center;vertical-align:middle;color:#fff}
+.att-icon{display:inline-block;width:calc(12px * var(--tbl-scale));height:calc(12px * var(--tbl-scale));line-height:calc(12px * var(--tbl-scale));border-radius:50%;font-size:var(--f-badge);font-weight:800;margin-right:calc(2px * var(--tbl-scale));text-align:center;vertical-align:middle;color:#fff}
 .att-icon-p{background:#EAB308}            /* 출석 아이콘 노랑 */
 .att-icon-a{background:#DC2626}            /* 결석 아이콘 빨강 */
 .att-icon-u{background:#D1D5DB;color:#6B7280}  /* 미체크 아이콘 회색 */
 .att-icon-h{background:#0EA5E9}            /* 휴원 아이콘 파랑 */
 .att-nm{font-weight:600}
-.att-tag{display:inline-block;font-size:8px;font-weight:800;padding:0 3px;border-radius:3px;margin-left:2px;vertical-align:middle;color:#fff}
+.att-tag{display:inline-block;font-size:var(--f-badge-small);font-weight:800;padding:0 calc(3px * var(--tbl-scale));border-radius:3px;margin-left:calc(2px * var(--tbl-scale));vertical-align:middle;color:#fff}
 .att-tag.tag-bo{background:#7C3AED}
 .att-tag.tag-sa{background:#EA580C}
 .att-tag.tag-hy{background:#0284C7}
-.att-sub{display:inline-block;font-size:10px;background:#F9FAFB;border:1px solid #D1D5DB;border-radius:4px;padding:1px 3px;margin-left:2px;cursor:pointer;color:#374151}
+.att-sub{display:inline-block;font-size:var(--f-small);background:#F9FAFB;border:1px solid #D1D5DB;border-radius:4px;padding:calc(1px * var(--tbl-scale)) calc(3px * var(--tbl-scale));margin-left:calc(2px * var(--tbl-scale));cursor:pointer;color:#374151}
 .att-sub:hover{background:#E5E7EB}
 .att-batch-on .stu-clickable{cursor:copy!important}
 .att-selected-cell{outline:3px solid #2563EB!important;outline-offset:-3px;box-shadow:inset 0 0 0 999px rgba(37,99,235,.14)!important}
@@ -248,21 +252,21 @@ body.is-snapshot .snap-banner{display:block}
 .att-split .att-row.att-selected-row+.att-row{border-top-color:transparent}
 
 /* 반칸 행 (5행 이후 추가 학생용) */
-.half-row > td{height:12px!important;padding:0 3px!important;font-size:9px!important;line-height:1.1!important}
-.half-row .stu-cell{font-size:9px!important;height:12px!important}
-.half-row .att-nm{font-size:9px!important}
-.half-row .att-icon{width:9px;height:9px;line-height:9px;font-size:7px}
-.half-row .att-tag{font-size:7px;padding:0 2px}
-.half-row .col-num-day{font-size:8px!important}
+.half-row > td{height:calc(12px * var(--tbl-scale))!important;padding:0 calc(3px * var(--tbl-scale))!important;font-size:var(--f-badge)!important;line-height:1.1!important}
+.half-row .stu-cell{font-size:var(--f-badge)!important;height:calc(12px * var(--tbl-scale))!important}
+.half-row .att-nm{font-size:var(--f-badge)!important}
+.half-row .att-icon{width:calc(9px * var(--tbl-scale));height:calc(9px * var(--tbl-scale));line-height:calc(9px * var(--tbl-scale));font-size:calc(7px * var(--tbl-scale))}
+.half-row .att-tag{font-size:calc(7px * var(--tbl-scale));padding:0 calc(2px * var(--tbl-scale))}
+.half-row .col-num-day{font-size:var(--f-badge-small)!important}
 .half-row .cell-blocked{background:#FAFAFA!important}
 
 /* 출석 모드: 선생님 셀 옆 + 버튼 */
-.att-add-inst{display:inline-block;margin-left:4px;padding:0 5px;font-size:13px;font-weight:900;color:#fff;background:#3B82F6;border-radius:50%;cursor:pointer;line-height:16px;vertical-align:middle;transition:all 0.15s;box-shadow:0 1px 2px rgba(0,0,0,0.15)}
+.att-add-inst{display:inline-block;margin-left:calc(4px * var(--tbl-scale));padding:0 calc(5px * var(--tbl-scale));font-size:var(--f-att-plus);font-weight:900;color:#fff;background:#3B82F6;border-radius:50%;cursor:pointer;line-height:calc(16px * var(--tbl-scale));vertical-align:middle;transition:all 0.15s;box-shadow:0 1px 2px rgba(0,0,0,0.15)}
 .att-add-inst:hover{background:#2563EB;transform:scale(1.15)}
 
 /* 2칸 분할 (원생+보강/샘플) */
 .att-split{padding:0!important;background:transparent!important;vertical-align:top!important}
-.att-split .att-row{padding:2px 4px;min-height:16px;display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;font-size:11px;line-height:1.3;box-sizing:border-box;width:100%}
+.att-split .att-row{padding:calc(2px * var(--tbl-scale)) calc(4px * var(--tbl-scale));min-height:calc(16px * var(--tbl-scale));display:flex;align-items:center;justify-content:center;gap:calc(3px * var(--tbl-scale));cursor:pointer;font-size:var(--f-student);line-height:1.3;box-sizing:border-box;width:100%}
 .att-split .att-row-primary{border-bottom:1px dashed rgba(0,0,0,0.2)}
 .att-split .att-row:hover{filter:brightness(0.95)}
 .att-split .att-nm{font-weight:600}
@@ -311,7 +315,7 @@ body.is-snapshot .snap-banner{display:block}
 .inst-popup-bottom label{font-size:10px;font-weight:600;display:flex;align-items:center;gap:3px;cursor:pointer}
 .inst-btn-clear{margin-left:auto;font-size:10px;font-weight:700;color:#DC2626;border:1px solid #DC2626;border-radius:5px;padding:3px 8px;background:#fff;cursor:pointer;font-family:inherit}
 .inst-btn-clear:hover{background:#FEE2E2}
-.inst-reserve-badge{display:inline-flex;align-items:center;justify-content:center;background:#DC2626;color:#fff;font-size:8px;font-weight:800;min-width:14px;height:14px;border-radius:7px;padding:0 3px;margin-left:2px;vertical-align:middle}
+.inst-reserve-badge{display:inline-flex;align-items:center;justify-content:center;background:#DC2626;color:#fff;font-size:var(--f-badge-small);font-weight:800;min-width:calc(14px * var(--tbl-scale));height:calc(14px * var(--tbl-scale));border-radius:calc(7px * var(--tbl-scale));padding:0 calc(3px * var(--tbl-scale));margin-left:calc(2px * var(--tbl-scale));vertical-align:middle}
 .inst-cell-wrap{position:relative;display:inline-block}
 .inst-reserve-list{font-size:11px;padding:6px 0;border-top:1px solid #E5E7EB;margin-top:6px}
 .inst-reserve-item{display:flex;align-items:center;gap:6px;padding:3px 0}
@@ -425,7 +429,7 @@ body.is-snapshot .snap-banner{display:block}
 .stu-date-box.bogang-set .date-bogang-label{display:block}
 .stu-date-box.sample-set{background:#FEF3C7!important;color:#D97706!important;border-color:#F59E0B!important}
 .stu-date-box.sample-set .date-sample-label{display:block}
-.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:9px;font-weight:800;line-height:1.1;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:var(--f-badge);font-weight:800;line-height:1.1;margin-top:calc(2px * var(--tbl-scale));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .date-retire-label{color:#fff}.date-enroll-label{color:#fff}
 .date-absent-label{color:#DC2626}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
 .stu-date-box.hyuwon-set{background:#E0F2FE!important;color:#0369A1!important;border-color:#0EA5E9!important}
@@ -433,7 +437,7 @@ body.is-snapshot .snap-banner{display:block}
 /* 셀 이벤트 뱃지 (등원 상단 + 나머지 2x2) */
 .cb-top{
   display:block;width:100%;
-  padding:0 2px;font-size:9px;font-weight:800;
+  padding:0 calc(2px * var(--tbl-scale));font-size:var(--f-badge);font-weight:800;
   border-radius:2px;text-align:center;
   white-space:nowrap;
   line-height:1.5;color:#fff;margin-top:1px;
@@ -444,7 +448,7 @@ body.is-snapshot .snap-banner{display:block}
 }
 .cb{
   flex:1 1 calc(50% - 1px);min-width:0;
-  padding:0 2px;font-size:9px;font-weight:800;
+  padding:0 calc(2px * var(--tbl-scale));font-size:var(--f-badge);font-weight:800;
   border-radius:2px;text-align:center;
   white-space:nowrap;
   line-height:1.5;color:#fff;

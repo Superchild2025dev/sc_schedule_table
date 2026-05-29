@@ -245,11 +245,23 @@ const STORAGE_KEYS = {
   VERSION:  'swim_ver',
 };
 
+function normalizeStoredScheduleValue(key,val){
+  try{
+    if(window.SCScheduleTime&&typeof SCScheduleTime.normalizeStoredValue==='function'){
+      return SCScheduleTime.normalizeStoredValue(key,val);
+    }
+  }catch(e){
+    console.warn('schedule time normalize failed',key,e);
+  }
+  return val;
+}
+
 /* JSON 로드/저장 헬퍼 (try/catch + Undo 푸시 통합) */
 function loadJSON(key, defaultVal){
   try{
     const r = dbGet(key);
-    return r ? JSON.parse(r) : (defaultVal!==undefined ? defaultVal : null);
+    const val = r ? JSON.parse(r) : (defaultVal!==undefined ? defaultVal : null);
+    return normalizeStoredScheduleValue(key,val);
   }catch(e){
     return defaultVal!==undefined ? defaultVal : null;
   }
@@ -289,6 +301,7 @@ function saveJSON(key, val, skipUndo){
     }
     return;
   }
+  val=normalizeStoredScheduleValue(key,val);
   let auditPoint=null;
   if(key!==STORAGE_KEYS.AUDIT_LOG && key!==STORAGE_KEYS.RESTORE_POINTS && typeof createAuditPoint==='function'){
     auditPoint=createAuditPoint([key], {

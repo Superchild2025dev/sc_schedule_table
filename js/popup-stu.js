@@ -1881,6 +1881,7 @@ function askDateForDay(day, callback, opts){
 }
 
 function _moveDisplayTime(day,t){
+  if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function') return SCScheduleTime.displayTimeForDay(day,t);
   const cfg=typeof getTabConfig==='function'?getTabConfig():null;
   const satLabel=cfg&&cfg.satTimeLabel||{};
   return String(day||'')==='토' ? (satLabel[t]||t||'') : (t||'');

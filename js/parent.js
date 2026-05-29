@@ -125,9 +125,10 @@ function parseJSON(v,def){
   try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
 }
 
-const SATURDAY_DISPLAY_TIME={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
 function displayTimeForDay(day,t){
-  return String(day||'')==='토' ? (SATURDAY_DISPLAY_TIME[t]||t||'') : (t||'');
+  if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function') return SCScheduleTime.displayTimeForDay(day,t);
+  const sat={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
+  return String(day||'').replace('요일','')==='토' ? (sat[t]||t||'') : (t||'');
 }
 function displayStudentTime(s){
   return displayTimeForDay(s?.d,s?.t);
@@ -138,15 +139,18 @@ function displayTargetTime(t){
 
 function applyParentBundle(bundle){
   bundle=bundle||{};
-  STUDENTS=Array.isArray(bundle.students)?bundle.students:[];
-  INST_MAP=bundle.inst||{};
-  MARK_MAP=bundle.mark||{};
+  const norm=(key,val)=>window.SCScheduleTime&&typeof SCScheduleTime.normalizeStoredValue==='function'
+    ? SCScheduleTime.normalizeStoredValue(key,val)
+    : val;
+  STUDENTS=norm('swim_students',Array.isArray(bundle.students)?bundle.students:[]);
+  INST_MAP=norm('swim_inst',bundle.inst||{});
+  MARK_MAP=norm('swim_mark',bundle.mark||{});
   CLOSED_LIST=Array.isArray(bundle.closed)?bundle.closed:[];
   const parsedPeriods=Array.isArray(bundle.periods)&&bundle.periods.length ? bundle.periods : null;
   SCHEDULE_PERIODS=parsedPeriods || JSON.parse(JSON.stringify(_DEFAULT_PERIODS));
-  HYUWON_MAP=bundle.hyuwon||{};
+  HYUWON_MAP=norm('swim_hyuwon',bundle.hyuwon||{});
   RESERVE_MAP={};
-  REQUESTS=bundle.requests||{};
+  REQUESTS=norm('swim_requests',bundle.requests||{});
 }
 
 function parentErrorMessage(error, fallback){

@@ -10,7 +10,6 @@
   };
 
   const SELECTED_BRANCH_KEY='selected_branch';
-  const SATURDAY_DISPLAY_TIME={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
   let _selectedBranch=null;
   let _fb=null;
   let _fbReady=false;
@@ -55,6 +54,14 @@
     if(!v) return def;
     try{return typeof v==='string'?JSON.parse(v):v;}catch(e){return def;}
   }
+  function normalizeStoredValue(key,val){
+    return window.SCScheduleTime&&typeof SCScheduleTime.normalizeStoredValue==='function'
+      ? SCScheduleTime.normalizeStoredValue(key,val)
+      : val;
+  }
+  function parseStoredJSON(key,v,def){
+    return normalizeStoredValue(key,parseJSON(v,def));
+  }
   function toDateStr(d){
     const y=d.getFullYear();
     const m=String(d.getMonth()+1).padStart(2,'0');
@@ -79,7 +86,9 @@
     return `${mm}/${dd} ${hh}:${mi}`;
   }
   function displayTime(day,t){
-    return String(day||'')==='토' ? (SATURDAY_DISPLAY_TIME[t]||t||'') : (t||'');
+    if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function') return SCScheduleTime.displayTimeForDay(day,t);
+    const sat={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
+    return String(day||'').replace('요일','')==='토' ? (sat[t]||t||'') : (t||'');
   }
   function normalizeSlotKeyParts(slotKey){
     const parts=String(slotKey||'').split('/');
@@ -159,10 +168,10 @@
     return _fb.once('value').then(snap=>{
       const data=snap.val()||{};
       dataKeys(data);
-      STUDENTS=parseJSON(data[_stuKey],[]);
-      INST_MAP=parseJSON(data[_instKey],{});
-      MARK_MAP=parseJSON(data.swim_mark,{});
-      REQUESTS=parseJSON(data.swim_requests,{});
+      STUDENTS=parseStoredJSON(_stuKey,data[_stuKey],[]);
+      INST_MAP=parseStoredJSON(_instKey,data[_instKey],{});
+      MARK_MAP=parseStoredJSON('swim_mark',data.swim_mark,{});
+      REQUESTS=parseStoredJSON('swim_requests',data.swim_requests,{});
     });
   }
 
@@ -172,10 +181,10 @@
       loadAllData().then(render).catch(e=>console.warn('desk reload failed',e));
       return;
     }
-    if(key===_stuKey) STUDENTS=parseJSON(asStr,[]);
-    else if(key===_instKey) INST_MAP=parseJSON(asStr,{});
-    else if(key==='swim_mark') MARK_MAP=parseJSON(asStr,{});
-    else if(key==='swim_requests') REQUESTS=parseJSON(asStr,{});
+    if(key===_stuKey) STUDENTS=parseStoredJSON(_stuKey,asStr,[]);
+    else if(key===_instKey) INST_MAP=parseStoredJSON(_instKey,asStr,{});
+    else if(key==='swim_mark') MARK_MAP=parseStoredJSON('swim_mark',asStr,{});
+    else if(key==='swim_requests') REQUESTS=parseStoredJSON('swim_requests',asStr,{});
     render();
   }
 

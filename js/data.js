@@ -1850,6 +1850,7 @@ function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUEST
 function saveDaySnapshot(){ saveJSON(_attendanceStorageKey('daySnapshot'), DAY_SNAPSHOT); }
 
 function _cacheJSONOnly(key,val){
+  val=normalizeStoredScheduleValue(key,val);
   const json=JSON.stringify(val||{});
   const sk=key.replace(/[.#$/\[\]]/g,'_');
   try{ _dbCache[sk]=json; }catch(e){}
@@ -1863,13 +1864,15 @@ function _cloneJSON(val){
   if(val===undefined||val===null) return val;
   try{return JSON.parse(JSON.stringify(val));}catch(e){return val;}
 }
-function _parseJSONValue(raw,fallback){
+function _parseJSONValue(raw,fallback,storageKey){
   if(!raw) return _cloneJSON(fallback);
   try{
     const val=typeof raw==='string'?JSON.parse(raw):raw;
-    return val===undefined||val===null?_cloneJSON(fallback):val;
+    const parsed=val===undefined||val===null?_cloneJSON(fallback):val;
+    return storageKey?normalizeStoredScheduleValue(storageKey,parsed):parsed;
   }catch(e){
-    return _cloneJSON(fallback);
+    const parsed=_cloneJSON(fallback);
+    return storageKey?normalizeStoredScheduleValue(storageKey,parsed):parsed;
   }
 }
 function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
@@ -1886,7 +1889,7 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
     return Promise.reject(new Error('타임머신 모드에서는 저장되지 않습니다'));
   }
   let abortReason='';
-  const runMutator=value=>mutator(value, reason=>{abortReason=reason||'';});
+  const runMutator=value=>mutator(normalizeStoredScheduleValue(storageKey,value), reason=>{abortReason=reason||'';});
   const auditPoint=(typeof createAuditPoint==='function')
     ? createAuditPoint([storageKey], {type:describeStorageChangeType(storageKey), label:describeStorageChange(storageKey)})
     : null;
@@ -1894,20 +1897,21 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
     const next=runMutator(_cloneJSON(currentValue!==undefined?currentValue:fallback));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
     if(next!==undefined){
-      applyResult(next);
-      saveJSON(storageKey,next);
+      const normalizedNext=normalizeStoredScheduleValue(storageKey,next);
+      applyResult(normalizedNext);
+      saveJSON(storageKey,normalizedNext);
     }
     return Promise.resolve(next);
   }
   const sk=storageKey.replace(/[.#$/\[\]]/g,'_');
   return _fb.child(sk).transaction(raw=>{
-    const value=_parseJSONValue(raw,fallback);
+    const value=_parseJSONValue(raw,fallback,storageKey);
     const next=runMutator(value);
     if(next===undefined) return;
-    return JSON.stringify(next);
+    return JSON.stringify(normalizeStoredScheduleValue(storageKey,next));
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
-    const next=_parseJSONValue(res.snapshot.val(),fallback);
+    const next=_parseJSONValue(res.snapshot.val(),fallback,storageKey);
     applyResult(next);
     _cacheJSONOnly(storageKey,next);
     if(auditPoint) recordAuditPoint(auditPoint,[storageKey]);
@@ -1919,6 +1923,7 @@ function _txJSONMap(storageKey,currentMap,applyResult,mutator){
 }
 function _storageSafeKey(key){ return key.replace(/[.#$/\[\]]/g,'_'); }
 function _applyStoredValue(key,val){
+  val=normalizeStoredScheduleValue(key,val);
   const tabCfg=getTabConfig();
   if(key===tabCfg.stuKey){
     STUDENTS=Array.isArray(val)?val:[];
@@ -1967,12 +1972,12 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     get(key,fallback){
       const safeKey=_storageSafeKey(key);
       if(!txKeySet.has(safeKey)) throw new Error('트랜잭션 키 누락: '+key);
-      return _parseJSONValue(root[safeKey],fallback);
+      return _parseJSONValue(root[safeKey],fallback,key);
     },
     set(key,val){
       const safeKey=_storageSafeKey(key);
       if(!txKeySet.has(safeKey)) throw new Error('트랜잭션 키 누락: '+key);
-      root[safeKey]=JSON.stringify(val);
+      root[safeKey]=JSON.stringify(normalizeStoredScheduleValue(key,val));
       touched.add(key);
     },
     abort(reason){ abortReason=reason||''; },
@@ -1983,7 +1988,7 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     const next=mutator(makeCtx(localRoot));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
     touched.forEach(key=>{
-      const val=_parseJSONValue(localRoot[_storageSafeKey(key)],{});
+      const val=_parseJSONValue(localRoot[_storageSafeKey(key)],{},key);
       _applyStoredValue(key,val);
       saveJSON(key,val);
     });
@@ -2003,7 +2008,7 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
     const root=res.snapshot.val()||{};
     touched.forEach(key=>{
-      const val=_parseJSONValue(root[_storageSafeKey(key)],{});
+      const val=_parseJSONValue(root[_storageSafeKey(key)],{},key);
       _applyStoredValue(key,val);
       _cacheJSONOnly(key,val);
     });

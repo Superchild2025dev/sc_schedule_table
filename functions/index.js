@@ -52,9 +52,101 @@ function dateParts(ds) {
   };
 }
 
+const SAT_INTERNAL_TO_DISPLAY = {
+  "1시": "9시",
+  "2시": "10시",
+  "3시": "11시",
+  "4시": "12시",
+  "5시": "1시",
+  "6시": "2시",
+};
+const SAT_DISPLAY_TO_INTERNAL = {
+  "9시": "1시",
+  "09시": "1시",
+  "10시": "2시",
+  "11시": "3시",
+  "12시": "4시",
+  "13시": "5시",
+  "14시": "6시",
+  "오후1시": "5시",
+  "오후2시": "6시",
+  "오후 1시": "5시",
+  "오후 2시": "6시",
+};
+function normalizeDayText(day) {
+  return String(day || "").replace(/요일/g, "").trim();
+}
+function isSaturday(day) {
+  return normalizeDayText(day) === "토";
+}
+function normalizeTimeText(time) {
+  const text = String(time || "").trim();
+  const match = text.match(/^0(\d)시$/);
+  return match ? `${match[1]}시` : text;
+}
 function displayTimeForDay(day, time) {
-  const sat = {"1시": "9시", "2시": "10시", "3시": "11시", "4시": "12시", "5시": "1시", "6시": "2시"};
-  return String(day || "").replace("요일", "") === "토" ? (sat[time] || time || "") : (time || "");
+  const t = normalizeTimeText(time);
+  return isSaturday(day) ? (SAT_INTERNAL_TO_DISPLAY[t] || t || "") : (t || "");
+}
+function internalTimeForDay(day, time) {
+  const t = normalizeTimeText(time);
+  return isSaturday(day) ? (SAT_DISPLAY_TO_INTERNAL[t] || t || "") : (t || "");
+}
+function normalizeSlotKey(key) {
+  const parts = String(key || "").split("/");
+  if (parts.length >= 2 && isSaturday(parts[1])) parts[0] = internalTimeForDay(parts[1], parts[0]);
+  return parts.join("/");
+}
+function normalizeStudents(list) {
+  return (Array.isArray(list) ? list : []).map(stu => {
+    if (stu && isSaturday(stu.d)) stu.t = internalTimeForDay(stu.d, stu.t);
+    return stu;
+  });
+}
+function normalizeSlotMap(map) {
+  if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+  const out = {};
+  const entries = Object.entries(map);
+  entries.forEach(([key, value]) => {
+    const nextKey = normalizeSlotKey(key);
+    if (nextKey !== key && out[nextKey] === undefined) out[nextKey] = value;
+  });
+  entries.forEach(([key, value]) => {
+    const nextKey = normalizeSlotKey(key);
+    if (nextKey === key || out[nextKey] === undefined) out[nextKey] = value;
+  });
+  return out;
+}
+function normalizeRequest(req) {
+  if (!req || typeof req !== "object") return req;
+  if (req.instKey) req.instKey = normalizeSlotKey(req.instKey);
+  if (req.parent && typeof req.parent === "object") {
+    ["studentSlotKey", "originalSlotKey", "previousSlotKey", "sourceSlotKey", "sourceInstKey"].forEach(key => {
+      if (req.parent[key]) req.parent[key] = normalizeSlotKey(req.parent[key]);
+    });
+  }
+  if (req.target && typeof req.target === "object") {
+    const day = req.target.d || req.target.day;
+    if (isSaturday(day)) req.target.t = internalTimeForDay(day, req.target.t);
+    if (req.target.slotKey) req.target.slotKey = normalizeSlotKey(req.target.slotKey);
+  }
+  return req;
+}
+function normalizeRequests(map) {
+  if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+  const out = {};
+  Object.entries(map).forEach(([key, value]) => {
+    out[key] = normalizeRequest(value);
+  });
+  return out;
+}
+function normalizeStoredScheduleValue(key, value) {
+  const k = String(key || "");
+  if (k === "swim_students" || /^swim_stu_/.test(k) || /^swim_bt_.*_stu$/.test(k)) return normalizeStudents(value);
+  if (k === "swim_inst" || /^swim_inst_/.test(k) || /^swim_bt_.*_inst$/.test(k)) return normalizeSlotMap(value);
+  if (k === "swim_mark" || k === "swim_hyuwon") return normalizeSlotMap(value);
+  if (k === "swim_requests") return normalizeRequests(value);
+  return value;
 }
 
 function safeBranch(input) {
@@ -179,6 +271,8 @@ function deleteKnownChunks(tx, branch, key, item) {
 }
 
 function writeStoredValue(tx, branch, key, value, previousItem) {
+  const normalized = normalizeStoredScheduleValue(key, parseJSON(value, value));
+  if (normalized !== value) value = typeof value === "string" ? JSON.stringify(normalized) : normalized;
   const encoded = encodeStoredValue(value);
   const previousCount = knownChunkCount(previousItem);
   if (encoded.text.length > CHUNK_THRESHOLD) {
@@ -206,7 +300,7 @@ function writeStoredValue(tx, branch, key, value, previousItem) {
 }
 
 async function readJSON(branch, key, fallback) {
-  return parseJSON(await readStoredValue(branch, key), fallback);
+  return normalizeStoredScheduleValue(key, parseJSON(await readStoredValue(branch, key), fallback));
 }
 
 async function readAligoSettings(branch) {
@@ -719,7 +813,7 @@ function availableSlotsFor(base, session, sourceSlotKey, ds, teacherMode) {
     }
   });
   candidates.sort((a, b) =>
-    Number(a.t) - Number(b.t) ||
+    parseInt(internalTimeForDay(a.day, a.t), 10) - parseInt(internalTimeForDay(b.day, b.t), 10) ||
     String(a.instName || "").localeCompare(String(b.instName || ""), "ko") ||
     Number(a.lane) - Number(b.lane) ||
     Number(a.row) - Number(b.row)
