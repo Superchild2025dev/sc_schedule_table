@@ -547,7 +547,8 @@ function _updateAttBarInfo(){
 
   // 통계: 주간 전체
   let total=0,present=0,absent=0;
-  (DAYS||[]).forEach(day=>{
+  const days=(typeof getDays==='function'?getDays():['월','화','수','목','금','토']);
+  (days||[]).forEach(day=>{
     const cellDs=_dayToCellDs(day);
     if(!cellDs) return;
     const data=(typeof getAttendanceBasisDataForDate==='function')?getAttendanceBasisDataForDate(cellDs):null;
