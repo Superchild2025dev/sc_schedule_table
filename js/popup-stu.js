@@ -673,10 +673,10 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const curMonth = SCHEDULE_PERIODS[getCurrentPeriod()].month;
   const pendingEnrollInfo=!stu&&!!pendingEnrollEntry;
   const viewStu=stu||_stuLikeFromEnrollEntry(pendingEnrollEntry);
-  const inputLock=pendingEnrollInfo?'readonly':'';
-  const checkLock=pendingEnrollInfo?'disabled':'';
-  const chipLock=pendingEnrollInfo?' readonly':'';
-  const chipStyle=pendingEnrollInfo?'pointer-events:none;':'';
+  const inputLock='';
+  const checkLock='';
+  const chipLock='';
+  const chipStyle='';
   const isNewOn=!!(viewStu&&viewStu.isNew&&(pendingEnrollInfo||viewStu.isNew===curMonth));
   const reenrollOn=!!(viewStu&&viewStu.reenroll&&(pendingEnrollInfo||viewStu.reenroll===curMonth));
   const infoDate=pendingEnrollEntry?.ds?pendingEnrollEntry.ds.slice(5).replace('-','/'):'';
@@ -726,7 +726,11 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
       <textarea class="fi" id="sp-memo" placeholder="메모" style="margin-top:2px" ${inputLock}>${viewStu&&viewStu.memo?esc(viewStu.memo):''}</textarea>
     </div>
     ${pendingEnrollInfo
-      ? `<div style="font-size:10px;color:#6B7280;text-align:center;margin-top:6px;font-weight:700;line-height:1.4">등록 날짜를 누르면 수정/삭제할 수 있습니다.</div>`
+      ? `<div class="stu-popup-actions">
+          <button class="btn btn-p" id="sp-enroll-left-save" style="flex:1;background:#3B82F6">등록 예약 저장</button>
+          <button class="btn btn-d" id="sp-enroll-left-del">삭제</button>
+        </div>
+        <div style="font-size:10px;color:#6B7280;text-align:center;margin-top:6px;font-weight:700;line-height:1.4">왼쪽 정보 수정 후 바로 저장할 수 있습니다.</div>`
       : enrollMode
       ? `<div class="stu-popup-actions">
           <button class="btn btn-p" id="sp-enroll-from-left" style="flex:1;background:#3B82F6">📅 등록 예약</button>
@@ -1510,6 +1514,16 @@ function handleEnrollFromLeft(e, ctx){
   _commitEnroll(ctx.slotKey, _readEnrollForm('sp-'));
 }
 
+function handleEnrollLeftSave(e, ctx){
+  const entry=ENROLL_MAP[ctx.slotKey];
+  if(!entry){
+    toast('등록 예약이 없습니다','err');
+    return;
+  }
+  _stuPopup.selDate=entry.ds||_stuPopup.selDate;
+  _commitEnroll(ctx.slotKey, _readEnrollForm('sp-'));
+}
+
 async function handleEnrollDel(e, ctx){
   if(!confirm(_reserveMoveDeleteMessage(ENROLL_MAP[ctx.slotKey]))) return;
   try{
@@ -1614,6 +1628,8 @@ const STU_POPUP_RESERVE_HANDLERS = [
   //  이전엔 false라서 selDate=null인 상태로 호출되면 ds:null인 좀비 entry가 영구 저장됨.
   ['#sp-enroll-set',  handleEnrollSet,  true],
   ['#sp-enroll-del',  handleEnrollDel,  false],
+  ['#sp-enroll-left-save', handleEnrollLeftSave, false],
+  ['#sp-enroll-left-del',  handleEnrollDel, false],
   // [v100] 좌측 폼에서 등록 예약
   ['#sp-enroll-from-left', handleEnrollFromLeft, true],
   ['#sp-save',        handleSave,       false],
