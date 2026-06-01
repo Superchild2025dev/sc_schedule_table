@@ -434,6 +434,18 @@ body.is-snapshot .snap-banner{display:block}
 .date-absent-label{color:#DC2626}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
 .stu-date-box.hyuwon-set{background:#E0F2FE!important;color:#0369A1!important;border-color:#0EA5E9!important}
 
+.sp-retire-panel{margin-top:6px;padding-top:6px;border-top:1px solid #E5E7EB;display:flex;flex-direction:column;gap:5px}
+.sp-retire-panel-title{display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:900;color:#374151}
+.sp-retire-panel-title span{font-weight:800;color:#6B7280}
+.sp-retire-choice{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:7px 9px;border:1.5px solid var(--rc);border-radius:7px;background:#fff;color:var(--rc);font-family:inherit;cursor:pointer;text-align:left}
+.sp-retire-choice b{font-size:12px;font-weight:900;white-space:nowrap}
+.sp-retire-choice span{font-size:10px;font-weight:700;color:#6B7280;text-align:right}
+.sp-retire-choice.on{background:var(--rc);color:#fff}
+.sp-retire-choice.on span{color:rgba(255,255,255,.88)}
+.sp-retire-choice:disabled{opacity:.45;cursor:not-allowed;background:#F3F4F6;color:#9CA3AF;border-color:#D1D5DB}
+.sp-retire-delete{width:100%;padding:7px 9px;border:1.5px solid #DC2626;border-radius:7px;background:#fff;color:#DC2626;font-size:11px;font-weight:900;font-family:inherit;cursor:pointer}
+.sp-retire-delete:hover{background:#FEE2E2}
+
 /* 셀 이벤트 뱃지 (등원 상단 + 나머지 2x2) */
 .cb-top{
   display:block;width:100%;
@@ -454,7 +466,8 @@ body.is-snapshot .snap-banner{display:block}
   line-height:1.5;color:#fff;
 }
 .cb-retire{background:#555}
-.cb-enroll{background:#3B82F6}
+.cb-enroll{background:#DBEAFE;color:#1D4ED8}
+.stu-enroll-inline{color:#1D4ED8!important;font-weight:900}
 .cb-absent{background:#EF4444}
 .cb-bogang{background:#7C3AED}
 .cb-sample{background:#F59E0B;color:#333}

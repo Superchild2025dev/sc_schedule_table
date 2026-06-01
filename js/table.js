@@ -1458,14 +1458,18 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const classDates=classDatesCache[day];
       const allDates=[...classDates.cur,...classDates.next];
       const retEntry=RETIRE_MAP[slotKey];
-      const retDs=retEntry?.ds||null;
+      const retDs=(typeof retEntry==='string'?retEntry:retEntry?.ds)||null;
       const enrEntry=ENROLL_MAP[slotKey];
+      const hasFutureRetire=!!(retDs&&retDs>=todayStr);
+      const hasFutureEnroll=!!(enrEntry&&enrEntry.ds>todayStr);
 
       const badges=[];
       const _dl=ds=>{ const p=ds.slice(5).split('-'); return parseInt(p[0])+'/'+parseInt(p[1]); };
 
       // 출석 모드에서는 뱃지/마크 전부 숨김 (출석만 깔끔하게)
       const _skipBadges = _attendanceMode;
+      const retireInline=!_skipBadges&&!!stu&&hasFutureRetire;
+      const enrollInline=!_skipBadges&&hasFutureEnroll&&!hasFutureRetire;
 
       // 휴원
       const hyuwon=HYUWON_MAP[slotKey];
@@ -1491,13 +1495,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
         }
       }
       // 퇴원
-      if(!_skipBadges && retDs&&retDs>=todayStr){
+      if(!_skipBadges && hasFutureRetire && !retireInline){
         const dl=_dl(retDs), nm=_scheduleReservationName(retEntry,stu);
-        const label=nm?nm+'~'+dl+'까지':dl+'까지';
-        badges.push({type:'retire', ds:retDs, text:label, tip:'제외 '+label});
+        const suffix=_retireReservationSuffix(retEntry,slotKey,stu);
+        const label=nm?nm+'~'+dl+suffix:dl+suffix;
+        badges.push({type:'retire', ds:retDs, text:label, tip:_retireReservationKindLabel(retEntry,slotKey,stu)+' '+label});
       }
       // 등원
-      if(!_skipBadges && enrEntry&&enrEntry.ds>todayStr){
+      if(!_skipBadges && hasFutureEnroll && !enrollInline){
         const dl=_dl(enrEntry.ds), nm=_scheduleReservationName(enrEntry);
         const label=nm?nm+' '+dl+'부터~':dl+'부터~';
         badges.push({type:'enroll', ds:enrEntry.ds, text:label, tip:'등록 '+label});
@@ -1634,8 +1639,16 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
         }
       } else if(stu){
         const prefix=namePrefix[slotKey]||'';
-        const display=(prefix?prefix+'.':'')+stu.n+(stu.a||'');
+        let display=(prefix?prefix+'.':'')+stu.n+(stu.a||'');
+        if(retireInline) display+=' ~'+_dl(retDs)+_retireReservationSuffix(retEntry,slotKey,stu);
         let html=`<span class="stu-name-text">${esc(display)}</span>`;
+        if(enrollInline) html+=` <span class="stu-enroll-inline">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;
+        if(badgeHtml) html+=badgeHtml;
+        td.innerHTML=html;
+      } else if(enrollInline){
+        const displayName=_scheduleReservationName(enrEntry)||'등록';
+        const display=displayName+' '+_dl(enrEntry.ds)+'부터~';
+        let html=`<span class="stu-name-text stu-enroll-inline">${esc(display)}</span>`;
         if(badgeHtml) html+=badgeHtml;
         td.innerHTML=html;
       } else {
@@ -1950,8 +1963,51 @@ function _summaryRecordPerson(entry,fallback){
 function _scheduleReservationName(entry,fallback){
   return _summaryRecordPerson(entry,fallback).n||'';
 }
+function _retireReservationIsActual(entry,slotKey,fallback){
+  if(!entry) return false;
+  if(entry.retireType==='retire') return true;
+  if(entry.retireType==='exclude') return false;
+  if(_summaryIsMoveEntry(entry)) return false;
+  const ds=typeof entry==='string'?entry:entry.ds;
+  const person=_summaryRecordPerson(entry,fallback);
+  const name=String(person.n||'').trim();
+  const phone=_summaryNormPhone(person.p);
+  return Array.isArray(RETIRE_HISTORY)&&RETIRE_HISTORY.some(r=>{
+    if((r.retiredAt||'')!==ds) return false;
+    if(name&&String(r.n||'').trim()!==name) return false;
+    const rPhone=_summaryNormPhone(r.p);
+    if(phone&&rPhone&&phone!==rPhone) return false;
+    if(slotKey){
+      const rSlot=[r.t,r.d,r.l,r.r].map(v=>String(v||'')).join('/');
+      if(rSlot&&rSlot!==slotKey) return false;
+    }
+    return true;
+  });
+}
+function _retireReservationSuffix(entry,slotKey,fallback){
+  return _retireReservationIsActual(entry,slotKey,fallback)?'퇴원':'까지';
+}
+function _retireReservationReason(entry){
+  if(!entry||typeof entry!=='object') return '';
+  if(entry.excludeReason==='reduce') return 'reduce';
+  if(entry.excludeReason==='move'||_summaryIsMoveEntry(entry)) return 'move';
+  return '';
+}
+function _retireReservationKindLabel(entry,slotKey,fallback){
+  if(_retireReservationIsActual(entry,slotKey,fallback)) return '퇴원';
+  const reason=_retireReservationReason(entry);
+  if(reason==='reduce') return '횟수줄임';
+  if(reason==='move') return '이동';
+  return '제외';
+}
 function _summaryRetireStatus(entry,isChange){
-  return isChange||_summaryIsMoveEntry(entry) ? '제외예정' : '퇴원예정';
+  if(entry?.retireType==='exclude'||isChange||_summaryIsMoveEntry(entry)){
+    const reason=_retireReservationReason(entry);
+    if(reason==='reduce') return '횟수줄임예정';
+    if(reason==='move'||isChange||_summaryIsMoveEntry(entry)) return '이동예정';
+    return '제외예정';
+  }
+  return '퇴원예정';
 }
 function _summaryEnrollStatus(entry){
   return '등록예정';
@@ -2091,7 +2147,7 @@ function getScheduleSummaryData(){
     if(retire){
       const ds=typeof retire==='string'?retire:retire.ds;
       const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(retire,stu));
-      _summaryAddPerson(excludedPeople,_summaryRecord(retire,_summaryRetireStatus(retire,isChange),slotKey,_summaryDate(ds)+'까지',stu),false);
+      _summaryAddPerson(excludedPeople,_summaryRecord(retire,_summaryRetireStatus(retire,isChange),slotKey,_summaryDate(ds)+_retireReservationSuffix(retire,slotKey,stu),stu),false);
       return;
     }
     occupiedSlots.add(slotKey);
@@ -2110,7 +2166,7 @@ function getScheduleSummaryData(){
     const ds=typeof entry==='string'?entry:entry.ds;
     const fallback=_summaryPairFallback(entry,ENROLL_MAP);
     const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(entry,fallback));
-    _summaryAddPerson(excludedPeople,_summaryRecord(entry,_summaryRetireStatus(entry,isChange),slotKey,_summaryDate(ds)+'까지',fallback),false);
+    _summaryAddPerson(excludedPeople,_summaryRecord(entry,_summaryRetireStatus(entry,isChange),slotKey,_summaryDate(ds)+_retireReservationSuffix(entry,slotKey,fallback),fallback),false);
   });
 
   const countedRows=_summaryRowsFromMap(countedPeople);

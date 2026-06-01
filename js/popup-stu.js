@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 학생 셀 팝업 (renderStuPopup ~200줄, 분할 대상)
  * ════════════════════════════════════════════════════════════════ */
-let _stuPopup={key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,showEnroll:false,showBogang:false,showSample:false,showHyuwon:false};
+let _stuPopup={key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,showEnroll:false,showBogang:false,showSample:false,showHyuwon:false,showRetire:false};
 let _stuBusy=false;
 
 function stuPopupCanEdit(){
@@ -42,6 +42,7 @@ function handleReadOnlyDateBoxClick(dateBox){
     _stuPopup.showBogang=false;
     _stuPopup.showSample=false;
     _stuPopup.showHyuwon=false;
+    _stuPopup.showRetire=false;
     renderStuPopup();
     return;
   }
@@ -50,6 +51,7 @@ function handleReadOnlyDateBoxClick(dateBox){
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
   _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
 
   const mark=getMark(slotKey,ds);
   const sub=mark?.sub||null;
@@ -566,6 +568,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   if(!selDate) return '';
 
   const curMark=getMark(slotKey,selDate);
+  const retireEntry=RETIRE_MAP[slotKey]||null;
   const isRetire=retireDate===selDate;
   const isEnroll=enrollDate===selDate;
 
@@ -581,9 +584,12 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   // [v114] 원생이 있고 제외 예약이 없으면 등록 버튼 잠금
   const enrollLocked = hasStu && !retireDate;
 
-  // 폼 선택: 보강/샘플/등록/휴원 중 하나만 표시
+  // 폼 선택: 제외/보강/샘플/등록/휴원 중 하나만 표시
   let formHtml='';
-  if(_stuPopup.showBogang){
+  if(_stuPopup.showRetire){
+    const stu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
+    formHtml=buildRetireChoiceFormHtml(slotKey,selDate,stu,isRetire?retireEntry:null);
+  } else if(_stuPopup.showBogang){
     const existBo=boOn?(sub?.type==='bogang'?sub:(curMark?.type==='bogang'?curMark:null)):null;
     formHtml=buildBogangFormHtml(existBo);
   } else if(_stuPopup.showSample){
@@ -614,11 +620,31 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
       <button class="btn" id="sp-mark-sample-show" style="${btnStyle(saOn,'#F59E0B')}">샘플</button>
     </div>
     <div style="display:flex;gap:3px">
-      <button class="btn" id="sp-retire-set"       style="${btnStyle(isRetire,'#333')}">제외</button>
+      <button class="btn" id="sp-retire-set"       style="${btnStyle(isRetire||_stuPopup.showRetire,'#333')}">제외</button>
       <button class="btn" id="sp-enroll-show"      style="${enrollBtnStyle}"${enrollLocked?' title="제외 예약 후 등록 가능"':''}>등록</button>
       <button class="btn" id="sp-hyuwon-show"      style="${btnStyle(hyOn,'#0EA5E9')}">${hyOn?'휴원중':'휴원'}</button>
     </div>
     ${formHtml}
+  </div>`;
+}
+
+function buildRetireChoiceFormHtml(slotKey, ds, stu, existingEntry){
+  const current=_retireChoiceKind(existingEntry,stu,slotKey);
+  const isReserveMove=_isReserveMoveEntry(existingEntry);
+  const item=(kind,title,desc,color,disabled)=>{
+    const on=current===kind;
+    return `<button type="button" class="sp-retire-choice ${on?'on':''}" data-kind="${kind}" ${disabled?'disabled':''} style="--rc:${color}">
+      <b>${title}</b><span>${desc}</span>
+    </button>`;
+  };
+  const deleteButton=existingEntry?`<button type="button" id="sp-retire-del" class="sp-retire-delete">제외 예약 삭제</button>`:'';
+  const dateLabel=ds?ds.slice(5).replace('-','/'):'';
+  return `<div class="sp-retire-panel">
+    <div class="sp-retire-panel-title">${existingEntry?'제외 종류 변경':'제외 종류 선택'} <span>${esc(dateLabel)}</span></div>
+    ${item('retire','퇴원','퇴원 기록에 남깁니다','#EF4444',isReserveMove)}
+    ${item('move','이동','반/요일/시간 변경으로 빠지는 경우','#6B7280',false)}
+    ${item('reduce','횟수줄임','특정 요일 시수만 줄어드는 경우','#4B5563',isReserveMove)}
+    ${deleteButton}
   </div>`;
 }
 
@@ -768,8 +794,8 @@ function renderStuPopup(freshOpen){
   const inst=getInst(t,day,lane);
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
   const retireEntry=RETIRE_MAP[slotKey]||null;
-  const retireDate=retireEntry?.ds||null;
-  const retireName=retireEntry?.name||'';
+  const retireDate=(typeof retireEntry==='string'?retireEntry:retireEntry?.ds)||null;
+  const retireName=retireEntry?_popupRetireDateLabel(retireEntry,stu,slotKey):'';
   const enrollEntry=ENROLL_MAP[slotKey]||null;
   const enrollDate=enrollEntry?.ds||null;
   const enrollName=enrollEntry?((enrollEntry.name||'')+(enrollEntry.age||'')):'';
@@ -1002,21 +1028,9 @@ async function handleDateBoxClick(dateBox, ctx){
     return;
   }
 
-  // 1) 제외일 클릭 → 해제
-  if(RETIRE_MAP[slotKey]?.ds===ds){
-    if(!confirm(_reserveMoveDeleteMessage(RETIRE_MAP[slotKey]))) return;
-    try{
-      const paired=await deleteRetireReservation(slotKey);
-      _stuPopup.selDate=null;
-      _stuPopup.showEnroll=false;
-      _flashKey=slotKey;
-      renderStuPopup();
-      buildTable();
-      toast(paired?'예약 이동 취소':'제외 해제','ok');
-    }catch(err){
-      toast(err?.message||'제외 해제 실패','err');
-      console.error(err);
-    }
+  // 1) 제외일 클릭 → 종류 변경/삭제 모달
+  if(_retireEntryDate(RETIRE_MAP[slotKey])===ds){
+    _openRetireChoiceInline(ds);
     return;
   }
 
@@ -1042,6 +1056,7 @@ async function handleDateBoxClick(dateBox, ctx){
     _stuPopup.showBogang=false;
     _stuPopup.showSample=false;
     _stuPopup.showHyuwon=false;
+    _stuPopup.showRetire=false;
     renderStuPopup();
     return;
   }
@@ -1049,6 +1064,7 @@ async function handleDateBoxClick(dateBox, ctx){
   // 4) 새 날짜 선택 + 기존 마크에 따라 폼 자동 열기
   _stuPopup.selDate=ds;
   _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
   const selMark=getMark(slotKey,ds);
   const selSub=selMark?.sub||null;
   if(selMark?.type==='bogang'||(selMark?.type==='absent'&&selSub?.type==='bogang')){
@@ -1081,6 +1097,7 @@ function handleMarkAbsent(e, ctx){
   }
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
+  _stuPopup.showRetire=false;
   _flashKey=slotKey;
   renderStuPopup();
   buildTable();
@@ -1095,6 +1112,8 @@ function handleBogangShow(e, ctx){
   _stuPopup.showBogang=true;
   _stuPopup.showSample=false;
   _stuPopup.showEnroll=false;
+  _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
   renderStuPopup();
   setTimeout(()=>{
     document.getElementById('sp-bogang-name')?.focus();
@@ -1151,6 +1170,8 @@ function handleSampleShow(e, ctx){
   _stuPopup.showSample=true;
   _stuPopup.showBogang=false;
   _stuPopup.showEnroll=false;
+  _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
   renderStuPopup();
   setTimeout(()=>document.getElementById('sp-sample-name')?.focus(),30);
 }
@@ -1195,6 +1216,7 @@ function handleHyuwonShow(e, ctx){
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
   _stuPopup.showEnroll=false;
+  _stuPopup.showRetire=false;
   renderStuPopup();
 }
 
@@ -1220,74 +1242,84 @@ async function handleHyuwonDel(e, ctx){
 async function handleRetireSet(e, ctx){
   const {t, day, lane, row, slotKey} = ctx;
   const ds=_stuPopup.selDate;
-  // 같은 날짜 토글 → 해제
-  if(RETIRE_MAP[slotKey]?.ds===ds){
-    if(!confirm(_reserveMoveDeleteMessage(RETIRE_MAP[slotKey]))) return;
-    try{
-      const paired=await deleteRetireReservation(slotKey);
-      renderStuPopup();
-      _flashKey=slotKey;
-      buildTable();
-      toast(paired?'예약 이동 취소':'제외 해제','ok');
-    }catch(err){
-      toast(err?.message||'제외 해제 실패','err');
-      console.error(err);
-    }
-    return;
-  }
-  // [v118] 제외 종류 선택: 퇴원(기록 영구 보관) vs 단순 제외(이동 등 임시용, 기록 X)
-  const stu=getStu(t,day,lane,row);
-  _showRetireChoiceModal({stu, slotKey, ds});
+  _stuPopup.showRetire=!_stuPopup.showRetire;
+  _stuPopup.showEnroll=false;
+  _stuPopup.showBogang=false;
+  _stuPopup.showSample=false;
+  _stuPopup.showHyuwon=false;
+  renderStuPopup();
 }
 
-// [v118] 제외 종류 선택 modal
-function _showRetireChoiceModal({stu, slotKey, ds}){
-  const existing = document.getElementById('retire-choice-modal');
-  if(existing) existing.remove();
-  const stuLabel = stu ? `${stu.n}${stu.a||''}` : '(빈 셀)';
-  const html = `
-    <div id="retire-choice-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center">
-      <div style="background:#fff;padding:24px 28px;border-radius:14px;min-width:320px;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.4)">
-        <div style="font-weight:900;font-size:15px;margin-bottom:6px;color:#111">제외 종류 선택</div>
-        <div style="font-size:12px;color:#666;margin-bottom:18px">${esc(stuLabel)} · ${ds}</div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <button id="rc-retire" style="padding:14px;background:#EF4444;color:#fff;border:none;border-radius:10px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding-left:18px">
-            🚪 퇴원<div style="font-size:10px;font-weight:500;opacity:.9;margin-top:2px">기록을 영구 보관합니다</div>
-          </button>
-          <button id="rc-simple" style="padding:14px;background:#6B7280;color:#fff;border:none;border-radius:10px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding-left:18px">
-            ✂️ 단순 제외<div style="font-size:10px;font-weight:500;opacity:.9;margin-top:2px">이동 등 임시 처리 (기록 안 남음)</div>
-          </button>
-          <button id="rc-cancel" style="padding:8px;background:#fff;color:#666;border:1.5px solid #D1D5DB;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;margin-top:4px">취소</button>
-        </div>
-      </div>
-    </div>
-  `;
-  document.body.insertAdjacentHTML('beforeend', html);
-  const modal = document.getElementById('retire-choice-modal');
-  const close = ()=>modal.remove();
-  document.getElementById('rc-cancel').addEventListener('click', close);
-  modal.addEventListener('click', (e)=>{ if(e.target===modal) close(); });
-  // 공통: RETIRE_MAP 저장
-  const _setRetire = async (withHistory)=>{
-    await updateRetireMapTx(retire=>{
-      retire[slotKey]=_reservationEntryFromStudent(stu,ds);
-      return retire;
-    });
-    if(withHistory && stu && typeof addRetireHistory==='function') addRetireHistory(stu, ds);
-    renderStuPopup();
+function _openRetireChoiceInline(ds){
+  _stuPopup.selDate=ds;
+  _stuPopup.showRetire=true;
+  _stuPopup.showEnroll=false;
+  _stuPopup.showBogang=false;
+  _stuPopup.showSample=false;
+  _stuPopup.showHyuwon=false;
+  renderStuPopup();
+}
+
+async function _setRetireChoice(slotKey,ds,stu,existingEntry,kind){
+  if(_isReserveMoveEntry(existingEntry)&&kind!=='move'){
+    toast('예약 이동 제외는 이동으로 고정됩니다','err');
+    return;
+  }
+  await updateRetireMapTx(retire=>{
+    const extra=kind==='retire'
+      ? {retireType:'retire'}
+      : {retireType:'exclude', excludeReason:kind};
+    retire[slotKey]=_reservationEntryFromStudent(stu,ds,extra);
+    return retire;
+  });
+  if(kind==='retire'){
+    if(stu && typeof addRetireHistory==='function'&&!_hasMatchingRetireHistory(stu,ds,slotKey)) addRetireHistory(stu,ds);
+  } else {
+    _removeMatchingRetireHistory(stu,ds,slotKey);
+  }
+  _flashKey=slotKey;
+  renderStuPopup();
+  buildTable();
+}
+
+async function handleRetireChoiceSet(e,ctx){
+  const btn=e.target.closest('.sp-retire-choice');
+  if(!btn||btn.disabled) return;
+  const kind=btn.dataset.kind||'move';
+  const {slotKey,t,day,lane,row}=ctx;
+  const ds=_stuPopup.selDate;
+  const stu=getStu(t,day,lane,row);
+  const existingEntry=RETIRE_MAP[slotKey]||null;
+  try{
+    await _setRetireChoice(slotKey,ds,stu,existingEntry,kind);
+    toast(kind==='retire'?'퇴원 제외로 저장':kind==='reduce'?'횟수줄임 제외로 저장':'이동 제외로 저장','ok');
+  }catch(err){
+    toast(err?.message||'제외 종류 저장 실패','err');
+    console.error(err);
+  }
+}
+
+async function handleRetireDelete(e,ctx){
+  const {slotKey,t,day,lane,row}=ctx;
+  const ds=_stuPopup.selDate;
+  const existingEntry=RETIRE_MAP[slotKey]||null;
+  if(!existingEntry) return;
+  if(!confirm(_reserveMoveDeleteMessage(existingEntry))) return;
+  const stu=getStu(t,day,lane,row);
+  try{
+    const paired=await deleteRetireReservation(slotKey);
+    _removeMatchingRetireHistory(stu,ds,slotKey);
+    _stuPopup.selDate=null;
+    _stuPopup.showRetire=false;
+    _stuPopup.showEnroll=false;
     _flashKey=slotKey;
+    renderStuPopup();
     buildTable();
-  };
-  document.getElementById('rc-retire').addEventListener('click', ()=>{
-    close();
-    _setRetire(true).then(()=>toast('🚪 퇴원 처리 완료 (기록 보관됨)','ok'))
-      .catch(err=>{toast(err?.message||'퇴원 처리 실패','err');console.error(err);});
-  });
-  document.getElementById('rc-simple').addEventListener('click', ()=>{
-    close();
-    _setRetire(false).then(()=>toast('✂️ 단순 제외 완료 (기록 X)','ok'))
-      .catch(err=>{toast(err?.message||'단순 제외 실패','err');console.error(err);});
-  });
+    toast(paired?'예약 이동 취소':'제외 해제','ok');
+  }catch(err){
+    toast(err?.message||'제외 해제 실패','err');
+    console.error(err);
+  }
 }
 
 function handleEnrollShow(e, ctx){
@@ -1305,12 +1337,16 @@ function handleEnrollShow(e, ctx){
     _stuPopup.showEnroll=!_stuPopup.showEnroll;
     _stuPopup.showBogang=false;
     _stuPopup.showSample=false;
+    _stuPopup.showHyuwon=false;
+    _stuPopup.showRetire=false;
     renderStuPopup();
     return;
   }
   _stuPopup.showEnroll=!_stuPopup.showEnroll;
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
+  _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
   renderStuPopup();
   // [v100] enrollMode면 좌측 sp-name로 포커스. 그 외엔 우측 sp-enroll-name.
   setTimeout(()=>{
@@ -1544,6 +1580,8 @@ const STU_POPUP_MARK_HANDLERS = [
  */
 const STU_POPUP_RESERVE_HANDLERS = [
   ['#sp-retire-set',  handleRetireSet,  true],
+  ['.sp-retire-choice', handleRetireChoiceSet, true],
+  ['#sp-retire-del', handleRetireDelete, true],
   ['#sp-enroll-show', handleEnrollShow, true],
   // [FIX] handleEnrollSet은 _stuPopup.selDate를 ENROLL_MAP.ds에 저장하므로 needsDate=true여야 함.
   //  이전엔 false라서 selDate=null인 상태로 호출되면 ds:null인 좀비 entry가 영구 저장됨.
@@ -1690,7 +1728,7 @@ document.getElementById('stu-popup').addEventListener('change',function(e){
 function closeStuPopup(){
   document.getElementById('stu-popup').classList.remove('show');
   if(_stuPopup.td) _stuPopup.td.classList.remove('stu-active');
-  _stuPopup.key=null;_stuPopup.selDate=null;_stuPopup.showEnroll=false;_stuPopup.showBogang=false;_stuPopup.showSample=false;
+  _stuPopup.key=null;_stuPopup.selDate=null;_stuPopup.showEnroll=false;_stuPopup.showBogang=false;_stuPopup.showSample=false;_stuPopup.showHyuwon=false;_stuPopup.showRetire=false;
   if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
 }
 
@@ -1908,6 +1946,80 @@ function _reservationEntryFromStudent(stu, ds, extra){
     if(stu.g) entry.g=stu.g;
   }
   return entry;
+}
+
+function _retireEntryDate(entry){
+  return typeof entry==='string'?entry:(entry?.ds||null);
+}
+
+function _retireChoiceKind(entry,stu,slotKey){
+  if(!entry) return 'move';
+  if(entry.retireType==='retire') return 'retire';
+  if(entry.excludeReason==='reduce') return 'reduce';
+  if(entry.excludeReason==='move'||entry.retireType==='exclude'||_isReserveMoveEntry(entry)) return 'move';
+  return _popupRetireIsActual(entry,stu,slotKey)?'retire':'move';
+}
+
+function _popupRetireIsActual(entry,stu,slotKey){
+  if(!entry) return false;
+  if(entry.retireType==='retire') return true;
+  if(entry.retireType==='exclude') return false;
+  if(entry.moveType) return false;
+  const ds=entry.ds||entry;
+  const name=String(entry.name||stu?.n||'').trim();
+  const phone=String(entry.p||stu?.p||'').replace(/\D/g,'');
+  return Array.isArray(RETIRE_HISTORY)&&RETIRE_HISTORY.some(r=>{
+    if((r.retiredAt||'')!==ds) return false;
+    if(name&&String(r.n||'').trim()!==name) return false;
+    const rPhone=String(r.p||'').replace(/\D/g,'');
+    if(phone&&rPhone&&phone!==rPhone) return false;
+    if(slotKey){
+      const rSlot=[r.t,r.d,r.l,r.r].map(v=>String(v||'')).join('/');
+      if(rSlot&&rSlot!==slotKey) return false;
+    }
+    return true;
+  });
+}
+
+function _popupRetireDateLabel(entry,stu,slotKey){
+  const name=entry?.name||stu?.n||'';
+  return [name,_popupRetireIsActual(entry,stu,slotKey)?'퇴원':_popupRetireReasonText(entry)].filter(Boolean).join(' ');
+}
+
+function _popupRetireReasonText(entry){
+  if(!entry||entry.retireType==='retire') return '';
+  if(entry.excludeReason==='reduce') return '횟수줄임';
+  if(entry.excludeReason==='move'||_isReserveMoveEntry(entry)) return '이동';
+  return '까지';
+}
+
+function _retireHistoryMatches(r,stu,ds,slotKey){
+  if(!r||(r.retiredAt||'')!==ds) return false;
+  const name=String(stu?.n||'').trim();
+  if(name&&String(r.n||'').trim()!==name) return false;
+  const phone=String(stu?.p||'').replace(/\D/g,'');
+  const rPhone=String(r.p||'').replace(/\D/g,'');
+  if(phone&&rPhone&&phone!==rPhone) return false;
+  if(slotKey){
+    const rSlot=[r.t,r.d,r.l,r.r].map(v=>String(v||'')).join('/');
+    if(rSlot&&rSlot!==slotKey) return false;
+  }
+  return true;
+}
+
+function _hasMatchingRetireHistory(stu,ds,slotKey){
+  return Array.isArray(RETIRE_HISTORY)&&RETIRE_HISTORY.some(r=>_retireHistoryMatches(r,stu,ds,slotKey));
+}
+
+function _removeMatchingRetireHistory(stu,ds,slotKey){
+  if(!Array.isArray(RETIRE_HISTORY)) return false;
+  const before=RETIRE_HISTORY.length;
+  RETIRE_HISTORY=RETIRE_HISTORY.filter(r=>!_retireHistoryMatches(r,stu,ds,slotKey));
+  if(RETIRE_HISTORY.length!==before){
+    if(typeof saveRetireHistory==='function') saveRetireHistory();
+    return true;
+  }
+  return false;
 }
 
 function _reserveMoveAtSlot(slotKey,retire,enroll){
@@ -2332,7 +2444,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
             if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
             if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
             if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
-            retire[srcKey]=_reservationEntryFromStudent(stu,sourceDs,{moveType:'reserve', moveId, pairKey:dstKey});
+            retire[srcKey]=_reservationEntryFromStudent(stu,sourceDs,{retireType:'exclude', excludeReason:'move', moveType:'reserve', moveId, pairKey:dstKey});
             enroll[dstKey]=enrollEntry;
             ctx.set(STORAGE_KEYS.RETIRE,retire);
             ctx.set(STORAGE_KEYS.ENROLL,enroll);
