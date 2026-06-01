@@ -291,6 +291,25 @@ function pushUndo(){
   });
   if(_undoStack.length>_UNDO_MAX) _undoStack.shift();
 }
+function _undoTracksStorageKey(key){
+  const k=String(key||'');
+  return k===STORAGE_KEYS.STUDENTS
+    || k===STORAGE_KEYS.INST
+    || /^swim_stu_/.test(k)
+    || /^swim_inst_/.test(k)
+    || /^swim_bt_.*_(stu|inst)$/.test(k)
+    || k===STORAGE_KEYS.RETIRE
+    || k===STORAGE_KEYS.ENROLL
+    || k===STORAGE_KEYS.MARK
+    || k===STORAGE_KEYS.DISABLED
+    || k===STORAGE_KEYS.RESERVE
+    || k===STORAGE_KEYS.休원
+    || k===STORAGE_KEYS.MOVE;
+}
+function pushUndoForKeys(keys){
+  const list=Array.isArray(keys)?keys:[keys];
+  if(list.some(_undoTracksStorageKey)) pushUndo();
+}
 function popUndo(){
   if(!_undoStack.length){toast('되돌릴 내역 없음','err');return;}
   if(typeof isSnapshotTab==='function' && isSnapshotTab()){
@@ -1893,6 +1912,7 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
   const auditPoint=(typeof createAuditPoint==='function')
     ? createAuditPoint([storageKey], {type:describeStorageChangeType(storageKey), label:describeStorageChange(storageKey)})
     : null;
+  if(typeof pushUndoForKeys==='function') pushUndoForKeys(storageKey);
   if(!_fbReady){
     const next=runMutator(_cloneJSON(currentValue!==undefined?currentValue:fallback));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
@@ -1968,6 +1988,7 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
   const touched=new Set();
   let abortReason='';
   const auditPoint=(typeof createAuditPoint==='function')?createAuditPoint(txKeys, meta||{type:'edit', label:'시간표 편집'}):null;
+  if(typeof pushUndoForKeys==='function') pushUndoForKeys(txKeys);
   const makeCtx=root=>({
     get(key,fallback){
       const safeKey=_storageSafeKey(key);
