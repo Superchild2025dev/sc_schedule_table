@@ -519,8 +519,24 @@ function buildHyuwonFormHtml(existing){
  * [v99] 차량/승하차 장소/메모도 한 번에 입력
  * [v102] 성별도 입력
  */
+function _enrollDraftFromStudent(stu){
+  if(!stu) return null;
+  return {
+    name:stu.n||'',
+    age:stu.a||null,
+    p:stu.p||'',
+    loc:stu.loc||'',
+    memo:stu.memo||'',
+    g:stu.g||null,
+    isNew:false,
+    reenroll:false,
+    __draft:true,
+  };
+}
+
 function buildEnrollFormHtml(existing){
   const e=existing||{};
+  const isExistingReservation=!!(existing&&!existing.__draft);
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
     <div style="display:flex;gap:4px;margin-bottom:4px">
       <input class="fi" id="sp-enroll-name" placeholder="이름" value="${e.name?esc(e.name):''}" style="flex:1;margin:0;padding:4px 6px;font-size:11px">
@@ -553,9 +569,9 @@ function buildEnrollFormHtml(existing){
     `;})()}
     <textarea class="fi" id="sp-enroll-memo" placeholder="메모" style="margin:0 0 4px;padding:4px 6px;font-size:11px;min-height:28px">${e.memo?esc(e.memo):''}</textarea>
     <div style="display:flex;gap:4px">
-      <button class="btn btn-p" id="sp-enroll-set" style="flex:1;padding:4px;font-size:10px;background:#3B82F6">${existing?'등록 수정':'등록 예약'}</button>
-      ${existing?'<button class="btn btn-o" id="sp-enroll-move" style="padding:4px 6px;font-size:10px;color:#3B82F6;border-color:#3B82F6">이동</button>':''}
-      ${existing?'<button class="btn btn-d" id="sp-enroll-del" style="padding:4px 8px;font-size:10px">해제</button>':''}
+      <button class="btn btn-p" id="sp-enroll-set" style="flex:1;padding:4px;font-size:10px;background:#3B82F6">${isExistingReservation?'등록 수정':'등록 예약'}</button>
+      ${isExistingReservation?'<button class="btn btn-o" id="sp-enroll-move" style="padding:4px 6px;font-size:10px;color:#3B82F6;border-color:#3B82F6">이동</button>':''}
+      ${isExistingReservation?'<button class="btn btn-d" id="sp-enroll-del" style="padding:4px 8px;font-size:10px">해제</button>':''}
     </div>
   </div>`;
 }
@@ -581,9 +597,6 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   const hyuwon=HYUWON_MAP[slotKey];
   const hyOn=!!hyuwon;
 
-  // [v114] 원생이 있고 제외 예약이 없으면 등록 버튼 잠금
-  const enrollLocked = hasStu && !retireDate;
-
   // 폼 선택: 제외/보강/샘플/등록/휴원 중 하나만 표시
   let formHtml='';
   if(_stuPopup.showRetire){
@@ -598,8 +611,9 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   } else if(_stuPopup.showEnroll&&isEnroll&&!enrollMode){
     // 등록일 클릭 → 수정 폼 (기존 데이터 채움)
     formHtml=buildEnrollFormHtml(ENROLL_MAP[slotKey]);
-  } else if(_stuPopup.showEnroll&&!isEnroll&&!enrollMode&&!enrollLocked){
-    formHtml=buildEnrollFormHtml();
+  } else if(_stuPopup.showEnroll&&!isEnroll&&!enrollMode){
+    const stu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
+    formHtml=buildEnrollFormHtml(_enrollDraftFromStudent(stu));
   } else if(_stuPopup.showHyuwon){
     formHtml=buildHyuwonFormHtml(hyuwon);
   }
@@ -609,9 +623,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   const btnStyle=(on,color)=>on
     ? `${bs}background:${color};color:#fff;border:none`
     : `${bs}background:#fff;border:1.5px solid ${color};color:${color}`;
-  const enrollBtnStyle = enrollLocked
-    ? `${bs}background:#F3F4F6;border:1.5px solid #D1D5DB;color:#9CA3AF;cursor:not-allowed`
-    : btnStyle(isEnroll,'#3B82F6');
+  const enrollBtnStyle = btnStyle(isEnroll||_stuPopup.showEnroll,'#3B82F6');
 
   return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px">
     <div style="display:flex;gap:3px;margin-bottom:3px">
@@ -621,7 +633,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     </div>
     <div style="display:flex;gap:3px">
       <button class="btn" id="sp-retire-set"       style="${btnStyle(isRetire||_stuPopup.showRetire,'#333')}">제외</button>
-      <button class="btn" id="sp-enroll-show"      style="${enrollBtnStyle}"${enrollLocked?' title="제외 예약 후 등록 가능"':''}>등록</button>
+      <button class="btn" id="sp-enroll-show"      style="${enrollBtnStyle}">등록</button>
       <button class="btn" id="sp-hyuwon-show"      style="${btnStyle(hyOn,'#0EA5E9')}">${hyOn?'휴원중':'휴원'}</button>
     </div>
     ${formHtml}
@@ -1355,13 +1367,6 @@ async function handleRetireDelete(e,ctx){
 
 function handleEnrollShow(e, ctx){
   const {slotKey,t,day,lane,row} = ctx;
-  // [v114] 원생이 있고 제외 예약이 없으면 등록 불가
-  const existingStu=getStu(t,day,lane,row);
-  const hasRetire=!!RETIRE_MAP[slotKey];
-  if(existingStu && !hasRetire){
-    toast('제외 예약 후 등록 가능','err');
-    return;
-  }
   const ds=_stuPopup.selDate;
   // 같은 날짜 → 수정 폼 열기 (토글)
   if(ENROLL_MAP[slotKey]?.ds===ds){
