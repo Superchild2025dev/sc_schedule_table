@@ -466,8 +466,10 @@ body.is-snapshot .snap-banner{display:block}
   line-height:1.5;color:#fff;
 }
 .cb-retire{background:#555}
-.cb-enroll{background:#DBEAFE;color:#1D4ED8}
-.stu-enroll-inline{color:#1D4ED8!important;font-weight:900}
+.cb-enroll{background:#DBEAFE;color:#111}
+.cb-enroll-new{background:#DBEAFE;color:#DC2626}
+.stu-enroll-inline{color:#111!important;font-weight:900}
+.stu-enroll-inline-new{color:#DC2626!important}
 .cb-absent{background:#EF4444}
 .cb-bogang{background:#7C3AED}
 .cb-sample{background:#F59E0B;color:#333}

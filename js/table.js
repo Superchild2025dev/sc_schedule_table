@@ -1505,7 +1505,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       if(!_skipBadges && hasFutureEnroll && !enrollInline){
         const dl=_dl(enrEntry.ds), nm=_scheduleReservationName(enrEntry);
         const label=nm?nm+' '+dl+'부터~':dl+'부터~';
-        badges.push({type:'enroll', ds:enrEntry.ds, text:label, tip:'등록 '+label});
+        badges.push({type:enrEntry.isNew?'enroll-new':'enroll', ds:enrEntry.ds, text:label, tip:'등록 '+label});
       }
       // 결석/보강/샘플
       if(!_skipBadges) allDates.forEach(d=>{
@@ -1642,13 +1642,13 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
         let display=(prefix?prefix+'.':'')+stu.n+(stu.a||'');
         if(retireInline) display+=' ~'+_dl(retDs)+_retireReservationSuffix(retEntry,slotKey,stu);
         let html=`<span class="stu-name-text">${esc(display)}</span>`;
-        if(enrollInline) html+=` <span class="stu-enroll-inline">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;
+        if(enrollInline) html+=` <span class="stu-enroll-inline${enrEntry.isNew?' stu-enroll-inline-new':''}">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;
         if(badgeHtml) html+=badgeHtml;
         td.innerHTML=html;
       } else if(enrollInline){
         const displayName=_scheduleReservationName(enrEntry)||'등록';
         const display=displayName+' '+_dl(enrEntry.ds)+'부터~';
-        let html=`<span class="stu-name-text stu-enroll-inline">${esc(display)}</span>`;
+        let html=`<span class="stu-name-text stu-enroll-inline${enrEntry.isNew?' stu-enroll-inline-new':''}">${esc(display)}</span>`;
         if(badgeHtml) html+=badgeHtml;
         td.innerHTML=html;
       } else {
