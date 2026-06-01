@@ -654,53 +654,80 @@ function buildRetireChoiceFormHtml(slotKey, ds, stu, existingEntry){
  *   - 저장 버튼이 "등록 예약" 버튼으로 바뀜
  *   - 삭제/비활성화/이동 버튼은 숨김
  */
-function buildStuPopupLeft(stu, slotKey, enrollMode){
+function _stuLikeFromEnrollEntry(entry){
+  if(!entry) return null;
+  return {
+    n:entry.name||'',
+    a:entry.age||null,
+    p:entry.p||'',
+    loc:entry.loc||'',
+    memo:entry.memo||'',
+    g:entry.g||null,
+    isNew:entry.isNew||null,
+    reenroll:entry.reenroll||null,
+    __pendingEnroll:true,
+  };
+}
+
+function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const curMonth = SCHEDULE_PERIODS[getCurrentPeriod()].month;
+  const pendingEnrollInfo=!stu&&!!pendingEnrollEntry;
+  const viewStu=stu||_stuLikeFromEnrollEntry(pendingEnrollEntry);
+  const inputLock=pendingEnrollInfo?'readonly':'';
+  const checkLock=pendingEnrollInfo?'disabled':'';
+  const chipLock=pendingEnrollInfo?' readonly':'';
+  const chipStyle=pendingEnrollInfo?'pointer-events:none;':'';
+  const isNewOn=!!(viewStu&&viewStu.isNew&&(pendingEnrollInfo||viewStu.isNew===curMonth));
+  const reenrollOn=!!(viewStu&&viewStu.reenroll&&(pendingEnrollInfo||viewStu.reenroll===curMonth));
+  const infoDate=pendingEnrollEntry?.ds?pendingEnrollEntry.ds.slice(5).replace('-','/'):'';
   return `<div class="stu-popup-left">
+    ${pendingEnrollInfo?`<div style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1D4ED8;border-radius:8px;padding:6px 8px;margin-bottom:8px;font-size:11px;font-weight:800;text-align:center">${esc(infoDate)}부터 등록 예약된 원생</div>`:''}
     <div class="stu-popup-row">
       <div style="flex:1">
         <label class="fl">이름</label>
-        <input class="fi" id="sp-name" value="${stu?esc(stu.n):''}" placeholder="이름">
+        <input class="fi" id="sp-name" value="${viewStu?esc(viewStu.n):''}" placeholder="이름" ${inputLock}>
       </div>
       <div style="width:60px">
         <label class="fl">나이</label>
-        <input class="fi" id="sp-age" type="number" value="${stu&&stu.a?stu.a:''}" placeholder="" style="width:100%">
+        <input class="fi" id="sp-age" type="number" value="${viewStu&&viewStu.a?viewStu.a:''}" placeholder="" style="width:100%" ${inputLock}>
       </div>
     </div>
     <div style="margin-bottom:4px">
       <label class="fl">전화번호</label>
-      <input class="fi" id="sp-phone" value="${stu&&stu.p?esc(stu.p):''}" placeholder="010-0000-0000" style="margin-top:2px">
+      <input class="fi" id="sp-phone" value="${viewStu&&viewStu.p?esc(viewStu.p):''}" placeholder="010-0000-0000" style="margin-top:2px" ${inputLock}>
     </div>
     <div class="sp-chip-row">
-      <div class="sp-vt-col new-col ${stu&&stu.isNew&&stu.isNew===curMonth?'on':''}" id="sp-new">
+      <div class="sp-vt-col new-col ${isNewOn?'on':''}${chipLock}" id="sp-new" style="${chipStyle}">
         <span class="sp-vt-label">신규</span>
         <span class="sp-vt-toggle"></span>
       </div>
-      ${enrollMode?`<div class="sp-vt-col reenroll-col" id="sp-reenroll">
+      ${enrollMode||pendingEnrollInfo?`<div class="sp-vt-col reenroll-col ${reenrollOn?'on':''}${chipLock}" id="sp-reenroll" style="${chipStyle}">
         <span class="sp-vt-label">재등록</span>
         <span class="sp-vt-toggle"></span>
       </div>`:''}
-      <button type="button" class="sp-chip male ${stu&&stu.g==='m'?'on':''}" id="sp-gender-m">남</button>
-      <button type="button" class="sp-chip female ${stu&&stu.g==='f'?'on':''}" id="sp-gender-f">여</button>
+      <button type="button" class="sp-chip male ${viewStu&&viewStu.g==='m'?'on':''}" id="sp-gender-m" ${checkLock}>남</button>
+      <button type="button" class="sp-chip female ${viewStu&&viewStu.g==='f'?'on':''}" id="sp-gender-f" ${checkLock}>여</button>
     </div>
     <div style="margin-bottom:4px">
       <label class="fl">승하차</label>
-      ${(()=>{ const p=_parseLoc(stu&&stu.loc); return `
+      ${(()=>{ const p=_parseLoc(viewStu&&viewStu.loc); return `
         <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
-          <input class="fi" id="sp-pickup" placeholder="승차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.pickUp||'')}" ${p.pickSelf?'disabled':''}>
-          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-pick-self" ${p.pickSelf?'checked':''}> 자가</label>
+          <input class="fi" id="sp-pickup" placeholder="승차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.pickUp||'')}" ${p.pickSelf||pendingEnrollInfo?'disabled':''}>
+          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-pick-self" ${p.pickSelf?'checked':''} ${checkLock}> 자가</label>
         </div>
         <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
-          <input class="fi" id="sp-dropoff" placeholder="하차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.dropOff||'')}" ${p.dropSelf?'disabled':''}>
-          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-drop-self" ${p.dropSelf?'checked':''}> 자가</label>
+          <input class="fi" id="sp-dropoff" placeholder="하차 장소" style="flex:1;margin:0;padding:4px 6px;font-size:11px" value="${esc(p.dropOff||'')}" ${p.dropSelf||pendingEnrollInfo?'disabled':''}>
+          <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-drop-self" ${p.dropSelf?'checked':''} ${checkLock}> 자가</label>
         </div>
       `; })()}
     </div>
     <div style="margin-bottom:4px">
       <label class="fl">메모</label>
-      <textarea class="fi" id="sp-memo" placeholder="메모" style="margin-top:2px">${stu&&stu.memo?esc(stu.memo):''}</textarea>
+      <textarea class="fi" id="sp-memo" placeholder="메모" style="margin-top:2px" ${inputLock}>${viewStu&&viewStu.memo?esc(viewStu.memo):''}</textarea>
     </div>
-    ${enrollMode
+    ${pendingEnrollInfo
+      ? `<div style="font-size:10px;color:#6B7280;text-align:center;margin-top:6px;font-weight:700;line-height:1.4">등록 날짜를 누르면 수정/삭제할 수 있습니다.</div>`
+      : enrollMode
       ? `<div class="stu-popup-actions">
           <button class="btn btn-p" id="sp-enroll-from-left" style="flex:1;background:#3B82F6">📅 등록 예약</button>
         </div>
@@ -813,7 +840,7 @@ function renderStuPopup(freshOpen){
   popup.innerHTML=`
     <div class="stu-popup-hd">${day} ${t} ${lane}레인 ${row}번${inst?' · '+instDisplay(inst):''}<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeStuPopup()">✕</span></div>
     <div class="stu-popup-body">
-      ${buildStuPopupLeft(stu, slotKey, enrollMode)}
+      ${buildStuPopupLeft(stu, slotKey, enrollMode, enrollEntry)}
       ${buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml)}
     </div>
   `;
