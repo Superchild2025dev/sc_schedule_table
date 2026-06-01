@@ -515,64 +515,40 @@ function buildHyuwonFormHtml(existing){
 }
 
 /**
- * 등록 폼 HTML (신규 학생 등록 예약)
- * [v99] 차량/승하차 장소/메모도 한 번에 입력
- * [v102] 성별도 입력
+ * 등록 예약 컨트롤 HTML
+ * 학생 정보는 좌측 원생 정보에서만 관리하고, 여기서는 날짜/상태만 조정한다.
  */
-function _enrollDraftFromStudent(stu){
-  if(!stu) return null;
-  return {
-    name:stu.n||'',
-    age:stu.a||null,
-    p:stu.p||'',
-    loc:stu.loc||'',
-    memo:stu.memo||'',
-    g:stu.g||null,
-    isNew:false,
-    reenroll:false,
-    __draft:true,
-  };
+function _shortMd(ds){
+  if(!ds) return '';
+  return ds.slice(5).replace('-','/');
 }
 
-function buildEnrollFormHtml(existing){
-  const e=existing||{};
-  const isExistingReservation=!!(existing&&!existing.__draft);
+function buildEnrollControlHtml(existing, selDate){
+  const e=existing||null;
+  const hasReservation=!!e;
+  const sameDate=hasReservation&&e.ds===selDate;
+  const locked=hasReservation&&_isReserveMoveEntry(e);
+  const primaryLabel=hasReservation
+    ? (sameDate?'등록 옵션 저장':'등록일 변경')
+    : '선택일로 등록 예약';
+  const statusText=hasReservation
+    ? `현재 등록일 ${esc(_shortMd(e.ds))}${sameDate?'':' → 선택일 '+esc(_shortMd(selDate))}`
+    : `선택일 ${esc(_shortMd(selDate))}부터 등록 예약`;
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
-    <div style="display:flex;gap:4px;margin-bottom:4px">
-      <input class="fi" id="sp-enroll-name" placeholder="이름" value="${e.name?esc(e.name):''}" style="flex:1;margin:0;padding:4px 6px;font-size:11px">
-      <input class="fi" id="sp-enroll-age" type="number" placeholder="나이" value="${e.age||''}" style="width:55px;margin:0;padding:4px 6px;font-size:11px">
+    <div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1D4ED8;border-radius:8px;padding:6px 8px;margin-bottom:6px;font-size:10px;font-weight:800;text-align:center">
+      ${statusText}
     </div>
-    <input class="fi" id="sp-enroll-phone" placeholder="010-0000-0000" value="${e.p?esc(e.p):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
     <div class="sp-chip-row" style="margin-bottom:4px">
-      <div class="sp-vt-col new-col ${e.isNew?'on':''}" id="sp-enroll-new">
+      <div class="sp-vt-col new-col ${e?.isNew?'on':''}" id="sp-enroll-new">
         <span class="sp-vt-label">신규</span>
         <span class="sp-vt-toggle"></span>
       </div>
-      <div class="sp-vt-col reenroll-col ${e.reenroll?'on':''}" id="sp-enroll-reenroll">
-        <span class="sp-vt-label">재등록</span>
-        <span class="sp-vt-toggle"></span>
-      </div>
-      <button type="button" class="sp-chip male ${e.g==='m'?'on':''}" id="sp-enroll-gender-m">남</button>
-      <button type="button" class="sp-chip female ${e.g==='f'?'on':''}" id="sp-enroll-gender-f">여</button>
     </div>
-    ${(()=>{ const p=_parseLoc(e.loc); return `
-    <div style="margin:0 0 4px;padding:4px 6px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px">
-      <div style="display:flex;gap:4px;align-items:center;margin-bottom:2px">
-        <input class="fi" id="sp-enroll-pickup" placeholder="승차 장소" style="flex:1;margin:0;padding:3px 6px;font-size:11px" value="${esc(p.pickUp||'')}" ${p.pickSelf?'disabled':''}>
-        <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-enroll-pick-self" ${p.pickSelf?'checked':''}> 자가</label>
-      </div>
-      <div style="display:flex;gap:4px;align-items:center">
-        <input class="fi" id="sp-enroll-dropoff" placeholder="하차 장소" style="flex:1;margin:0;padding:3px 6px;font-size:11px" value="${esc(p.dropOff||'')}" ${p.dropSelf?'disabled':''}>
-        <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap"><input type="checkbox" id="sp-enroll-drop-self" ${p.dropSelf?'checked':''}> 자가</label>
-      </div>
-    </div>
-    `;})()}
-    <textarea class="fi" id="sp-enroll-memo" placeholder="메모" style="margin:0 0 4px;padding:4px 6px;font-size:11px;min-height:28px">${e.memo?esc(e.memo):''}</textarea>
-    <div style="display:flex;gap:4px">
-      <button class="btn btn-p" id="sp-enroll-set" style="flex:1;padding:4px;font-size:10px;background:#3B82F6">${isExistingReservation?'등록 수정':'등록 예약'}</button>
-      ${isExistingReservation?'<button class="btn btn-o" id="sp-enroll-move" style="padding:4px 6px;font-size:10px;color:#3B82F6;border-color:#3B82F6">이동</button>':''}
-      ${isExistingReservation?'<button class="btn btn-d" id="sp-enroll-del" style="padding:4px 8px;font-size:10px">해제</button>':''}
-    </div>
+    <div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin-bottom:6px">신규 OFF = 재등록</div>
+    ${locked
+      ? `<div style="font-size:10px;color:#6B7280;text-align:center;font-weight:700;line-height:1.4;margin-bottom:6px">예약 이동으로 만든 등록은 이동 취소로만 변경할 수 있습니다.</div>`
+      : `<button class="btn btn-p" id="sp-enroll-set" style="width:100%;padding:5px;font-size:10px;background:#3B82F6">${primaryLabel}</button>`}
+    ${hasReservation?`<button class="btn btn-d" id="sp-enroll-del" style="width:100%;padding:5px;font-size:10px;margin-top:4px">등록예약 해제</button>`:''}
   </div>`;
 }
 
@@ -608,12 +584,8 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   } else if(_stuPopup.showSample){
     const existSa=saOn?(sub?.type==='sample'?sub:(curMark?.type==='sample'?curMark:null)):null;
     formHtml=buildSampleFormHtml(existSa);
-  } else if(_stuPopup.showEnroll&&isEnroll&&!enrollMode){
-    // 등록일 클릭 → 수정 폼 (기존 데이터 채움)
-    formHtml=buildEnrollFormHtml(ENROLL_MAP[slotKey]);
-  } else if(_stuPopup.showEnroll&&!isEnroll&&!enrollMode){
-    const stu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
-    formHtml=buildEnrollFormHtml(_enrollDraftFromStudent(stu));
+  } else if(_stuPopup.showEnroll&&!enrollMode){
+    formHtml=buildEnrollControlHtml(ENROLL_MAP[slotKey]||null, selDate);
   } else if(_stuPopup.showHyuwon){
     formHtml=buildHyuwonFormHtml(hyuwon);
   }
@@ -624,6 +596,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     ? `${bs}background:${color};color:#fff;border:none`
     : `${bs}background:#fff;border:1.5px solid ${color};color:${color}`;
   const enrollBtnStyle = btnStyle(isEnroll||_stuPopup.showEnroll,'#3B82F6');
+  const enrollBtnText = enrollDate&&selDate&&enrollDate!==selDate ? '등록일 변경' : '등록';
 
   return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px">
     <div style="display:flex;gap:3px;margin-bottom:3px">
@@ -633,7 +606,7 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     </div>
     <div style="display:flex;gap:3px">
       <button class="btn" id="sp-retire-set"       style="${btnStyle(isRetire||_stuPopup.showRetire,'#333')}">제외</button>
-      <button class="btn" id="sp-enroll-show"      style="${enrollBtnStyle}">등록</button>
+      <button class="btn" id="sp-enroll-show"      style="${enrollBtnStyle}">${enrollBtnText}</button>
       <button class="btn" id="sp-hyuwon-show"      style="${btnStyle(hyOn,'#0EA5E9')}">${hyOn?'휴원중':'휴원'}</button>
     </div>
     ${formHtml}
@@ -690,7 +663,6 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const chipLock='';
   const chipStyle='';
   const isNewOn=!!(viewStu&&viewStu.isNew&&(pendingEnrollInfo||viewStu.isNew===curMonth));
-  const reenrollOn=!!(viewStu&&viewStu.reenroll&&(pendingEnrollInfo||viewStu.reenroll===curMonth));
   const infoDate=pendingEnrollEntry?.ds?pendingEnrollEntry.ds.slice(5).replace('-','/'):'';
   return `<div class="stu-popup-left">
     ${pendingEnrollInfo?`<div style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1D4ED8;border-radius:8px;padding:6px 8px;margin-bottom:8px;font-size:11px;font-weight:800;text-align:center">${esc(infoDate)}부터 등록 예약된 원생</div>`:''}
@@ -713,13 +685,10 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
         <span class="sp-vt-label">신규</span>
         <span class="sp-vt-toggle"></span>
       </div>
-      ${enrollMode||pendingEnrollInfo?`<div class="sp-vt-col reenroll-col ${reenrollOn?'on':''}${chipLock}" id="sp-reenroll" style="${chipStyle}">
-        <span class="sp-vt-label">재등록</span>
-        <span class="sp-vt-toggle"></span>
-      </div>`:''}
       <button type="button" class="sp-chip male ${viewStu&&viewStu.g==='m'?'on':''}" id="sp-gender-m" ${checkLock}>남</button>
       <button type="button" class="sp-chip female ${viewStu&&viewStu.g==='f'?'on':''}" id="sp-gender-f" ${checkLock}>여</button>
     </div>
+    ${enrollMode||pendingEnrollInfo?`<div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin:-1px 0 5px">신규 OFF = 재등록</div>`:''}
     <div style="margin-bottom:4px">
       <label class="fl">승하차</label>
       ${(()=>{ const p=_parseLoc(viewStu&&viewStu.loc); return `
@@ -848,8 +817,8 @@ function renderStuPopup(freshOpen){
   const curPeriod=SCHEDULE_PERIODS[getCurrentPeriod()];
   const nextPeriod=SCHEDULE_PERIODS[getCurrentPeriod()+1]||null;
 
-  // [v100] 빈 셀 + 등록 폼 활성 = 좌측 폼이 등록 입력 모드로 동작
-  const enrollMode = !stu && _stuPopup.showEnroll && !!selDate && enrollDate!==selDate;
+  // 빈 셀 + 기존/예약 원생 정보 없음 + 등록 버튼 활성 = 좌측 폼이 등록 입력 모드로 동작
+  const enrollMode = !stu && !retireEntry && !enrollEntry && _stuPopup.showEnroll && !!selDate;
 
   const actionHtml=renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, !!stu);
 
@@ -1077,7 +1046,7 @@ async function handleDateBoxClick(dateBox, ctx){
     return;
   }
 
-  // 2) 등록일 클릭 → 수정 폼 열기
+  // 2) 등록일 클릭 → 등록 예약 컨트롤 열기
   if(ENROLL_MAP[slotKey]?.ds===ds){
     _stuPopup.selDate=ds;
     _stuPopup.showEnroll=true;
@@ -1086,8 +1055,7 @@ async function handleDateBoxClick(dateBox, ctx){
     _stuPopup.showHyuwon=false;
     renderStuPopup();
     setTimeout(()=>{
-      const el=document.getElementById('sp-enroll-name');
-      if(el){el.focus();try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}}
+      document.getElementById('sp-enroll-set')?.focus();
     },30);
     return;
   }
@@ -1368,7 +1336,7 @@ async function handleRetireDelete(e,ctx){
 function handleEnrollShow(e, ctx){
   const {slotKey,t,day,lane,row} = ctx;
   const ds=_stuPopup.selDate;
-  // 같은 날짜 → 수정 폼 열기 (토글)
+  // 등록 컨트롤 열기/닫기. 저장은 등록일 변경/예약 버튼에서 처리한다.
   if(ENROLL_MAP[slotKey]?.ds===ds){
     _stuPopup.showEnroll=!_stuPopup.showEnroll;
     _stuPopup.showBogang=false;
@@ -1384,12 +1352,12 @@ function handleEnrollShow(e, ctx){
   _stuPopup.showHyuwon=false;
   _stuPopup.showRetire=false;
   renderStuPopup();
-  // [v100] enrollMode면 좌측 sp-name로 포커스. 그 외엔 우측 sp-enroll-name.
+  // 빈 칸 신규 등록 예약일 때만 좌측 이름칸에 포커스.
   setTimeout(()=>{
     const stu=getStu(ctx.t,ctx.day,ctx.lane,ctx.row);
-    const target=(!stu && _stuPopup.showEnroll)
+    const target=(!stu && _stuPopup.showEnroll && !ENROLL_MAP[slotKey])
       ? document.getElementById('sp-name')
-      : document.getElementById('sp-enroll-name');
+      : document.getElementById('sp-enroll-set');
     if(target){
       target.focus();
       try{ target.setSelectionRange(target.value.length, target.value.length); }catch(e){}
@@ -1422,6 +1390,22 @@ function _readEnrollForm(prefix){
   const reenroll=!isNew && (g(prefix+'reenroll')?.classList.contains('on')||false);
   const vehicle=_locUsesVehicle(loc);
   return {name,age,phone,vehicle,gender,loc,memo,isNew,reenroll};
+}
+
+function _readEnrollReservationForm(){
+  const form=_readEnrollForm('sp-');
+  const newBtn=document.getElementById('sp-enroll-new');
+  if(newBtn){
+    form.isNew=!!newBtn?.classList.contains('on');
+    form.reenroll=!form.isNew;
+  }
+  return form;
+}
+
+function _readEnrollLeftForm(){
+  const form=_readEnrollForm('sp-');
+  form.reenroll=!form.isNew;
+  return form;
 }
 
 function _periodMonthForDate(ds){
@@ -1512,11 +1496,16 @@ async function _commitEnroll(slotKey, form){
 }
 
 function handleEnrollSet(e, ctx){
-  _commitEnroll(ctx.slotKey, _readEnrollForm('sp-enroll-'));
+  const entry=ENROLL_MAP[ctx.slotKey];
+  if(entry&&_isReserveMoveEntry(entry)){
+    toast(_reserveMoveLockedMessage(),'err');
+    return;
+  }
+  _commitEnroll(ctx.slotKey, _readEnrollReservationForm());
 }
 
 function handleEnrollFromLeft(e, ctx){
-  _commitEnroll(ctx.slotKey, _readEnrollForm('sp-'));
+  _commitEnroll(ctx.slotKey, _readEnrollLeftForm());
 }
 
 function handleEnrollLeftSave(e, ctx){
@@ -1526,7 +1515,7 @@ function handleEnrollLeftSave(e, ctx){
     return;
   }
   _stuPopup.selDate=entry.ds||_stuPopup.selDate;
-  _commitEnroll(ctx.slotKey, _readEnrollForm('sp-'));
+  _commitEnroll(ctx.slotKey, _readEnrollLeftForm());
 }
 
 async function handleEnrollDel(e, ctx){
@@ -1564,15 +1553,6 @@ function handleEnrollNewToggle(e, ctx){
   const btn=document.getElementById('sp-enroll-new');
   if(btn){
     btn.classList.toggle('on');
-    if(btn.classList.contains('on')) document.getElementById('sp-enroll-reenroll')?.classList.remove('on');
-  }
-}
-
-function handleEnrollReenrollToggle(e, ctx){
-  const btn=document.getElementById('sp-enroll-reenroll');
-  if(btn){
-    btn.classList.toggle('on');
-    if(btn.classList.contains('on')) document.getElementById('sp-enroll-new')?.classList.remove('on');
   }
 }
 
@@ -1588,7 +1568,6 @@ const STU_POPUP_SIMPLE_HANDLERS = [
   ['#sp-enroll-gender-m', handleEnrollGenderM],
   ['#sp-enroll-gender-f', handleEnrollGenderF],
   ['#sp-enroll-new',      handleEnrollNewToggle],
-  ['#sp-enroll-reenroll', handleEnrollReenrollToggle],
   ['#sp-move-all',        handleMoveAll],
   ['#sp-move-stu',        handleMoveStu],
   ['#sp-copy-stu',        handleCopyStu],
@@ -1724,10 +1703,7 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
     const ae=document.activeElement;
     if(ae&&ae.tagName==='TEXTAREA') return;
     e.preventDefault();
-    // 등록 입력 필드에 포커스 있으면 등록 버튼
-    if(ae?.id==='sp-enroll-name'||ae?.id==='sp-enroll-age'||ae?.id==='sp-enroll-phone'){
-      document.getElementById('sp-enroll-set')?.click();
-    } else if(ae?.id==='sp-bogang-name'||ae?.id==='sp-bogang-age'){
+    if(ae?.id==='sp-bogang-name'||ae?.id==='sp-bogang-age'){
       document.getElementById('sp-mark-bogang')?.click();
     } else if(ae?.id==='sp-sample-name'||ae?.id==='sp-sample-age'||ae?.id==='sp-sample-phone'||ae?.id==='sp-sample-memo'){
       document.getElementById('sp-mark-sample')?.click();
@@ -1758,15 +1734,6 @@ document.getElementById('stu-popup').addEventListener('change',function(e){
   }
   if(id==='sp-drop-self'){
     const inp=document.getElementById('sp-dropoff');
-    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
-  }
-  // 우측 등록 폼
-  if(id==='sp-enroll-pick-self'){
-    const inp=document.getElementById('sp-enroll-pickup');
-    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
-  }
-  if(id==='sp-enroll-drop-self'){
-    const inp=document.getElementById('sp-enroll-dropoff');
     if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
   }
 });
