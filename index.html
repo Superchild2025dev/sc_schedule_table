@@ -17,8 +17,8 @@
 <script src="js/firebase-store.js?v=20260529-16"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="auth.css?v=20260529-16">
-<link rel="stylesheet" href="style.css?v=20260601-4">
+<link rel="stylesheet" href="auth.css?v=20260602-3">
+<link rel="stylesheet" href="style.css?v=20260602-3">
 </head>
 <body>
 
@@ -179,13 +179,13 @@
 
 <div id="tab-modal" class="tab-modal">
   <div class="tab-modal-box">
-    <div class="tab-modal-title">새 시간표 만들기</div>
+    <div class="tab-modal-title">방특 시간표 만들기</div>
     <div class="tab-modal-btns tab-type-row">
-      <button class="tab-type-btn active" data-tab-type="regular">정규시간표</button>
-      <button class="tab-type-btn" data-tab-type="bangteuk">방특시간표</button>
+      <button class="tab-type-btn" data-tab-type="regular" style="display:none">정규시간표</button>
+      <button class="tab-type-btn active" data-tab-type="bangteuk">방특시간표</button>
     </div>
     <label class="tab-modal-label" for="tab-new-name">시간표 이름</label>
-    <input id="tab-new-name" class="tab-modal-input" placeholder="예: 6월 초급반">
+    <input id="tab-new-name" class="tab-modal-input" placeholder="예: 26년 여름방특">
     <div id="tab-period-fields">
       <div class="tab-period-field" data-tab-period-regular>
         <label class="tab-modal-label" for="tab-period-month">운영 월</label>
@@ -376,15 +376,15 @@
 
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
 <script src="js/schedule-time.js?v=20260529-16"></script>
-<script src="js/auth-guard.js?v=20260529-16"></script>
-<script src="js/core.js?v=20260529-16"></script>
-<script src="js/tabs.js?v=20260529-16"></script>
-<script src="js/data.js?v=20260601-1"></script>
-<script src="js/teachers.js?v=20260529-16"></script>
+<script src="js/auth-guard.js?v=20260602-3"></script>
+<script src="js/core.js?v=20260602-3"></script>
+<script src="js/tabs.js?v=20260602-3"></script>
+<script src="js/data.js?v=20260602-3"></script>
+<script src="js/teachers.js?v=20260602-2"></script>
 <script src="js/popup-stu.js?v=20260601-8"></script>
 <script src="js/table.js?v=20260601-6"></script>
 <script src="js/defaults.js?v=20260529-16"></script>
-<script src="js/init.js?v=20260529-16"></script>
+<script src="js/init.js?v=20260602-3"></script>
 
 </body>
 </html>

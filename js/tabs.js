@@ -57,6 +57,20 @@ let _tabList = loadJSON(STORAGE_KEYS.TAB_LIST, []);
 if(!_tabList.length) _tabList=[{id:'regular',name:'정규시간표',type:'regular'}];
 let _tabFolderList = loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
 if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
+function _mainTabSetting(){
+  return loadJSON(STORAGE_KEYS.MAIN_TAB||'swim_main_tab', null)||{};
+}
+function _mainTabId(list){
+  const tabs=Array.isArray(list)?list:_tabList;
+  const saved=_mainTabSetting();
+  const found=tabs.find(t=>t&&t.id===saved.tabId&&t.type!=='snapshot');
+  if(found) return found.id;
+  const regular=tabs.find(t=>t&&t.id==='regular');
+  if(regular) return regular.id;
+  const live=tabs.find(t=>t&&t.type!=='snapshot');
+  return live?.id||tabs[0]?.id||'regular';
+}
+_activeTab=_mainTabId(_tabList);
 function _tabClone(value){
   return JSON.parse(JSON.stringify(value));
 }
@@ -84,6 +98,10 @@ function _defaultPeriodMonth(){
 }
 function _tabPeriodMonth(tab){
   if(!tab) return '';
+  const main=_mainTabSetting();
+  if((!tab.type||tab.type==='regular') && (main.tabId===tab.id || (!main.tabId&&tab.id==='regular'))){
+    return _defaultPeriodMonth();
+  }
   if(tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
   const m=String(tab.name||'').match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
   if(!m) return tab.id==='regular'?'2026-05':'';
@@ -147,6 +165,8 @@ function _tabBasisBadge(tab){
     if(tab.seasonStart&&tab.seasonEnd) return tab.seasonStart.slice(5).replace('-','/')+'~'+tab.seasonEnd.slice(5).replace('-','/');
     return '기간 미설정';
   }
+  const main=_mainTabSetting();
+  if(main.tabId===tab.id || (!main.tabId&&tab.id==='regular')) return '';
   return (_tabPeriodMonth(tab)||'월 미설정').replace('-','.');
 }
 function _parseTabStored(raw,fallback){
@@ -187,6 +207,7 @@ function _tabStateFromRoot(root){
     tabs:_normalizeTabList(_parseTabStored(root?.[STORAGE_KEYS.TAB_LIST], _tabList)),
     folders:_normalizeTabFolders(_parseTabStored(root?.[STORAGE_KEYS.TAB_FOLDERS], _tabFolderList)),
     parent:_parseTabStored(root?.[STORAGE_KEYS.PARENT_TAB], loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{}),
+    main:_parseTabStored(root?.[STORAGE_KEYS.MAIN_TAB], loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{}),
   };
 }
 function _applyTabState(state,keys){
@@ -201,6 +222,9 @@ function _applyTabState(state,keys){
   }
   if(set.has(STORAGE_KEYS.PARENT_TAB)){
     _cacheTabValue(STORAGE_KEYS.PARENT_TAB,state.parent||{});
+  }
+  if(set.has(STORAGE_KEYS.MAIN_TAB)){
+    _cacheTabValue(STORAGE_KEYS.MAIN_TAB,state.main||{});
   }
 }
 function updateTabSettingsTx(keys,mutator,meta){
@@ -217,6 +241,7 @@ function updateTabSettingsTx(keys,mutator,meta){
       tabs:_normalizeTabList(_tabClone(_tabList)),
       folders:_normalizeTabFolders(_tabClone(_tabFolderList)),
       parent:loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{},
+      main:loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{},
     };
     const result=mutator(state);
     if(result===undefined) return false;
@@ -225,6 +250,7 @@ function updateTabSettingsTx(keys,mutator,meta){
       if(key===STORAGE_KEYS.TAB_LIST) saveJSON(key,_tabList,true);
       else if(key===STORAGE_KEYS.TAB_FOLDERS) saveJSON(key,_tabFolderList,true);
       else if(key===STORAGE_KEYS.PARENT_TAB) saveJSON(key,state.parent||{},true);
+      else if(key===STORAGE_KEYS.MAIN_TAB) saveJSON(key,state.main||{},true);
     });
     if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,keys,meta);
     return true;
@@ -243,6 +269,7 @@ function updateTabSettingsTx(keys,mutator,meta){
     if(keys.includes(STORAGE_KEYS.TAB_LIST)) root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
     if(keys.includes(STORAGE_KEYS.TAB_FOLDERS)) root[STORAGE_KEYS.TAB_FOLDERS]=JSON.stringify(_normalizeTabFolders(state.folders));
     if(keys.includes(STORAGE_KEYS.PARENT_TAB)) root[STORAGE_KEYS.PARENT_TAB]=JSON.stringify(state.parent||{});
+    if(keys.includes(STORAGE_KEYS.MAIN_TAB)) root[STORAGE_KEYS.MAIN_TAB]=JSON.stringify(state.main||{});
     return root;
   }).then(res=>{
     if(!res.committed) throw new Error('탭 설정 저장이 취소되었습니다');
@@ -372,7 +399,7 @@ function _ensureTabFolder(folder){
   }
   return false;
 }
-let _newTabType='regular';
+let _newTabType='bangteuk';
 function _syncNewTabPeriodFields(){
   const reg=document.querySelector('[data-tab-period-regular]');
   const bt=document.querySelector('[data-tab-period-bangteuk]');
@@ -381,7 +408,7 @@ function _syncNewTabPeriodFields(){
 }
 function openNewTabModal(){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 편집')) return;
-  _newTabType='regular';
+  _newTabType='bangteuk';
   const modal=document.getElementById('tab-modal');
   const nameEl=document.getElementById('tab-new-name');
   const folderEl=document.getElementById('tab-new-folder');
@@ -453,6 +480,10 @@ async function createTabFromModal(){
   }
   if(!name){toast('시간표 이름을 입력하세요','err');return;}
   const type=_newTabType;
+  if(type==='regular'){
+    toast('정규 운영 시간표는 메인 1개만 사용하고, 저장본은 스냅샷으로 남겨주세요','err');
+    return;
+  }
   const id=(type==='regular'?'reg':'bt')+'_'+Date.now();
   const newTab={id,name,type};
   if(type==='regular'){
@@ -531,6 +562,11 @@ function _tabStorageKeys(tab){
 function _parentTabSetting(){
   return loadJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', null)||{};
 }
+function activateMainTabForStartup(){
+  const next=_mainTabId(_tabList);
+  if(next) _activeTab=next;
+  return _activeTab;
+}
 function _openSingleTabMenu(tabId, anchor){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 기능')) return;
   const tab=_tabList.find(t=>t.id===tabId);
@@ -541,7 +577,7 @@ function _openSingleTabMenu(tabId, anchor){
   const folders=_tabFolders();
   let html='';
   html+=_menuBtn('rename',tabId,'이름 변경');
-  if(!isSnap) html+=_menuBtn('basis',tabId,tab.type==='bangteuk'?'방특 기간 설정':'운영 월 설정');
+  if(!isSnap && tab.type==='bangteuk') html+=_menuBtn('basis',tabId,'방특 기간 설정');
   html+=_menuSep();
   html+=_menuLabel('폴더 이동');
   if(currentFolder) html+=_menuBtn('folder-none',tabId,'폴더에서 꺼내기');
@@ -555,8 +591,8 @@ function _openSingleTabMenu(tabId, anchor){
   if(i<_tabList.length-1) html+=_menuBtn('right',tabId,'오른쪽으로 이동');
   if(!isSnap){
     html+=_menuSep();
+    html+=_menuBtn('main-public',tabId,'메인 시간표로 지정');
     html+=_menuBtn('parent-public',tabId,'학부모 공개로 지정');
-    html+=_menuBtn('copy',tabId,'시간표 복사');
     html+=_menuBtn('snapshot',tabId,'스냅샷 만들기');
   }
   if(tab.id!=='regular'){
@@ -719,19 +755,50 @@ async function setParentPublicTab(tabId){
     toast(e.message||'학부모 공개 지정 실패','err');
   }
 }
+async function setMainTab(tabId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','메인 시간표 지정')) return;
+  const tab=_tabList.find(t=>t.id===tabId);
+  if(!tab||tab.type==='snapshot'){
+    toast('스냅샷은 메인 시간표로 지정할 수 없습니다','err');
+    return;
+  }
+  try{
+    let label=tab.name||tab.id;
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.MAIN_TAB],state=>{
+      const fresh=state.tabs.find(t=>t.id===tabId);
+      if(!fresh||fresh.type==='snapshot') throw new Error('메인 시간표로 지정할 수 없습니다');
+      label=fresh.name||fresh.id;
+      state.main={..._tabStorageKeys(fresh), setAt:new Date().toISOString()};
+      return state;
+    },{label:'메인 시간표 지정',target:label});
+    _activeTab=tabId;
+    switchTabView();
+    toast('메인 시간표: '+label,'ok');
+  }catch(e){
+    console.error(e);
+    toast(e.message||'메인 시간표 지정 실패','err');
+  }
+}
 async function deleteTab(tabId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 삭제')) return;
-  if(!confirm('이 탭을 삭제하시겠습니까?')) return;
   const id=tabId;
   const tab=_tabList.find(t=>t.id===id);
   if(!tab) return;
+  if(tab.id==='regular'){
+    toast('정규시간표는 삭제할 수 없습니다','err');
+    return;
+  }
+  const name=tab.name||tab.id;
+  const kind=tab.type==='snapshot'?'스냅샷':'시간표';
+  if(!confirm(`${name} ${kind}을 삭제하시겠습니까?\n\n학생/담임/출석부/날짜 스냅샷 데이터가 함께 정리됩니다.`)) return;
   try{
-    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.PARENT_TAB],state=>{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.PARENT_TAB,STORAGE_KEYS.MAIN_TAB],state=>{
       const target=state.tabs.find(t=>t.id===id);
       if(!target) throw new Error('시간표를 찾을 수 없습니다');
       if(target.id==='regular') throw new Error('정규시간표는 삭제할 수 없습니다');
       state.tabs=state.tabs.filter(t=>t.id!==id);
       if(state.parent?.tabId===id) state.parent={};
+      if(state.main?.tabId===id) state.main={};
       return state;
     },{label:'시간표 삭제',target:tab.name||tab.id});
     if(tab.type==='snapshot'){
@@ -747,8 +814,9 @@ async function deleteTab(tabId){
       dbRemove('swim_stu_'+id);
       dbRemove('swim_inst_'+id);
     }
-    if(_activeTab===id){_activeTab='regular';}
+    if(_activeTab===id){_activeTab=_mainTabId(_tabList);}
     switchTabView();
+    toast(kind+' 삭제 완료','ok');
   }catch(e){
     console.error(e);
     toast(e.message||'시간표 삭제 실패','err');
@@ -763,6 +831,7 @@ function _handleTabMenuAction(action,id,targetFolder=''){
   else if(action==='folder-new') promptNewTabFolder(id);
   else if(action==='left') moveTabOrder(id,-1);
   else if(action==='right') moveTabOrder(id,1);
+  else if(action==='main-public') setMainTab(id);
   else if(action==='parent-public') setParentPublicTab(id);
   else if(action==='copy') copyTab(id);
   else if(action==='snapshot') createSnapshot(id);
@@ -901,11 +970,12 @@ function renderTabBar(){
     const baseCls=isSnap?'tab-btn tab-snapshot':'tab-btn';
     const cls=tab.id===_activeTab?baseCls+' active':baseCls;
     const labelTitle=isSnap?` title="📷 ${tab.capturedAt||''} 스냅샷 — 읽기 전용"`:'';
+    const mainBadge=_mainTabSetting().tabId===tab.id?'<span class="main-tab-badge">메인</span>':'';
     const parentBadge=_parentTabSetting().tabId===tab.id?'<span class="parent-tab-badge">학부모</span>':'';
     const basis=_tabBasisBadge(tab);
     const basisBadge=basis?'<span class="tab-basis-badge">'+_tabEsc(basis)+'</span>':'';
     const menu=canEditTabs?`<span class="tab-menu-trigger" data-tab-menu="${_tabEsc(tab.id)}" title="시간표 기능">⋯</span>`:'';
-    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${basisBadge}${parentBadge}${menu}</button>`;
+    return `<button class="${cls}" data-tab="${_tabEsc(tab.id)}"${labelTitle}><span data-tab-rename="${_tabEsc(tab.id)}">${isSnap?'📷 ':''}${_tabEsc(tab.name)}</span>${basisBadge}${mainBadge}${parentBadge}${menu}</button>`;
   };
   _folderedTabGroups().forEach(group=>{
     if(!group.folder){
@@ -922,7 +992,7 @@ function renderTabBar(){
     html+=`<div class="tab-folder-tabs">${group.items.map(item=>renderTab(item.tab,item.i)).join('')}</div>`;
     html+=`</div>`;
   });
-  if(canEditTabs) html+=`<button class="tab-add" data-tab-add title="새 탭 추가">＋</button>`;
+  if(canEditTabs) html+=`<button class="tab-add" data-tab-add title="방특 시간표 추가">＋</button>`;
   bar.innerHTML=html;
 }
 

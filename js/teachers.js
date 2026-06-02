@@ -344,7 +344,10 @@ function renderInstPopup(){
     html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
     if(cur) html+=`<button class="inst-btn-clear" data-name="__clear__">선생님 삭제</button>`;
     html+=`</div>`;
-    html+=`<div style="padding:6px 0 2px;border-top:1px solid #E5E7EB;margin-top:6px"><button class="btn btn-o" id="ip-swap" style="width:100%;font-size:11px;padding:5px;color:#F59E0B;border-color:#F59E0B">↔ 위치 교환</button></div>`;
+    html+=`<div class="inst-tool-row">`;
+    html+=`<button class="btn btn-o inst-tool-btn sort" id="ip-compact">빈칸 정렬</button>`;
+    html+=`<button class="btn btn-o inst-tool-btn swap" id="ip-swap">↔ 위치 교환</button>`;
+    html+=`</div>`;
   } else {
     html+=`<div style="padding:8px 2px 6px;font-size:11px;color:#6B7280;border-bottom:1px solid #E5E7EB">
       <b style="color:#111">${cur?esc(instDisplay(cur)):'담임 없음'}</b>
@@ -409,6 +412,12 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
   if(e.target.closest('#ip-swap')){
     e.stopPropagation();
     startInstSwap();
+    return;
+  }
+  // 빈칸 정렬
+  if(e.target.closest('#ip-compact')){
+    e.stopPropagation();
+    await compactInstLaneRows();
     return;
   }
   // 무관 체크박스 토글 → 선생님 선택 표시/숨김
@@ -568,6 +577,227 @@ function _instSwapMarkKeys(marks,srcSK,dstSK){
   }
   for(const [ds,v] of Object.entries(dstMarks)) marks[srcSK+'/'+ds]=v;
   for(const [ds,v] of Object.entries(srcMarks)) marks[dstSK+'/'+ds]=v;
+}
+
+function _instSlotKey(t,day,lane,row){
+  return t+'/'+day+'/'+lane+'/'+row;
+}
+
+function _instSlotRowFromKey(key,t,day,lane){
+  const p=String(key||'').split('/');
+  if(p.length<4) return null;
+  if(p[0]!==t||p[1]!==day||String(p[2])!==String(lane)) return null;
+  const r=parseInt(p[3],10);
+  return Number.isFinite(r)&&r>0?r:null;
+}
+
+function _instRequestRows(requests,t,day,lane){
+  const rows=new Set();
+  for(const req of Object.values(requests||{})){
+    const target=req?.target||{};
+    if(target.t===t&&target.d===day&&String(target.l)===String(lane)){
+      const r=parseInt(target.r,10);
+      if(Number.isFinite(r)&&r>0) rows.add(r);
+    }
+    const slotKeys=[
+      req?.parent?.studentSlotKey,
+      req?.parent?.sourceSlotKey,
+      req?.parent?.previousSlotKey,
+      req?.parent?.originalSlotKey,
+      req?.sourceSlotKey,
+    ].filter(Boolean);
+    slotKeys.forEach(sk=>{
+      const r=_instSlotRowFromKey(sk,t,day,lane);
+      if(r) rows.add(r);
+    });
+  }
+  return rows;
+}
+
+function _instCollectLaneRows({students,retire,enroll,disabled,marks,hyuwon,attendance,attGuests,requests},t,day,lane){
+  const rows=new Set();
+  (students||[]).forEach(s=>{
+    if(s&&s.t===t&&s.d===day&&String(s.l)===String(lane)){
+      const r=parseInt(s.r,10);
+      if(Number.isFinite(r)&&r>0) rows.add(r);
+    }
+  });
+  [retire,enroll,disabled,hyuwon].forEach(map=>{
+    Object.keys(map||{}).forEach(k=>{
+      const r=_instSlotRowFromKey(k,t,day,lane);
+      if(r) rows.add(r);
+    });
+  });
+  [marks,attendance].forEach(map=>{
+    Object.keys(map||{}).forEach(k=>{
+      const r=_instSlotRowFromKey(k,t,day,lane);
+      if(r) rows.add(r);
+    });
+  });
+  Object.entries(attGuests||{}).forEach(([,list])=>{
+    (list||[]).forEach(g=>{
+      const r=_instSlotRowFromKey(g?.slotKey,t,day,lane);
+      if(r) rows.add(r);
+    });
+  });
+  _instRequestRows(requests,t,day,lane).forEach(r=>rows.add(r));
+  return rows;
+}
+
+function _instExtractPrefixMap(map,slotKey){
+  const result={};
+  const prefix=slotKey+'/';
+  Object.keys(map||{}).forEach(k=>{
+    if(k.startsWith(prefix)){
+      result[k.slice(prefix.length)]=map[k];
+      delete map[k];
+    }
+  });
+  return result;
+}
+
+function _instWritePrefixMap(map,slotKey,entries){
+  for(const [suffix,val] of Object.entries(entries||{})){
+    map[slotKey+'/'+suffix]=val;
+  }
+}
+
+function _instHasGuestSlotRow(attGuests,t,day,lane,row){
+  const slotKey=_instSlotKey(t,day,lane,row);
+  return Object.values(attGuests||{}).some(list=>(list||[]).some(g=>g&&g.slotKey===slotKey));
+}
+
+function _instReassignRequestSlotKey(req,oldKey,newKey){
+  if(!req) return;
+  if(req.parent){
+    ['studentSlotKey','sourceSlotKey','previousSlotKey','originalSlotKey'].forEach(prop=>{
+      if(req.parent[prop]===oldKey) req.parent[prop]=newKey;
+    });
+  }
+  if(req.sourceSlotKey===oldKey) req.sourceSlotKey=newKey;
+}
+
+function _instReassignRequests(requests,t,day,lane,rowMap){
+  for(const req of Object.values(requests||{})){
+    const target=req?.target;
+    if(target&&target.t===t&&target.d===day&&String(target.l)===String(lane)){
+      const oldR=parseInt(target.r,10);
+      const newR=rowMap[oldR];
+      if(newR) target.r=newR;
+    }
+    for(const [oldR,newR] of Object.entries(rowMap)){
+      const oldKey=_instSlotKey(t,day,lane,oldR);
+      const newKey=_instSlotKey(t,day,lane,newR);
+      _instReassignRequestSlotKey(req,oldKey,newKey);
+    }
+  }
+}
+
+function _instMoveGuestSlotKeys(attGuests,t,day,lane,rowMap){
+  Object.entries(attGuests||{}).forEach(([,list])=>{
+    (list||[]).forEach(g=>{
+      const r=_instSlotRowFromKey(g?.slotKey,t,day,lane);
+      if(r&&rowMap[r]) g.slotKey=_instSlotKey(t,day,lane,rowMap[r]);
+    });
+  });
+}
+
+async function compactInstLaneRows(){
+  const {t,day,lane}= _instPopup||{};
+  if(!t||!day||!lane) return;
+  if(!confirm(`${day} ${t} ${lane}레인 빈칸을 위로 정렬할까요?\n학생, 뱃지, 결석/보강, 등록/제외 예약이 같이 이동합니다.`)) return;
+
+  const stuKey=getTabConfig().stuKey;
+  const attKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attendance'):STORAGE_KEYS.ATTENDANCE;
+  const guestKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attGuests'):STORAGE_KEYS.ATT_GUESTS;
+  const txKeys=[
+    stuKey,
+    STORAGE_KEYS.RETIRE,
+    STORAGE_KEYS.ENROLL,
+    STORAGE_KEYS.DISABLED,
+    STORAGE_KEYS.MARK,
+    STORAGE_KEYS.休원,
+    STORAGE_KEYS.REQUESTS,
+    attKey,
+    guestKey,
+  ];
+
+  try{
+    let moved=0;
+    await updateScheduleTx(txKeys, ctx=>{
+      const students=ctx.get(stuKey,[]);
+      const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+      const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+      const marks=ctx.get(STORAGE_KEYS.MARK,{});
+      const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+      const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
+      const attendance=ctx.get(attKey,{});
+      const attGuests=ctx.get(guestKey,{});
+      const rowSet=_instCollectLaneRows({students,retire,enroll,disabled,marks,hyuwon,attendance,attGuests,requests},t,day,lane);
+      const maxRow=Math.max(getTimeRows(t),0,...Array.from(rowSet));
+      const rowData=[];
+      for(let r=1;r<=maxRow;r++){
+        const slotKey=_instSlotKey(t,day,lane,r);
+        const stuIdx=students.findIndex(s=>s&&s.t===t&&s.d===day&&String(s.l)===String(lane)&&parseInt(s.r,10)===r);
+        const data={
+          row:r,
+          stu:stuIdx>=0?JSON.parse(JSON.stringify(students[stuIdx])):null,
+          retire:retire[slotKey],
+          enroll:enroll[slotKey],
+          disabled:disabled[slotKey],
+          hyuwon:hyuwon[slotKey],
+          marks:_instExtractPrefixMap(marks,slotKey),
+          attendance:_instExtractPrefixMap(attendance,slotKey),
+          hasGuest:_instHasGuestSlotRow(attGuests,t,day,lane,r),
+        };
+        if(stuIdx>=0) students.splice(stuIdx,1);
+        delete retire[slotKey];
+        delete enroll[slotKey];
+        delete disabled[slotKey];
+        delete hyuwon[slotKey];
+        if(data.stu||data.retire||data.enroll||data.disabled||data.hyuwon||data.hasGuest||Object.keys(data.marks).length||Object.keys(data.attendance).length){
+          rowData.push(data);
+        }
+      }
+      const rowMap={};
+      rowData.forEach((data,i)=>{
+        const newRow=i+1;
+        rowMap[data.row]=newRow;
+        if(data.row!==newRow) moved++;
+        const dstKey=_instSlotKey(t,day,lane,newRow);
+        if(data.stu){
+          data.stu.t=t; data.stu.d=day; data.stu.l=parseInt(lane,10); data.stu.r=newRow;
+          students.push(data.stu);
+        }
+        if(data.retire!==undefined) retire[dstKey]=data.retire;
+        if(data.enroll!==undefined) enroll[dstKey]=data.enroll;
+        if(data.disabled!==undefined) disabled[dstKey]=data.disabled;
+        if(data.hyuwon!==undefined) hyuwon[dstKey]=data.hyuwon;
+        _instWritePrefixMap(marks,dstKey,data.marks);
+        _instWritePrefixMap(attendance,dstKey,data.attendance);
+      });
+      _instMoveGuestSlotKeys(attGuests,t,day,lane,rowMap);
+      _instReassignRequests(requests,t,day,lane,rowMap);
+
+      ctx.set(stuKey,students);
+      ctx.set(STORAGE_KEYS.RETIRE,retire);
+      ctx.set(STORAGE_KEYS.ENROLL,enroll);
+      ctx.set(STORAGE_KEYS.DISABLED,disabled);
+      ctx.set(STORAGE_KEYS.MARK,marks);
+      ctx.set(STORAGE_KEYS.休원,hyuwon);
+      ctx.set(STORAGE_KEYS.REQUESTS,requests);
+      ctx.set(attKey,attendance);
+      ctx.set(guestKey,attGuests);
+      return true;
+    }, {type:'move', label:'반 빈칸 정렬', detail:`${t}/${day}/${lane}레인`});
+    closeInstPopup();
+    buildTable();
+    toast(moved?`빈칸 정렬 완료 (${moved}칸 이동)`:'정렬할 빈칸이 없습니다','ok');
+  }catch(err){
+    toast(err?.message||'빈칸 정렬 실패','err');
+    console.error(err);
+  }
 }
 
 async function executeInstSwap(dstT,dstDay,dstLane){

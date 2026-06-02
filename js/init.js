@@ -22,6 +22,7 @@ function startScheduleApp(){
     //  사용자가 뭐든 저장하면 빈 데이터가 Firebase로 push되어 데이터 손실 발생)
     reloadBadgeMaps();    // RETIRE/ENROLL/MARK/DISABLED/RESERVE/HYUWON
     reloadGlobalData();   // SCHEDULE_PERIODS/closedList/TEACHERS/_tabList
+    if(typeof activateMainTabForStartup==='function') activateMainTabForStartup();
     loadTabData();        // STUDENTS/INST_MAP
     const render=()=>{
       renderTabBar();

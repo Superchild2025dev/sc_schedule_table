@@ -236,6 +236,7 @@ const STORAGE_KEYS = {
   TAB_LIST: 'swim_tab_list',
   TAB_FOLDERS: 'swim_tab_folders',
   PARENT_TAB: 'swim_parent_tab', // 학부모 페이지가 기준으로 삼을 운영 시간표 탭
+  MAIN_TAB: 'swim_main_tab',     // 관리자 새로고침 시 기본으로 열 운영 시간표 탭
   TEACHERS: 'swim_teachers',     // [v115] 선생님 목록 (이름+색)
   PERIODS:  'swim_periods',     // 수업 기간 목록
   RETIRE_HISTORY: 'swim_retire_history', // [v118] 퇴원 기록 보관 (영구)

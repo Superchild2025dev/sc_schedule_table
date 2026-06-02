@@ -256,7 +256,8 @@
       return hasPermission('manageRecords');
     }
     if(key === 'swim_teachers') return hasPermission('manageTeachers');
-    if(key === 'swim_tab_list' || key === 'swim_tab_folders' || key === 'swim_students' ||
+    if(key === 'swim_tab_list' || key === 'swim_tab_folders' || key === 'swim_parent_tab' ||
+       key === 'swim_main_tab' || key === 'swim_students' ||
        key === 'swim_inst' || key === 'swim_retire' || key === 'swim_enroll' ||
        key === 'swim_disabled' || key === 'swim_reserve' || key === 'swim_hyuwon' ||
        key === 'swim_move' || key === 'swim_age_year' ||

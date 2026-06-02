@@ -1466,6 +1466,18 @@ function _scheduleAuditTeacherFromSlot(slot,day,item){
   if(!user) return '-';
   return user.includes('@')?user.split('@')[0]:user;
 }
+function _scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item){
+  if(!fromSlot||!toSlot) return false;
+  const allDays=['월','화','수','목','금','토','일'];
+  const fromDays=_scheduleAuditExpandDay(fromSlot.dayToken||day,allDays).join('');
+  const toDays=_scheduleAuditExpandDay(toSlot.dayToken||day,allDays).join('');
+  if(fromDays!==toDays) return false;
+  if(String(fromSlot.time||'')!==String(toSlot.time||'')) return false;
+  if(String(fromSlot.lane||'')!==String(toSlot.lane||'')) return false;
+  const fromTeacher=_scheduleAuditTeacherFromSlot(fromSlot,day,item);
+  const toTeacher=_scheduleAuditTeacherFromSlot(toSlot,day,item);
+  return !!(fromTeacher&&toTeacher&&fromTeacher!=='-'&&fromTeacher===toTeacher);
+}
 function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
@@ -1485,6 +1497,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     if(!date.key||date.key.slice(0,7)!==monthKey) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
+      if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
       rows.push({
         day,
         teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,item),
@@ -2152,7 +2165,9 @@ function reloadGlobalData(){
   loadTeachers();
   // 탭 목록
   const tl=loadJSON(STORAGE_KEYS.TAB_LIST, []);
-  _tabList=tl.length?tl:[{id:'regular',name:'정규시간표',type:'regular'}];
+  _tabList=typeof _normalizeTabList==='function'
+    ? _normalizeTabList(tl.length?tl:[{id:'regular',name:'정규시간표',type:'regular'}])
+    : (tl.length?tl:[{id:'regular',name:'정규시간표',type:'regular'}]);
   if(typeof _tabFolderList!=='undefined'){
     const tf=loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
     _tabFolderList=Array.isArray(tf)?tf:[];
@@ -2165,7 +2180,7 @@ function reloadGlobalData(){
   }
   // 현재 활성 탭이 삭제됐으면 첫 탭으로
   if(!_tabList.find(t=>t.id===_activeTab)){
-    _activeTab=_tabList[0].id;
+    _activeTab=typeof _mainTabId==='function'?_mainTabId(_tabList):_tabList[0].id;
     loadTabData();
   }
   renderTabBar();
