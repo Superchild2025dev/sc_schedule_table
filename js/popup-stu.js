@@ -657,8 +657,8 @@ function _stuLikeFromEnrollEntry(entry){
 
 function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const curMonth = SCHEDULE_PERIODS[getCurrentPeriod()].month;
-  const pendingEnrollInfo=!stu&&!!pendingEnrollEntry;
-  const viewStu=stu||_stuLikeFromEnrollEntry(pendingEnrollEntry);
+  const pendingEnrollInfo=!!pendingEnrollEntry&&(_stuPopup.showEnroll||!stu);
+  const viewStu=pendingEnrollInfo?_stuLikeFromEnrollEntry(pendingEnrollEntry):(stu||_stuLikeFromEnrollEntry(pendingEnrollEntry));
   const inputLock='';
   const checkLock='';
   const chipLock='';
@@ -818,15 +818,16 @@ function renderStuPopup(freshOpen){
   const curPeriod=SCHEDULE_PERIODS[getCurrentPeriod()];
   const nextPeriod=SCHEDULE_PERIODS[getCurrentPeriod()+1]||null;
 
-  // 빈 셀 + 기존/예약 원생 정보 없음 + 등록 버튼 활성 = 좌측 폼이 등록 입력 모드로 동작
-  const enrollMode = !stu && !retireEntry && !enrollEntry && _stuPopup.showEnroll && !!selDate;
+  // 빈 칸 또는 제외/퇴원 예약이 있는 칸에서 등록 버튼을 누르면 좌측 폼이 등록 입력 모드로 동작한다.
+  const enrollMode = !enrollEntry && _stuPopup.showEnroll && !!selDate && (!stu || !!retireEntry);
+  const popupLeftStu = enrollMode && retireEntry ? null : stu;
 
   const actionHtml=renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, !!stu);
 
   popup.innerHTML=`
     <div class="stu-popup-hd">${day} ${t} ${lane}레인 ${row}번${inst?' · '+instDisplay(inst):''}<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeStuPopup()">✕</span></div>
     <div class="stu-popup-body">
-      ${buildStuPopupLeft(stu, slotKey, enrollMode, enrollEntry)}
+      ${buildStuPopupLeft(popupLeftStu, slotKey, enrollMode, enrollEntry)}
       ${buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml)}
     </div>
   `;
@@ -1004,9 +1005,10 @@ async function handleDelete(e, ctx){
  * 3) 같은 날짜 재클릭 → 선택 해제
  * 4) 새 날짜 → 선택 + 기존 마크 있으면 해당 폼 자동 열기
  */
-async function handleDateBoxClick(dateBox, ctx){
+async function handleDateBoxClick(dateBox, ctx, clickTarget){
   const {slotKey} = ctx;
   const ds=dateBox.dataset.ds;
+  const clickedEnrollLabel=!!clickTarget?.closest?.('.date-enroll-label');
 
   // 0) 휴원 모드면 날짜 토글
   if(_stuPopup.showHyuwon){
@@ -1041,13 +1043,32 @@ async function handleDateBoxClick(dateBox, ctx){
     return;
   }
 
-  // 1) 제외일 클릭 → 종류 변경/삭제 모달
+  // 1) 등록 라벨 클릭 → 등록 예약 정보 수정
+  if(clickedEnrollLabel&&ENROLL_MAP[slotKey]?.ds===ds){
+    _stuPopup.selDate=ds;
+    _stuPopup.showEnroll=true;
+    _stuPopup.showBogang=false;
+    _stuPopup.showSample=false;
+    _stuPopup.showHyuwon=false;
+    _stuPopup.showRetire=false;
+    renderStuPopup();
+    setTimeout(()=>{
+      const target=document.getElementById('sp-name')||document.getElementById('sp-enroll-set');
+      if(target){
+        target.focus();
+        try{ target.setSelectionRange(target.value.length, target.value.length); }catch(e){}
+      }
+    },30);
+    return;
+  }
+
+  // 2) 제외일 클릭 → 종류 변경/삭제 모달
   if(_retireEntryDate(RETIRE_MAP[slotKey])===ds){
     _openRetireChoiceInline(ds);
     return;
   }
 
-  // 2) 등록일 클릭 → 등록 예약 컨트롤 열기
+  // 3) 등록일 클릭 → 등록 예약 컨트롤 열기
   if(ENROLL_MAP[slotKey]?.ds===ds){
     _stuPopup.selDate=ds;
     _stuPopup.showEnroll=true;
@@ -1061,7 +1082,7 @@ async function handleDateBoxClick(dateBox, ctx){
     return;
   }
 
-  // 3) 같은 날짜 재클릭 → 선택 해제
+  // 4) 같은 날짜 재클릭 → 선택 해제
   if(_stuPopup.selDate===ds){
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
@@ -1073,7 +1094,7 @@ async function handleDateBoxClick(dateBox, ctx){
     return;
   }
 
-  // 4) 새 날짜 선택 + 기존 마크에 따라 폼 자동 열기
+  // 5) 새 날짜 선택 + 기존 마크에 따라 폼 자동 열기
   _stuPopup.selDate=ds;
   _stuPopup.showHyuwon=false;
   _stuPopup.showRetire=false;
@@ -1377,7 +1398,10 @@ function handleEnrollShow(e, ctx){
   // 빈 칸 신규 등록 예약일 때만 좌측 이름칸에 포커스.
   setTimeout(()=>{
     const stu=getStu(ctx.t,ctx.day,ctx.lane,ctx.row);
-    const target=(!stu && _stuPopup.showEnroll && !ENROLL_MAP[slotKey])
+    const retireEntry=RETIRE_MAP[slotKey]||null;
+    const enrollEntry=ENROLL_MAP[slotKey]||null;
+    const useLeftInput=_stuPopup.showEnroll && (!!enrollEntry || (!enrollEntry && (!stu || !!retireEntry)));
+    const target=useLeftInput
       ? document.getElementById('sp-name')
       : document.getElementById('sp-enroll-set');
     if(target){
@@ -1722,7 +1746,7 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
 
   // 날짜 박스 클릭
   if(dateBox&&!dateBox.classList.contains('closed')){
-    handleDateBoxClick(dateBox, ctx);
+    handleDateBoxClick(dateBox, ctx, e.target);
     return;
   }
 
