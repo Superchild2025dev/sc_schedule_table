@@ -592,6 +592,32 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .schedule-student-date-chip{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:#F8FAFC;border:1px solid #E2E8F0;color:#475569;font-size:10px;font-weight:900;white-space:nowrap}
 .schedule-student-slot-person{margin-bottom:4px}
 .schedule-student-slot-person:last-child{margin-bottom:0}
+#schedule-print-root{display:none}
+.schedule-print-modal-box{width:340px}
+.schedule-print-note{min-height:34px;margin-top:8px;padding:8px;border-radius:8px;background:#F0FDF4;color:#047857;font-size:11px;font-weight:800;line-height:1.35}
+.schedule-print-note.warn{background:#FEF3C7;color:#92400E}
+.schedule-print-sheet{background:#fff;color:#111;font-family:'Noto Sans KR',sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.schedule-print-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px;color:#111;min-height:0}
+.schedule-print-head strong{display:block;font-size:13px;font-weight:900;line-height:1.2}
+.schedule-print-head span{display:block;margin-top:2px;font-size:10px;font-weight:800;color:#374151}
+.schedule-print-head em{font-style:normal;font-size:10px;font-weight:900;color:#0F9D58;white-space:nowrap}
+.schedule-print-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.schedule-print-table th,.schedule-print-table td{border:1px solid #222;text-align:center;vertical-align:middle;color:#111;overflow:hidden;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.schedule-print-table th{background:#E5E7EB;font-weight:900}
+.schedule-print-table .print-time-col{width:34px}
+.schedule-print-table .print-num-col{width:22px}
+.schedule-print-table .print-time{font-weight:900;background:#F9FAFB}
+.schedule-print-table .print-num{font-weight:800;background:#FAFAFA;color:#333}
+.schedule-print-table .print-inst-row td{background:#E5E7EB;font-weight:900}
+.schedule-print-table .print-teacher{font-weight:900}
+.print-student{display:flex;align-items:center;justify-content:center;gap:2px;min-height:100%;font-weight:900;line-height:1.05;white-space:nowrap;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.print-student b{display:inline-flex;align-items:center;justify-content:center;min-width:10px;height:10px;border-radius:2px;background:#111;color:#fff;font-size:7px;line-height:1;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.print-student.bogang{color:#5B21B6}
+.print-student.bogang b{background:#7C3AED}
+.print-student.sample{color:#9A3412}
+.print-student.sample b{background:#F59E0B;color:#111}
+.print-student.enroll{color:#1D4ED8}
+.print-student.enroll b{background:#2563EB}
 .schedule-student-slot-person strong{display:inline-block;margin-right:4px;font-weight:900;color:#111}
 .schedule-student-slot-chip-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
 .schedule-student-slot-chip{display:inline-flex;align-items:center;gap:4px;min-height:22px;padding:2px 7px;border-radius:999px;background:#EEF2FF;color:#1E3A8A;border:1px solid #C7D2FE;font-size:11px;font-weight:900;white-space:nowrap}
@@ -701,9 +727,42 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 }
 
 @media print{
+  @page{size:A4 portrait;margin:6mm}
   .appbar{display:none!important}
   .page{padding:0}
   .tbl-outer{border-radius:0;border:1px solid #ccc;box-shadow:none}
   .sched-tbl{font-size:8px}
   .sched-tbl th.dc,.sched-tbl td.dc{width:90px;min-width:90px;max-width:90px}
+  body.printing-schedule{background:#fff!important;overflow:visible!important}
+  body.printing-schedule .appbar,
+  body.printing-schedule .tab-bar,
+  body.printing-schedule .snap-banner,
+  body.printing-schedule .page,
+  body.printing-schedule .tbl-scroll-proxy,
+  body.printing-schedule .move-bar,
+  body.printing-schedule .inst-popup,
+  body.printing-schedule .stu-popup,
+  body.printing-schedule .cell-tip,
+  body.printing-schedule .toasts,
+  body.printing-schedule .modal-bg,
+  body.printing-schedule .tab-modal,
+  body.printing-schedule .branch-modal{display:none!important}
+  body.printing-schedule #schedule-print-root{display:block!important}
+  body.printing-schedule .schedule-print-sheet{width:100%;min-height:285mm;overflow:visible;page-break-after:avoid;display:flex;flex-direction:column}
+  body.printing-schedule .schedule-print-table{flex:0 0 auto}
+  body.printing-schedule .schedule-print-table th,
+  body.printing-schedule .schedule-print-table td{padding:0 var(--print-pad-x,2px);font-size:var(--print-font,9px);height:var(--print-row-h,4mm);line-height:1.08}
+  body.printing-schedule .schedule-print-table th{font-size:var(--print-th-font,9px);height:var(--print-row-h,4mm);padding:0 var(--print-pad-x,2px)}
+  body.printing-schedule .schedule-print-table .print-inst-row td{height:var(--print-row-h,4mm);font-size:var(--print-inst-font,9px)}
+  body.printing-schedule .schedule-print-head{margin-bottom:1px;min-height:0;line-height:1}
+  body.printing-schedule .schedule-print-head strong{display:none}
+  body.printing-schedule .schedule-print-head span,
+  body.printing-schedule .schedule-print-head em{font-size:8px;line-height:1}
+  body.printing-schedule .schedule-print-sheet.dense .schedule-print-table th,
+  body.printing-schedule .schedule-print-sheet.dense .schedule-print-table td{font-size:var(--print-font,8px);height:var(--print-row-h,3.5mm);padding:0 var(--print-pad-x,1px)}
+  body.printing-schedule .schedule-print-sheet.dense .schedule-print-table .print-inst-row td{font-size:var(--print-inst-font,8px);height:var(--print-row-h,3.5mm)}
+  body.printing-schedule .schedule-print-sheet.ultra .schedule-print-table th,
+  body.printing-schedule .schedule-print-sheet.ultra .schedule-print-table td{font-size:var(--print-font,7px);height:var(--print-row-h,3mm);padding:0 var(--print-pad-x,1px)}
+  body.printing-schedule .schedule-print-sheet.ultra .schedule-print-table .print-inst-row td{font-size:var(--print-inst-font,7px);height:var(--print-row-h,3mm)}
+  body.printing-schedule .print-student b{min-width:var(--print-badge,9px);height:var(--print-badge,9px);font-size:calc(var(--print-badge,9px) * .68)}
 }
