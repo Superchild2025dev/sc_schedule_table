@@ -9,15 +9,24 @@
 <title>SC 수영장 설정</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
+<script>
+(function(){
+  var v=Date.now().toString(36);
+  window.SC_ASSET_VERSION=v;
+  window.scAsset=function(path){return path+(path.indexOf('?')>=0?'&':'?')+'v='+v;};
+  window.scCss=function(path){document.write('<link rel="stylesheet" href="'+window.scAsset(path)+'">');};
+  window.scJs=function(path){document.write('<script src="'+window.scAsset(path)+'"><\/script>');};
+})();
+</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-<script src="js/firebase-config.js?v=20260529-16"></script>
-<script src="js/firebase-store.js?v=20260529-16"></script>
+<script>scJs('js/firebase-config.js')</script>
+<script>scJs('js/firebase-store.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="auth.css?v=20260529-16">
-<link rel="stylesheet" href="settings.css?v=20260529-16">
+<script>scCss('auth.css')</script>
+<script>scCss('settings.css')</script>
 </head>
 <body>
 <header class="settings-topbar">
@@ -422,7 +431,7 @@
 
 <div id="settings-toast" class="settings-toast"></div>
 
-<script src="js/auth-guard.js?v=20260529-16"></script>
-<script src="js/settings.js?v=20260529-16"></script>
+<script>scJs('js/auth-guard.js')</script>
+<script>scJs('js/settings.js')</script>
 </body>
 </html>

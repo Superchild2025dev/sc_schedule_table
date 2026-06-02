@@ -9,16 +9,25 @@
 <title>슈퍼차일드 수영장 시간표</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
+<script>
+(function(){
+  var v=Date.now().toString(36);
+  window.SC_ASSET_VERSION=v;
+  window.scAsset=function(path){return path+(path.indexOf('?')>=0?'&':'?')+'v='+v;};
+  window.scCss=function(path){document.write('<link rel="stylesheet" href="'+window.scAsset(path)+'">');};
+  window.scJs=function(path){document.write('<script src="'+window.scAsset(path)+'"><\/script>');};
+})();
+</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-<script src="js/firebase-config.js?v=20260529-16"></script>
-<script src="js/firebase-store.js?v=20260529-16"></script>
+<script>scJs('js/firebase-config.js')</script>
+<script>scJs('js/firebase-store.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="auth.css?v=20260602-3">
-<link rel="stylesheet" href="style.css?v=20260602-3">
+<script>scCss('auth.css')</script>
+<script>scCss('style.css')</script>
 </head>
 <body>
 
@@ -375,16 +384,16 @@
 <div class="toasts" id="toasts"></div>
 
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
-<script src="js/schedule-time.js?v=20260529-16"></script>
-<script src="js/auth-guard.js?v=20260602-3"></script>
-<script src="js/core.js?v=20260602-3"></script>
-<script src="js/tabs.js?v=20260602-3"></script>
-<script src="js/data.js?v=20260602-4"></script>
-<script src="js/teachers.js?v=20260602-2"></script>
-<script src="js/popup-stu.js?v=20260601-8"></script>
-<script src="js/table.js?v=20260601-6"></script>
-<script src="js/defaults.js?v=20260529-16"></script>
-<script src="js/init.js?v=20260602-3"></script>
+<script>scJs('js/schedule-time.js')</script>
+<script>scJs('js/auth-guard.js')</script>
+<script>scJs('js/core.js')</script>
+<script>scJs('js/tabs.js')</script>
+<script>scJs('js/data.js')</script>
+<script>scJs('js/teachers.js')</script>
+<script>scJs('js/popup-stu.js')</script>
+<script>scJs('js/table.js')</script>
+<script>scJs('js/defaults.js')</script>
+<script>scJs('js/init.js')</script>
 
 </body>
 </html>
