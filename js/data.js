@@ -1329,6 +1329,7 @@ function _recordItems(){
   const retire=(Array.isArray(RETIRE_HISTORY)?RETIRE_HISTORY:[]).map((r,idx)=>({
     id:'retire_'+idx,
     at:r.recordedAt,
+    effectiveDate:r.retiredAt||'',
     type:'retire',
     label:(r.n||'')+' 퇴원',
     target:`${r.n||''}${r.a?`(${r.a})`:''}`,
@@ -1395,6 +1396,10 @@ function _scheduleAuditDayTokens(item,visibleDays){
   return ['기타'];
 }
 function _scheduleAuditDateInfo(item,monthKey){
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(item?.effectiveDate||''))){
+    const key=String(item.effectiveDate);
+    return {key,label:parseInt(key.slice(5,7),10)+'/'+parseInt(key.slice(8,10),10)};
+  }
   const text=_scheduleAuditText(item);
   const full=text.match(/(20\d{2})[-./](\d{1,2})[-./](\d{1,2})/);
   if(full){
@@ -1576,7 +1581,7 @@ function _scheduleAuditRowKey(row){
 function _scheduleAuditSortRows(rows){
   return (rows||[]).sort((a,b)=>{
     const ak=a.dateKey||'', bk=b.dateKey||'';
-    if(ak&&bk&&ak!==bk) return ak.localeCompare(bk);
+    if(ak&&bk&&ak!==bk) return bk.localeCompare(ak);
     if(ak&&!bk) return -1;
     if(!ak&&bk) return 1;
     const at=a.time||'', bt=b.time||'';
@@ -1599,16 +1604,18 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     const fromSlot=_scheduleAuditSlotFromText(fromText)||_scheduleAuditSlotFromText(text);
     if(!fromSlot) return;
     const toSlot=_scheduleAuditSlotFromText(toText);
-    const date=_scheduleAuditDateInfo({at:item?.at,label:item?.label,target:item?.target,detail:segment,tabName:item?.tabName,user:item?.user},monthKey);
+    const date=_scheduleAuditDateInfo({at:item?.at,effectiveDate:item?.effectiveDate,label:item?.label,target:item?.target,detail:segment,tabName:item?.tabName,user:item?.user},monthKey);
     if(!date.key||date.key.slice(0,7)!==monthKey) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
+      const reason=_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot);
+      if(reason==='삭제') return;
       rows.push({
         day,
         teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,item),
         target:_scheduleAuditNameFromSegment(segment,item),
-        reason:_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot),
+        reason,
         date:date.label,
         dateKey:date.key,
         time:fromSlot.time||_scheduleAuditTime(item),

@@ -448,6 +448,8 @@ body.is-snapshot .snap-banner{display:block}
 .sp-retire-choice.on{background:var(--rc);color:#fff}
 .sp-retire-choice.on span{color:rgba(255,255,255,.88)}
 .sp-retire-choice:disabled{opacity:.45;cursor:not-allowed;background:#F3F4F6;color:#9CA3AF;border-color:#D1D5DB}
+.sp-retire-past{width:100%;padding:6px 9px;border:1.5px dashed #2563EB;border-radius:7px;background:#EFF6FF;color:#1D4ED8;font-size:11px;font-weight:900;font-family:inherit;cursor:pointer}
+.sp-retire-past:hover{background:#DBEAFE}
 .sp-retire-delete{width:100%;padding:7px 9px;border:1.5px solid #DC2626;border-radius:7px;background:#fff;color:#DC2626;font-size:11px;font-weight:900;font-family:inherit;cursor:pointer}
 .sp-retire-delete:hover{background:#FEE2E2}
 

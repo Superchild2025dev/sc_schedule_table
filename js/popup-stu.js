@@ -626,6 +626,7 @@ function buildRetireChoiceFormHtml(slotKey, ds, stu, existingEntry){
   const dateLabel=ds?ds.slice(5).replace('-','/'):'';
   return `<div class="sp-retire-panel">
     <div class="sp-retire-panel-title">${existingEntry?'제외 종류 변경':'제외 종류 선택'} <span>${esc(dateLabel)}</span></div>
+    <button type="button" id="sp-retire-past" class="sp-retire-past">지난 수업일 선택</button>
     ${item('retire','퇴원','퇴원 기록에 남깁니다','#EF4444',isReserveMove)}
     ${item('move','이동','반/요일/시간 변경으로 빠지는 경우','#6B7280',false)}
     ${item('reduce','횟수줄임','특정 요일 시수만 줄어드는 경우','#4B5563',isReserveMove)}
@@ -1300,7 +1301,8 @@ async function handleRetireChoiceSet(e,ctx){
   const {slotKey,t,day,lane,row}=ctx;
   const ds=_stuPopup.selDate;
   const stu=getStu(t,day,lane,row);
-  const existingEntry=RETIRE_MAP[slotKey]||null;
+  const existingRaw=RETIRE_MAP[slotKey]||null;
+  const existingEntry=_retireEntryDate(existingRaw)===ds?existingRaw:null;
   try{
     await _setRetireChoice(slotKey,ds,stu,existingEntry,kind);
     toast(kind==='retire'?'퇴원 제외로 저장':kind==='reduce'?'횟수줄임 제외로 저장':'이동 제외로 저장','ok');
@@ -1308,6 +1310,26 @@ async function handleRetireChoiceSet(e,ctx){
     toast(err?.message||'제외 종류 저장 실패','err');
     console.error(err);
   }
+}
+
+function handleRetirePastDate(e,ctx){
+  const {slotKey,t,day,lane,row}=ctx;
+  const stu=getStu(t,day,lane,row);
+  if(!stu){
+    toast('퇴원 기록을 남길 원생이 없습니다','err');
+    return;
+  }
+  askDateForDay(day, function(ds){
+    if(!ds) return;
+    _stuPopup.selDate=ds;
+    _stuPopup.showRetire=true;
+    renderStuPopup();
+  }, {
+    title:'퇴원/제외 기준일 선택',
+    subtitle:'직전 운영기간까지 포함합니다. 지난 날짜를 고르면 그 날짜 기준으로 퇴원 기록을 남길 수 있습니다.',
+    includePrevPeriod:true,
+    preferPast:true,
+  });
 }
 
 async function handleRetireDelete(e,ctx){
@@ -1430,6 +1452,13 @@ async function _commitEnroll(slotKey, form){
   const ds=_stuPopup.selDate;
   const todayStr=toDateStr(getToday());
   const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
+  const slotParts=_slotParts(slotKey);
+  const currentStu=getStu(slotParts.t,slotParts.d,slotParts.l,slotParts.r);
+  const convertedFromStudent=!!(currentStu && _enrollEntryMatchesStudent(currentStu,{
+    name:form.name,
+    age:form.age,
+    p:form.phone,
+  }));
 
   // [FIX] 당일/과거 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
   if(ds<=todayStr){
@@ -1478,17 +1507,36 @@ async function _commitEnroll(slotKey, form){
     loc:form.loc||undefined,
     memo:form.memo||undefined,
     g:form.gender||undefined,
+    convertedFromStudent:convertedFromStudent||undefined,
   };
   try{
-    await updateEnrollMapTx(enroll=>{
-      enroll[slotKey]=entry;
-      return enroll;
-    });
+    if(convertedFromStudent){
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([STORAGE_KEYS.ENROLL,stuKey], ctx=>{
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        const students=ctx.get(stuKey,[]);
+        const idx=_findStudentIndexAt(students,slotKey);
+        if(idx<0 || !_enrollEntryMatchesStudent(students[idx],entry)){
+          ctx.abort('다른 기기에서 먼저 변경된 자리입니다');
+          return;
+        }
+        students.splice(idx,1);
+        enroll[slotKey]=entry;
+        ctx.set(stuKey,students);
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        return true;
+      }, {type:'edit', label:'등록 예약 전환', detail:`${form.name} ${ds}부터 등록 예약`});
+    } else {
+      await updateEnrollMapTx(enroll=>{
+        enroll[slotKey]=entry;
+        return enroll;
+      });
+    }
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
     renderStuPopup(true);
     buildTable();
-    toast(form.name+(form.age||'')+' 등록 예약','ok');
+    toast(form.name+(form.age||'')+(convertedFromStudent?' 등록 예약 전환':' 등록 예약'),'ok');
   }catch(err){
     toast(err?.message||'등록 예약 실패','err');
     console.error(err);
@@ -1519,15 +1567,15 @@ function handleEnrollLeftSave(e, ctx){
 }
 
 async function handleEnrollDel(e, ctx){
-  if(!confirm(_reserveMoveDeleteMessage(ENROLL_MAP[ctx.slotKey]))) return;
+  if(!confirm(_enrollDeleteMessage(ctx.slotKey,ENROLL_MAP[ctx.slotKey]))) return;
   try{
-    const paired=await deleteEnrollReservation(ctx.slotKey);
+    const result=await deleteEnrollReservation(ctx.slotKey);
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
     _flashKey=ctx.slotKey;
     renderStuPopup();
     buildTable();
-    toast(paired?'예약 이동 취소':'등록 해제','ok');
+    toast(result.paired?'예약 이동 취소':result.removedStudent?'등록 예약 및 원생 삭제':'등록 해제','ok');
   }catch(err){
     toast(err?.message||'등록 해제 실패','err');
     console.error(err);
@@ -1605,6 +1653,7 @@ const STU_POPUP_MARK_HANDLERS = [
  */
 const STU_POPUP_RESERVE_HANDLERS = [
   ['#sp-retire-set',  handleRetireSet,  true],
+  ['#sp-retire-past', handleRetirePastDate, false],
   ['.sp-retire-choice', handleRetireChoiceSet, true],
   ['#sp-retire-del', handleRetireDelete, true],
   ['#sp-enroll-show', handleEnrollShow, true],
@@ -1886,18 +1935,50 @@ function mergeHyuwon(a, b){
  * 특정 요일의 수업일 중 하나를 선택하는 모달
  * @param {string} day - '월'|'화'|...
  * @param {Function} callback - (selectedDs|null) => void
- * @param {Object=} opts - {title?:string, subtitle?:string}
+ * @param {Object=} opts - {title?:string, subtitle?:string, includePrevPeriod?:boolean, preferPast?:boolean}
  */
+function _classDatesForPeriod(day, period){
+  if(!period||!period.start||!period.end) return [];
+  const dayIndexes=typeof getDayIndexes==='function'?getDayIndexes(day):[];
+  if(!dayIndexes.length) return [];
+  const dates=[];
+  const cur=new Date(period.start+'T00:00:00');
+  const end=new Date(period.end+'T00:00:00');
+  while(cur<=end){
+    if(dayIndexes.includes(cur.getDay())){
+      const ds=toDateStr(cur);
+      dates.push({ds,m:cur.getMonth()+1,d:cur.getDate(),closed:isClosedDateFull(cur)});
+    }
+    cur.setDate(cur.getDate()+1);
+  }
+  return dates;
+}
+
 function askDateForDay(day, callback, opts){
   opts=opts||{};
   const classDates=getClassDatesForDay(day);
-  const allDates=[...classDates.cur,...classDates.next].filter(d=>!d.closed);
+  const todayStr=toDateStr(getToday());
+  let allDates=[...classDates.cur,...classDates.next];
+  if(opts.includePrevPeriod){
+    const curIdx=getCurrentPeriod();
+    const prevPeriod=SCHEDULE_PERIODS[curIdx-1]||null;
+    allDates=[..._classDatesForPeriod(day,prevPeriod),...allDates];
+  }
+  allDates=allDates
+    .filter(d=>!d.closed)
+    .filter((d,idx,arr)=>arr.findIndex(x=>x.ds===d.ds)===idx);
+  allDates.sort((a,b)=>{
+    if(!opts.preferPast) return a.ds.localeCompare(b.ds);
+    const aPast=a.ds<todayStr;
+    const bPast=b.ds<todayStr;
+    if(aPast!==bPast) return aPast?-1:1;
+    return aPast?b.ds.localeCompare(a.ds):a.ds.localeCompare(b.ds);
+  });
   if(!allDates.length){
     toast(day+'요일에 수업일이 없습니다','err');
     callback(null);
     return;
   }
-  const todayStr=toDateStr(getToday());
   // 모달 생성
   let backdrop=document.getElementById('date-pick-modal');
   if(backdrop) backdrop.remove();
@@ -1961,6 +2042,45 @@ function _reservationEntryFromStudent(stu, ds, extra){
     if(stu.g) entry.g=stu.g;
   }
   return entry;
+}
+
+function _normEnrollPhone(v){
+  return String(v||'').replace(/\D/g,'');
+}
+
+function _enrollEntryMatchesStudent(stu, entry){
+  if(!stu||!entry) return false;
+  const stuName=String(stu.n||'').trim();
+  const entryName=String(entry.name||entry.n||'').trim();
+  if(stuName&&entryName&&stuName!==entryName) return false;
+  const stuPhone=_normEnrollPhone(stu.p);
+  const entryPhone=_normEnrollPhone(entry.p||entry.phone);
+  if(stuPhone&&entryPhone&&stuPhone!==entryPhone) return false;
+  const stuAge=stu.a==null?'':String(stu.a);
+  const entryAge=entry.age==null?'':String(entry.age);
+  if(stuAge&&entryAge&&stuAge!==entryAge) return false;
+  return !!(stuName||entryName);
+}
+
+function _convertedEnrollStudentIndex(students, slotKey, entry){
+  if(!entry||_isReserveMoveEntry(entry)) return -1;
+  const idx=_findStudentIndexAt(students,slotKey);
+  if(idx<0) return -1;
+  const stu=students[idx];
+  if(entry.convertedFromStudent && _enrollEntryMatchesStudent(stu,entry)) return idx;
+  // 이전 버전에서 기존 원생을 등록예약으로 바꿨지만 플래그가 없던 데이터 보정.
+  if(entry.ds>toDateStr(getToday()) && _enrollEntryMatchesStudent(stu,entry)) return idx;
+  return -1;
+}
+
+function _enrollDeleteMessage(slotKey,entry){
+  if(_isReserveMoveEntry(entry)) return _reserveMoveDeleteMessage(entry);
+  const p=_slotParts(slotKey);
+  const stu=getStu(p.t,p.d,p.l,p.r);
+  if(_enrollEntryMatchesStudent(stu,entry)){
+    return '기존 원생을 등록예약으로 바꾼 항목입니다. 삭제하면 등록예약과 현재 칸의 원생 정보가 함께 삭제됩니다. 삭제하시겠습니까?';
+  }
+  return '삭제하시겠습니까?';
 }
 
 function _retireEntryDate(entry){
@@ -2089,16 +2209,28 @@ async function deleteRetireReservation(slotKey){
 
 async function deleteEnrollReservation(slotKey){
   let paired=false;
-  await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
+  let removedStudent=false;
+  const stuKey=getTabConfig().stuKey;
+  await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,stuKey], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
-    if(!enroll[slotKey]){ctx.abort('등록 예약이 이미 없습니다');return;}
+    const students=ctx.get(stuKey,[]);
+    const entry=enroll[slotKey];
+    if(!entry){ctx.abort('등록 예약이 이미 없습니다');return;}
     paired=_deleteReserveMovePair(retire,enroll,'enroll',slotKey);
     if(paired) ctx.set(STORAGE_KEYS.RETIRE,retire);
+    if(!paired){
+      const removeIdx=_convertedEnrollStudentIndex(students,slotKey,entry);
+      if(removeIdx>=0){
+        students.splice(removeIdx,1);
+        removedStudent=true;
+        ctx.set(stuKey,students);
+      }
+    }
     ctx.set(STORAGE_KEYS.ENROLL,enroll);
     return true;
   });
-  return paired;
+  return {paired, removedStudent};
 }
 
 function _slotParts(slotKey){
