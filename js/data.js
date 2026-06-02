@@ -1478,6 +1478,112 @@ function _scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item){
   const toTeacher=_scheduleAuditTeacherFromSlot(toSlot,day,item);
   return !!(fromTeacher&&toTeacher&&fromTeacher!=='-'&&fromTeacher===toTeacher);
 }
+function _scheduleAuditSlotFromKey(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4) return null;
+  return {time:p[0], dayToken:p[1], lane:p[2], row:p[3]||'', text:`${p[0]} ${p[1]} ${p[2]}레인 ${p[3]||''}번`};
+}
+function _scheduleAuditDateLabel(ds){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(ds||''))) return {key:'',label:'-'};
+  return {key:ds,label:parseInt(ds.slice(5,7),10)+'/'+parseInt(ds.slice(8,10),10)};
+}
+function _scheduleAuditEntryDate(entry){
+  return typeof entry==='string'?entry:String(entry?.ds||'');
+}
+function _scheduleAuditEntryName(entry,fallback){
+  try{
+    if(typeof _summaryRecordPerson==='function'){
+      const p=_summaryRecordPerson(entry,fallback);
+      if(String(p?.n||'').trim()) return String(p.n).trim();
+    }
+  }catch(e){}
+  const source=entry&&typeof entry==='object'?entry:{};
+  return String(source.n||source.name||fallback?.n||fallback?.name||'').trim();
+}
+function _scheduleAuditIsActualRetire(entry,slotKey,fallback){
+  try{
+    if(typeof _retireReservationIsActual==='function') return _retireReservationIsActual(entry,slotKey,fallback);
+  }catch(e){}
+  if(entry?.retireType==='retire') return true;
+  if(entry?.retireType==='exclude'||entry?.moveType) return false;
+  return false;
+}
+function _scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback){
+  if(_scheduleAuditIsActualRetire(entry,slotKey,fallback)) return '퇴원';
+  if(entry?.retireType==='retire') return '퇴원';
+  if(toSlot){
+    const allDays=['월','화','수','목','금','토','일'];
+    const fromDays=_scheduleAuditExpandDay(fromSlot?.dayToken||'',allDays).join('');
+    const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'',allDays).join('');
+    if(fromDays!==toDays) return '일정변경';
+    if(fromSlot?.time!==toSlot.time) return '시간변경';
+    if(fromSlot?.lane!==toSlot.lane||fromSlot?.row!==toSlot.row) return '반변경';
+  }
+  if(entry?.excludeReason==='reduce') return '횟수줄임';
+  if(entry?.excludeReason==='move'||entry?.moveType) return '반변경';
+  if(entry?.retireType==='exclude') return '횟수줄임';
+  return '퇴원';
+}
+function _scheduleAuditDisplayTime(slot,day){
+  try{
+    if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function'){
+      return SCScheduleTime.displayTimeForDay(day,slot?.time)||slot?.time||'-';
+    }
+  }catch(e){}
+  return slot?.time||'-';
+}
+function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
+  const rows=[];
+  let todayStr='';
+  try{ todayStr=toDateStr(getToday()); }catch(e){}
+  Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
+    const ds=_scheduleAuditEntryDate(entry);
+    if(!ds) return;
+    // 시간표에 실제로 보이는 예약만 하단 기록에 반영한다.
+    if(todayStr&&ds<todayStr) return;
+    const fromSlot=_scheduleAuditSlotFromKey(slotKey);
+    if(!fromSlot) return;
+    const fallback=(typeof getStu==='function')?getStu(fromSlot.time,fromSlot.dayToken,fromSlot.lane,fromSlot.row):(_stuIdx&&_stuIdx[slotKey]);
+    const pairKey=entry&&typeof entry==='object'?entry.pairKey:'';
+    const pairEntry=pairKey?(ENROLL_MAP||{})[pairKey]:null;
+    const toSlot=pairEntry?_scheduleAuditSlotFromKey(pairKey):null;
+    const date=_scheduleAuditDateLabel(ds);
+    const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
+    days.forEach(day=>{
+      if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
+      const target=_scheduleAuditEntryName(entry,fallback);
+      if(!target) return;
+      const reason=_scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback);
+      rows.push({
+        day,
+        teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,{user:''}),
+        target,
+        reason,
+        date:date.label,
+        dateKey:date.key,
+        time:_scheduleAuditDisplayTime(fromSlot,day),
+        detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
+        at:date.key?date.key+'T00:00:00':'',
+        source:'visible-reservation',
+      });
+    });
+  });
+  return rows;
+}
+function _scheduleAuditRowKey(row){
+  return [row.day,row.teacher,row.target,row.reason,row.date,row.time].map(v=>String(v||'').trim()).join('|');
+}
+function _scheduleAuditSortRows(rows){
+  return (rows||[]).sort((a,b)=>{
+    const ak=a.dateKey||'', bk=b.dateKey||'';
+    if(ak&&bk&&ak!==bk) return ak.localeCompare(bk);
+    if(ak&&!bk) return -1;
+    if(!ak&&bk) return 1;
+    const at=a.time||'', bt=b.time||'';
+    if(at!==bt) return at.localeCompare(bt,'ko',{numeric:true});
+    return String(b.at||'').localeCompare(String(a.at||''));
+  });
+}
 function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
@@ -1504,6 +1610,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
         target:_scheduleAuditNameFromSegment(segment,item),
         reason:_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot),
         date:date.label,
+        dateKey:date.key,
         time:fromSlot.time||_scheduleAuditTime(item),
         detail:String(segment||item?.detail||item?.label||''),
         at:item?.at||'',
@@ -1572,12 +1679,19 @@ function renderScheduleAuditSummary(){
   const visibleDays=_scheduleAuditDays();
   const perDay={};
   visibleDays.forEach(day=>{ perDay[day]=[]; });
+  const seenRows=new Set();
+  const addRow=row=>{
+    if(!row||!row.day) return;
+    if(!perDay[row.day]) perDay[row.day]=[];
+    const key=_scheduleAuditRowKey(row);
+    if(seenRows.has(key)) return;
+    seenRows.add(key);
+    perDay[row.day].push(row);
+  };
+  _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays).forEach(addRow);
   const items=_recordItems().sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   items.forEach(item=>{
-    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(row=>{
-      if(!perDay[row.day]) perDay[row.day]=[];
-      perDay[row.day].push(row);
-    });
+    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(addRow);
   });
   const days=[...visibleDays];
   if(perDay['기타']?.length) days.push('기타');
@@ -1587,7 +1701,7 @@ function renderScheduleAuditSummary(){
     return;
   }
   body.innerHTML=days.map(day=>{
-    const rows=(perDay[day]||[]).slice(0,10);
+    const rows=_scheduleAuditSortRows(perDay[day]||[]).slice(0,10);
     const total=(perDay[day]||[]).length;
     const html=rows.length?rows.map(row=>`<tr title="${esc(row.detail).replace(/"/g,'&quot;')}">
       ${_scheduleAuditSpacerCells(day,'td')}
