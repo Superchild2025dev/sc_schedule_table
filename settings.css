@@ -66,7 +66,7 @@ button,input,textarea,select{font-family:inherit}
 .student-filter-bar{display:grid;grid-template-columns:minmax(240px,1.2fr) 180px 160px 160px;gap:8px;margin-bottom:10px}
 .student-filter-bar input,.student-filter-bar select{height:36px;border:1px solid #D1D8E5;border-radius:7px;padding:0 10px;color:#172033;background:#fff;font-size:13px}
 .student-filter-bar input:focus,.student-filter-bar select:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
-.student-summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,160px));gap:8px;margin-bottom:12px}
+.student-summary-grid{display:grid;grid-template-columns:repeat(6,minmax(0,160px));gap:8px;margin-bottom:12px}
 .student-summary-grid>div{border:1px solid #DDE3EC;border-radius:8px;background:#FBFCFE;padding:12px}
 .student-summary-grid strong{display:block;font-size:23px;line-height:1;font-weight:900;color:#0F9D58;margin-bottom:5px}
 .student-summary-grid span{font-size:12px;font-weight:900;color:#526173}
@@ -93,6 +93,11 @@ button,input,textarea,select{font-family:inherit}
 .student-state.move{background:#FEF3C7;color:#B45309}
 .student-state.hidden{background:#EDE9FE;color:#6D28D9}
 .student-hidden-warning{margin:10px 0 12px;padding:10px 12px;border:1px solid #DDD6FE;border-radius:8px;background:#F5F3FF;color:#5B21B6;font-size:12px;font-weight:900;line-height:1.45}
+.student-phone-editor{display:flex;flex-direction:column;gap:5px;min-width:160px}
+.student-phone-editor input{height:30px;border:1px solid #D1D8E5;border-radius:6px;padding:0 8px;font-size:12px;font-weight:800;color:#172033}
+.student-phone-editor button{height:28px;border:1px solid #0F9D58;border-radius:6px;background:#0F9D58;color:#fff;font-size:11px;font-weight:900;cursor:pointer}
+.student-phone-editor button:disabled{opacity:.55;cursor:default}
+.student-phone-note{font-size:10px;font-weight:900;color:#B45309;line-height:1.25}
 .student-slot-list{line-height:1.5;color:#374151}
 .student-pill-stack{display:flex;flex-direction:column;align-items:center;gap:3px}
 .student-member-list{display:flex;flex-direction:column;gap:4px}

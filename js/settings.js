@@ -472,11 +472,12 @@
     if(status==='숨김후보') return 'hidden';
     return 'retire';
   }
-  function studentRecord(entry,status,tab,slotKey,dateLabel,fallback,teacherName){
+  function studentRecord(entry,status,tab,slotKey,dateLabel,fallback,teacherName,source){
     const person=studentRecordPerson(entry,fallback);
     const statusKey=studentStatusKey(status);
     return {
       n:person.n,
+      a:person.a,
       p:person.p,
       status,
       statusKey,
@@ -484,6 +485,7 @@
       tabId:tab&&tab.id||'reservation',
       tabName:tab&&tab.name||'예약',
       slot:studentSlotInfo(slotKey,dateLabel,teacherName),
+      source:source||null,
     };
   }
   function studentGroupName(record){
@@ -576,10 +578,20 @@
         statusKeys:new Set(),
         tabs:new Set(),
         members:new Map(),
+        phoneTargets:new Map(),
       });
     }
     const row=map.get(key);
     if(record.p&&!row.p) row.p=displayPhone(record.p);
+    if(!studentGroupPhone(record)&&record.source&&(record.statusKey==='current'||record.statusKey==='enroll')){
+      const targetKey=[record.source.kind,record.source.key,record.source.slotKey].join('|');
+      row.phoneTargets.set(targetKey,Object.assign({},record.source,{
+        name,
+        age:record.a||record.age||'',
+        tabName:record.tabName||'',
+        label:(record.slot&&record.slot.text)||'',
+      }));
+    }
     const personKey=(name&&key.startsWith('person:')) ? key.slice('person:'.length) : studentPersonKey(record);
     if(personKey){
       if(record.counted) row.countedPeople.add(personKey);
@@ -682,7 +694,7 @@
     const addHiddenSaturdayRecord=(entry,tab,slotKey,fallback,reason)=>{
       if(!isSaturdaySlot(slotKey)) return;
       const instKey=slotKey.split('/').slice(0,3).join('/');
-      addStudentGroup(groups,studentRecord(entry,'숨김후보',tab||{id:'hidden',name:'숨김후보'},slotKey,reason||'시간표 밖',fallback,teacherByInstKey[instKey]||''));
+      addStudentGroup(groups,studentRecord(entry,'숨김후보',tab||{id:'hidden',name:'숨김후보'},slotKey,reason||'시간표 밖',fallback,teacherByInstKey[instKey]||'',null));
     };
     tabs.forEach(tab=>{
       const cfg=studentTabConfig(tab);
@@ -726,10 +738,10 @@
           const instKey=slotKey.split('/').slice(0,3).join('/');
           const isChange=enrollPersonKeys.has(studentEntryPersonKey(retire,stu));
           handledRetireSlots.add(slotKey);
-          addStudentGroup(groups,studentRecord(retire,studentRetireStatus(retire,isChange),{id:cfg.tabId,name:cfg.tabName},slotKey,shortDate(ds)+'까지',stu,teacherByInstKey[instKey]||''));
+          addStudentGroup(groups,studentRecord(retire,studentRetireStatus(retire,isChange),{id:cfg.tabId,name:cfg.tabName},slotKey,shortDate(ds)+'까지',stu,teacherByInstKey[instKey]||'',{kind:'retire',key:RETIRE_KEY,slotKey}));
         }else{
           const instKey=slotKey.split('/').slice(0,3).join('/');
-          addStudentGroup(groups,studentRecord(stu,'재원',{id:cfg.tabId,name:cfg.tabName},slotKey,'',null,teacherByInstKey[instKey]||''));
+          addStudentGroup(groups,studentRecord(stu,'재원',{id:cfg.tabId,name:cfg.tabName},slotKey,'',null,teacherByInstKey[instKey]||'',{kind:'student',key:cfg.stuKey,slotKey}));
         }
       });
     });
@@ -744,7 +756,7 @@
       }
       const ds=typeof entry==='string'?entry:entry.ds;
       const instKey=slotKey.split('/').slice(0,3).join('/');
-      addStudentGroup(groups,studentRecord(entry,studentEnrollStatus(entry),reservationTab,slotKey,shortDate(ds)+'부터',null,teacherByInstKey[instKey]||''));
+      addStudentGroup(groups,studentRecord(entry,studentEnrollStatus(entry),reservationTab,slotKey,shortDate(ds)+'부터',null,teacherByInstKey[instKey]||'',{kind:'enroll',key:ENROLL_KEY,slotKey}));
     });
     activeRetireSlots.forEach((entry,slotKey)=>{
       if(handledRetireSlots.has(slotKey)) return;
@@ -757,7 +769,7 @@
         return;
       }
       const isChange=enrollPersonKeys.has(studentEntryPersonKey(entry,fallback));
-      addStudentGroup(groups,studentRecord(entry,studentRetireStatus(entry,isChange),reservationTab,slotKey,shortDate(ds)+'까지',fallback,teacherByInstKey[instKey]||''));
+      addStudentGroup(groups,studentRecord(entry,studentRetireStatus(entry,isChange),reservationTab,slotKey,shortDate(ds)+'까지',fallback,teacherByInstKey[instKey]||'',{kind:'retire',key:RETIRE_KEY,slotKey}));
     });
 
     const rows=[...groups.values()].map(row=>{
@@ -788,6 +800,8 @@
         counted:hasCountedStatus,
         countedCount:hasCountedStatus?(row.countedPeople.size||peopleCount):0,
         countedSlotCount,
+        missingPhoneCount:row.phoneTargets&&row.phoneTargets.size?1:0,
+        phoneTargets:[...(row.phoneTargets||new Map()).values()],
         retireCount:(!hasCountedStatus&&statusKeys.includes('retire'))?(row.retirePeople.size||peopleCount):0,
         hiddenCount:(!hasCountedStatus&&statusKeys.includes('hidden'))?peopleCount:0,
         moveCount:statusKeys.includes('exclude')||statusKeys.includes('move')?(row.movePeople.size||peopleCount):0,
@@ -807,7 +821,8 @@
     const total=counted+retire;
     const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
     const hidden=rows.reduce((sum,row)=>sum+(row.hiddenCount||0),0);
-    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,hidden,loadedAt:new Date().toISOString()};
+    const missingPhone=rows.reduce((sum,row)=>sum+(row.missingPhoneCount||0),0);
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,hidden,missingPhone,loadedAt:new Date().toISOString()};
   }
   async function loadStudentDirectory(force){
     const branchId=activeBranch;
@@ -823,7 +838,7 @@
       studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
     }catch(e){
       console.error(e);
-      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,error:e.message||String(e)};
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,missingPhone:0,error:e.message||String(e)};
       toast('원생목록 로드 실패','err');
     }finally{
       studentDirectoryLoadingByBranch[branchId]=false;
@@ -1559,7 +1574,7 @@
     if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
   }
   function currentStudentDirectory(){
-    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0};
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,missingPhone:0};
   }
   function studentRowTeachers(row){
     return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
@@ -1602,6 +1617,7 @@
       if(status==='move'&&!(row.statusKeys||[]).includes('move')) return false;
       if(status==='retire'&&!(row.statusKeys||[]).includes('retire')) return false;
       if(status==='hidden'&&!(row.statusKeys||[]).includes('hidden')) return false;
+      if(status==='missing_phone'&&!(row.missingPhoneCount>0)) return false;
       if(teacher!=='all'&&!studentRowTeachers(row).includes(teacher)) return false;
       if(q&&!String(row.search||'').includes(q)) return false;
       return true;
@@ -1627,6 +1643,141 @@
     if(statusKey==='hidden') return 'hidden';
     return '';
   }
+  function studentPhoneCell(row){
+    const hasMissing=(row.missingPhoneCount||0)>0;
+    const digits=normalizePhone(row.p||'');
+    if(!hasMissing) return row.p?esc(row.p):'<span class="student-muted">번호 없음</span>';
+    const label=row.p
+      ? `${esc(row.p)}<span class="student-phone-note">시간표 미입력 ${row.phoneTargets?.length||1}칸</span>`
+      : `<span class="student-phone-note">전화번호 미입력</span>`;
+    const buttonText=row.p?'빈칸에 적용':'저장';
+    return `<div class="student-phone-editor">
+      ${label}
+      <input type="tel" inputmode="numeric" autocomplete="off" data-student-phone-input="${escAttr(row.key)}" value="${escAttr(digits)}" placeholder="01012345678">
+      <button type="button" data-student-phone-save="${escAttr(row.key)}">${buttonText}</button>
+    </div>`;
+  }
+  function entryName(entry){
+    return String(entry&&typeof entry==='object'?(entry.n||entry.name):'').trim();
+  }
+  function entryAge(entry){
+    return String(entry&&typeof entry==='object'?(entry.a||entry.age):'').trim();
+  }
+  function entryHasPhone(entry){
+    return !!normalizePhone(entry&&typeof entry==='object'?(entry.p||entry.phone||entry.tel):'');
+  }
+  function studentPhoneTargetMatches(entry,target){
+    if(!entry||typeof entry!=='object'||entryHasPhone(entry)) return false;
+    const targetName=String(target&&target.name||'').trim();
+    const name=entryName(entry);
+    if(targetName&&name&&targetName!==name) return false;
+    const targetAge=String(target&&target.age||'').trim();
+    const age=entryAge(entry);
+    if(targetAge&&age&&targetAge!==age) return false;
+    return !!(targetName||name);
+  }
+  function setEntryPhone(entry,phone){
+    if(!entry||typeof entry!=='object') return false;
+    entry.p=phone;
+    if(Object.prototype.hasOwnProperty.call(entry,'phone')) entry.phone=phone;
+    if(Object.prototype.hasOwnProperty.call(entry,'tel')) entry.tel=phone;
+    return true;
+  }
+  function studentPhoneInputFor(rowKey){
+    return [...document.querySelectorAll('[data-student-phone-input]')]
+      .find(el=>el.dataset.studentPhoneInput===String(rowKey));
+  }
+  function studentPhoneButtonFor(rowKey){
+    return [...document.querySelectorAll('[data-student-phone-save]')]
+      .find(el=>el.dataset.studentPhoneSave===String(rowKey));
+  }
+  function saveStudentPhoneForTargetMap(map,target,phone){
+    if(!map||typeof map!=='object'||Array.isArray(map)) return 0;
+    const entry=map[target.slotKey];
+    if(!studentPhoneTargetMatches(entry,target)) return 0;
+    setEntryPhone(entry,phone);
+    map[target.slotKey]=entry;
+    return 1;
+  }
+  async function saveStudentPhone(rowKey){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','원생 전화번호 수정')) return;
+    const dir=currentStudentDirectory();
+    const row=(dir.rows||[]).find(item=>String(item.key)===String(rowKey));
+    const targets=(row&&row.phoneTargets)||[];
+    if(!row||!targets.length){
+      toast('수정할 전화번호 미입력 항목이 없습니다','err');
+      return;
+    }
+    const input=studentPhoneInputFor(rowKey);
+    const button=studentPhoneButtonFor(rowKey);
+    const phone=normalizePhone(input&&input.value||row.p||'');
+    if(!phone||phone.length<9||phone.length>11){
+      toast('전화번호 전체를 숫자로 입력해주세요','err');
+      if(input) input.focus();
+      return;
+    }
+    const keys=[...new Set(targets.map(target=>target&&target.key).filter(Boolean))];
+    if(!keys.length){
+      toast('수정할 저장 위치를 찾지 못했습니다','err');
+      return;
+    }
+    const originalLabel=button&&button.textContent;
+    if(button){
+      button.disabled=true;
+      button.textContent='저장 중';
+    }
+    let changedCount=0;
+    try{
+      const res=await branchRoot(activeBranch).transactionKeys(keys,root=>{
+        root=root||{};
+        let localChanged=0;
+        targets.forEach(target=>{
+          if(!target||!target.key||!target.slotKey) return;
+          const current=parseStored(root[target.key]);
+          if(target.kind==='student'){
+            const list=Array.isArray(current)?current:[];
+            let targetChanged=0;
+            list.forEach(stu=>{
+              if(studentSlotKey(stu)!==target.slotKey) return;
+              if(!studentPhoneTargetMatches(stu,target)) return;
+              if(setEntryPhone(stu,phone)) targetChanged++;
+            });
+            if(targetChanged){
+              localChanged+=targetChanged;
+              root[target.key]=JSON.stringify(list);
+            }
+            return;
+          }
+          if(target.kind==='enroll'){
+            const map=current&&typeof current==='object'&&!Array.isArray(current)?current:{};
+            const added=saveStudentPhoneForTargetMap(map,target,phone);
+            if(added){
+              localChanged+=added;
+              root[target.key]=JSON.stringify(map);
+            }
+          }
+        });
+        if(!localChanged) return;
+        changedCount=localChanged;
+        return root;
+      });
+      if(!res||!res.committed||!changedCount){
+        toast('이미 번호가 있거나 대상 원생을 찾지 못했습니다','err');
+        return;
+      }
+      delete studentDirectoryByBranch[activeBranch];
+      await loadStudentDirectory(true);
+      toast(`전화번호 ${changedCount}칸 저장 완료`,'ok');
+    }catch(e){
+      console.error(e);
+      toast(e.message||'전화번호 저장 실패','err');
+    }finally{
+      if(button){
+        button.disabled=false;
+        button.textContent=originalLabel||'저장';
+      }
+    }
+  }
   function renderStudentDirectory(){
     const dir=currentStudentDirectory();
     renderStudentTeacherOptions(dir);
@@ -1636,11 +1787,13 @@
     const avgEl=$('students-average-hours');
     const retireEl=$('students-retire-count');
     const netEl=$('students-net-count');
+    const missingPhoneEl=$('students-missing-phone-count');
     if(totalEl) totalEl.textContent=String(dir.total||0);
     if(classHoursEl) classHoursEl.textContent=String(dir.classHours||0);
     if(avgEl) avgEl.textContent=(Number(dir.averageHours||0)).toFixed(1);
     if(retireEl) retireEl.textContent=String(dir.retire||0);
     if(netEl) netEl.textContent=String(dir.counted||0);
+    if(missingPhoneEl) missingPhoneEl.textContent=String(dir.missingPhone||0);
     const hiddenWarning=$('students-hidden-warning');
     if(hiddenWarning){
       const hidden=Number(dir.hidden||0);
@@ -1678,7 +1831,7 @@
       const slotHtml=slotBadges.map(badge=>`<span class="student-slot-chip"><b>${esc(badge)}</b></span>`).join('');
       return `<tr>
         <td><div class="student-pill-stack">${pillHtml||'<span class="student-pill excluded">제외</span>'}</div></td>
-        <td>${row.p?esc(row.p):'<span class="student-muted">번호 없음</span>'}</td>
+        <td>${studentPhoneCell(row)}</td>
         <td><div class="student-member-list">${memberHtml}</div></td>
         <td><span class="student-teacher-chip-row">${teacherHtml||'<span class="student-muted">-</span>'}</span></td>
         <td class="student-slot-list"><span class="student-slot-chip-row">${slotHtml||'<span class="student-muted">-</span>'}</span></td>
@@ -1814,6 +1967,17 @@
     $('students-teacher-filter')?.addEventListener('change',renderStudentDirectory);
     $('students-status-filter')?.addEventListener('change',renderStudentDirectory);
     $('students-sort')?.addEventListener('change',renderStudentDirectory);
+    $('students-list-body')?.addEventListener('click',e=>{
+      const btn=e.target.closest('[data-student-phone-save]');
+      if(!btn) return;
+      saveStudentPhone(btn.dataset.studentPhoneSave);
+    });
+    $('students-list-body')?.addEventListener('keydown',e=>{
+      const input=e.target.closest('[data-student-phone-input]');
+      if(!input||e.key!=='Enter') return;
+      e.preventDefault();
+      saveStudentPhone(input.dataset.studentPhoneInput);
+    });
     $('feedback-refresh').addEventListener('click',()=>reloadFeedback(false));
     $('feedback-mark-all').addEventListener('click',markAllFeedbackDone);
     $('feedback-list').addEventListener('click',e=>{
