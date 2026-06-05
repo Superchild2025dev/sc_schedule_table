@@ -252,7 +252,8 @@
       return hasPermission('teacherRequests') || hasPermission('attendanceCheck');
     }
     if(key === 'swim_closed' || key === 'swim_periods') return hasPermission('manageCalendar');
-    if(key === 'swim_audit_log' || key === 'swim_restore_points' || key === 'swim_retire_history'){
+    if(key === 'swim_audit_log' || key === 'swim_restore_points' || key === 'swim_retire_history' ||
+       key === 'swim_desk_notes'){
       return hasPermission('manageRecords');
     }
     if(key === 'swim_teachers') return hasPermission('manageTeachers');

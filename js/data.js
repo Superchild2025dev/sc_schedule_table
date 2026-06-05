@@ -780,6 +780,8 @@ let ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
 let DAY_SNAPSHOT = loadJSON(_attendanceStorageKey('daySnapshot'), {});
 // [v118] RETIRE_HISTORY = [{retiredAt, recordedAt, t, d, l, r, n, a, p, loc, memo, enrolledFrom}, ...] 퇴원 기록 (영구 보관)
 let RETIRE_HISTORY = loadJSON(STORAGE_KEYS.RETIRE_HISTORY, []);
+let DESK_NOTES = loadJSON(STORAGE_KEYS.DESK_NOTES, []);
+if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
 let AUDIT_LOG = [];
 let RESTORE_POINTS = [];
 const AUDIT_LOG_MAX=200;
@@ -1539,6 +1541,7 @@ function _scheduleAuditDisplayTime(slot,day){
 }
 function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
   const rows=[];
+  const scope=_scheduleAuditActiveScope();
   let todayStr='';
   try{ todayStr=toDateStr(getToday()); }catch(e){}
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
@@ -1570,6 +1573,9 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
         detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
         at:date.key?date.key+'T00:00:00':'',
         source:'visible-reservation',
+        tabId:scope.tabId,
+        tabName:scope.tabName,
+        tabType:scope.tabType,
       });
     });
   });
@@ -1578,8 +1584,52 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
 function _scheduleAuditRowKey(row){
   return [row.day,row.teacher,row.target,row.reason,row.date,row.time].map(v=>String(v||'').trim()).join('|');
 }
+function _scheduleAuditActiveScope(){
+  const tab=(typeof _tabById==='function')?_tabById(_activeTab):null;
+  const type=tab?.type||'regular';
+  return {
+    tabId:String(tab?.id||_activeTab||'regular'),
+    tabName:String(tab?.name||''),
+    tabType:type==='bangteuk'?'bangteuk':'regular',
+  };
+}
+function _scheduleAuditScopeFromItem(item){
+  const active=_scheduleAuditActiveScope();
+  const tabId=String(item?.tabId||'');
+  const tab=tabId&&typeof _tabById==='function'?_tabById(tabId):null;
+  const tabType=String(item?.tabType||tab?.type||'');
+  return {
+    tabId,
+    tabName:String(item?.tabName||tab?.name||''),
+    tabType:tabType==='bangteuk'?'bangteuk':(tabType?'regular':''),
+    legacy:!tabId&&!tabType,
+    active,
+  };
+}
+function _scheduleAuditMatchesActiveScope(item){
+  const scope=_scheduleAuditScopeFromItem(item);
+  const active=scope.active||_scheduleAuditActiveScope();
+  if(scope.tabId) return scope.tabId===active.tabId;
+  // 오래된 기록에는 탭 정보가 없어서 정규 탭에서만 보여준다. 방특에 섞이지 않게 막는 용도.
+  return active.tabType==='regular';
+}
+function _scheduleAuditIsManualNote(row){
+  return !!(row?.manual || row?.original?.source==='manual');
+}
+function _scheduleAuditManualOrder(row){
+  return String(row?.createdAt||row?.at||row?.updatedAt||row?.id||'');
+}
 function _scheduleAuditSortRows(rows){
   return (rows||[]).sort((a,b)=>{
+    const am=_scheduleAuditIsManualNote(a);
+    const bm=_scheduleAuditIsManualNote(b);
+    if(am!==bm) return am?1:-1;
+    if(am&&bm){
+      const ao=_scheduleAuditManualOrder(a);
+      const bo=_scheduleAuditManualOrder(b);
+      if(ao!==bo) return ao.localeCompare(bo);
+      return String(a.id||'').localeCompare(String(b.id||''));
+    }
     const ak=a.dateKey||'', bk=b.dateKey||'';
     if(ak&&bk&&ak!==bk) return bk.localeCompare(ak);
     if(ak&&!bk) return -1;
@@ -1589,7 +1639,523 @@ function _scheduleAuditSortRows(rows){
     return String(b.at||'').localeCompare(String(a.at||''));
   });
 }
+function _scheduleAuditAttr(s){
+  return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function _scheduleAuditShortDateFromKey(key){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(key||''))) return '';
+  return parseInt(key.slice(5,7),10)+'/'+parseInt(key.slice(8,10),10);
+}
+function _scheduleAuditDateInputValue(note){
+  if(String(note?.date||'').trim()&&String(note.date).trim()!=='-') return String(note.date).trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(note?.dateKey||''))) return _scheduleAuditShortDateFromKey(note.dateKey);
+  const label=String(note?.date||'').trim();
+  const md=label.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if(md){
+    return parseInt(md[1],10)+'/'+parseInt(md[2],10);
+  }
+  return '';
+}
+function _scheduleAuditParseDateText(text,monthKey){
+  const raw=String(text||'').trim();
+  if(!raw) return {key:'',label:'-'};
+  let m=raw.match(/^(20\d{2})[-./년\s]+(\d{1,2})[-./월\s]+(\d{1,2})(?:일)?$/);
+  if(m){
+    const key=m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');
+    return {key,label:_scheduleAuditShortDateFromKey(key)};
+  }
+  m=raw.match(/^(\d{1,2})\s*(?:\/|\.|월)\s*(\d{1,2})(?:일)?$/);
+  if(m){
+    const year=String(monthKey||'').slice(0,4)||String(getToday().getFullYear());
+    const key=year+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+    return {key,label:parseInt(m[1],10)+'/'+parseInt(m[2],10)};
+  }
+  return {key:'',label:raw};
+}
+function _deskNoteCanSave(silent){
+  if(window.SCAuth && typeof SCAuth.canWriteKey==='function' && !SCAuth.canWriteKey(STORAGE_KEYS.DESK_NOTES)){
+    if(!silent && typeof toast==='function') toast('기록 수정 권한이 없습니다','err');
+    return false;
+  }
+  if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(STORAGE_KEYS.DESK_NOTES,'기록 저장')) return false;
+  if(typeof isSnapshotTab==='function' && isSnapshotTab()){
+    if(!silent && typeof toast==='function') toast('스냅샷에서는 기록을 수정할 수 없습니다','err');
+    return false;
+  }
+  if(typeof _fakeDate !== 'undefined' && _fakeDate){
+    if(!silent && typeof toast==='function') toast('타임머신 모드에서는 기록을 수정할 수 없습니다','err');
+    return false;
+  }
+  return true;
+}
+function _deskNoteId(){
+  return 'desk_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+}
+function _deskNoteRecordedDate(row){
+  let key='';
+  if(row?.source!=='visible-reservation') key=_recordLocalDateKey(row?.at);
+  if(!key) key=row?.dateKey||'';
+  return {key,label:_scheduleAuditShortDateFromKey(key)||row?.date||'-'};
+}
+function _deskNoteFromScheduleRow(row){
+  const written=_deskNoteRecordedDate(row);
+  const now=new Date().toISOString();
+  const sourceKey=_scheduleAuditRowKey(row);
+  const scope=_scheduleAuditScopeFromItem(row);
+  const active=scope.active||_scheduleAuditActiveScope();
+  const tabId=scope.tabId||active.tabId;
+  const tabName=scope.tabName||active.tabName;
+  const tabType=scope.tabType||active.tabType;
+  return {
+    id:_deskNoteId(),
+    sourceKey,
+    original:{
+      teacher:row.teacher||'-',
+      student:row.target||'-',
+      change:row.reason||'-',
+      date:row.date||'-',
+      dateKey:row.dateKey||'',
+      time:row.time||'-',
+      day:row.day||'기타',
+      detail:row.detail||'',
+      at:row.at||'',
+      source:row.source||'audit',
+      tabId,
+      tabName,
+      tabType,
+    },
+    tabId,
+    tabName,
+    tabType,
+    day:row.day||'기타',
+    effectiveDateKey:row.dateKey||'',
+    teacher:row.teacher||'-',
+    student:row.target||'-',
+    change:row.reason||'-',
+    date:written.label,
+    dateKey:written.key,
+    time:row.time||'-',
+    detail:row.detail||'',
+    at:row.at||now,
+    source:row.source||'audit',
+    deleted:false,
+    createdAt:now,
+    updatedAt:now,
+  };
+}
+function _normalizeDeskNotesList(list){
+  return Array.isArray(list)?list.filter(Boolean):[];
+}
+function _deskNoteFindIndex(list,note){
+  const id=String(note?.id||'');
+  if(id){
+    const idx=list.findIndex(n=>String(n?.id||'')===id);
+    if(idx>=0) return idx;
+  }
+  const sourceKey=String(note?.sourceKey||'');
+  if(sourceKey){
+    return list.findIndex(n=>String(n?.sourceKey||'')===sourceKey);
+  }
+  return -1;
+}
+function _mergeDeskNote(list,note){
+  const next=_normalizeDeskNotesList(list).slice();
+  const idx=_deskNoteFindIndex(next,note);
+  if(idx>=0){
+    if(next[idx]?.deleted && note?.sourceKey && !note?.manual && !note?.deleted) return next;
+    next[idx]={...next[idx],...note};
+  }
+  else next.push(note);
+  return next;
+}
+function _updateDeskNotesTx(mutator,meta,silent){
+  DESK_NOTES=_normalizeDeskNotesList(DESK_NOTES);
+  if(!_deskNoteCanSave(!!silent)) return Promise.reject(new Error('기록 저장 권한이 없습니다'));
+  const applyLocal=()=>{
+    let abortReason='';
+    const next=mutator(DESK_NOTES.slice(),reason=>{abortReason=reason||'';});
+    if(next===undefined) return Promise.reject(new Error(abortReason||'기록 저장이 취소되었습니다'));
+    DESK_NOTES=_normalizeDeskNotesList(next);
+    if(dbSet(STORAGE_KEYS.DESK_NOTES, JSON.stringify(DESK_NOTES))===false){
+      return Promise.reject(new Error('기록 저장 실패'));
+    }
+    return Promise.resolve(DESK_NOTES);
+  };
+  if(typeof updateScheduleTx!=='function') return applyLocal();
+  return updateScheduleTx([STORAGE_KEYS.DESK_NOTES],ctx=>{
+    const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
+    const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
+    if(next===undefined) return;
+    ctx.set(STORAGE_KEYS.DESK_NOTES,_normalizeDeskNotesList(next));
+    return true;
+  },meta||{type:'edit',label:'기록 편집'}).then(()=>DESK_NOTES);
+}
+function _saveDeskNotes(silent){
+  DESK_NOTES=_normalizeDeskNotesList(DESK_NOTES);
+  if(!_deskNoteCanSave(!!silent)) return false;
+  return dbSet(STORAGE_KEYS.DESK_NOTES, JSON.stringify(DESK_NOTES))!==false;
+}
+function _upsertDeskNoteTx(note,expectedUpdatedAt,meta){
+  const clean={...note};
+  return _updateDeskNotesTx((list,abort)=>{
+    const next=_normalizeDeskNotesList(list).slice();
+    const idx=_deskNoteFindIndex(next,clean);
+    if(expectedUpdatedAt&&idx>=0&&String(next[idx]?.updatedAt||'')!==String(expectedUpdatedAt)){
+      abort('다른 사용자가 먼저 수정했습니다. 기록을 다시 열어 확인해주세요.');
+      return;
+    }
+    if(idx>=0) next[idx]={...next[idx],...clean};
+    else next.push(clean);
+    return next;
+  },meta||{type:'edit',label:'기록 편집'});
+}
+let _deskNotesAutoMergeInFlight=false;
+let _deskNotesAutoMergeQueue=[];
+function _queueDeskNotesAutoMerge(additions){
+  if(!additions||!additions.length) return;
+  if(!_deskNoteCanSave(true)) return;
+  _deskNotesAutoMergeQueue=_deskNotesAutoMergeQueue.concat(additions.map(note=>({...note})));
+  if(_deskNotesAutoMergeInFlight) return;
+  _deskNotesAutoMergeInFlight=true;
+  const flush=()=>{
+    const batch=_deskNotesAutoMergeQueue.splice(0);
+    if(!batch.length){
+      _deskNotesAutoMergeInFlight=false;
+      return;
+    }
+    _updateDeskNotesTx(list=>{
+      let next=_normalizeDeskNotesList(list).slice();
+      batch.forEach(note=>{ next=_mergeDeskNote(next,note); });
+      return next;
+    },{type:'edit',label:'하단 기록 자동 동기화'},true).catch(err=>{
+      console.warn('하단 기록 자동 동기화 실패:',err);
+    }).finally(flush);
+  };
+  flush();
+}
+function _syncDeskNotesFromRows(rows){
+  DESK_NOTES=_normalizeDeskNotesList(DESK_NOTES);
+  const sourceKeys=new Set(DESK_NOTES.map(note=>String(note?.sourceKey||'')).filter(Boolean));
+  const additions=[];
+  (rows||[]).forEach(row=>{
+    const sourceKey=_scheduleAuditRowKey(row);
+    if(!sourceKey||sourceKeys.has(sourceKey)) return;
+    sourceKeys.add(sourceKey);
+    additions.push(_deskNoteFromScheduleRow(row));
+  });
+  if(!additions.length) return DESK_NOTES;
+  const canSave=_deskNoteCanSave(true);
+  if(canSave){
+    DESK_NOTES=DESK_NOTES.concat(additions);
+    _queueDeskNotesAutoMerge(additions);
+    return DESK_NOTES;
+  }
+  return DESK_NOTES.concat(additions);
+}
+function _deskNoteVisible(note,monthKey,visibleDays){
+  if(!note||note.deleted) return false;
+  if(!_scheduleAuditMatchesActiveScope(note)) return false;
+  const day=note.day||'기타';
+  if(day!=='기타'&&!visibleDays.includes(day)) return false;
+  if(note.monthKey) return String(note.monthKey)===String(monthKey||'');
+  // 화면 표시 날짜는 데스크가 누른/수정한 날짜지만,
+  // 어느 월 시간표 하단에 보일지는 원본 적용일(퇴원/제외/이동일)을 기준으로 잡는다.
+  const basisKey=String(note.effectiveDateKey||note.original?.dateKey||note.dateKey||'');
+  if(basisKey&&monthKey&&basisKey.slice(0,7)!==monthKey) return false;
+  return true;
+}
+function _findDeskNote(id){
+  DESK_NOTES=Array.isArray(DESK_NOTES)?DESK_NOTES:[];
+  return DESK_NOTES.find(note=>String(note.id)===String(id));
+}
+let _deskNoteOutsideCloseBound=false;
+function _deskNoteModal(){
+  let modal=document.getElementById('desk-note-modal');
+  if(modal) return modal;
+  modal=document.createElement('div');
+  modal.id='desk-note-modal';
+  modal.className='desk-note-popover';
+  modal.style.display='none';
+  modal.onclick=function(e){ e.stopPropagation(); };
+  modal.innerHTML=`<div class="desk-note-card" onclick="event.stopPropagation()">
+    <div class="desk-note-head">
+      <h3 id="desk-note-title">기록 수정</h3>
+      <button type="button" class="desk-note-x" onclick="closeDeskNoteModal()">×</button>
+    </div>
+    <input type="hidden" id="desk-note-id">
+    <input type="hidden" id="desk-note-day">
+    <input type="hidden" id="desk-note-version">
+    <div class="desk-note-grid">
+      <label>담당<input type="text" id="desk-note-teacher"></label>
+      <label>원생<input type="text" id="desk-note-student"></label>
+      <label>변동<input type="text" id="desk-note-change" list="desk-note-change-list" placeholder="삭제, 퇴원, 반변경 등"></label>
+      <label>수정날짜<input type="text" id="desk-note-date" placeholder="6/5 또는 2026-06-05"></label>
+      <label>시간<input type="text" id="desk-note-time" placeholder="4시 또는 4시 → 5시"></label>
+    </div>
+    <datalist id="desk-note-change-list">
+      <option value="삭제"></option>
+      <option value="퇴원"></option>
+      <option value="반변경"></option>
+      <option value="시간변경"></option>
+      <option value="일정변경"></option>
+      <option value="횟수줄임"></option>
+      <option value="메모"></option>
+    </datalist>
+    <div class="desk-note-origin" id="desk-note-origin"></div>
+    <div class="desk-note-actions">
+      <button type="button" class="desk-note-delete" id="desk-note-delete-btn" onclick="deleteDeskNoteModal()">삭제</button>
+      <span></span>
+      <button type="button" class="desk-note-cancel" onclick="closeDeskNoteModal()">닫기</button>
+      <button type="button" class="desk-note-save" onclick="saveDeskNoteModal()">저장</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  if(!_deskNoteOutsideCloseBound){
+    _deskNoteOutsideCloseBound=true;
+    document.addEventListener('mousedown',function(e){
+      const pop=document.getElementById('desk-note-modal');
+      if(!pop||pop.style.display==='none') return;
+      if(pop.contains(e.target)) return;
+      if(e.target?.closest&&e.target.closest('.schedule-audit-editable')) return;
+      closeDeskNoteModal();
+    });
+  }
+  return modal;
+}
+function _positionDeskNotePopover(anchor){
+  const modal=document.getElementById('desk-note-modal');
+  if(!modal) return;
+  const rect=anchor&&anchor.getBoundingClientRect?anchor.getBoundingClientRect():null;
+  const vw=document.documentElement.clientWidth||window.innerWidth||1280;
+  const vh=document.documentElement.clientHeight||window.innerHeight||720;
+  const sw=window.scrollX||window.pageXOffset||0;
+  const sh=window.scrollY||window.pageYOffset||0;
+  const width=modal.offsetWidth||560;
+  const height=modal.offsetHeight||260;
+  const centerX=rect ? sw+rect.left+(rect.width/2) : sw+(vw/2);
+  let left=Math.round(centerX-(width/2));
+  left=Math.max(sw+12,Math.min(left,sw+vw-width-12));
+  let top=rect ? Math.round(sh+rect.bottom+10) : Math.round(sh+90);
+  modal.classList.remove('above');
+  if(rect&&top+height>sh+vh-12){
+    top=Math.max(sh+12,Math.round(sh+rect.top-height-10));
+    modal.classList.add('above');
+  }
+  modal.style.left=left+'px';
+  modal.style.top=top+'px';
+  const arrowLeft=Math.max(18,Math.min(width-18,centerX-left));
+  modal.style.setProperty('--desk-note-arrow-left',arrowLeft+'px');
+}
+function openDeskNoteModal(id,anchor){
+  if(window.SCAuth && !SCAuth.requirePermission('manageRecords','기록 수정')) return;
+  const note=_findDeskNote(id);
+  if(!note) return;
+  const modal=_deskNoteModal();
+  const popKey='edit|'+String(note.id||id);
+  if(modal.style.display!=='none'&&modal.dataset.popKey===popKey){
+    closeDeskNoteModal();
+    return;
+  }
+  modal.dataset.popKey=popKey;
+  document.getElementById('desk-note-title').textContent='기록 수정';
+  document.getElementById('desk-note-id').value=note.id||'';
+  document.getElementById('desk-note-day').value=note.day||'기타';
+  document.getElementById('desk-note-version').value=note.updatedAt||'';
+  document.getElementById('desk-note-teacher').value=note.teacher||'';
+  document.getElementById('desk-note-student').value=note.student||'';
+  document.getElementById('desk-note-change').value=note.change||'';
+  document.getElementById('desk-note-date').value=_scheduleAuditDateInputValue(note);
+  document.getElementById('desk-note-time').value=note.time||'';
+  document.getElementById('desk-note-delete-btn').style.display='';
+  const original=note.original||{};
+  document.getElementById('desk-note-origin').textContent=[
+    '원본:',
+    original.teacher||note.teacher||'-',
+    original.student||note.student||'-',
+    original.change||'',
+    original.date||'',
+    original.time||''
+  ].filter(Boolean).join(' ');
+  modal.style.visibility='hidden';
+  modal.style.display='block';
+  _positionDeskNotePopover(anchor);
+  modal.style.visibility='';
+}
+function openDeskNoteCreate(day,anchor){
+  if(window.SCAuth && !SCAuth.requirePermission('manageRecords','기록 추가')) return;
+  const modal=_deskNoteModal();
+  const popKey='create|'+String(day||'기타');
+  if(modal.style.display!=='none'&&modal.dataset.popKey===popKey){
+    closeDeskNoteModal();
+    return;
+  }
+  modal.dataset.popKey=popKey;
+  document.getElementById('desk-note-title').textContent='기록 추가';
+  document.getElementById('desk-note-id').value='';
+  document.getElementById('desk-note-day').value=day||'기타';
+  document.getElementById('desk-note-version').value='';
+  document.getElementById('desk-note-teacher').value='';
+  document.getElementById('desk-note-student').value='';
+  document.getElementById('desk-note-change').value='';
+  document.getElementById('desk-note-date').value=_scheduleAuditShortDateFromKey(toDateStr(getToday()));
+  document.getElementById('desk-note-time').value='';
+  document.getElementById('desk-note-delete-btn').style.display='none';
+  document.getElementById('desk-note-origin').textContent='데스크가 직접 추가하는 기록입니다. 원본 감사기록에는 남지 않습니다.';
+  modal.style.visibility='hidden';
+  modal.style.display='block';
+  _positionDeskNotePopover(anchor);
+  modal.style.visibility='';
+}
+function closeDeskNoteModal(){
+  const modal=document.getElementById('desk-note-modal');
+  if(modal){
+    modal.style.visibility='hidden';
+    modal.style.display='none';
+    delete modal.dataset.popKey;
+  }
+}
+function _deskNoteCssSelector(id){
+  const raw=String(id||'');
+  const safe=(window.CSS&&typeof CSS.escape==='function')?CSS.escape(raw):raw.replace(/["\\]/g,'\\$&');
+  return `[data-desk-note-id="${safe}"]`;
+}
+function _deskNoteTitle(row){
+  return [
+    row?.detail||'',
+    row?.original?.detail ? '원본: '+row.original.detail : ''
+  ].filter(Boolean).join('\n');
+}
+function _deskNoteRowHtml(row,day,editable){
+  const onclick=editable?` onclick="openDeskNoteModal('${_scheduleAuditAttr(row.id)}',this)"`:'';
+  return `<tr class="${editable?'schedule-audit-editable':''}" data-desk-note-id="${_scheduleAuditAttr(row.id)}"${onclick} title="${_scheduleAuditAttr(_deskNoteTitle(row))}">
+    ${_scheduleAuditSpacerCells(day,'td')}
+    <td>${esc(row.teacher)}</td>
+    <td>${esc(row.student)}</td>
+    <td class="${row.change==='퇴원'?'schedule-audit-retire':''}">${esc(row.change)}</td>
+    <td>${esc(row.date)}</td>
+    <td>${esc(row.time)}</td>
+  </tr>`;
+}
+function _deskNoteDataCells(rowEl){
+  return [...(rowEl?.children||[])].filter(td=>!td.classList.contains('schedule-audit-spacer'));
+}
+function _updateDeskNoteRowDom(note){
+  const row=document.querySelector(_deskNoteCssSelector(note?.id));
+  if(!row) return false;
+  const cells=_deskNoteDataCells(row);
+  if(cells.length<5) return false;
+  cells[0].textContent=note.teacher||'-';
+  cells[1].textContent=note.student||'-';
+  cells[2].textContent=note.change||'-';
+  cells[2].classList.toggle('schedule-audit-retire',note.change==='퇴원');
+  cells[3].textContent=note.date||'-';
+  cells[4].textContent=note.time||'-';
+  row.title=_deskNoteTitle(note);
+  return true;
+}
+function _insertDeskNoteRowDom(note){
+  const day=note?.day||'기타';
+  const section=document.querySelector(`.schedule-audit-day[data-schedule-audit-day="${_scheduleAuditAttr(day)}"]`);
+  const tbody=section?.querySelector('tbody');
+  if(!tbody) return false;
+  const tmp=document.createElement('tbody');
+  tmp.innerHTML=_deskNoteRowHtml(note,day,true);
+  const row=tmp.firstElementChild;
+  const empty=tbody.querySelector('tr .schedule-audit-empty')?.closest('tr');
+  if(empty) empty.remove();
+  const addRow=tbody.querySelector('.schedule-audit-add-row');
+  if(addRow) tbody.insertBefore(row,addRow);
+  else tbody.appendChild(row);
+  return true;
+}
+function _removeDeskNoteRowDom(note){
+  const row=document.querySelector(_deskNoteCssSelector(note?.id));
+  if(!row) return false;
+  const tbody=row.parentElement;
+  const section=row.closest('.schedule-audit-day');
+  const day=section?.getAttribute('data-schedule-audit-day')||note?.day||'기타';
+  row.remove();
+  if(tbody&&!tbody.querySelector('tr[data-desk-note-id]')){
+    const addRow=tbody.querySelector('.schedule-audit-add-row');
+    const empty=document.createElement('tr');
+    empty.innerHTML=`<td colspan="${_scheduleAuditHasNum(day)?7:6}" class="schedule-audit-empty">기록 없음</td>`;
+    if(addRow) tbody.insertBefore(empty,addRow);
+    else tbody.appendChild(empty);
+  }
+  return true;
+}
+function saveDeskNoteModal(){
+  const id=document.getElementById('desk-note-id')?.value||'';
+  let note=_findDeskNote(id);
+  const isNew=!note;
+  if(!_deskNoteCanSave(false)) return;
+  const now=new Date().toISOString();
+  const scope=_scheduleAuditActiveScope();
+  if(!note){
+    note={
+      id:_deskNoteId(),
+      sourceKey:'',
+      original:{source:'manual'},
+      day:document.getElementById('desk-note-day')?.value||'기타',
+      tabId:scope.tabId,
+      tabName:scope.tabName,
+      tabType:scope.tabType,
+      monthKey:_scheduleAuditMonthKey(),
+      manual:true,
+      deleted:false,
+      createdAt:now,
+      updatedAt:now,
+    };
+    note.sourceKey='manual|'+note.id;
+  } else {
+    note={...note};
+  }
+  const dateText=document.getElementById('desk-note-date')?.value||'';
+  const parsedDate=_scheduleAuditParseDateText(dateText,_scheduleAuditMonthKey());
+  const expectedVersion=document.getElementById('desk-note-version')?.value||'';
+  note.teacher=(document.getElementById('desk-note-teacher')?.value||'').trim()||'-';
+  note.student=(document.getElementById('desk-note-student')?.value||'').trim()||'-';
+  note.change=(document.getElementById('desk-note-change')?.value||'').trim()||'-';
+  note.tabId=note.tabId||scope.tabId;
+  note.tabName=note.tabName||scope.tabName;
+  note.tabType=note.tabType||scope.tabType;
+  note.dateKey=parsedDate.key;
+  note.date=parsedDate.label||'-';
+  note.time=(document.getElementById('desk-note-time')?.value||'').trim()||'-';
+  note.updatedAt=now;
+  _upsertDeskNoteTx(note,isNew?'':expectedVersion,{type:'edit',label:isNew?'기록 추가':'기록 수정'}).then(()=>{
+    const saved=_findDeskNote(note.id)||note;
+    closeDeskNoteModal();
+    const visible=_deskNoteVisible(saved,_scheduleAuditMonthKey(),_scheduleAuditDays());
+    const updated=visible ? (isNew?_insertDeskNoteRowDom(saved):_updateDeskNoteRowDom(saved)) : false;
+    if(!updated) renderScheduleAuditSummary();
+    if(typeof toast==='function') toast('기록을 저장했습니다','ok');
+  }).catch(err=>{
+    console.warn('기록 저장 실패:',err);
+    if(typeof toast==='function') toast(err?.message||'기록 저장 실패','err');
+  });
+}
+function deleteDeskNoteModal(){
+  const id=document.getElementById('desk-note-id')?.value||'';
+  const note=_findDeskNote(id);
+  if(!note) return;
+  if(!_deskNoteCanSave(false)) return;
+  if(!confirm('이 기록을 삭제할까요?')) return;
+  const next={...note,deleted:true,updatedAt:new Date().toISOString()};
+  const expectedVersion=document.getElementById('desk-note-version')?.value||'';
+  _upsertDeskNoteTx(next,expectedVersion,{type:'edit',label:'기록 삭제'}).then(()=>{
+    closeDeskNoteModal();
+    if(!_removeDeskNoteRowDom(next)) renderScheduleAuditSummary();
+    if(typeof toast==='function') toast('기록을 삭제했습니다','ok');
+  }).catch(err=>{
+    console.warn('기록 삭제 실패:',err);
+    if(typeof toast==='function') toast(err?.message||'기록 삭제 실패','err');
+  });
+}
 function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
+  if(!_scheduleAuditMatchesActiveScope(item)) return [];
+  const scope=_scheduleAuditScopeFromItem(item);
+  const active=scope.active||_scheduleAuditActiveScope();
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
   const segments=parts.length?parts:[_scheduleAuditText(item)];
@@ -1610,7 +2176,6 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     days.forEach(day=>{
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
       const reason=_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot);
-      if(reason==='삭제') return;
       rows.push({
         day,
         teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,item),
@@ -1621,6 +2186,10 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
         time:fromSlot.time||_scheduleAuditTime(item),
         detail:String(segment||item?.detail||item?.label||''),
         at:item?.at||'',
+        source:item?._source||'audit',
+        tabId:scope.tabId||active.tabId,
+        tabName:scope.tabName||active.tabName,
+        tabType:scope.tabType||active.tabType,
       });
     });
   });
@@ -1687,42 +2256,46 @@ function renderScheduleAuditSummary(){
   const perDay={};
   visibleDays.forEach(day=>{ perDay[day]=[]; });
   const seenRows=new Set();
-  const addRow=row=>{
+  const sourceRows=[];
+  const addSourceRow=row=>{
     if(!row||!row.day) return;
-    if(!perDay[row.day]) perDay[row.day]=[];
     const key=_scheduleAuditRowKey(row);
     if(seenRows.has(key)) return;
     seenRows.add(key);
-    perDay[row.day].push(row);
+    sourceRows.push(row);
   };
-  _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays).forEach(addRow);
+  _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays).forEach(addSourceRow);
   const items=_recordItems().sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   items.forEach(item=>{
-    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(addRow);
+    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(addSourceRow);
+  });
+  const notes=_syncDeskNotesFromRows(sourceRows);
+  notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays)).forEach(note=>{
+    const day=note.day||'기타';
+    if(!perDay[day]) perDay[day]=[];
+    perDay[day].push(note);
   });
   const days=[...visibleDays];
   if(perDay['기타']?.length) days.push('기타');
   const hasRows=days.some(day=>(perDay[day]||[]).length);
-  if(!hasRows){
+  const editable=_deskNoteCanSave(true);
+  if(!hasRows&&!editable){
     body.innerHTML='<div class="schedule-audit-empty">해당 월 이탈 기록이 없습니다</div>';
     return;
   }
   body.innerHTML=days.map(day=>{
-    const rows=_scheduleAuditSortRows(perDay[day]||[]).slice(0,10);
+    const rows=_scheduleAuditSortRows(perDay[day]||[]);
     const total=(perDay[day]||[]).length;
-    const html=rows.length?rows.map(row=>`<tr title="${esc(row.detail).replace(/"/g,'&quot;')}">
+    const html=rows.length?rows.map(row=>_deskNoteRowHtml(row,day,editable)).join(''):`<tr><td colspan="${_scheduleAuditHasNum(day)?7:6}" class="schedule-audit-empty">기록 없음</td></tr>`;
+    const addRow=editable?`<tr class="schedule-audit-editable schedule-audit-add-row" onclick="openDeskNoteCreate('${_scheduleAuditAttr(day)}',this)" title="${esc(day==='기타'?'기록 추가':day+'요일 기록 추가')}">
       ${_scheduleAuditSpacerCells(day,'td')}
-      <td>${esc(row.teacher)}</td>
-      <td>${esc(row.target)}</td>
-      <td class="${row.reason==='퇴원'?'schedule-audit-retire':''}">${esc(row.reason)}</td>
-      <td>${esc(row.date)}</td>
-      <td>${esc(row.time)}</td>
-    </tr>`).join(''):`<tr><td colspan="${_scheduleAuditHasNum(day)?7:6}" class="schedule-audit-empty">기록 없음</td></tr>`;
-    return `<section class="schedule-audit-day" style="width:${_scheduleAuditDayWidth(day)}" title="${esc(day==='기타'?'기타':day+'요일')} ${total}건">
+      <td class="schedule-audit-add" colspan="5">+ 기록 추가</td>
+    </tr>`:'';
+    return `<section class="schedule-audit-day" data-schedule-audit-day="${_scheduleAuditAttr(day)}" style="width:${_scheduleAuditDayWidth(day)}" title="${esc(day==='기타'?'기타':day+'요일')} ${total}건">
       <table class="schedule-audit-table">
         ${_scheduleAuditColgroup(day)}
-        <thead><tr>${_scheduleAuditSpacerCells(day,'th')}<th>선생님</th><th>변동자</th><th>사유</th><th>변경일자</th><th>시간</th></tr></thead>
-        <tbody>${html}</tbody>
+        <thead><tr>${_scheduleAuditSpacerCells(day,'th')}<th>담당</th><th>원생</th><th>변동</th><th>수정날짜</th><th>시간</th></tr></thead>
+        <tbody>${html}${addRow}</tbody>
       </table>
     </section>`;
   }).join('');
@@ -2099,6 +2672,7 @@ function _applyStoredValue(key,val){
   else if(key===_attendanceStorageKey('attendance')) ATTENDANCE=val||{};
   else if(key===_attendanceStorageKey('attGuests')) ATT_GUESTS=val||{};
   else if(key===_attendanceStorageKey('daySnapshot')) DAY_SNAPSHOT=val||{};
+  else if(key===STORAGE_KEYS.DESK_NOTES) DESK_NOTES=Array.isArray(val)?val:[];
   else if(key===STORAGE_KEYS.AUDIT_LOG) AUDIT_LOG=Array.isArray(val)?val:[];
   else if(key===STORAGE_KEYS.RESTORE_POINTS) RESTORE_POINTS=Array.isArray(val)?val:[];
 }
@@ -2299,6 +2873,8 @@ function reloadGlobalData(){
     RESTORE_POINTS=loadJSON(STORAGE_KEYS.RESTORE_POINTS, []);
     if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
   }
+  DESK_NOTES=loadJSON(STORAGE_KEYS.DESK_NOTES, []);
+  if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
   // 현재 활성 탭이 삭제됐으면 첫 탭으로
   if(!_tabList.find(t=>t.id===_activeTab)){
     _activeTab=typeof _mainTabId==='function'?_mainTabId(_tabList):_tabList[0].id;

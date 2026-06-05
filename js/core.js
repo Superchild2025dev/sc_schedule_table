@@ -241,6 +241,7 @@ const STORAGE_KEYS = {
   PERIODS:  'swim_periods',     // 수업 기간 목록
   RETIRE_HISTORY: 'swim_retire_history', // [v118] 퇴원 기록 보관 (영구)
   AUDIT_LOG: 'swim_audit_log',   // 기록관리: 이동/편집 로그
+  DESK_NOTES: 'swim_desk_notes', // 하단 전달사항: 원본 기록에서 분리된 데스크 편집용 표
   RESTORE_POINTS: 'swim_restore_points', // 기록관리: 특정 시점 복구 포인트
   AGE_YEAR: 'swim_age_year',     // 학생 나이 자동 증가 마지막 반영 연도
   VERSION:  'swim_ver',

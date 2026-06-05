@@ -1735,6 +1735,8 @@ function buildTable(){
   }
 
   const wrap=document.getElementById('tbl');
+  const savedScrollLeft=_tblOuter?_tblOuter.scrollLeft:0;
+  const savedScrollTop=_tblOuter?_tblOuter.scrollTop:0;
   const tbl=document.createElement('table');
   tbl.className='sched-tbl';
 
@@ -1839,13 +1841,15 @@ function buildTable(){
     });
   }
 
-  // 후처리: 스크롤 복원, 프록시, 오늘 컬럼 프레임, 플래시
-  const savedScroll=_tblOuter?_tblOuter.scrollLeft:0;
+  // 후처리: 기록 영역까지 다시 붙인 뒤 스크롤 복원, 프록시, 오늘 컬럼 프레임, 플래시
   updateProxyPosition();
   drawTodayColFrame();
-  if(_tblOuter&&savedScroll){
-    _tblOuter.scrollLeft=savedScroll;
-    _proxy.scrollLeft=savedScroll;
+  if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
+  if(_tblOuter){
+    const maxTop=Math.max(0,_tblOuter.scrollHeight-_tblOuter.clientHeight);
+    _tblOuter.scrollTop=Math.min(savedScrollTop,maxTop);
+    _tblOuter.scrollLeft=savedScrollLeft;
+    if(_proxy) _proxy.scrollLeft=savedScrollLeft;
   }
   if(_flashKey){
     const fk=_flashKey;_flashKey=null;
@@ -1863,7 +1867,6 @@ function buildTable(){
   // 학부모 요청 대기 카운트 업데이트
   try{ updateScheduleSummary(); }catch(e){ console.warn('[summary]', e); }
   updateParentReqCount();
-  if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
 
   // 스냅샷 사용했다면 원복
   if(_snapshotSwapped){
@@ -1919,6 +1922,31 @@ function _summaryStudentKey(stu){
   const name=String(person.n||'').trim();
   if(!name) return '';
   return name+'|'+_summaryNormPhone(person.p);
+}
+function _summaryMergeRows(map,fromKey,toKey){
+  if(!fromKey||!toKey||fromKey===toKey||!map.has(fromKey)) return;
+  const from=map.get(fromKey);
+  if(!map.has(toKey)){
+    from.key=toKey;
+    map.delete(fromKey);
+    map.set(toKey,from);
+    return;
+  }
+  const to=map.get(toKey);
+  if(!to.n&&from.n) to.n=from.n;
+  if(!to.p&&from.p) to.p=from.p;
+  to.counted=!!(to.counted||from.counted);
+  (from.states||new Set()).forEach(v=>to.states.add(v));
+  (from.slots||[]).forEach(slot=>{
+    if(!to.slots.some(saved=>saved.key===slot.key)) to.slots.push(slot);
+  });
+  map.delete(fromKey);
+}
+function _summaryExistingPhoneKey(map,name){
+  if(!name) return '';
+  const prefix=name+'|';
+  const matches=[...map.keys()].filter(key=>key.startsWith(prefix)&&key!==prefix);
+  return matches.length===1 ? matches[0] : '';
 }
 function _summaryDate(ds){
   if(!ds) return '';
@@ -2033,10 +2061,30 @@ function _summaryEntryPersonKey(entry,fallback){
   if(!name) return '';
   return name+'|'+_summaryNormPhone(person.p);
 }
+function _summaryEntryMatchesPerson(entry,fallback,target){
+  const a=_summaryRecordPerson(entry,fallback);
+  const b=_summaryRecordPerson(target,null);
+  const aName=String(a.n||'').trim();
+  const bName=String(b.n||'').trim();
+  if(aName&&bName&&aName!==bName) return false;
+  const aPhone=_summaryNormPhone(a.p);
+  const bPhone=_summaryNormPhone(b.p);
+  if(aPhone&&bPhone&&aPhone!==bPhone) return false;
+  return !!(aName||bName);
+}
+function _summaryDisplayTimeForDay(day,time){
+  try{
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.displayTimeForDay==='function'){
+      return window.SCScheduleTime.displayTimeForDay(day,time)||time;
+    }
+  }catch(e){}
+  return time;
+}
 function _summarySlotInfo(slotKey,dateText,teacherName){
   const p=String(slotKey||'').split('/');
   const day=p[1]||'';
-  const hour=String(p[0]||'').replace(/[^\d]/g,'')||String(p[0]||'');
+  const displayTime=_summaryDisplayTimeForDay(day,p[0]||'');
+  const hour=String(displayTime||p[0]||'').replace(/[^\d]/g,'')||String(displayTime||p[0]||'');
   const badge=day&&hour ? day+hour : (p.length>=4 ? `${p[1]} ${p[0]}` : String(slotKey||''));
   const teacher=String(teacherName||'').trim();
   const date=String(dateText||'').trim();
@@ -2059,8 +2107,18 @@ function _summaryRecord(entry,status,slotKey,dateText,fallback){
   };
 }
 function _summaryAddPerson(map,rec,counted){
-  const key=_summaryStudentKey(rec);
+  const person=_summaryRecordPerson(rec,null);
+  const name=String(person.n||'').trim();
+  const phone=_summaryNormPhone(person.p);
+  let key=_summaryStudentKey(rec);
   if(!key) return;
+  const noPhoneKey=name?name+'|':'';
+  if(name&&phone){
+    _summaryMergeRows(map,noPhoneKey,key);
+  }else if(name&&!phone){
+    const existingPhoneKey=_summaryExistingPhoneKey(map,name);
+    if(existingPhoneKey) key=existingPhoneKey;
+  }
   if(!map.has(key)){
     map.set(key,{key,n:rec.n||'',p:rec.p||'',counted,states:new Set(),slots:[]});
   }
@@ -2104,18 +2162,27 @@ function getScheduleSummaryData(){
     });
   });
 
-  const slotCanCount=slotKey=>{
+  const isSaturdaySlot=slotKey=>String(slotKey||'').split('/')[1]==='토';
+  const validSaturdayTime=time=>{
+    if(!window.SCScheduleTime||!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY) return true;
+    return !!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[String(time||'')];
+  };
+  const slotVisibility=slotKey=>{
     const p=String(slotKey||'').split('/');
-    if(p.length<4) return false;
+    const saturday=p[1]==='토';
+    if(p.length<4) return {visible:false,saturday,reason:'슬롯 형식 오류'};
+    if(!days.includes(p[1])) return {visible:false,saturday,reason:'현재 시간표 요일 아님'};
+    if(!times.includes(p[0]) || (saturday&&!validSaturdayTime(p[0]))) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
+    const lane=parseInt(p[2],10);
+    if(!Number.isFinite(lane)||lane<1||lane>lanes) return {visible:false,saturday,reason:'현재 시간표 레인 밖'};
     const instKey=p[0]+'/'+p[1]+'/'+p[2];
     const maxRows=instRowsByKey[instKey];
-    if(!maxRows) return false;
+    if(!maxRows) return {visible:false,saturday,reason:'담임 없는 칸'};
     const row=parseInt(p[3],10);
-    if(!Number.isFinite(row) || row<1 || row>maxRows) return false;
-    if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) return false;
-    return true;
+    if(!Number.isFinite(row) || row<1 || row>maxRows) return {visible:false,saturday,reason:'현재 시간표 번호 밖'};
+    if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) return {visible:false,saturday,reason:'비활성 칸'};
+    return {visible:true,saturday,reason:''};
   };
-
   const today=typeof toDateStr==='function'&&typeof getToday==='function'?toDateStr(getToday()):'';
   const activeRetireSlots=new Map();
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
@@ -2131,11 +2198,18 @@ function getScheduleSummaryData(){
     if(key) enrollPersonKeys.add(key);
   });
 
+  const hiddenPeople=new Map();
+  const addHiddenSaturday=(entry,slotKey,fallback,reason)=>{
+    if(!isSaturdaySlot(slotKey)) return;
+    _summaryAddPerson(hiddenPeople,_summaryRecord(entry,'숨김후보',slotKey,reason||'시간표 밖',fallback),false);
+  };
   const actualBySlot=new Map();
   (Array.isArray(STUDENTS)?STUDENTS:[]).forEach(stu=>{
     if(!stu || !stu.n) return;
     const slotKey=String(stu.t||'')+'/'+String(stu.d||'')+'/'+String(stu.l||'')+'/'+String(stu.r||'');
-    if(slotCanCount(slotKey)) actualBySlot.set(slotKey,stu);
+    const visibility=slotVisibility(slotKey);
+    if(visibility.visible) actualBySlot.set(slotKey,stu);
+    else if(visibility.saturday) addHiddenSaturday(stu,slotKey,null,visibility.reason);
   });
 
   const occupiedSlots=new Set();
@@ -2144,6 +2218,8 @@ function getScheduleSummaryData(){
 
   actualBySlot.forEach((stu,slotKey)=>{
     const retire=activeRetireSlots.get(slotKey);
+    const enroll=ENROLL_MAP&&ENROLL_MAP[slotKey];
+    if(enroll&&_summaryEntryMatchesPerson(enroll,null,stu)) return;
     if(retire){
       const ds=typeof retire==='string'?retire:retire.ds;
       const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(retire,stu));
@@ -2156,21 +2232,32 @@ function getScheduleSummaryData(){
 
   Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
     if(!entry) return;
-    if(slotCanCount(slotKey)) occupiedSlots.add(slotKey);
+    const visibility=slotVisibility(slotKey);
+    if(visibility.saturday&&!visibility.visible){
+      addHiddenSaturday(entry,slotKey,null,visibility.reason);
+      return;
+    }
+    if(visibility.visible) occupiedSlots.add(slotKey);
     const ds=typeof entry==='string'?entry:entry.ds;
     _summaryAddPerson(countedPeople,_summaryRecord(entry,_summaryEnrollStatus(entry),slotKey,_summaryDate(ds)+'부터'),true);
   });
 
   activeRetireSlots.forEach((entry,slotKey)=>{
     if(actualBySlot.has(slotKey)) return;
+    const visibility=slotVisibility(slotKey);
     const ds=typeof entry==='string'?entry:entry.ds;
     const fallback=_summaryPairFallback(entry,ENROLL_MAP);
+    if(visibility.saturday&&!visibility.visible){
+      addHiddenSaturday(entry,slotKey,fallback,visibility.reason);
+      return;
+    }
     const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(entry,fallback));
     _summaryAddPerson(excludedPeople,_summaryRecord(entry,_summaryRetireStatus(entry,isChange),slotKey,_summaryDate(ds)+_retireReservationSuffix(entry,slotKey,fallback),fallback),false);
   });
 
   const countedRows=_summaryRowsFromMap(countedPeople);
   const excludedRows=_summaryRowsFromMap(excludedPeople);
+  const hiddenRows=_summaryRowsFromMap(hiddenPeople);
   const countedKeys=new Set(countedRows.map(row=>row.key));
   const excludedOnlyRows=excludedRows.filter(row=>!countedKeys.has(row.key));
   return {
@@ -2178,6 +2265,7 @@ function getScheduleSummaryData(){
     capacity,
     countedRows,
     excludedRows,
+    hiddenRows,
     excludedOnlyRows,
     averageHours:countedRows.length ? occupiedSlots.size/countedRows.length : 0,
   };
@@ -2194,22 +2282,85 @@ function updateScheduleSummary(){
 function _scheduleStudentRowsForModal(){
   const data=getScheduleSummaryData();
   const contactMap=new Map();
-  const addRow=(row,counted)=>{
+  const rewriteContactMemberKeys=(row,oldPersonKey,newPersonKey)=>{
+    if(!row||!oldPersonKey||!newPersonKey||oldPersonKey===newPersonKey) return;
+    const nextMembers=new Map();
+    (row.members||new Map()).forEach((member,key)=>{
+      const nextKey=String(key).startsWith(oldPersonKey+'|')
+        ? newPersonKey+String(key).slice(oldPersonKey.length)
+        : key;
+      if(!nextMembers.has(nextKey)){
+        nextMembers.set(nextKey,member);
+        return;
+      }
+      const target=nextMembers.get(nextKey);
+      (member.dates||new Set()).forEach(v=>target.dates.add(v));
+      (member.slots||[]).forEach(slot=>{
+        if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
+      });
+    });
+    row.members=nextMembers;
+  };
+  const mergeContacts=(fromKey,toKey)=>{
+    if(!fromKey||!toKey||fromKey===toKey||!contactMap.has(fromKey)) return;
+    const from=contactMap.get(fromKey);
+    const fromPerson=fromKey.startsWith('person:')?fromKey.slice('person:'.length):'';
+    const toPerson=toKey.startsWith('person:')?toKey.slice('person:'.length):'';
+    rewriteContactMemberKeys(from,fromPerson,toPerson);
+    if(!contactMap.has(toKey)){
+      from.key=toKey;
+      contactMap.delete(fromKey);
+      contactMap.set(toKey,from);
+      return;
+    }
+    const to=contactMap.get(toKey);
+    if(!to.p&&from.p) to.p=from.p;
+    to.countedCount+=from.countedCount||0;
+    to.excludedCount+=from.excludedCount||0;
+    to.hiddenCount+=from.hiddenCount||0;
+    (from.members||new Map()).forEach((member,key)=>{
+      if(!to.members.has(key)){
+        to.members.set(key,member);
+        return;
+      }
+      const target=to.members.get(key);
+      (member.dates||new Set()).forEach(v=>target.dates.add(v));
+      (member.slots||[]).forEach(slot=>{
+        if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
+      });
+    });
+    to.searchParts.push(...(from.searchParts||[]));
+    contactMap.delete(fromKey);
+  };
+  const existingContactPhoneKey=name=>{
+    const prefix='person:'+name+'|';
+    const matches=[...contactMap.keys()].filter(key=>key.startsWith(prefix)&&key!==prefix);
+    return matches.length===1 ? matches[0] : '';
+  };
+  const addRow=(row,counted,kind)=>{
     const rawPhone=String(row.p||'').trim();
     const phone=(typeof normPhone==='function'?normPhone(rawPhone):rawPhone).replace(/\D/g,'');
     const name=String(row.n||'').trim();
-    const key=name ? 'person:'+name+'|'+phone : (phone ? 'phone:'+phone : '');
+    let key=name ? 'person:'+name+'|'+phone : (phone ? 'phone:'+phone : '');
     if(!key) return;
+    const noPhoneKey=name?'person:'+name+'|':'';
+    if(name&&phone){
+      mergeContacts(noPhoneKey,key);
+    }else if(name&&!phone){
+      const existingPhoneKey=existingContactPhoneKey(name);
+      if(existingPhoneKey) key=existingPhoneKey;
+    }
     if(!contactMap.has(key)){
-      contactMap.set(key,{key,p:row.p||'',countedCount:0,excludedCount:0,members:new Map(),searchParts:[]});
+      contactMap.set(key,{key,p:row.p||'',countedCount:0,excludedCount:0,hiddenCount:0,members:new Map(),searchParts:[]});
     }
     const contact=contactMap.get(key);
     if(row.p&&!contact.p) contact.p=row.p;
     if(counted) contact.countedCount++;
+    else if(kind==='hidden') contact.hiddenCount++;
     else contact.excludedCount++;
-    const memberKey=String(row.key||row.n)+'|'+String(row.status||'')+'|'+(counted?'1':'0');
+    const memberKey=String(row.key||row.n)+'|'+String(row.status||'')+'|'+(kind||'normal')+'|'+(counted?'1':'0');
     if(!contact.members.has(memberKey)){
-      contact.members.set(memberKey,{n:row.n||'',status:row.status||'',counted,dates:new Set(),slots:[]});
+      contact.members.set(memberKey,{n:row.n||'',status:row.status||'',counted,kind:kind||'',dates:new Set(),slots:[]});
     }
     const member=contact.members.get(memberKey);
     const rowSlots=Array.isArray(row.slots)?row.slots:String(row.slots||'').split(' / ').filter(Boolean).map(text=>({key:text,badge:text,teacher:'',date:'',text}));
@@ -2217,10 +2368,11 @@ function _scheduleStudentRowsForModal(){
       if(slot.date) member.dates.add(slot.date);
       if(!member.slots.some(saved=>saved.key===slot.key)) member.slots.push(slot);
     });
-    contact.searchParts.push(row.n,row.p,row.status,row.slotText||'',counted?'집계포함':'집계제외');
+    contact.searchParts.push(row.n,row.p,row.status,row.slotText||'',kind==='hidden'?'숨김후보':(counted?'집계포함':'집계제외'));
   };
-  data.countedRows.forEach(row=>addRow(row,true));
-  data.excludedRows.forEach(row=>addRow(row,false));
+  data.countedRows.forEach(row=>addRow(row,true,'counted'));
+  data.excludedRows.forEach(row=>addRow(row,false,'excluded'));
+  (data.hiddenRows||[]).forEach(row=>addRow(row,false,'hidden'));
   const rows=[...contactMap.values()].map(row=>{
     const members=[...row.members.values()].sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.status).localeCompare(String(b.status),'ko'));
     const countedCount=row.countedCount||0;
@@ -2228,6 +2380,7 @@ function _scheduleStudentRowsForModal(){
       ...row,
       countedCount,
       excludedCount:countedCount?0:(row.excludedCount||0),
+      hiddenCount:row.hiddenCount||0,
       members,
       search:row.searchParts.join(' ').toLowerCase()
     };
@@ -2250,6 +2403,7 @@ function closeScheduleStudentList(){
   if(modal) modal.style.display='none';
 }
 function _scheduleStudentStatusClass(status,counted){
+  if(String(status||'').includes('숨김')) return 'hidden';
   if(String(status||'').includes('제외')) return 'exclude';
   if(String(status||'').includes('이동')) return 'move';
   if(!counted) return 'retire';
@@ -2269,12 +2423,13 @@ function renderScheduleStudentList(){
     return String(row.search||'').includes(q);
   });
   if(summary){
-    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
+    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
   }
   body.innerHTML=filtered.map(row=>{
     const badges=[
       row.countedCount?`<span class="schedule-student-badge counted">포함 ${_summaryNumber(row.countedCount)}</span>`:'',
       row.excludedCount?`<span class="schedule-student-badge excluded">제외 ${_summaryNumber(row.excludedCount)}</span>`:'',
+      row.hiddenCount?`<span class="schedule-student-badge hidden">숨김 ${_summaryNumber(row.hiddenCount)}</span>`:'',
     ].filter(Boolean).join('');
     const members=_scheduleNormalizeChangeMembers(row.members||[]).map(member=>{
       const statusCls=_scheduleStudentStatusClass(member.status,member.counted);
@@ -2303,7 +2458,7 @@ function downloadScheduleStudentListCsv(){
   const filtered=rows.filter(row=>!q||String(row.search||'').includes(q));
   const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
   filtered.forEach(row=>{
-    const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.excludedCount?`제외 ${row.excludedCount}`:''].filter(Boolean).join(' / ');
+    const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.excludedCount?`제외 ${row.excludedCount}`:'',row.hiddenCount?`숨김 ${row.hiddenCount}`:''].filter(Boolean).join(' / ');
     const displayMembers=_scheduleNormalizeChangeMembers(row.members||[]);
     const memberText=displayMembers.map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
     const teacherText=[...new Set(displayMembers.flatMap(m=>m.slots.map(slot=>slot.teacher).filter(Boolean)))].join(' / ');

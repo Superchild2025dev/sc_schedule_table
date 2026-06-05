@@ -3,6 +3,7 @@
   const TEACHERS_KEY='swim_teachers';
   const FEEDBACK_KEY='swim_parent_feedback';
   const TAB_LIST_KEY='swim_tab_list';
+  const MAIN_TAB_KEY='swim_main_tab';
   const STUDENTS_KEY='swim_students';
   const INST_KEY='swim_inst';
   const ENROLL_KEY='swim_enroll';
@@ -313,6 +314,29 @@
       .filter(tab=>tab&&tab.type!=='snapshot')
       .map(tab=>Object.assign({id:'regular',name:'정규시간표',type:'regular'},tab));
   }
+  function currentIsoDate(){
+    const d=new Date();
+    const p=n=>String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+  }
+  function selectStudentDirectoryTabs(rawTabs,mainSetting){
+    const tabs=normalizeStudentTabs(rawTabs);
+    const main=mainSetting&&typeof mainSetting==='object'?mainSetting:{};
+    const regularTabs=tabs.filter(tab=>!tab.type||tab.type==='regular');
+    const regularMain=regularTabs.find(tab=>tab.id===main.tabId)
+      || regularTabs.find(tab=>tab.id==='regular')
+      || regularTabs[0]
+      || null;
+    const selected=[];
+    if(regularMain) selected.push(regularMain);
+    const today=currentIsoDate();
+    tabs.filter(tab=>tab.type==='bangteuk').forEach(tab=>{
+      const isMainBangteuk=main.tabId&&tab.id===main.tabId;
+      const inSeason=tab.seasonStart&&tab.seasonEnd&&tab.seasonStart<=today&&tab.seasonEnd>=today;
+      if((isMainBangteuk||inSeason)&&!selected.some(item=>item.id===tab.id)) selected.push(tab);
+    });
+    return selected.length?selected:(regularMain?[regularMain]:tabs.slice(0,1));
+  }
   function studentTabConfig(tab){
     const id=tab&&tab.id||'regular';
     if(tab&&tab.type==='bangteuk'){
@@ -382,7 +406,11 @@
   function studentSlotInfo(slotKey,dateLabel,teacherName){
     const p=String(slotKey||'').split('/');
     const day=p[1]||'';
-    const hour=String(p[0]||'').replace(/[^\d]/g,'')||String(p[0]||'');
+    let time=p[0]||'';
+    try{
+      if(window.SCScheduleTime&&typeof window.SCScheduleTime.displayTimeForDay==='function') time=window.SCScheduleTime.displayTimeForDay(day,time)||time;
+    }catch(e){}
+    const hour=String(time||p[0]||'').replace(/[^\d]/g,'')||String(time||p[0]||'');
     const badge=day&&hour ? day+hour : (p.length>=4 ? `${p[1]} ${p[0]}` : String(slotKey||''));
     const teacher=String(teacherName||'').trim();
     const date=String(dateLabel||'').trim();
@@ -441,24 +469,103 @@
     if(status==='등록예정') return 'enroll';
     if(status==='제외예정') return 'exclude';
     if(status==='이동예정') return 'move';
+    if(status==='숨김후보') return 'hidden';
     return 'retire';
   }
   function studentRecord(entry,status,tab,slotKey,dateLabel,fallback,teacherName){
     const person=studentRecordPerson(entry,fallback);
+    const statusKey=studentStatusKey(status);
     return {
       n:person.n,
       p:person.p,
       status,
-      statusKey:studentStatusKey(status),
-      counted:status!=='퇴원예정',
+      statusKey,
+      counted:statusKey==='current'||statusKey==='enroll',
       tabId:tab&&tab.id||'reservation',
       tabName:tab&&tab.name||'예약',
       slot:studentSlotInfo(slotKey,dateLabel,teacherName),
     };
   }
+  function studentGroupName(record){
+    return String(record&&(record.n||record.name)||'').trim();
+  }
+  function studentGroupPhone(record){
+    return normalizePhone(record&&record.p||record&&record.phone||record&&record.tel||'');
+  }
+  function rewriteStudentGroupPersonKey(row,oldPersonKey,newPersonKey){
+    if(!row||!oldPersonKey||!newPersonKey||oldPersonKey===newPersonKey) return;
+    ['countedPeople','retirePeople','movePeople'].forEach(prop=>{
+      const set=row[prop];
+      if(set&&set.has(oldPersonKey)){
+        set.delete(oldPersonKey);
+        set.add(newPersonKey);
+      }
+    });
+    const nextMembers=new Map();
+    (row.members||new Map()).forEach((member,key)=>{
+      const nextKey=String(key).startsWith(oldPersonKey+'|')
+        ? newPersonKey+String(key).slice(oldPersonKey.length)
+        : key;
+      if(!nextMembers.has(nextKey)){
+        nextMembers.set(nextKey,member);
+        return;
+      }
+      const target=nextMembers.get(nextKey);
+      (member.dates||new Set()).forEach(v=>target.dates.add(v));
+      (member.slots||[]).forEach(slot=>{
+        if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
+      });
+    });
+    row.members=nextMembers;
+  }
+  function mergeStudentGroups(map,fromKey,toKey){
+    if(!fromKey||!toKey||fromKey===toKey||!map.has(fromKey)) return;
+    const from=map.get(fromKey);
+    const fromPerson=fromKey.startsWith('person:')?fromKey.slice('person:'.length):'';
+    const toPerson=toKey.startsWith('person:')?toKey.slice('person:'.length):'';
+    rewriteStudentGroupPersonKey(from,fromPerson,toPerson);
+    if(!map.has(toKey)){
+      from.key=toKey;
+      map.delete(fromKey);
+      map.set(toKey,from);
+      return;
+    }
+    const to=map.get(toKey);
+    if(!to.p&&from.p) to.p=from.p;
+    ['countedPeople','retirePeople','movePeople','statusKeys','tabs'].forEach(prop=>{
+      (from[prop]||new Set()).forEach(v=>to[prop].add(v));
+    });
+    (from.members||new Map()).forEach((member,key)=>{
+      if(!to.members.has(key)){
+        to.members.set(key,member);
+        return;
+      }
+      const target=to.members.get(key);
+      (member.dates||new Set()).forEach(v=>target.dates.add(v));
+      (member.slots||[]).forEach(slot=>{
+        if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
+      });
+    });
+    map.delete(fromKey);
+  }
+  function studentExistingPhoneGroupKey(map,name){
+    if(!name) return '';
+    const prefix='person:'+name+'|';
+    const matches=[...map.keys()].filter(key=>key.startsWith(prefix)&&key!==prefix);
+    return matches.length===1 ? matches[0] : '';
+  }
   function addStudentGroup(map,record){
-    const key=studentPhoneGroupKey(record);
+    const name=studentGroupName(record);
+    const phone=studentGroupPhone(record);
+    let key=studentPhoneGroupKey(record);
     if(!key) return;
+    const noPhoneKey=name?'person:'+name+'|':'';
+    if(name&&phone){
+      mergeStudentGroups(map,noPhoneKey,key);
+    }else if(name&&!phone){
+      const existingPhoneKey=studentExistingPhoneGroupKey(map,name);
+      if(existingPhoneKey) key=existingPhoneKey;
+    }
     if(!map.has(key)){
       map.set(key,{
         key,
@@ -473,7 +580,7 @@
     }
     const row=map.get(key);
     if(record.p&&!row.p) row.p=displayPhone(record.p);
-    const personKey=studentPersonKey(record);
+    const personKey=(name&&key.startsWith('person:')) ? key.slice('person:'.length) : studentPersonKey(record);
     if(personKey){
       if(record.counted) row.countedPeople.add(personKey);
       if(record.statusKey==='retire') row.retirePeople.add(personKey);
@@ -501,8 +608,22 @@
     const person=studentRecordPerson(entry,fallback);
     return studentPersonKey(person);
   }
+  function studentEntryMatchesPerson(entry,fallback,target){
+    const a=studentRecordPerson(entry,fallback);
+    const b=studentRecordPerson(target,null);
+    const aName=String(a.n||'').trim();
+    const bName=String(b.n||'').trim();
+    if(aName&&bName&&aName!==bName) return false;
+    const aPhone=normalizePhone(a.p);
+    const bPhone=normalizePhone(b.p);
+    if(aPhone&&bPhone&&aPhone!==bPhone) return false;
+    return !!(aName||bName);
+  }
   function studentDirectoryRowsFromRoot(root){
-    const tabs=normalizeStudentTabs(studentRootValue(root,TAB_LIST_KEY,[]));
+    const tabs=selectStudentDirectoryTabs(
+      studentRootValue(root,TAB_LIST_KEY,[]),
+      studentRootValue(root,MAIN_TAB_KEY,{})||{}
+    );
     const enrollMap=studentRootValue(root,ENROLL_KEY,{})||{};
     const retireMap=studentRootValue(root,RETIRE_KEY,{})||{};
     const disabledMap=studentRootValue(root,DISABLED_KEY,{})||{};
@@ -525,6 +646,44 @@
     const teacherByInstKey={};
     const handledRetireSlots=new Set();
     const tabOptions=[];
+    const slotContexts=[];
+    const isSaturdaySlot=slotKey=>{
+      const p=String(slotKey||'').split('/');
+      return p[1]==='토';
+    };
+    const checkSlotInContext=(ctx,slotKey)=>{
+      const p=String(slotKey||'').split('/');
+      if(p.length<4) return {visible:false,saturday:false,reason:'슬롯 형식 오류'};
+      const saturday=p[1]==='토';
+      if(!ctx||!ctx.cfg||!ctx.cfg.days.includes(p[1])) return {visible:false,saturday,reason:'현재 시간표 요일 아님'};
+      const validSaturdayTime=!saturday||!window.SCScheduleTime||!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY||!!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[p[0]];
+      if(!ctx.cfg.times.includes(p[0])||!validSaturdayTime) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
+      const lane=parseInt(p[2],10);
+      if(!Number.isFinite(lane)||lane<1||lane>ctx.cfg.lanes) return {visible:false,saturday,reason:'현재 시간표 레인 밖'};
+      const instKey=p[0]+'/'+p[1]+'/'+p[2];
+      const maxRows=ctx.instRowsByKey[instKey];
+      if(!maxRows) return {visible:false,saturday,reason:'담임 없는 칸'};
+      const row=parseInt(p[3],10);
+      if(!Number.isFinite(row)||row<1||row>maxRows) return {visible:false,saturday,reason:'현재 시간표 번호 밖'};
+      if(disabledMap[instKey+'/'+row]) return {visible:false,saturday,reason:'비활성 칸'};
+      return {visible:true,saturday,reason:''};
+    };
+    const checkSlotInAnyContext=slotKey=>{
+      if(!isSaturdaySlot(slotKey)) return {visible:true,saturday:false,reason:''};
+      let fallback={visible:false,saturday:true,reason:'토요일 운영 탭 없음'};
+      for(const ctx of slotContexts){
+        const res=checkSlotInContext(ctx,slotKey);
+        if(!res.saturday) continue;
+        if(res.visible) return res;
+        if(res.reason&&fallback.reason==='토요일 운영 탭 없음') fallback=res;
+      }
+      return fallback;
+    };
+    const addHiddenSaturdayRecord=(entry,tab,slotKey,fallback,reason)=>{
+      if(!isSaturdaySlot(slotKey)) return;
+      const instKey=slotKey.split('/').slice(0,3).join('/');
+      addStudentGroup(groups,studentRecord(entry,'숨김후보',tab||{id:'hidden',name:'숨김후보'},slotKey,reason||'시간표 밖',fallback,teacherByInstKey[instKey]||''));
+    };
     tabs.forEach(tab=>{
       const cfg=studentTabConfig(tab);
       tabOptions.push({id:cfg.tabId,name:cfg.tabName});
@@ -543,22 +702,25 @@
           }
         });
       });
+      const ctx={tab,cfg,instRowsByKey};
+      slotContexts.push(ctx);
       const canCountSlot=slotKey=>{
-        const p=String(slotKey||'').split('/');
-        if(p.length<4) return false;
-        const instKey=p[0]+'/'+p[1]+'/'+p[2];
-        const maxRows=instRowsByKey[instKey];
-        const row=parseInt(p[3],10);
-        return !!(maxRows&&Number.isFinite(row)&&row>=1&&row<=maxRows&&!disabledMap[instKey+'/'+row]);
+        return checkSlotInContext(ctx,slotKey).visible;
       };
       const actualBySlot=new Map();
       (Array.isArray(students)?students:[]).forEach(stu=>{
         if(!stu||!stu.n) return;
         const slotKey=studentSlotKey(stu);
         if(canCountSlot(slotKey)) actualBySlot.set(slotKey,stu);
+        else {
+          const hidden=checkSlotInContext(ctx,slotKey);
+          if(hidden.saturday) addHiddenSaturdayRecord(stu,{id:cfg.tabId,name:cfg.tabName},slotKey,null,hidden.reason);
+        }
       });
       actualBySlot.forEach((stu,slotKey)=>{
         const retire=activeRetireSlots.get(slotKey);
+        const enroll=enrollMap&&enrollMap[slotKey];
+        if(enroll&&studentEntryMatchesPerson(enroll,null,stu)) return;
         if(retire){
           const ds=typeof retire==='string'?retire:retire.ds;
           const instKey=slotKey.split('/').slice(0,3).join('/');
@@ -575,15 +737,25 @@
     const reservationTab={id:'reservation',name:'예약'};
     Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
       if(!entry) return;
+      const hidden=checkSlotInAnyContext(slotKey);
+      if(hidden.saturday&&!hidden.visible){
+        addHiddenSaturdayRecord(entry,reservationTab,slotKey,null,hidden.reason);
+        return;
+      }
       const ds=typeof entry==='string'?entry:entry.ds;
       const instKey=slotKey.split('/').slice(0,3).join('/');
       addStudentGroup(groups,studentRecord(entry,studentEnrollStatus(entry),reservationTab,slotKey,shortDate(ds)+'부터',null,teacherByInstKey[instKey]||''));
     });
     activeRetireSlots.forEach((entry,slotKey)=>{
       if(handledRetireSlots.has(slotKey)) return;
+      const hidden=checkSlotInAnyContext(slotKey);
       const ds=typeof entry==='string'?entry:entry.ds;
       const instKey=slotKey.split('/').slice(0,3).join('/');
       const fallback=studentPairFallback(entry,enrollMap);
+      if(hidden.saturday&&!hidden.visible){
+        addHiddenSaturdayRecord(entry,reservationTab,slotKey,fallback,hidden.reason);
+        return;
+      }
       const isChange=enrollPersonKeys.has(studentEntryPersonKey(entry,fallback));
       addStudentGroup(groups,studentRecord(entry,studentRetireStatus(entry,isChange),reservationTab,slotKey,shortDate(ds)+'까지',fallback,teacherByInstKey[instKey]||''));
     });
@@ -593,9 +765,19 @@
       const names=members.map(m=>m.n).filter(Boolean);
       const slotText=members.map(m=>m.n+' '+m.status+' '+m.slots.map(slot=>slot.text).join(' / ')).join(' / ');
       const statusKeys=[...new Set(members.map(m=>m.statusKey).filter(Boolean))];
-      const peopleKeys=[...new Set(members.map(m=>studentPersonKey(m)).filter(Boolean))];
-      const peopleCount=peopleKeys.length||row.countedPeople.size||0;
-      const hasCountedStatus=statusKeys.some(k=>k!=='retire');
+      const peopleKeys=new Set([
+        ...row.countedPeople,
+        ...row.retirePeople,
+        ...row.movePeople,
+      ]);
+      if(!peopleKeys.size){
+        members.forEach(m=>{
+          const key=studentPersonKey(m);
+          if(key) peopleKeys.add(key);
+        });
+      }
+      const peopleCount=peopleKeys.size||0;
+      const hasCountedStatus=row.countedPeople.size>0||statusKeys.includes('current')||statusKeys.includes('enroll');
       const countedSlotCount=[...new Set(members
         .filter(m=>m.statusKey==='current'||m.statusKey==='enroll')
         .flatMap(m=>(m.slots||[]).map(slot=>slot.key).filter(Boolean)))].length;
@@ -604,10 +786,11 @@
         p:row.p,
         peopleCount,
         counted:hasCountedStatus,
-        countedCount:hasCountedStatus?peopleCount:0,
+        countedCount:hasCountedStatus?(row.countedPeople.size||peopleCount):0,
         countedSlotCount,
         retireCount:(!hasCountedStatus&&statusKeys.includes('retire'))?(row.retirePeople.size||peopleCount):0,
-        moveCount:statusKeys.includes('exclude')||statusKeys.includes('move')?peopleCount:0,
+        hiddenCount:(!hasCountedStatus&&statusKeys.includes('hidden'))?peopleCount:0,
+        moveCount:statusKeys.includes('exclude')||statusKeys.includes('move')?(row.movePeople.size||peopleCount):0,
         statusKeys,
         tabIds:[...row.tabs].map(v=>v.split('|')[0]),
         tabs:[...row.tabs].map(v=>v.split('|')[1]).join(', '),
@@ -623,7 +806,8 @@
     const retire=rows.reduce((sum,row)=>sum+(row.retireCount||0),0);
     const total=counted+retire;
     const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
-    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,loadedAt:new Date().toISOString()};
+    const hidden=rows.reduce((sum,row)=>sum+(row.hiddenCount||0),0);
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,hidden,loadedAt:new Date().toISOString()};
   }
   async function loadStudentDirectory(force){
     const branchId=activeBranch;
@@ -639,7 +823,7 @@
       studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
     }catch(e){
       console.error(e);
-      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,error:e.message||String(e)};
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,error:e.message||String(e)};
       toast('원생목록 로드 실패','err');
     }finally{
       studentDirectoryLoadingByBranch[branchId]=false;
@@ -1375,7 +1559,7 @@
     if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
   }
   function currentStudentDirectory(){
-    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0};
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0};
   }
   function studentRowTeachers(row){
     return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
@@ -1417,6 +1601,7 @@
       if(status==='exclude'&&!(row.statusKeys||[]).includes('exclude')) return false;
       if(status==='move'&&!(row.statusKeys||[]).includes('move')) return false;
       if(status==='retire'&&!(row.statusKeys||[]).includes('retire')) return false;
+      if(status==='hidden'&&!(row.statusKeys||[]).includes('hidden')) return false;
       if(teacher!=='all'&&!studentRowTeachers(row).includes(teacher)) return false;
       if(q&&!String(row.search||'').includes(q)) return false;
       return true;
@@ -1439,6 +1624,7 @@
     if(statusKey==='exclude') return 'exclude';
     if(statusKey==='move') return 'move';
     if(statusKey==='retire') return 'retire';
+    if(statusKey==='hidden') return 'hidden';
     return '';
   }
   function renderStudentDirectory(){
@@ -1455,6 +1641,14 @@
     if(avgEl) avgEl.textContent=(Number(dir.averageHours||0)).toFixed(1);
     if(retireEl) retireEl.textContent=String(dir.retire||0);
     if(netEl) netEl.textContent=String(dir.counted||0);
+    const hiddenWarning=$('students-hidden-warning');
+    if(hiddenWarning){
+      const hidden=Number(dir.hidden||0);
+      hiddenWarning.hidden=!hidden;
+      hiddenWarning.innerHTML=hidden
+        ? `토요일 시간표 밖 숨김후보 <strong>${hidden}</strong>명이 있습니다. 실제 원생수/시수 집계에서는 제외했고, 상태 필터에서 <strong>숨김후보</strong>로 확인할 수 있습니다.`
+        : '';
+    }
     const body=$('students-list-body');
     if(!body) return;
     if(dir.error){
@@ -1470,6 +1664,7 @@
         row.countedCount?`<span class="student-pill counted">포함 ${row.countedCount}</span>`:'',
         row.moveCount?`<span class="student-pill move">제외 ${row.moveCount}</span>`:'',
         row.retireCount?`<span class="student-pill excluded">퇴원 ${row.retireCount}</span>`:'',
+        row.hiddenCount?`<span class="student-pill hidden">숨김 ${row.hiddenCount}</span>`:'',
       ].filter(Boolean).join('');
       const memberHtml=(row.members||[]).map(member=>{
         const slotBits=[...new Set((member.slots||[]).map(slot=>slot.badge).filter(Boolean))]
@@ -1498,7 +1693,7 @@
     }
     const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
     rows.forEach(row=>{
-      const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.moveCount?`제외 ${row.moveCount}`:'',row.retireCount?`퇴원 ${row.retireCount}`:''].filter(Boolean).join(' / ');
+      const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.moveCount?`제외 ${row.moveCount}`:'',row.retireCount?`퇴원 ${row.retireCount}`:'',row.hiddenCount?`숨김 ${row.hiddenCount}`:''].filter(Boolean).join(' / ');
       const memberText=(row.members||[]).map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
       const teacherText=studentRowTeachers(row).join(' / ');
       const slotText=studentRowSlotBadges(row).join(' / ');

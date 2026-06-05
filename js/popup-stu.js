@@ -308,8 +308,8 @@ function _bogangStudentCandidate(stu){
   const slotKey=_bogangStudentSlotKey(stu);
   const inst=getInst(stu.t,stu.d,stu.l);
   const teacher=_bogangCleanTeacherName(inst);
-  const time=String(stu.t||'');
   const day=String(stu.d||'');
+  const time=_moveDisplayTime(day,String(stu.t||''));
   const slotLabel=[day+(time?time.replace('시',''):''),teacher?teacher+'쌤':''].filter(Boolean).join(' ');
   return {
     key:slotKey+'|'+(stu.p||'')+'|'+(stu.n||'')+'|'+(stu.a||''),
@@ -330,13 +330,24 @@ function _bogangSearchText(c){
 }
 function _bogangGroupCandidates(list){
   const map=new Map();
+  const phonesByName=new Map();
   list.forEach(c=>{
+    const name=String(c.n||'').trim();
     const phone=_bogangNormPhone(c.p);
-    const key=phone ? `${c.n}|${phone}` : `${c.n}|${c.a}|${c.slotKey}`;
+    if(!name||!phone) return;
+    if(!phonesByName.has(name)) phonesByName.set(name,new Set());
+    phonesByName.get(name).add(phone);
+  });
+  list.forEach(c=>{
+    const name=String(c.n||'').trim();
+    const phone=_bogangNormPhone(c.p);
+    const knownPhones=phonesByName.get(name);
+    const fallbackPhone=knownPhones&&knownPhones.size===1?[...knownPhones][0]:'';
+    const key=phone ? `${name}|${phone}` : (fallbackPhone ? `${name}|${fallbackPhone}` : `${name}|${c.a}|${c.slotKey}`);
     if(!map.has(key)){
       map.set(key,Object.assign({},c,{
         key,
-        p:phone||c.p||'',
+        p:phone||fallbackPhone||c.p||'',
         slots:[],
         teachers:new Set(),
         days:new Set(),
@@ -889,6 +900,16 @@ function handleEnrollMove(e, ctx){ startMove('enroll'); }
 function handleMoveReserve(e, ctx){ startMove('reserve'); }
 function handleSwap(e, ctx){ startMove('swap'); }
 
+function _sameStudentMissingPhone(stu,name,age){
+  if(!stu||!name) return false;
+  if(String(stu.n||'').trim()!==name) return false;
+  if(normPhone(stu.p)) return false;
+  const stuAge=stu.a==null?'':String(stu.a);
+  const targetAge=age==null?'':String(age);
+  if(stuAge&&targetAge&&stuAge!==targetAge) return false;
+  return true;
+}
+
 async function handleDisable(e, ctx){
   const wasDis=isDisabled(ctx.slotKey);
   try{
@@ -935,6 +956,8 @@ async function handleSave(e, ctx){
   const memo=document.getElementById('sp-memo')?.value.trim()||'';
 
   const oldStu=getStu(t,day,lane,row);
+  const oldPhone=oldStu?normPhone(oldStu.p):'';
+  const shouldBackfillPhone=!!(oldStu&&phone&&!oldPhone&&name&&String(oldStu.n||'').trim()===name);
   try{
     await updateStudentsTx((students,abort)=>{
       const idx=students.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
@@ -948,6 +971,11 @@ async function handleSave(e, ctx){
         return;
       }
       if(idx>=0) students.splice(idx,1);
+      if(shouldBackfillPhone){
+        students.forEach(s=>{
+          if(_sameStudentMissingPhone(s,name,age)) s.p=phone;
+        });
+      }
       if(name){
         const obj={n:name,a:age,t,d:day,l:lane,r:row};
         if(phone) obj.p=phone;
@@ -2039,7 +2067,7 @@ function askDateForDay(day, callback, opts){
 }
 
 function _moveDisplayTime(day,t){
-  if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function') return SCScheduleTime.displayTimeForDay(day,t);
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.displayTimeForDay==='function') return window.SCScheduleTime.displayTimeForDay(day,t);
   const cfg=typeof getTabConfig==='function'?getTabConfig():null;
   const satLabel=cfg&&cfg.satTimeLabel||{};
   return String(day||'')==='토' ? (satLabel[t]||t||'') : (t||'');

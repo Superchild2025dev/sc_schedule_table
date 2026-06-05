@@ -154,6 +154,7 @@
           <option value="enroll">등록예정</option>
           <option value="exclude">제외예정</option>
           <option value="retire">퇴원예정</option>
+          <option value="hidden">숨김후보</option>
         </select>
         <select id="students-sort">
           <option value="count">집계순</option>
@@ -171,6 +172,7 @@
         <div><strong id="students-retire-count">0</strong><span>퇴원예정</span></div>
         <div><strong id="students-net-count">0</strong><span>순 원생수</span></div>
       </div>
+      <div id="students-hidden-warning" class="student-hidden-warning" hidden></div>
 
       <div class="student-table-wrap">
         <table class="student-table">
@@ -431,6 +433,7 @@
 
 <div id="settings-toast" class="settings-toast"></div>
 
+<script>scJs('js/schedule-time.js')</script>
 <script>scJs('js/auth-guard.js')</script>
 <script>scJs('js/settings.js')</script>
 </body>
