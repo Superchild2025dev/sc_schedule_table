@@ -74,6 +74,14 @@ _activeTab=_mainTabId(_tabList);
 function _tabClone(value){
   return JSON.parse(JSON.stringify(value));
 }
+function _tabCloneSafe(value,fallback){
+  const src=(value===undefined||value===null)?fallback:value;
+  try{return JSON.parse(JSON.stringify(src));}
+  catch(e){
+    try{return JSON.parse(JSON.stringify(fallback));}
+    catch(e2){return fallback;}
+  }
+}
 function _pad2(n){
   return String(parseInt(n,10)).padStart(2,'0');
 }
@@ -96,8 +104,20 @@ function _periodMonthForDate(ds){
 function _defaultPeriodMonth(){
   try{return _normalizeMonthKey(_periodMonthForDate(toDateStr(getToday())))||'2026-05';}catch(e){return '2026-05';}
 }
+function _addMonthsToMonthKey(monthKey,delta){
+  const key=_normalizeMonthKey(monthKey)||_defaultPeriodMonth();
+  const m=String(key||'').match(/^(\d{4})-(\d{2})$/);
+  const base=m?new Date(Number(m[1]),Number(m[2])-1+delta,1):new Date(getToday().getFullYear(),getToday().getMonth()+delta,1);
+  return base.getFullYear()+'-'+_pad2(base.getMonth()+1);
+}
+function _monthTabName(monthKey){
+  const key=_normalizeMonthKey(monthKey)||_defaultPeriodMonth();
+  const month=parseInt(String(key).slice(5,7),10)||1;
+  return month+'월출석부';
+}
 function _tabPeriodMonth(tab){
   if(!tab) return '';
+  if(tab.periodLocked&&tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
   const main=_mainTabSetting();
   if((!tab.type||tab.type==='regular') && (main.tabId===tab.id || (!main.tabId&&tab.id==='regular'))){
     return _defaultPeriodMonth();
@@ -593,6 +613,7 @@ function _openSingleTabMenu(tabId, anchor){
     html+=_menuSep();
     html+=_menuBtn('main-public',tabId,'메인 시간표로 지정');
     html+=_menuBtn('parent-public',tabId,'학부모 공개로 지정');
+    if(!tab.type||tab.type==='regular') html+=_menuBtn('rollover',tabId,'시간표 이월하기');
     html+=_menuBtn('snapshot',tabId,'스냅샷 만들기');
   }
   if(tab.id!=='regular'){
@@ -659,6 +680,7 @@ async function configureTabBasis(tabId){
     if(val===null) return;
     if(!/^\d{4}-\d{2}$/.test(val)){toast('운영 월 형식은 YYYY-MM 입니다','err');return;}
     patch.periodMonth=val;
+    patch.periodLocked=true;
   }
   try{
     await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
@@ -833,6 +855,7 @@ function _handleTabMenuAction(action,id,targetFolder=''){
   else if(action==='right') moveTabOrder(id,1);
   else if(action==='main-public') setMainTab(id);
   else if(action==='parent-public') setParentPublicTab(id);
+  else if(action==='rollover') rolloverScheduleTab(id);
   else if(action==='copy') copyTab(id);
   else if(action==='snapshot') createSnapshot(id);
   else if(action==='delete') deleteTab(id);
@@ -854,6 +877,86 @@ function _handleFolderMenuAction(action,folder){
 let _origGlobalMaps=null; // 스냅샷 진입 시 백업, 떠날 때 복원
 const SNAP_KEY_PREFIX='swim_snap_';
 
+function _snapshotDataForTab(srcTab,capturedAt){
+  const keys=_tabStorageKeys(srcTab);
+  const active=srcTab&&srcTab.id===_activeTab&&srcTab.type!=='snapshot';
+  const attKeys=getAttendanceStorageKeys(srcTab?.id);
+  return {
+    students:_tabCloneSafe(active&&typeof STUDENTS!=='undefined'?STUDENTS:loadJSON(keys.stuKey, []), []),
+    inst:_tabCloneSafe(active&&typeof INST_MAP!=='undefined'?INST_MAP:loadJSON(keys.instKey, {}), {}),
+    retire:_tabCloneSafe(typeof RETIRE_MAP!=='undefined'?RETIRE_MAP:loadJSON(STORAGE_KEYS.RETIRE, {}), {}),
+    enroll:_tabCloneSafe(typeof ENROLL_MAP!=='undefined'?ENROLL_MAP:loadJSON(STORAGE_KEYS.ENROLL, {}), {}),
+    mark:_tabCloneSafe(typeof MARK_MAP!=='undefined'?MARK_MAP:loadJSON(STORAGE_KEYS.MARK, {}), {}),
+    disabled:_tabCloneSafe(typeof DISABLED_MAP!=='undefined'?DISABLED_MAP:loadJSON(STORAGE_KEYS.DISABLED, {}), {}),
+    reserve:_tabCloneSafe(typeof RESERVE_MAP!=='undefined'?RESERVE_MAP:loadJSON(STORAGE_KEYS.RESERVE, {}), {}),
+    hyuwon:_tabCloneSafe(typeof HYUWON_MAP!=='undefined'?HYUWON_MAP:loadJSON(STORAGE_KEYS.休원, {}), {}),
+    move:_tabCloneSafe(typeof MOVE_MAP!=='undefined'?MOVE_MAP:loadJSON(STORAGE_KEYS.MOVE, {}), {}),
+    attendance:_tabCloneSafe(active&&typeof ATTENDANCE!=='undefined'?ATTENDANCE:loadJSON(attKeys.attendance, {}), {}),
+    attGuests:_tabCloneSafe(active&&typeof ATT_GUESTS!=='undefined'?ATT_GUESTS:loadJSON(attKeys.attGuests, {}), {}),
+    daySnapshot:_tabCloneSafe(active&&typeof DAY_SNAPSHOT!=='undefined'?DAY_SNAPSHOT:loadJSON(attKeys.daySnapshot, {}), {}),
+    capturedAt,
+    sourceTabId:srcTab.id,
+    sourceTabType:srcTab.type,
+    sourceTabName:srcTab.name,
+  };
+}
+
+async function rolloverScheduleTab(srcId){
+  if(window.SCAuth && !SCAuth.requirePermission('editSchedule','시간표 이월')) return;
+  const srcTab=_tabList.find(t=>t.id===srcId);
+  if(!srcTab) return;
+  if(srcTab.type==='snapshot'){toast('스냅샷은 이월할 수 없습니다','err');return;}
+  if(srcTab.type==='bangteuk'){toast('방특은 기간 설정/스냅샷으로 관리해주세요','err');return;}
+  const currentMonth=_tabPeriodMonth(srcTab)||_defaultPeriodMonth();
+  const nextDefault=_addMonthsToMonthKey(currentMonth,1);
+  const nextInput=prompt('이월할 운영 월 (YYYY-MM):', nextDefault);
+  if(nextInput===null) return;
+  const nextMonth=_normalizeMonthKey(nextInput);
+  if(!nextMonth){toast('운영 월 형식은 YYYY-MM 입니다','err');return;}
+  const nextNameInput=prompt('이월 후 시간표 이름:', _monthTabName(nextMonth));
+  if(nextNameInput===null) return;
+  const nextName=nextNameInput.trim();
+  if(!nextName){toast('시간표 이름을 입력하세요','err');return;}
+  const snapshotName=(srcTab.name||_monthTabName(currentMonth))+' 박제';
+  const msg=[
+    '현재 시간표를 "'+snapshotName+'" 스냅샷으로 박제하고',
+    '운영 시간표를 "'+nextName+'"로 이월할까요?',
+    '',
+    '메인/학부모 공개 딱지는 이 운영 시간표에 유지됩니다.'
+  ].join('\n');
+  if(!confirm(msg)) return;
+
+  const today=toDateStr(getToday());
+  const newId='snap_'+Date.now();
+  const snapData=_snapshotDataForTab(srcTab,today);
+  dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
+  const snapTab={id:newId,name:snapshotName,type:'snapshot',capturedAt:today,periodMonth:currentMonth};
+  if(srcTab.folder) snapTab.folder=srcTab.folder;
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.MAIN_TAB,STORAGE_KEYS.PARENT_TAB],state=>{
+      const idx=state.tabs.findIndex(t=>t.id===srcId);
+      if(idx<0) throw new Error('원본 시간표를 찾을 수 없습니다');
+      const live=state.tabs[idx];
+      if(live.type==='snapshot'||live.type==='bangteuk') throw new Error('정규 운영 시간표만 이월할 수 있습니다');
+      state.tabs.splice(idx,0,snapTab);
+      live.name=nextName;
+      live.periodMonth=nextMonth;
+      live.periodLocked=true;
+      const liveKeys=_tabStorageKeys(live);
+      state.main={...liveKeys,setAt:new Date().toISOString()};
+      state.parent={...liveKeys,setAt:new Date().toISOString()};
+      return state;
+    },{label:'시간표 이월',target:nextName,detail:`${snapshotName} → ${nextName}`});
+    _activeTab=srcId;
+    switchTabView();
+    toast('시간표 이월 완료: '+nextName,'ok');
+  }catch(e){
+    console.error(e);
+    dbRemove(SNAP_KEY_PREFIX+newId);
+    toast(e.message||'시간표 이월 실패','err');
+  }
+}
+
 async function createSnapshot(srcId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','스냅샷 만들기')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
@@ -863,28 +966,12 @@ async function createSnapshot(srcId){
   const name=prompt('스냅샷 이름:', srcTab.name+' ('+today+')');
   if(!name) return;
   const newId='snap_'+Date.now();
-  // 현재 탭 데이터(STUDENTS/INST_MAP은 이미 활성 탭의 것)와 전역 맵을 deep clone
-  const snapData={
-    students:JSON.parse(JSON.stringify(STUDENTS||[])),
-    inst:JSON.parse(JSON.stringify(INST_MAP||{})),
-    retire:JSON.parse(JSON.stringify(RETIRE_MAP||{})),
-    enroll:JSON.parse(JSON.stringify(ENROLL_MAP||{})),
-    mark:JSON.parse(JSON.stringify(MARK_MAP||{})),
-    disabled:JSON.parse(JSON.stringify(DISABLED_MAP||{})),
-    reserve:JSON.parse(JSON.stringify(RESERVE_MAP||{})),
-    hyuwon:JSON.parse(JSON.stringify(HYUWON_MAP||{})),
-    move:JSON.parse(JSON.stringify(MOVE_MAP||{})),
-    attendance:JSON.parse(JSON.stringify(ATTENDANCE||{})),
-    attGuests:JSON.parse(JSON.stringify(ATT_GUESTS||{})),
-    daySnapshot:JSON.parse(JSON.stringify(DAY_SNAPSHOT||{})),
-    capturedAt:today,
-    sourceTabId:srcId,
-    sourceTabType:srcTab.type,
-    sourceTabName:srcTab.name,
-  };
+  const snapData=_snapshotDataForTab(srcTab,today);
   // 직접 dbSet (saveJSON 가드 통과 위해)
   dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
+  const snapMonth=_tabPeriodMonth(srcTab);
   const newTab={id:newId,name,type:'snapshot',capturedAt:today};
+  if(snapMonth) newTab.periodMonth=snapMonth;
   if(srcTab.folder) newTab.folder=srcTab.folder;
   try{
     await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
@@ -940,6 +1027,7 @@ async function copyTab(srcId){
   // 탭 목록에 추가 (원본 바로 뒤에 삽입)
   const newTab={id:newId, name, type:srcTab.type};
   if(srcTab.periodMonth) newTab.periodMonth=srcTab.periodMonth;
+  if(srcTab.periodLocked) newTab.periodLocked=true;
   if(srcTab.seasonStart) newTab.seasonStart=srcTab.seasonStart;
   if(srcTab.seasonEnd) newTab.seasonEnd=srcTab.seasonEnd;
   if(srcTab.folder) newTab.folder=srcTab.folder;

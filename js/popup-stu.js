@@ -2655,6 +2655,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         if(stu.loc) enrollEntry.loc=stu.loc;
         if(stu.memo) enrollEntry.memo=stu.memo;
         if(stu.g) enrollEntry.g=stu.g;
+        const retireEntry=_reservationEntryFromStudent(stu,sourceDs,{retireType:'exclude', excludeReason:'move', moveType:'reserve', moveId, pairKey:dstKey});
         try{
           const stuKey=getTabConfig().stuKey;
           await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
@@ -2665,12 +2666,17 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
             if(retire[dstKey]||enroll[dstKey]){ctx.abort('목적지에 기존 예약이 있습니다');return;}
             if(_reserveMoveAtSlot(srcKey,retire,enroll)){ctx.abort(_reserveMoveLockedMessage());return;}
             if(retire[srcKey]){ctx.abort('출발지에 이미 제외 예약이 있습니다');return;}
-            retire[srcKey]=_reservationEntryFromStudent(stu,sourceDs,{retireType:'exclude', excludeReason:'move', moveType:'reserve', moveId, pairKey:dstKey});
+            retire[srcKey]=retireEntry;
             enroll[dstKey]=enrollEntry;
             ctx.set(STORAGE_KEYS.RETIRE,retire);
             ctx.set(STORAGE_KEYS.ENROLL,enroll);
             return true;
           }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`});
+          if(typeof ensureDeskNoteForRetireReservation==='function'){
+            await ensureDeskNoteForRetireReservation(srcKey,retireEntry,stu).catch(err=>{
+              console.warn('예약 이동 하단 기록 자동 추가 실패:',err);
+            });
+          }
           const label=newDs.slice(5).replace('-','/');
           const sourceLabel=sourceDs.slice(5).replace('-','/');
           _finishMove(stu.n+(stu.a||'')+' 예약 이동 (삭제 '+sourceLabel+' / 등록 '+label+')');
@@ -2724,6 +2730,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
 
   try{
     let movedName=stu.n;
+    let movedStuForLog=stu;
     const stuKey=getTabConfig().stuKey;
     const instKey=getTabConfig().instKey;
     await updateScheduleTx([stuKey,instKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED,STORAGE_KEYS.REQUESTS], ctx=>{
@@ -2767,6 +2774,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       if(sIdx<0){ctx.abort('소스 학생 정보 오류');return;}
       const remoteStu=students[sIdx];
       movedName=remoteStu.n||stu.n;
+      movedStuForLog=remoteStu;
       students.splice(sIdx,1);
       students.push(_studentForSlot(remoteStu,dstT,dstDay,dstLane,dstRow));
       ctx.set(stuKey,students);
@@ -2789,6 +2797,11 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       }
       return true;
     }, {type:'move', label:type==='all'?'전체 이동':'원생 이동', detail:`${srcKey} → ${dstKey}`});
+    if(typeof ensureDeskNoteForStudentMove==='function'){
+      await ensureDeskNoteForStudentMove(srcKey,dstKey,movedStuForLog,type).catch(err=>{
+        console.warn('이동 하단 기록 자동 추가 실패:',err);
+      });
+    }
     _finishMove(movedName+' 이동 완료');
   }catch(err){
     toast(err?.message||'이동 실패','err');

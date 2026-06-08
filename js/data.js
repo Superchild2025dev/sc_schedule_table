@@ -1417,6 +1417,10 @@ function _scheduleAuditDateInfo(item,monthKey){
   const key=_recordLocalDateKey(item?.at);
   return {key,label:key?`${parseInt(key.slice(5,7),10)}/${parseInt(key.slice(8,10),10)}`:'-'};
 }
+function _scheduleAuditRecordedDateInfo(item){
+  const key=_recordLocalDateKey(item?.at||item?.createdAt||item?.updatedAt);
+  return {key,label:key?`${parseInt(key.slice(5,7),10)}/${parseInt(key.slice(8,10),10)}`:'-'};
+}
 function _scheduleAuditTime(item){
   const text=_scheduleAuditText(item);
   const m=text.match(/(\d{1,2})시/);
@@ -1611,30 +1615,25 @@ function _scheduleAuditMatchesActiveScope(item){
   // 오래된 기록에는 탭 정보가 없어서 정규 탭에서만 보여준다. 방특에 섞이지 않게 막는 용도.
   return active.tabType==='regular';
 }
-function _scheduleAuditIsManualNote(row){
-  return !!(row?.manual || row?.original?.source==='manual');
+function _scheduleAuditRowDateOrder(row){
+  const key=String(row?.dateKey||row?.effectiveDateKey||row?.original?.dateKey||'');
+  if(key) return key;
+  return _recordLocalDateKey(row?.createdAt||row?.at||row?.updatedAt)||'9999-12-31';
 }
-function _scheduleAuditManualOrder(row){
+function _scheduleAuditRowCreatedOrder(row){
   return String(row?.createdAt||row?.at||row?.updatedAt||row?.id||'');
 }
 function _scheduleAuditSortRows(rows){
   return (rows||[]).sort((a,b)=>{
-    const am=_scheduleAuditIsManualNote(a);
-    const bm=_scheduleAuditIsManualNote(b);
-    if(am!==bm) return am?1:-1;
-    if(am&&bm){
-      const ao=_scheduleAuditManualOrder(a);
-      const bo=_scheduleAuditManualOrder(b);
-      if(ao!==bo) return ao.localeCompare(bo);
-      return String(a.id||'').localeCompare(String(b.id||''));
-    }
-    const ak=a.dateKey||'', bk=b.dateKey||'';
-    if(ak&&bk&&ak!==bk) return bk.localeCompare(ak);
-    if(ak&&!bk) return -1;
-    if(!ak&&bk) return 1;
+    const ak=_scheduleAuditRowDateOrder(a);
+    const bk=_scheduleAuditRowDateOrder(b);
+    if(ak!==bk) return ak.localeCompare(bk);
+    const ao=_scheduleAuditRowCreatedOrder(a);
+    const bo=_scheduleAuditRowCreatedOrder(b);
+    if(ao!==bo) return ao.localeCompare(bo);
     const at=a.time||'', bt=b.time||'';
     if(at!==bt) return at.localeCompare(bt,'ko',{numeric:true});
-    return String(b.at||'').localeCompare(String(a.at||''));
+    return String(a.id||'').localeCompare(String(b.id||''));
   });
 }
 function _scheduleAuditAttr(s){
@@ -1709,6 +1708,7 @@ function _deskNoteFromScheduleRow(row){
   const tabId=scope.tabId||active.tabId;
   const tabName=scope.tabName||active.tabName;
   const tabType=scope.tabType||active.tabType;
+  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? String(written.key).slice(0,7) : '';
   return {
     id:_deskNoteId(),
     sourceKey,
@@ -1738,6 +1738,7 @@ function _deskNoteFromScheduleRow(row){
     change:row.reason||'-',
     date:written.label,
     dateKey:written.key,
+    recordMonthKey,
     time:row.time||'-',
     detail:row.detail||'',
     at:row.source==='visible-reservation'?now:(row.at||now),
@@ -1790,6 +1791,45 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
     additions.forEach(note=>{ next=_mergeDeskNote(next,note); });
     return next;
   },{type:'edit',label:'하단 기록 자동 추가'},true).then(()=>{
+    additions.forEach(note=>{ DESK_NOTES=_mergeDeskNote(DESK_NOTES,note); });
+    return true;
+  });
+}
+function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
+  const fromSlot=_scheduleAuditSlotFromKey(srcKey);
+  const toSlot=_scheduleAuditSlotFromKey(dstKey);
+  const target=String(stu?.n||stu?.name||'').trim();
+  if(!fromSlot||!toSlot||!target) return Promise.resolve(false);
+  const scope=_scheduleAuditActiveScope();
+  const visibleDays=_scheduleAuditDays();
+  const todayKey=toDateStr(getToday());
+  const date=_scheduleAuditDateLabel(todayKey);
+  const additions=[];
+  _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
+    const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,stu);
+    additions.push(_deskNoteFromScheduleRow({
+      day,
+      teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,{user:''}),
+      target,
+      reason,
+      date:date.label,
+      dateKey:date.key,
+      time:_scheduleAuditDisplayTime(fromSlot,day),
+      detail:`즉시 이동: ${target} ${srcKey} → ${dstKey}`,
+      at:new Date().toISOString(),
+      source:'direct-move',
+      monthKey:_scheduleAuditMonthKey(),
+      tabId:scope.tabId,
+      tabName:scope.tabName,
+      tabType:scope.tabType,
+    }));
+  });
+  if(!additions.length) return Promise.resolve(false);
+  return _updateDeskNotesTx(list=>{
+    let next=_normalizeDeskNotesList(list).slice();
+    additions.forEach(note=>{ next=_mergeDeskNote(next,note); });
+    return next;
+  },{type:'edit',label:'하단 이동 기록 자동 추가'},true).then(()=>{
     additions.forEach(note=>{ DESK_NOTES=_mergeDeskNote(DESK_NOTES,note); });
     return true;
   });
@@ -1908,9 +1948,9 @@ function _deskNoteVisible(note,monthKey,visibleDays){
   if(!_scheduleAuditMatchesActiveScope(note)) return false;
   const day=note.day||'기타';
   if(day!=='기타'&&!visibleDays.includes(day)) return false;
+  if(note.recordMonthKey) return String(note.recordMonthKey)===String(monthKey||'');
   if(note.monthKey) return String(note.monthKey)===String(monthKey||'');
-  // 화면 표시 날짜는 데스크가 누른/수정한 날짜지만,
-  // 어느 월 시간표 하단에 보일지는 원본 적용일(퇴원/제외/이동일)을 기준으로 잡는다.
+  // recordMonthKey가 없는 기존 기록은 과거 표시 위치를 유지한다.
   const basisKey=String(note.effectiveDateKey||note.original?.dateKey||note.dateKey||'');
   if(basisKey&&monthKey&&basisKey.slice(0,7)!==monthKey) return false;
   return true;
@@ -2172,14 +2212,13 @@ function saveDeskNoteModal(){
   note.tabType=note.tabType||scope.tabType;
   note.dateKey=parsedDate.key;
   note.date=parsedDate.label||'-';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsedDate.key||''))) note.recordMonthKey=String(parsedDate.key).slice(0,7);
+  else delete note.recordMonthKey;
   note.time=(document.getElementById('desk-note-time')?.value||'').trim()||'-';
   note.updatedAt=now;
   _upsertDeskNoteTx(note,isNew?'':expectedVersion,{type:'edit',label:isNew?'기록 추가':'기록 수정'}).then(()=>{
-    const saved=_findDeskNote(note.id)||note;
     closeDeskNoteModal();
-    const visible=_deskNoteVisible(saved,_scheduleAuditMonthKey(),_scheduleAuditDays());
-    const updated=visible ? (isNew?_insertDeskNoteRowDom(saved):_updateDeskNoteRowDom(saved)) : false;
-    if(!updated) renderScheduleAuditSummary();
+    renderScheduleAuditSummary();
     if(typeof toast==='function') toast('기록을 저장했습니다','ok');
   }).catch(err=>{
     console.warn('기록 저장 실패:',err);
@@ -2221,7 +2260,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     const fromSlot=_scheduleAuditSlotFromText(fromText)||_scheduleAuditSlotFromText(text);
     if(!fromSlot) return;
     const toSlot=_scheduleAuditSlotFromText(toText);
-    const date=_scheduleAuditDateInfo({at:item?.at,effectiveDate:item?.effectiveDate,label:item?.label,target:item?.target,detail:segment,tabName:item?.tabName,user:item?.user},monthKey);
+    const date=_scheduleAuditRecordedDateInfo(item);
     if(!date.key||date.key.slice(0,7)!==monthKey) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
