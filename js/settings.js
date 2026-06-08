@@ -417,6 +417,7 @@
     const text=[badge,teacher?teacher+' 선생님':'',date].filter(Boolean).join(' ');
     return {
       key:[slotKey,date,teacher].join('|'),
+      slotKey,
       badge,
       teacher,
       date,
@@ -513,6 +514,7 @@
         return;
       }
       const target=nextMembers.get(nextKey);
+      if(!target.a&&member.a) target.a=member.a;
       (member.dates||new Set()).forEach(v=>target.dates.add(v));
       (member.slots||[]).forEach(slot=>{
         if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
@@ -543,6 +545,7 @@
         return;
       }
       const target=to.members.get(key);
+      if(!target.a&&member.a) target.a=member.a;
       (member.dates||new Set()).forEach(v=>target.dates.add(v));
       (member.slots||[]).forEach(slot=>{
         if(!target.slots.some(saved=>saved.key===slot.key)) target.slots.push(slot);
@@ -605,6 +608,7 @@
     if(!row.members.has(memberKey)){
       row.members.set(memberKey,{
         n:record.n||'',
+        a:record.a||'',
         status:record.status,
         statusKey:record.statusKey,
         counted:record.counted,
@@ -613,6 +617,7 @@
       });
     }
     const member=row.members.get(memberKey);
+    if(!member.a&&record.a) member.a=record.a;
     if(record.slot&&record.slot.date) member.dates.add(record.slot.date);
     if(record.slot&&record.slot.text&&!member.slots.some(slot=>slot.key===record.slot.key)) member.slots.push(record.slot);
   }
@@ -1838,26 +1843,101 @@
       </tr>`;
     }).join('');
   }
-  function downloadStudentDirectoryCsv(){
+  function addStudentExcelValue(set,value){
+    const text=String(value||'').trim();
+    if(text&&text!=='-') set.add(text);
+  }
+  function studentDirectoryExcelRows(){
     const rows=filteredStudentRows();
+    const grouped=new Map();
+    rows.forEach((row,rowIndex)=>{
+      (row.members||[]).forEach((member,memberIndex)=>{
+        const name=String(member.n||'').trim();
+        const phone=normalizePhone(row.p||'');
+        const key=(name||phone) ? `${name}|${phone}` : `unknown|${rowIndex}|${memberIndex}`;
+        if(!grouped.has(key)){
+          grouped.set(key,{
+            name:name,
+            age:member.a||'',
+            phone:row.p||'',
+            teachers:new Set(),
+            classes:new Set(),
+            statuses:new Set(),
+            dates:new Set(),
+          });
+        }
+        const item=grouped.get(key);
+        if(!item.age&&member.a) item.age=member.a;
+        if(!item.phone&&row.p) item.phone=row.p;
+        const slots=(member.slots&&member.slots.length)?member.slots:[null];
+        slots.forEach(slot=>{
+          if(slot){
+            addStudentExcelValue(item.teachers,slot.teacher);
+            addStudentExcelValue(item.classes,slot.badge);
+            addStudentExcelValue(item.dates,slot.date);
+          }
+        });
+        addStudentExcelValue(item.statuses,member.status);
+        (member.dates||[]).forEach(date=>addStudentExcelValue(item.dates,date));
+      });
+    });
+    return [...grouped.values()].map(item=>({
+      name:item.name,
+      age:item.age,
+      phone:item.phone,
+      teacher:[...item.teachers].join(' / '),
+      className:[...item.classes].join(' / '),
+      status:[...item.statuses].join(' / '),
+      date:[...item.dates].join(' / '),
+    })).sort((a,b)=>
+      String(a.name).localeCompare(String(b.name),'ko') ||
+      String(a.phone).localeCompare(String(b.phone),'ko')
+    );
+  }
+  function excelText(value){
+    const text=String(value??'');
+    return /^[=+\-@]/.test(text.trim()) ? "'"+text : text;
+  }
+  function excelCell(value){
+    return `<td style="mso-number-format:'\\@';">${esc(excelText(value))}</td>`;
+  }
+  function downloadStudentDirectoryExcel(){
+    const rows=studentDirectoryExcelRows();
     if(!rows.length){
       toast('다운로드할 원생이 없습니다','err');
       return;
     }
-    const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
-    rows.forEach(row=>{
-      const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.moveCount?`제외 ${row.moveCount}`:'',row.retireCount?`퇴원 ${row.retireCount}`:'',row.hiddenCount?`숨김 ${row.hiddenCount}`:''].filter(Boolean).join(' / ');
-      const memberText=(row.members||[]).map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
-      const teacherText=studentRowTeachers(row).join(' / ');
-      const slotText=studentRowSlotBadges(row).join(' / ');
-      csvRows.push([countText,row.p||'',memberText,teacherText,slotText]);
-    });
-    const csv='\ufeff'+csvRows.map(cols=>cols.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
-    const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+    const headers=['원생이름','나이','전화번호','선생님','반','상태','적용일'];
+    const table=`<table>
+      <thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(row=>`<tr>
+        ${excelCell(row.name)}
+        ${excelCell(row.age)}
+        ${excelCell(row.phone)}
+        ${excelCell(row.teacher)}
+        ${excelCell(row.className)}
+        ${excelCell(row.status)}
+        ${excelCell(row.date)}
+      </tr>`).join('')}</tbody>
+    </table>`;
+    const html=`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+body{font-family:"맑은 고딕",Arial,sans-serif}
+table{border-collapse:collapse}
+th,td{border:1px solid #888;padding:6px 8px;font-size:11pt;white-space:nowrap}
+th{background:#D9EAD3;font-weight:700}
+</style>
+</head>
+<body>${table}</body>
+</html>`;
+    const blob=new Blob(['\ufeff'+html],{type:'application/vnd.ms-excel;charset=utf-8'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
-    a.download=`${activeBranch}_students_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download=`${activeBranch}_students_${new Date().toISOString().slice(0,10)}.xls`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1962,7 +2042,7 @@
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
     $('students-refresh')?.addEventListener('click',()=>loadStudentDirectory(true));
-    $('students-csv')?.addEventListener('click',downloadStudentDirectoryCsv);
+    $('students-excel')?.addEventListener('click',downloadStudentDirectoryExcel);
     $('students-search')?.addEventListener('input',renderStudentDirectory);
     $('students-teacher-filter')?.addEventListener('change',renderStudentDirectory);
     $('students-status-filter')?.addEventListener('change',renderStudentDirectory);
