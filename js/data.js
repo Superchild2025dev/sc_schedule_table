@@ -1542,13 +1542,11 @@ function _scheduleAuditDisplayTime(slot,day){
 function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
   const rows=[];
   const scope=_scheduleAuditActiveScope();
-  let todayStr='';
-  try{ todayStr=toDateStr(getToday()); }catch(e){}
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
     const ds=_scheduleAuditEntryDate(entry);
     if(!ds) return;
-    // 시간표에 실제로 보이는 예약만 하단 기록에 반영한다.
-    if(todayStr&&ds<todayStr) return;
+    // 하단 기록은 오늘 기준이 아니라 현재 보고 있는 운영월 기준으로 남긴다.
+    if(monthKey&&String(ds).slice(0,7)!==String(monthKey)) return;
     const fromSlot=_scheduleAuditSlotFromKey(slotKey);
     if(!fromSlot) return;
     const fallback=(typeof getStu==='function')?getStu(fromSlot.time,fromSlot.dayToken,fromSlot.lane,fromSlot.row):(_stuIdx&&_stuIdx[slotKey]);
@@ -1693,7 +1691,12 @@ function _deskNoteId(){
 }
 function _deskNoteRecordedDate(row){
   let key='';
-  if(row?.source!=='visible-reservation') key=_recordLocalDateKey(row?.at);
+  if(row?.source==='visible-reservation'){
+    try{ key=toDateStr(getToday()); }
+    catch(e){ key=_recordLocalDateKey(new Date().toISOString()); }
+  } else {
+    key=_recordLocalDateKey(row?.at);
+  }
   if(!key) key=row?.dateKey||'';
   return {key,label:_scheduleAuditShortDateFromKey(key)||row?.date||'-'};
 }
@@ -1727,6 +1730,7 @@ function _deskNoteFromScheduleRow(row){
     tabId,
     tabName,
     tabType,
+    monthKey:row.monthKey||'',
     day:row.day||'기타',
     effectiveDateKey:row.dateKey||'',
     teacher:row.teacher||'-',
@@ -1736,12 +1740,59 @@ function _deskNoteFromScheduleRow(row){
     dateKey:written.key,
     time:row.time||'-',
     detail:row.detail||'',
-    at:row.at||now,
+    at:row.source==='visible-reservation'?now:(row.at||now),
     source:row.source||'audit',
     deleted:false,
     createdAt:now,
     updatedAt:now,
   };
+}
+function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
+  if(!slotKey||!entry) return Promise.resolve(false);
+  const ds=_scheduleAuditEntryDate(entry);
+  const fromSlot=_scheduleAuditSlotFromKey(slotKey);
+  if(!ds||!fromSlot) return Promise.resolve(false);
+  const scope=_scheduleAuditActiveScope();
+  const monthKey=_scheduleAuditMonthKey();
+  const visibleDays=_scheduleAuditDays();
+  const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
+  if(!days.length) return Promise.resolve(false);
+  const pairKey=entry&&typeof entry==='object'?entry.pairKey:'';
+  const pairEntry=pairKey?(ENROLL_MAP||{})[pairKey]:null;
+  const toSlot=pairEntry?_scheduleAuditSlotFromKey(pairKey):null;
+  const date=_scheduleAuditDateLabel(ds);
+  const target=_scheduleAuditEntryName(entry,fallback);
+  if(!target) return Promise.resolve(false);
+  const additions=[];
+  days.forEach(day=>{
+    if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
+    const reason=_scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback);
+    additions.push(_deskNoteFromScheduleRow({
+      day,
+      teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,{user:''}),
+      target,
+      reason,
+      date:date.label,
+      dateKey:date.key,
+      time:_scheduleAuditDisplayTime(fromSlot,day),
+      detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
+      at:date.key?date.key+'T00:00:00':'',
+      source:'visible-reservation',
+      monthKey,
+      tabId:scope.tabId,
+      tabName:scope.tabName,
+      tabType:scope.tabType,
+    }));
+  });
+  if(!additions.length) return Promise.resolve(false);
+  return _updateDeskNotesTx(list=>{
+    let next=_normalizeDeskNotesList(list).slice();
+    additions.forEach(note=>{ next=_mergeDeskNote(next,note); });
+    return next;
+  },{type:'edit',label:'하단 기록 자동 추가'},true).then(()=>{
+    additions.forEach(note=>{ DESK_NOTES=_mergeDeskNote(DESK_NOTES,note); });
+    return true;
+  });
 }
 function _normalizeDeskNotesList(list){
   return Array.isArray(list)?list.filter(Boolean):[];

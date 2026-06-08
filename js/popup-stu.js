@@ -1326,13 +1326,20 @@ async function _setRetireChoice(slotKey,ds,stu,existingEntry,kind){
     toast('예약 이동 제외는 이동으로 고정됩니다','err');
     return;
   }
+  let savedEntry=null;
   await updateRetireMapTx(retire=>{
     const extra=kind==='retire'
       ? {retireType:'retire'}
       : {retireType:'exclude', excludeReason:kind};
-    retire[slotKey]=_reservationEntryFromStudent(stu,ds,extra);
+    savedEntry=_reservationEntryFromStudent(stu,ds,extra);
+    retire[slotKey]=savedEntry;
     return retire;
   });
+  if(typeof ensureDeskNoteForRetireReservation==='function'){
+    await ensureDeskNoteForRetireReservation(slotKey,savedEntry||RETIRE_MAP[slotKey],stu).catch(err=>{
+      console.warn('하단 기록 자동 추가 실패:',err);
+    });
+  }
   if(kind==='retire'){
     if(stu && typeof addRetireHistory==='function'&&!_hasMatchingRetireHistory(stu,ds,slotKey)) addRetireHistory(stu,ds);
   } else {
@@ -1349,7 +1356,7 @@ async function handleRetireChoiceSet(e,ctx){
   const kind=btn.dataset.kind||'move';
   const {slotKey,t,day,lane,row}=ctx;
   const ds=_stuPopup.selDate;
-  const stu=getStu(t,day,lane,row);
+  const stu=getStu(t,day,lane,row)||_popupStudentDraft();
   const existingRaw=RETIRE_MAP[slotKey]||null;
   const existingEntry=_retireEntryDate(existingRaw)===ds?existingRaw:null;
   try{
@@ -1363,7 +1370,7 @@ async function handleRetireChoiceSet(e,ctx){
 
 function handleRetirePastDate(e,ctx){
   const {slotKey,t,day,lane,row}=ctx;
-  const stu=getStu(t,day,lane,row);
+  const stu=getStu(t,day,lane,row)||_popupStudentDraft();
   if(!stu){
     toast('퇴원 기록을 남길 원생이 없습니다','err');
     return;
@@ -2094,6 +2101,21 @@ function _reservationEntryFromStudent(stu, ds, extra){
     if(stu.g) entry.g=stu.g;
   }
   return entry;
+}
+function _popupStudentDraft(){
+  const name=(document.getElementById('sp-name')?.value||'').trim();
+  if(!name) return null;
+  const age=parseInt(document.getElementById('sp-age')?.value,10)||null;
+  const phone=normPhone(document.getElementById('sp-phone')?.value||'');
+  const gender=document.getElementById('sp-gender-m')?.classList.contains('on')?'m'
+    :(document.getElementById('sp-gender-f')?.classList.contains('on')?'f':null);
+  return {
+    n:name,
+    a:age,
+    p:phone,
+    g:gender,
+    memo:(document.getElementById('sp-memo')?.value||'').trim(),
+  };
 }
 
 function _normEnrollPhone(v){
