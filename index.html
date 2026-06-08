@@ -26,6 +26,7 @@
 <script>scJs('js/firebase-store.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script>scCss('auth.css')</script>
 <script>scCss('style.css')</script>
 </head>
@@ -66,6 +67,7 @@
     <input type="date" id="tm-date" class="hbtn" style="width:130px;color:#fff;background:rgba(255,255,255,.12);font-size:11px" title="타임머신" onchange="setTimeMachine(this.value)">
     <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
     <button class="hbtn" id="attendance-toggle-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">📋 출석부</button>
+    <button class="hbtn" id="schedule-excel-btn" data-perm="exportData" onclick="exportExcel()" title="현재 시간표 엑셀 저장">💾 엑셀 저장</button>
     <button class="hbtn" id="schedule-print-btn" onclick="openSchedulePrintModal()" title="날짜별 등원 원생 인쇄">🖨️ 인쇄</button>
     <button class="hbtn" id="parent-req-btn" data-perm="teacherRequests" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
     <button class="hbtn" data-perm="manageSettings" onclick="window.open('settings.html','_blank')">⚙️ 설정</button>

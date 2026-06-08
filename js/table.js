@@ -2554,97 +2554,424 @@ let _flashKey=null;
 /* ════════════════════════════════════════════════════════════════
  * 엑셀 저장 (SheetJS)
  * ════════════════════════════════════════════════════════════════ */
-function exportExcel(){
-  if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
-
-  const DAYS=getDays(),TIMES=getTimes(),LANE_COUNT=getLanes(),HAS_NUM=getHasNum();
-  const DATE_HDR=getDateHeaders();
-  const SAT_TIME_LABEL=getSatLabel();
-  const wb=XLSX.utils.book_new();
-  const data=[];
-
-  // 1행: 요일 헤더
-  const hdr1=[];
-  DAYS.forEach(day=>{
-    hdr1.push(DATE_HDR[day].label||day);
-    for(let i=1;i<LANE_COUNT;i++) hdr1.push('');
-  });
-  data.push([''].concat(hdr1));
-
-  // 2행: 레인 헤더
-  const hdr2=[];
-  DAYS.forEach(()=>{
-    for(let l=1;l<=LANE_COUNT;l++) hdr2.push(l+'레인');
-  });
-  data.push([''].concat(hdr2));
-
-  // 데이터 행
-  TIMES.forEach(({t})=>{
-    const rows=getTimeRows(t);
-    const satLabel=SAT_TIME_LABEL[t];
-
-    // 담임 행
-    const instRow=[t+' 담임'];
-    DAYS.forEach(day=>{
-      const isSat=day==='토';
-      for(let l=1;l<=LANE_COUNT;l++){
-        if(isSat&&!satLabel){instRow.push('');continue;}
-        const inst=getInst(t,day,l);
-        instRow.push(inst?inst.n:'');
+function _excelTextFromHtml(html){
+  const div=document.createElement('div');
+  div.innerHTML=String(html||'').replace(/<br\s*\/?>/gi,'\n');
+  return div.textContent.replace(/\n\s+/g,'\n').trim();
+}
+function _excelMd(ds){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(ds||''))) return '';
+  return parseInt(ds.slice(5,7),10)+'/'+parseInt(ds.slice(8,10),10);
+}
+function _excelRgbFromCss(value){
+  const text=String(value||'').trim();
+  if(!text||text==='transparent') return '';
+  let m=text.match(/^#?([0-9a-f]{6})$/i);
+  if(m) return m[1].toUpperCase();
+  m=text.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([.\d]+))?\)$/i);
+  if(!m) return '';
+  if(m[4]!==undefined&&parseFloat(m[4])===0) return '';
+  return [m[1],m[2],m[3]].map(n=>Math.max(0,Math.min(255,parseInt(n,10)||0)).toString(16).padStart(2,'0')).join('').toUpperCase();
+}
+function _excelArgb(hex){
+  hex=String(hex||'').replace(/^#/,'').toUpperCase();
+  if(!/^[0-9A-F]{6}$/.test(hex)) return '';
+  return 'FF'+hex;
+}
+function _excelStyleFromCell(cell){
+  const cs=window.getComputedStyle?getComputedStyle(cell):null;
+  const bg=_excelRgbFromCss(cs?.backgroundColor);
+  const color=_excelRgbFromCss(cs?.color)||'111111';
+  const bold=parseInt(cs?.fontWeight||'400',10)>=700 || cell.tagName==='TH';
+  const style={
+    alignment:{horizontal:'center',vertical:'center',wrapText:true},
+    font:{name:'맑은 고딕',sz:9,color:{rgb:_excelArgb(color)||'FF111111'},bold},
+    border:{
+      top:{style:'thin',color:{rgb:'FF666666'}},
+      bottom:{style:'thin',color:{rgb:'FF666666'}},
+      left:{style:'thin',color:{rgb:'FF666666'}},
+      right:{style:'thin',color:{rgb:'FF666666'}},
+    }
+  };
+  if(bg) style.fill={patternType:'solid',fgColor:{rgb:_excelArgb(bg)}};
+  return style;
+}
+function _excelAddLine(lines,text){
+  text=String(text||'').replace(/\s+\n/g,'\n').replace(/\n\s+/g,'\n').trim();
+  if(text&&!lines.includes(text)) lines.push(text);
+}
+function _excelStudentDisplayForSlot(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4) return '';
+  const [t,day,l,r]=p;
+  const stu=(typeof getStu==='function')?getStu(t,day,l,r):null;
+  if(stu) return String(stu.n||'')+String(stu.a||'');
+  const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  if(enr) return String(enr.name||enr.n||'')+String(enr.age||enr.a||'');
+  return '';
+}
+function _excelBadgeTag(kind){
+  if(kind==='sample') return '(샘)';
+  if(kind==='bogang'||kind==='pending-bogang') return '(보)';
+  return '';
+}
+function _excelBadgeText(kind,name,ds){
+  name=String(name||'').trim();
+  const md=_excelMd(ds);
+  if((kind==='bogang'||kind==='sample'||kind==='pending-bogang')&&name&&md) return name+md+_excelBadgeTag(kind);
+  if(kind==='absent'&&md) return '결석'+md;
+  if(kind==='pending-cancel'&&md) return '취소요청'+md;
+  return '';
+}
+function _excelSlotBadgeEntries(slotKey,day,todayStr){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4) return [];
+  const [t,d,l,r]=p;
+  const rows=[];
+  const add=(kind,name,ds)=>{
+    const text=_excelBadgeText(kind,name,ds);
+    if(text&&!rows.some(row=>row.text===text)) rows.push({kind,text,ds});
+  };
+  try{
+    const classDates=typeof getClassDatesForDay==='function'?getClassDatesForDay(day||d):{cur:[],next:[]};
+    const allDates=[...(classDates.cur||[]),...(classDates.next||[])];
+    allDates.forEach(date=>{
+      if(date.closed||date.ds<todayStr) return;
+      const mark=typeof getMark==='function'?getMark(slotKey,date.ds):(MARK_MAP&&MARK_MAP[slotKey+'/'+date.ds]);
+      if(!mark) return;
+      if(mark.type==='bogang'||mark.type==='sample') add(mark.type,mark.n,date.ds);
+      else if(mark.type==='absent'){
+        add('absent','',date.ds);
+        if(mark.sub?.type==='bogang'||mark.sub?.type==='sample') add(mark.sub.type,mark.sub.n,date.ds);
       }
     });
-    data.push(instRow);
-
-    // 학생 행
-    for(let ri=0;ri<rows;ri++){
-      const stuRow=[t+' '+(ri+1)+'번'];
-      DAYS.forEach(day=>{
-        const isSat=day==='토';
-        for(let l=1;l<=LANE_COUNT;l++){
-          if(isSat&&!satLabel){stuRow.push('');continue;}
-          const _l=l,_r=ri+1;
-          const stu=getStu(t,day,_l,_r);
-          if(!stu){stuRow.push('');continue;}
-          let txt=stu.n+(stu.a||'');
-          // 이벤트 정보 추가
-          const slotKey=t+'/'+day+'/'+_l+'/'+_r;
-          const ret=RETIRE_MAP[slotKey];
-          if(ret) txt+=' [퇴'+ret.ds.slice(5).replace('-','/')+']';
-          const enr=ENROLL_MAP[slotKey];
-          if(enr) txt+=' [등'+(enr.name||'')+' '+enr.ds.slice(5).replace('-','/')+']';
-          const hyu=HYUWON_MAP[slotKey];
-          if(hyu) txt+=' [휴원]';
-          if(stu.v||_tableLocUsesVehicle(stu.loc)) txt+=' 🚐';
-          if(stu.isNew) txt+=' (신규)';
-          if(stu.reenroll) txt+=' (재등록)';
-          stuRow.push(txt);
-        }
-      });
-      data.push(stuRow);
+  }catch(e){}
+  Object.values(REQUESTS||{}).forEach(req=>{
+    if(req.type!=='bogang') return;
+    if(req.status&&req.status!=='pending') return;
+    const tg=req.target;
+    if(!tg||tg.ds<todayStr) return;
+    if(tg.t===t&&tg.d===d&&parseInt(tg.l,10)===parseInt(l,10)&&parseInt(tg.r,10)===parseInt(r,10)){
+      add('pending-bogang',req.parent?.name,tg.ds);
     }
   });
-
-  const ws=XLSX.utils.aoa_to_sheet(data);
-
-  // 열 너비 설정
-  const colWidths=[{wch:10}];
-  for(let i=0;i<DAYS.length*LANE_COUNT;i++) colWidths.push({wch:14});
-  ws['!cols']=colWidths;
-
-  // 요일별 셀 병합 (1행)
-  const merges=[];
-  let col=1;
-  DAYS.forEach(()=>{
-    if(LANE_COUNT>1) merges.push({s:{r:0,c:col},e:{r:0,c:col+LANE_COUNT-1}});
-    col+=LANE_COUNT;
+  return rows.sort((a,b)=>(a.ds||'').localeCompare(b.ds||''));
+}
+function _excelBadgeDisplayForSlot(slotKey,day,todayStr){
+  return _excelSlotBadgeEntries(slotKey,day,todayStr).map(row=>row.text).join('\n');
+}
+function _excelBadgeFillKind(slotKey,day,todayStr){
+  const entries=_excelSlotBadgeEntries(slotKey,day,todayStr);
+  const colored=entries.find(row=>row.kind==='bogang'||row.kind==='sample'||row.kind==='pending-bogang');
+  if(!colored) return '';
+  return colored.kind==='sample'?'sample':'bogang';
+}
+function _excelApplyBadgeOnlyStyle(style,kind){
+  if(kind==='bogang'){
+    return {...style,fill:{patternType:'solid',fgColor:{rgb:'FF7C3AED'}},font:{...style.font,bold:true,color:{rgb:'FFFFFFFF'}}};
+  }
+  if(kind==='sample'){
+    return {...style,fill:{patternType:'solid',fgColor:{rgb:'FFF59E0B'}},font:{...style.font,bold:true,color:{rgb:'FF111111'}}};
+  }
+  return style;
+}
+function _excelSlotMemoLines(slotKey,day,todayStr){
+  const lines=[];
+  if(!slotKey) return lines;
+  const p=String(slotKey).split('/');
+  const [t,d,l,r]=p;
+  const stu=(p.length>=4&&typeof getStu==='function')?getStu(t,d,l,r):null;
+  if(stu){
+    if(stu.p) _excelAddLine(lines,'전화: '+stu.p);
+    if(stu.g) _excelAddLine(lines,'반: '+stu.g);
+    if(stu.loc) _excelAddLine(lines,'승하차: '+stu.loc);
+    if(stu.memo) _excelAddLine(lines,'메모: '+stu.memo);
+    if(stu.v||_tableLocUsesVehicle(stu.loc)) _excelAddLine(lines,'차량이용');
+    if(stu.isNew) _excelAddLine(lines,'신규');
+    if(stu.reenroll) _excelAddLine(lines,'재등록');
+  }
+  const ret=RETIRE_MAP&&RETIRE_MAP[slotKey];
+  const retDs=typeof ret==='string'?ret:ret?.ds;
+  if(retDs){
+    const kind=(typeof _retireReservationKindLabel==='function')?_retireReservationKindLabel(ret,slotKey,stu):'제외/퇴원';
+    const name=(typeof _scheduleReservationName==='function')?_scheduleReservationName(ret,stu):(ret?.name||stu?.n||'');
+    _excelAddLine(lines,kind+': '+[name,_excelMd(retDs)].filter(Boolean).join(' '));
+  }
+  const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  if(enr){
+    const name=(typeof _scheduleReservationName==='function')?_scheduleReservationName(enr):(enr.name||enr.n||'');
+    _excelAddLine(lines,'등록: '+[name,_excelMd(enr.ds)+'부터'].filter(Boolean).join(' ')+(enr.isNew?' / 신규':''));
+  }
+  const hy=HYUWON_MAP&&HYUWON_MAP[slotKey];
+  if(hy){
+    if(Array.isArray(hy.dates)&&hy.dates.length) _excelAddLine(lines,'휴원: '+hy.dates.map(_excelMd).filter(Boolean).join(', '));
+    else if(hy.from||hy.to) _excelAddLine(lines,'휴원: '+[_excelMd(hy.from),_excelMd(hy.to)].filter(Boolean).join('~'));
+  }
+  try{
+    const classDates=typeof getClassDatesForDay==='function'?getClassDatesForDay(day||d):{cur:[],next:[]};
+    const allDates=[...(classDates.cur||[]),...(classDates.next||[])];
+    allDates.forEach(date=>{
+      if(date.closed||date.ds<todayStr) return;
+      const mark=typeof getMark==='function'?getMark(slotKey,date.ds):(MARK_MAP&&MARK_MAP[slotKey+'/'+date.ds]);
+      if(!mark) return;
+      const dl=_excelMd(date.ds);
+      if(mark.type==='absent'){
+        _excelAddLine(lines,'결석: '+dl);
+        if(mark.sub){
+          const type=mark.sub.type==='sample'?'샘플':'보강';
+          _excelAddLine(lines,type+': '+[mark.sub.n,String(mark.sub.a||''),dl,mark.sub.p,mark.sub.memo].filter(Boolean).join(' '));
+        }
+      } else if(mark.type==='bogang'||mark.type==='sample'){
+        const type=mark.type==='sample'?'샘플':'보강';
+        _excelAddLine(lines,type+': '+[mark.n,String(mark.a||''),dl,mark.p,mark.memo].filter(Boolean).join(' '));
+      }
+    });
+  }catch(e){}
+  Object.values(REQUESTS||{}).forEach(req=>{
+    if(req.type==='bogang'&&(!req.status||req.status==='pending')){
+      const tg=req.target;
+      if(tg&&tg.t===t&&tg.d===d&&parseInt(tg.l,10)===parseInt(l,10)&&parseInt(tg.r,10)===parseInt(r,10)&&tg.ds>=todayStr){
+        _excelAddLine(lines,'보강 신청 대기: '+[req.parent?.name,_excelMd(tg.ds),req.parent?.phone].filter(Boolean).join(' '));
+      }
+    }
+    if(req.type==='absent-cancel'&&(!req.status||req.status==='pending')){
+      const parent=req.parent;
+      const tg=req.target;
+      if(parent?.studentSlotKey===slotKey&&tg&&tg.ds>=todayStr){
+        _excelAddLine(lines,'결석 취소 대기: '+[parent.name,_excelMd(tg.ds)].filter(Boolean).join(' '));
+      }
+    }
   });
-  ws['!merges']=merges;
-
+  return lines;
+}
+function _excelCellMemoLines(origCell,todayStr){
+  const lines=[];
+  origCell.querySelectorAll('.cb').forEach(badge=>{
+    const label=badge.textContent.trim();
+    const tip=_excelTextFromHtml(badge.dataset.tip||'');
+    _excelAddLine(lines,tip&&tip!==label?`${label}: ${tip}`:label);
+  });
+  origCell.querySelectorAll('.inst-reserve-badge').forEach(badge=>{
+    const tip=_excelTextFromHtml(badge.dataset.reserveTip||'');
+    _excelAddLine(lines,tip?'대기자: '+tip:'대기자 '+badge.textContent.trim());
+  });
+  if(origCell.classList.contains('stu-cell')||origCell.classList.contains('stu-clickable')){
+    const {t,day,lane,ri}=origCell.dataset||{};
+    if(t&&day&&lane&&ri){
+      _excelSlotMemoLines(`${t}/${day}/${lane}/${ri}`,day,todayStr).forEach(line=>_excelAddLine(lines,line));
+    }
+  }
+  return lines;
+}
+function _excelCleanCellForExport(cloneCell,origCell,todayStr){
+  cloneCell.querySelectorAll('.cb,.cell-badges,.inst-reserve-badge,.att-add-inst,.att-icon,.att-tag').forEach(el=>el.remove());
+  if(origCell.classList.contains('stu-cell')||origCell.classList.contains('stu-clickable')){
+    const {t,day,lane,ri}=origCell.dataset||{};
+    if(t&&day&&lane&&ri){
+      const slotKey=`${t}/${day}/${lane}/${ri}`;
+      const base=_excelStudentDisplayForSlot(slotKey);
+      const badges=_excelBadgeDisplayForSlot(slotKey,day,todayStr);
+      cloneCell.textContent=[base,badges].filter(Boolean).join('\n');
+      if(!base&&badges){
+        const fillKind=_excelBadgeFillKind(slotKey,day,todayStr);
+        if(fillKind) cloneCell.setAttribute('data-excel-badge-fill',fillKind);
+      }
+      return;
+    }
+  }
+  cloneCell.textContent=cloneCell.textContent.replace(/\s+/g,' ').trim();
+}
+function _excelWalkTableCells(table,handler){
+  const occupied={};
+  Array.from(table.rows).forEach((tr,r)=>{
+    let c=0;
+    Array.from(tr.cells).forEach(cell=>{
+      while(occupied[r+','+c]) c++;
+      const rs=cell.rowSpan||1, cs=cell.colSpan||1;
+      handler(cell,r,c,rs,cs);
+      for(let rr=r;rr<r+rs;rr++){
+        for(let cc=c;cc<c+cs;cc++) occupied[rr+','+cc]=true;
+      }
+      c+=cs;
+    });
+  });
+}
+function _excelSafeSheetName(name){
+  return String(name||'시간표').replace(/[\\/?*\[\]:]/g,' ').slice(0,31)||'시간표';
+}
+function _excelSafeFilePart(name){
+  return String(name||'시간표').replace(/[\\/:*?"<>|]/g,'_').replace(/\s+/g,'_').slice(0,60)||'시간표';
+}
+function _excelSheetMaxRow(ws){
+  const ref=ws['!ref'];
+  if(!ref) return 0;
+  return XLSX.utils.decode_range(ref).e.r;
+}
+function _excelRecordGroups(){
+  const groups={};
+  const panel=document.getElementById('schedule-audit-summary');
+  if(!panel) return groups;
+  const sections=Array.from(panel.querySelectorAll('.schedule-audit-day'));
+  sections.forEach(section=>{
+    const day=section.getAttribute('data-schedule-audit-day')||'기록';
+    const dataRows=Array.from(section.querySelectorAll('tbody tr[data-desk-note-id]')).map(tr=>
+      Array.from(tr.children)
+        .filter(td=>!td.classList.contains('schedule-audit-spacer'))
+        .slice(0,5)
+        .map(td=>td.textContent.trim())
+    ).filter(cols=>cols.some(Boolean));
+    if(!dataRows.length) return;
+    groups[day]=dataRows;
+  });
+  return groups;
+}
+function _excelDayColumnMap(table){
+  const map={};
+  const days=(typeof getDays==='function')?getDays():['월','화','수','목','금'];
+  const row=table?.querySelector('thead .day-hdr-row');
+  const cells=row?Array.from(row.cells):[];
+  let col=0;
+  days.forEach((day,i)=>{
+    const cell=cells[i];
+    const width=cell?(cell.colSpan||1):1;
+    map[day]={start:col,width};
+    col+=width;
+  });
+  return map;
+}
+function _excelExpandRef(ws,r,c){
+  const addr=XLSX.utils.encode_cell({r,c});
+  if(!ws['!ref']){
+    ws['!ref']=addr+':'+addr;
+    return;
+  }
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  range.s.r=Math.min(range.s.r,r);
+  range.s.c=Math.min(range.s.c,c);
+  range.e.r=Math.max(range.e.r,r);
+  range.e.c=Math.max(range.e.c,c);
+  ws['!ref']=XLSX.utils.encode_range(range);
+}
+function _excelSetCell(ws,r,c,value,style){
+  const addr=XLSX.utils.encode_cell({r,c});
+  ws[addr]={t:'s',v:String(value||'')};
+  if(style) ws[addr].s=style;
+  _excelExpandRef(ws,r,c);
+}
+function _excelRecordStyle(kind){
+  const base={
+    alignment:{horizontal:'center',vertical:'center',wrapText:true},
+    font:{name:'맑은 고딕',sz:9,color:{rgb:'FF111111'}},
+    border:{
+      top:{style:'thin',color:{rgb:'FF888888'}},
+      bottom:{style:'thin',color:{rgb:'FF888888'}},
+      left:{style:'thin',color:{rgb:'FF888888'}},
+      right:{style:'thin',color:{rgb:'FF888888'}},
+    }
+  };
+  if(kind==='title') return {...base,font:{...base.font,sz:12,bold:true},fill:{patternType:'solid',fgColor:{rgb:'FFE5E7EB'}}};
+  if(kind==='day') return {...base,font:{...base.font,bold:true},fill:{patternType:'solid',fgColor:{rgb:'FFF3F4F6'}}};
+  if(kind==='head') return {...base,font:{...base.font,bold:true},fill:{patternType:'solid',fgColor:{rgb:'FFD1D5DB'}}};
+  return base;
+}
+function _excelAppendRecords(ws,table,rowHeights){
+  const groups=_excelRecordGroups();
+  const days=Object.keys(groups);
+  if(!days.length) return;
+  const dayMap=_excelDayColumnMap(table);
+  const hasNums=(typeof getHasNum==='function')?getHasNum():[];
+  const startRow=_excelSheetMaxRow(ws)+3;
+  const headers=['담당','원생','변동','수정날짜','시간'];
+  const writeGroup=(day,rows,baseRow,info)=>{
+    const isKnownDay=!!info;
+    info=info||{start:0,width:Math.max(6,headers.length+1)};
+    const spacer=(hasNums||[]).includes(day)?2:1;
+    const blockStart=info.start;
+    const blockWidth=Math.max(info.width,spacer+headers.length);
+    const blockEnd=blockStart+blockWidth-1;
+    const dataStart=Math.min(blockStart+spacer, Math.max(blockStart, blockEnd-headers.length+1));
+    const totalRows=rows.length+1;
+    for(let ri=0;ri<totalRows;ri++){
+      const sheetRow=baseRow+ri;
+      rowHeights[sheetRow]=rowHeights[sheetRow]||{hpt:20};
+      for(let c=blockStart;c<=blockEnd;c++){
+        const dataIdx=c-dataStart;
+        const isData=dataIdx>=0&&dataIdx<headers.length;
+        let value='';
+        let style=_excelRecordStyle(ri===0&&isData?'head':'body');
+        if(ri===0){
+          if(!isKnownDay&&c===blockStart) value=day;
+          else value=isData?headers[dataIdx]:'';
+        } else if(isData){
+          value=rows[ri-1][dataIdx]||'';
+          if(dataIdx===2&&String(value)==='퇴원'){
+            style={...style,fill:{patternType:'solid',fgColor:{rgb:'FFF97316'}},font:{...style.font,bold:true,color:{rgb:'FF111111'}}};
+          }
+        }
+        _excelSetCell(ws,sheetRow,c,value,style);
+      }
+    }
+    return totalRows;
+  };
+  let maxKnownRows=0;
+  const unknownDays=[];
+  days.forEach(day=>{
+    const rows=groups[day]||[];
+    if(dayMap[day]) maxKnownRows=Math.max(maxKnownRows,writeGroup(day,rows,startRow,dayMap[day]));
+    else unknownDays.push(day);
+  });
+  let extraRow=startRow+Math.max(maxKnownRows,1)+1;
+  unknownDays.forEach(day=>{
+    extraRow+=writeGroup(day,groups[day]||[],extraRow,null)+1;
+  });
+}
+function exportExcel(){
+  if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
+  const source=document.querySelector('#tbl table');
+  if(!source){toast('내보낼 시간표가 없습니다','err');return;}
+  const todayStr=toDateStr(getToday());
+  const wb=XLSX.utils.book_new();
+  const clone=source.cloneNode(true);
+  const origCells=Array.from(source.querySelectorAll('th,td'));
+  const cloneCells=Array.from(clone.querySelectorAll('th,td'));
+  cloneCells.forEach((cell,i)=>{
+    const orig=origCells[i]||cell;
+    const comments=_excelCellMemoLines(orig,todayStr);
+    if(comments.length) cell.setAttribute('data-excel-comment',comments.join('\n'));
+    _excelCleanCellForExport(cell,orig,todayStr);
+  });
+  const ws=XLSX.utils.table_to_sheet(clone,{raw:true});
+  const colWidths=[];
+  const rowHeights=[];
+  let serial=0;
+  _excelWalkTableCells(clone,(cell,r,c)=>{
+    const orig=origCells[serial++]||cell;
+    const addr=XLSX.utils.encode_cell({r,c});
+    if(!ws[addr]) ws[addr]={t:'s',v:''};
+    ws[addr].s=_excelApplyBadgeOnlyStyle(_excelStyleFromCell(orig),cell.getAttribute('data-excel-badge-fill'));
+    const comment=cell.getAttribute('data-excel-comment');
+    if(comment){
+      ws[addr].c=[{a:'슈퍼차일드',t:comment}];
+      ws[addr].c.hidden=true;
+    }
+    const cls=orig.className||'';
+    const text=String(ws[addr].v||'');
+    const width=cls.includes('col-time')?7:cls.includes('col-num')?4:Math.min(18,Math.max(10,text.length+4));
+    colWidths[c]={wch:Math.max(colWidths[c]?.wch||0,width)};
+    rowHeights[r]={hpt:cls.includes('inst')?18:20};
+  });
+  _excelAppendRecords(ws,clone,rowHeights);
+  ws['!cols']=Array.from({length:colWidths.length},(_,i)=>colWidths[i]||{wch:10});
+  ws['!rows']=Array.from({length:_excelSheetMaxRow(ws)+1},(_,i)=>rowHeights[i]||{hpt:18});
+  ws['!freeze']={xSplit:0,ySplit:2};
+  wb.Workbook=wb.Workbook||{};
+  wb.Workbook.Views=[{RTL:false}];
   const today=getToday();
   const ds=today.getFullYear()+String(today.getMonth()+1).padStart(2,'0')+String(today.getDate()).padStart(2,'0');
-  const tabName=getTabConfig().name||'시간표';
-  XLSX.utils.book_append_sheet(wb,ws,tabName);
-  XLSX.writeFile(wb,'가경수영장_'+tabName+'_'+ds+'.xlsx');
+  const activeTab=(typeof _tabById==='function')?_tabById(_activeTab):null;
+  const tabName=activeTab?.name||'시간표';
+  XLSX.utils.book_append_sheet(wb,ws,_excelSafeSheetName(tabName));
+  XLSX.writeFile(wb,'슈퍼차일드_'+_excelSafeFilePart(tabName)+'_'+ds+'.xlsx',{cellStyles:true,bookSST:true});
   toast('엑셀 저장 완료','ok');
 }
 

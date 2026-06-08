@@ -810,6 +810,7 @@ let _auditStorageLoaded=false;
 let _auditStorageLoading=null;
 let _scheduleAuditLoaded=false;
 let _scheduleAuditLoading=null;
+let _scheduleAuditLoadRetryAt=0;
 
 function describeStorageChangeType(key){
   if(key===STORAGE_KEYS.MOVE) return 'move';
@@ -1730,7 +1731,7 @@ function _deskNoteFromScheduleRow(row){
     tabId,
     tabName,
     tabType,
-    monthKey:row.monthKey||'',
+    monthKey:row.monthKey||_scheduleAuditMonthKey(),
     day:row.day||'기타',
     effectiveDateKey:row.dateKey||'',
     teacher:row.teacher||'-',
@@ -1909,7 +1910,7 @@ function _queueDeskNotesAutoMerge(additions){
   if(_deskNotesAutoMergeInFlight) return;
   _deskNotesAutoMergeInFlight=true;
   const flush=()=>{
-    const batch=_deskNotesAutoMergeQueue.splice(0);
+    const batch=_deskNotesAutoMergeQueue.slice(0);
     if(!batch.length){
       _deskNotesAutoMergeInFlight=false;
       return;
@@ -1918,9 +1919,19 @@ function _queueDeskNotesAutoMerge(additions){
       let next=_normalizeDeskNotesList(list).slice();
       batch.forEach(note=>{ next=_mergeDeskNote(next,note); });
       return next;
-    },{type:'edit',label:'하단 기록 자동 동기화'},true).catch(err=>{
+    },{type:'edit',label:'하단 기록 자동 동기화'},true).then(()=>{
+      _deskNotesAutoMergeQueue.splice(0,batch.length);
+      flush();
+    }).catch(err=>{
       console.warn('하단 기록 자동 동기화 실패:',err);
-    }).finally(flush);
+      _deskNotesAutoMergeInFlight=false;
+      setTimeout(()=>{
+        if(_deskNotesAutoMergeQueue.length&&!_deskNotesAutoMergeInFlight){
+          _deskNotesAutoMergeInFlight=true;
+          flush();
+        }
+      },2000);
+    });
   };
   flush();
 }
@@ -1937,7 +1948,7 @@ function _syncDeskNotesFromRows(rows){
   if(!additions.length) return DESK_NOTES;
   const canSave=_deskNoteCanSave(true);
   if(canSave){
-    DESK_NOTES=DESK_NOTES.concat(additions);
+    additions.forEach(note=>{ DESK_NOTES=_mergeDeskNote(DESK_NOTES,note); });
     _queueDeskNotesAutoMerge(additions);
     return DESK_NOTES;
   }
@@ -1948,8 +1959,8 @@ function _deskNoteVisible(note,monthKey,visibleDays){
   if(!_scheduleAuditMatchesActiveScope(note)) return false;
   const day=note.day||'기타';
   if(day!=='기타'&&!visibleDays.includes(day)) return false;
-  if(note.recordMonthKey) return String(note.recordMonthKey)===String(monthKey||'');
   if(note.monthKey) return String(note.monthKey)===String(monthKey||'');
+  if(note.recordMonthKey) return String(note.recordMonthKey)===String(monthKey||'');
   // recordMonthKey가 없는 기존 기록은 과거 표시 위치를 유지한다.
   const basisKey=String(note.effectiveDateKey||note.original?.dateKey||note.dateKey||'');
   if(basisKey&&monthKey&&basisKey.slice(0,7)!==monthKey) return false;
@@ -2217,6 +2228,7 @@ function saveDeskNoteModal(){
   note.time=(document.getElementById('desk-note-time')?.value||'').trim()||'-';
   note.updatedAt=now;
   _upsertDeskNoteTx(note,isNew?'':expectedVersion,{type:'edit',label:isNew?'기록 추가':'기록 수정'}).then(()=>{
+    DESK_NOTES=_mergeDeskNote(DESK_NOTES,note);
     closeDeskNoteModal();
     renderScheduleAuditSummary();
     if(typeof toast==='function') toast('기록을 저장했습니다','ok');
@@ -2234,6 +2246,7 @@ function deleteDeskNoteModal(){
   const next={...note,deleted:true,updatedAt:new Date().toISOString()};
   const expectedVersion=document.getElementById('desk-note-version')?.value||'';
   _upsertDeskNoteTx(next,expectedVersion,{type:'edit',label:'기록 삭제'}).then(()=>{
+    DESK_NOTES=_mergeDeskNote(DESK_NOTES,next);
     closeDeskNoteModal();
     if(!_removeDeskNoteRowDom(next)) renderScheduleAuditSummary();
     if(typeof toast==='function') toast('기록을 삭제했습니다','ok');
@@ -2334,13 +2347,13 @@ function renderScheduleAuditSummary(){
   const body=document.getElementById('schedule-audit-body');
   if(!panel||!body) return;
   const monthKey=_scheduleAuditMonthKey();
-  if(!_auditStorageLoaded&&!_scheduleAuditLoaded){
-    body.innerHTML='<div class="schedule-audit-empty">기록을 불러오는 중입니다...</div>';
+  if(!_auditStorageLoaded&&!_scheduleAuditLoaded&&!_scheduleAuditLoading&&Date.now()>=_scheduleAuditLoadRetryAt){
+    _scheduleAuditLoadRetryAt=Date.now()+10000;
     _loadScheduleAuditLog().then(renderScheduleAuditSummary).catch(err=>{
       console.warn('하단 변경 로그 로드 실패:',err);
-      body.innerHTML='<div class="schedule-audit-empty">변경 로그를 불러오지 못했습니다</div>';
+      _scheduleAuditLoadRetryAt=Date.now()+10000;
+      renderScheduleAuditSummary();
     });
-    return;
   }
   const visibleDays=_scheduleAuditDays();
   const perDay={};
