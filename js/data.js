@@ -1394,6 +1394,8 @@ function _scheduleAuditDayTokens(item,visibleDays){
   const text=_scheduleAuditText(item);
   const slot=text.match(/\d{1,2}시\s*(월수금|화목|[월화수목금토일])\s*\d+레인/);
   if(slot) return _scheduleAuditExpandDay(slot[1],visibleDays);
+  const slashSlot=text.match(/\d{1,2}시\/(월수금|화목|[월화수목금토일])\/\d+\/\d+/);
+  if(slashSlot) return _scheduleAuditExpandDay(slashSlot[1],visibleDays);
   const day=text.match(/(?:^|[\s·/])([월화수목금토일])(?:요일)?(?:$|[\s·/])/);
   if(day&&visibleDays.includes(day[1])) return [day[1]];
   return ['기타'];
@@ -1428,7 +1430,10 @@ function _scheduleAuditTime(item){
   return m?m[1]+'시':'-';
 }
 function _scheduleAuditSlotFromText(text){
-  const m=String(text||'').match(/(\d{1,2}시)\s*(월수금|화목|[월화수목금토일])\s*(\d+)레인(?:\s*(\d+)번)?/);
+  const src=String(text||'');
+  const slash=src.match(/(\d{1,2}시)\/(월수금|화목|[월화수목금토일])\/(\d+)\/(\d+)/);
+  if(slash) return {time:slash[1], dayToken:slash[2], lane:slash[3], row:slash[4]||'', text:slash[0]};
+  const m=src.match(/(\d{1,2}시)\s*(월수금|화목|[월화수목금토일])\s*(\d+)레인(?:\s*(\d+)번)?/);
   if(!m) return null;
   return {time:m[1], dayToken:m[2], lane:m[3], row:m[4]||'', text:m[0]};
 }
@@ -1495,6 +1500,35 @@ function _scheduleAuditSlotFromKey(slotKey){
   if(p.length<4) return null;
   return {time:p[0], dayToken:p[1], lane:p[2], row:p[3]||'', text:`${p[0]} ${p[1]} ${p[2]}레인 ${p[3]||''}번`};
 }
+function _scheduleAuditStudentFromSlot(slot,slotKey,fallback){
+  if(fallback&&(fallback.n||fallback.name)) return fallback;
+  if(slotKey&&_stuIdx&&_stuIdx[slotKey]) return _stuIdx[slotKey];
+  if(!slot) return fallback||null;
+  const time=String(slot.time||'');
+  const lane=String(slot.lane||'');
+  const row=String(slot.row||'');
+  const dayCandidates=[];
+  const pushDay=d=>{ d=String(d||''); if(d&&!dayCandidates.includes(d)) dayCandidates.push(d); };
+  pushDay(slot.dayToken);
+  try{ _lookupDayKeys(slot.dayToken).forEach(pushDay); }catch(e){}
+  try{ _scheduleAuditExpandDay(slot.dayToken,['월','화','수','목','금','토','일']).forEach(pushDay); }catch(e){}
+  for(const day of dayCandidates){
+    const found=typeof getStu==='function'?getStu(time,day,lane,row):null;
+    if(found) return found;
+    const directKey=[time,day,lane,row].join('/');
+    if(_stuIdx&&_stuIdx[directKey]) return _stuIdx[directKey];
+  }
+  const list=Array.isArray(STUDENTS)?STUDENTS:[];
+  return list.find(s=>{
+    if(String(s?.t||'')!==time||String(s?.l||'')!==lane||String(s?.r||'')!==row) return false;
+    const stuDay=String(s?.d||'');
+    if(!stuDay) return false;
+    return dayCandidates.some(day=>stuDay===day||stuDay.includes(day)||day.includes(stuDay));
+  })||fallback||null;
+}
+function _scheduleAuditEntryNameFromSlot(entry,slot,slotKey,fallback){
+  return _scheduleAuditEntryName(entry,_scheduleAuditStudentFromSlot(slot,slotKey,fallback));
+}
 function _scheduleAuditDateLabel(ds){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(String(ds||''))) return {key:'',label:'-'};
   return {key:ds,label:parseInt(ds.slice(5,7),10)+'/'+parseInt(ds.slice(8,10),10)};
@@ -1554,7 +1588,7 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     if(monthKey&&String(ds).slice(0,7)!==String(monthKey)) return;
     const fromSlot=_scheduleAuditSlotFromKey(slotKey);
     if(!fromSlot) return;
-    const fallback=(typeof getStu==='function')?getStu(fromSlot.time,fromSlot.dayToken,fromSlot.lane,fromSlot.row):(_stuIdx&&_stuIdx[slotKey]);
+    const fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey);
     const pairKey=entry&&typeof entry==='object'?entry.pairKey:'';
     const pairEntry=pairKey?(ENROLL_MAP||{})[pairKey]:null;
     const toSlot=pairEntry?_scheduleAuditSlotFromKey(pairKey):null;
@@ -1562,7 +1596,7 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
-      const target=_scheduleAuditEntryName(entry,fallback);
+      const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
       if(!target) return;
       const reason=_scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback);
       rows.push({
@@ -1754,6 +1788,7 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
   const ds=_scheduleAuditEntryDate(entry);
   const fromSlot=_scheduleAuditSlotFromKey(slotKey);
   if(!ds||!fromSlot) return Promise.resolve(false);
+  fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey,fallback);
   const scope=_scheduleAuditActiveScope();
   const monthKey=_scheduleAuditMonthKey();
   const visibleDays=_scheduleAuditDays();
@@ -1763,7 +1798,7 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
   const pairEntry=pairKey?(ENROLL_MAP||{})[pairKey]:null;
   const toSlot=pairEntry?_scheduleAuditSlotFromKey(pairKey):null;
   const date=_scheduleAuditDateLabel(ds);
-  const target=_scheduleAuditEntryName(entry,fallback);
+  const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
   if(!target) return Promise.resolve(false);
   const additions=[];
   days.forEach(day=>{
@@ -1799,7 +1834,8 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
 function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
   const fromSlot=_scheduleAuditSlotFromKey(srcKey);
   const toSlot=_scheduleAuditSlotFromKey(dstKey);
-  const target=String(stu?.n||stu?.name||'').trim();
+  const sourceStu=_scheduleAuditStudentFromSlot(fromSlot,srcKey,stu);
+  const target=String(sourceStu?.n||sourceStu?.name||stu?.n||stu?.name||'').trim();
   if(!fromSlot||!toSlot||!target) return Promise.resolve(false);
   const scope=_scheduleAuditActiveScope();
   const visibleDays=_scheduleAuditDays();
@@ -1807,7 +1843,7 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
   const date=_scheduleAuditDateLabel(todayKey);
   const additions=[];
   _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
-    const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,stu);
+    const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,sourceStu||stu);
     additions.push(_deskNoteFromScheduleRow({
       day,
       teacher:_scheduleAuditTeacherFromSlot(fromSlot,day,{user:''}),
@@ -2286,7 +2322,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
         reason,
         date:date.label,
         dateKey:date.key,
-        time:fromSlot.time||_scheduleAuditTime(item),
+        time:_scheduleAuditDisplayTime(fromSlot,day)||_scheduleAuditTime(item),
         detail:String(segment||item?.detail||item?.label||''),
         at:item?.at||'',
         source:item?._source||'audit',
@@ -2323,10 +2359,17 @@ function _scheduleAuditSpacerCells(day,tag){
   const hasNum=_scheduleAuditHasNum(day);
   return `<${tag} class="schedule-audit-spacer"></${tag}>${hasNum?`<${tag} class="schedule-audit-spacer"></${tag}>`:''}`;
 }
+function _scheduleAuditVisibleForActiveTab(){
+  return _scheduleAuditActiveScope().tabType!=='bangteuk';
+}
 function ensureScheduleAuditSummary(){
   const wrap=document.getElementById('tbl');
   if(!wrap) return false;
   let panel=document.getElementById('schedule-audit-summary');
+  if(!_scheduleAuditVisibleForActiveTab()){
+    if(panel) panel.remove();
+    return false;
+  }
   if(panel&&panel.parentElement!==wrap) panel.remove();
   panel=document.getElementById('schedule-audit-summary');
   if(!panel){

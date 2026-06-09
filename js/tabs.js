@@ -147,6 +147,84 @@ function getAttendanceBasisTabForDate(ds){
   if(active&&(!active.type||active.type==='regular')) return active;
   return _tabById('regular')||active||null;
 }
+function _attendanceReservationDate(entry){
+  return typeof entry==='string'?String(entry||''):String(entry?.ds||'');
+}
+function _attendanceEntryPerson(entry,fallback){
+  try{
+    if(typeof _summaryRecordPerson==='function') return _summaryRecordPerson(entry,fallback);
+  }catch(e){}
+  const source=entry&&typeof entry==='object'?entry:{};
+  const fb=fallback||{};
+  return {
+    n:String(source.n||source.name||fb.n||fb.name||'').trim(),
+    a:source.a||source.age||fb.a||fb.age||null,
+    p:source.p||source.phone||source.tel||fb.p||fb.phone||fb.tel||''
+  };
+}
+function _attendanceEntryMatchesStudent(entry,stu){
+  if(!entry||!stu) return false;
+  const p=_attendanceEntryPerson(entry,stu);
+  const name=String(p.n||'').trim();
+  const stuName=String(stu.n||stu.name||'').trim();
+  if(name&&stuName&&name!==stuName) return false;
+  const phoneA=String(p.p||'').replace(/\D/g,'');
+  const phoneB=String(stu.p||stu.phone||stu.tel||'').replace(/\D/g,'');
+  if(phoneA&&phoneB&&phoneA!==phoneB) return false;
+  return !!(name||phoneA);
+}
+function _attendanceStudentFromEnroll(slotKey,entry){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4||!entry) return null;
+  const person=_attendanceEntryPerson(entry,null);
+  if(!person.n) return null;
+  const obj={
+    n:person.n,
+    a:person.a||null,
+    t:p[0],
+    d:p[1],
+    l:parseInt(p[2],10),
+    r:parseInt(p[3],10),
+    _attEnrollDs:String(entry.ds||'')
+  };
+  if(person.p) obj.p=person.p;
+  if(entry.isNew) obj.isNew=entry.isNew;
+  if(entry.reenroll) obj.reenroll=entry.reenroll;
+  if(entry.enrolled) obj.enrolled=entry.ds;
+  if(entry.v) obj.v=true;
+  if(entry.loc) obj.loc=entry.loc;
+  if(entry.memo) obj.memo=entry.memo;
+  if(entry.g) obj.g=entry.g;
+  return obj;
+}
+function _attendanceStudentsForDate(students,ds,hasSnapshot){
+  const base=(Array.isArray(students)?students:[]).map(stu=>stu?Object.assign({},stu):stu).filter(Boolean);
+  if(hasSnapshot||!ds) return base;
+  const bySlot=new Map();
+  base.forEach(stu=>{ bySlot.set([stu.t,stu.d,stu.l,stu.r].join('/'),stu); });
+  try{
+    Object.entries(typeof RETIRE_MAP!=='undefined'?(RETIRE_MAP||{}):{}).forEach(([slotKey,entry])=>{
+      const retDs=_attendanceReservationDate(entry);
+      if(!retDs) return;
+      if(retDs<ds){
+        bySlot.delete(slotKey);
+      }else if(retDs===ds&&bySlot.has(slotKey)){
+        bySlot.set(slotKey,Object.assign({},bySlot.get(slotKey),{_attRetireDs:retDs}));
+      }
+    });
+  }catch(e){}
+  try{
+    Object.entries(typeof ENROLL_MAP!=='undefined'?(ENROLL_MAP||{}):{}).forEach(([slotKey,entry])=>{
+      const enDs=String(entry?.ds||'');
+      if(!enDs||enDs>ds) return;
+      const existing=bySlot.get(slotKey);
+      if(existing&&!_attendanceEntryMatchesStudent(entry,existing)) return;
+      const next=existing?Object.assign({},existing,{_attEnrollDs:enDs}):_attendanceStudentFromEnroll(slotKey,entry);
+      if(next) bySlot.set(slotKey,next);
+    });
+  }catch(e){}
+  return [...bySlot.values()];
+}
 function getAttendanceBasisDataForDate(ds){
   const tab=getAttendanceBasisTabForDate(ds);
   const cfg=_tabConfigFor(tab);
@@ -155,7 +233,7 @@ function getAttendanceBasisDataForDate(ds){
   const todayStr=toDateStr(getToday());
   const snap=(ds<todayStr&&snapMap&&snapMap[ds]&&Array.isArray(snapMap[ds].students))?snapMap[ds]:null;
   const fallbackStu=(tab&&tab.id==='regular'&&typeof _DEFAULT_STU!=='undefined')?_DEFAULT_STU:[];
-  const students=snap?snap.students:loadJSON(cfg.stuKey,fallbackStu);
+  const students=_attendanceStudentsForDate(snap?snap.students:loadJSON(cfg.stuKey,fallbackStu),ds,!!snap);
   const instMap=snap?(snap.inst||{}):loadJSON(cfg.instKey,{});
   const stuIdx={};
   (Array.isArray(students)?students:[]).forEach(s=>{

@@ -235,6 +235,42 @@ function _attDisplayTag(item){
   if(item.type==='hyuwon') return '<span class="att-tag tag-hy">휴</span>';
   return '';
 }
+function _attMd(ds){
+  const p=String(ds||'').slice(5).split('-');
+  if(p.length<2) return '';
+  return parseInt(p[0],10)+'/'+parseInt(p[1],10);
+}
+function _attReservationNameMatches(entry,item){
+  if(!entry||!item) return false;
+  try{
+    if(typeof _summaryEntryMatchesPerson==='function') return _summaryEntryMatchesPerson(entry,item,item);
+  }catch(e){}
+  const name=String(entry.n||entry.name||'').trim();
+  if(name&&name!==String(item.n||item.name||'').trim()) return false;
+  const pa=String(entry.p||entry.phone||entry.tel||'').replace(/\D/g,'');
+  const pb=String(item.p||item.phone||item.tel||'').replace(/\D/g,'');
+  if(pa&&pb&&pa!==pb) return false;
+  return !!(name||pa||pb);
+}
+function _attDisplayName(item,slotKey,ds){
+  if(!item) return '';
+  const name=String(item.n||item.name||'');
+  const age=item.a||item.age||'';
+  if(item.type&&item.type!=='regular') return name+age;
+  const suffixes=[];
+  const ret=RETIRE_MAP&&RETIRE_MAP[slotKey];
+  const retDs=(typeof ret==='string'?ret:ret?.ds)||item._attRetireDs||'';
+  if(retDs&&retDs===ds){
+    const suffix=(typeof _retireReservationSuffix==='function')?_retireReservationSuffix(ret,slotKey,item):'까지';
+    suffixes.push('~'+_attMd(retDs)+suffix);
+  }
+  const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  const enDs=String(item._attEnrollDs||item.enrolled||enr?.ds||'');
+  if(enDs&&enDs===ds&&(!enr||_attReservationNameMatches(enr,item)||item._attEnrollDs===enDs)){
+    suffixes.push(_attMd(enDs)+'부터~');
+  }
+  return suffixes.length ? [name].concat(suffixes).filter(Boolean).join(' ') : name+age;
+}
 function _buildAttendanceBasisByDay(days){
   const map={};
   if(!_attendanceMode||!_attendanceDate||typeof getAttendanceBasisDataForDate!=='function') return map;
@@ -926,9 +962,7 @@ function syncStudentsBeforeRender(){
         if(entry.p) obj.p=entry.p;
         if(entry.isNew) obj.isNew=entry.isNew;
         else if(entry.reenroll) obj.reenroll=entry.reenroll;
-        else if(entry.enrolled){
-          obj.enrolled=entry.ds;
-        }
+        if(entry.enrolled||entry.isNew||entry.reenroll) obj.enrolled=entry.ds;
         // [v99] 등원 예약 시 입력한 차량/승하차/메모 적용
         if(entry.v) obj.v=true;
         if(entry.loc) obj.loc=entry.loc;
@@ -1003,7 +1037,7 @@ function syncStudentsBeforeRender(){
             if(entry.p) obj.p=entry.p;
             if(entry.isNew) obj.isNew=entry.isNew;
             else if(entry.reenroll) obj.reenroll=entry.reenroll;
-            else if(entry.enrolled) obj.enrolled=entry.ds;
+            if(entry.enrolled||entry.isNew||entry.reenroll) obj.enrolled=entry.ds;
             if(entry.v) obj.v=true;
             if(entry.loc) obj.loc=entry.loc;
             if(entry.memo) obj.memo=entry.memo;
@@ -1613,10 +1647,10 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 
             td.innerHTML=
               `<div class="att-row att-row-primary ${primaryBg}${primarySelected?' att-selected-row':''}" data-pk="primary">`+
-                renderIcon(ps)+`<span class="att-nm">${esc(_attPrimary.n)}${_attPrimary.a||''}${primaryTag}</span>`+
+                renderIcon(ps)+`<span class="att-nm">${esc(_attDisplayName(_attPrimary,slotKey,_cellDs))}${primaryTag}</span>`+
               `</div>`+
               `<div class="att-row att-row-sub ${subBg}${subSelected?' att-selected-row':''}" data-pk="sub">`+
-                renderIcon(ss)+`<span class="att-nm">${esc(_attSub.n)}${_attSub.a||''}${subTag}</span>`+
+                renderIcon(ss)+`<span class="att-nm">${esc(_attDisplayName(_attSub,slotKey,_cellDs))}${subTag}</span>`+
               `</div>`;
           } else {
             // 단일 렌더링 (Primary 또는 Sub 중 하나만)
@@ -1626,20 +1660,21 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
               td.classList.add(_attDisplayBg(_attPrimary,s));
               if(_attBatchTargets.has(_attTargetId(slotKey,false,_attPrimary,_cellDs))) td.classList.add('att-selected-cell');
               const typeTag=_attDisplayTag(_attPrimary);
-              html+=renderIcon(s)+`<span class="att-nm">${esc(_attPrimary.n)}${_attPrimary.a||''}${typeTag}</span>`;
+              html+=renderIcon(s)+`<span class="att-nm">${esc(_attDisplayName(_attPrimary,slotKey,_cellDs))}${typeTag}</span>`;
             }
             if(_attSub){
               const ss=_attDisplayState(_attSub,slotKey,_cellDs,true);
               const subTypeTag=_attSub.type==='bogang'?'보':_attSub.type==='sample'?'샘':_attSub.type==='hyuwon'?'휴':'';
               if(!_attPrimary && _attBatchTargets.has(_attTargetId(slotKey,true,_attSub,_cellDs))) td.classList.add('att-selected-cell');
-              html+=` <span class="att-sub" data-pk="sub">[${renderIcon(ss)}${esc(_attSub.n)}${_attSub.a||''}${subTypeTag}]</span>`;
+              html+=` <span class="att-sub" data-pk="sub">[${renderIcon(ss)}${esc(_attDisplayName(_attSub,slotKey,_cellDs))}${subTypeTag}]</span>`;
             }
             td.innerHTML=html;
           }
         }
       } else if(stu){
         const prefix=namePrefix[slotKey]||'';
-        let display=(prefix?prefix+'.':'')+stu.n+(stu.a||'');
+        const hideAgeForReservation=retireInline||enrollInline;
+        let display=(prefix?prefix+'.':'')+stu.n+(hideAgeForReservation?'':(stu.a||''));
         if(retireInline) display+=' ~'+_dl(retDs)+_retireReservationSuffix(retEntry,slotKey,stu);
         let html=`<span class="stu-name-text">${esc(display)}</span>`;
         if(enrollInline) html+=` <span class="stu-enroll-inline${enrEntry.isNew?' stu-enroll-inline-new':''}">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;

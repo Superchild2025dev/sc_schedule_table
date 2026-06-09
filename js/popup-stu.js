@@ -1535,7 +1535,7 @@ async function _commitEnroll(slotKey, form){
         if(form.memo) obj.memo=form.memo;
         if(form.isNew&&enrollMonth) obj.isNew=enrollMonth;
         else if(form.reenroll&&enrollMonth) obj.reenroll=enrollMonth;
-        else obj.enrolled=ds;  // 등록 표시 (빨간 배경 시각 효과)
+        obj.enrolled=ds;  // 등록일 당일 출석부/시간표 표시용
         students.push(obj);
         return students;
       });
