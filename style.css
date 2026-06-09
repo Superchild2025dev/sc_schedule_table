@@ -412,6 +412,8 @@ body.is-snapshot .snap-banner{display:block}
 .stu-dates-section{margin-top:10px;padding-top:8px;border-top:1.5px solid #E5E7EB}
 .stu-dates-label{font-size:10px;font-weight:700;color:#0F9D58;margin-bottom:4px}
 .stu-dates-row{display:flex;gap:4px;margin-bottom:4px}
+.stu-dates-row.stu-dates-week-rows{display:flex;flex-direction:column}
+.stu-date-week{display:grid;grid-template-columns:repeat(var(--bt-date-cols,3),1fr);gap:4px}
 .stu-date-box{
   flex:1;min-height:28px;border-radius:5px;
   display:flex;flex-direction:column;align-items:center;justify-content:center;

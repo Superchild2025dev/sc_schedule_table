@@ -250,9 +250,32 @@ function openStuPopup(td,t,day,lane,row){
  * @param {string|null} enrollDate - 등록 예약일
  * @param {string} enrollName - 등록 학생 이름+나이
  */
-function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enrollDate, enrollName){
+function _dateWeekKey(ds){
+  const date=new Date(ds+'T00:00:00');
+  const mondayOffset=(date.getDay()+6)%7;
+  date.setDate(date.getDate()-mondayOffset);
+  return toDateStr(date);
+}
+
+function _groupDatesByWeek(dates){
+  const groups=[];
+  const map=new Map();
+  (dates||[]).forEach(d=>{
+    const key=_dateWeekKey(d.ds);
+    if(!map.has(key)){
+      const group=[];
+      map.set(key,group);
+      groups.push(group);
+    }
+    map.get(key).push(d);
+  });
+  return groups;
+}
+
+function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enrollDate, enrollName, opts){
+  opts=opts||{};
   const todayStr=toDateStr(getToday());
-  return dates.map(d=>{
+  const renderBox=d=>{
     let cls=d.closed?'closed':(d.ds===todayStr?'today':(d.ds<todayStr?'past':'future'));
     if(retireDate&&d.ds===retireDate) cls+=' retire-set';
     if(enrollDate&&d.ds===enrollDate) cls+=' enroll-set';
@@ -280,7 +303,11 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
     if(isSampleOnly) markLabel=`<span class="date-sample-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
 
     return `<div class="stu-date-box ${cls}" data-ds="${d.ds}">${d.m}/${d.d}${retLabel}${enrLabel}${markLabel}</div>`;
-  }).join('');
+  };
+  if(opts.weekRows){
+    return _groupDatesByWeek(dates).map(group=>`<div class="stu-date-week">${group.map(renderBox).join('')}</div>`).join('');
+  }
+  return dates.map(renderBox).join('');
 }
 
 /* ── 학생 팝업 폼 빌더 (보강/샘플/등록) ── */
@@ -723,6 +750,9 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
           <button class="btn btn-p" id="sp-enroll-left-save" style="flex:1;background:#3B82F6">등록 예약 저장</button>
           <button class="btn btn-d" id="sp-enroll-left-del">삭제</button>
         </div>
+        <div style="display:flex;gap:4px;margin-top:4px">
+          <button class="btn btn-o" id="sp-enroll-copy" style="flex:1;font-size:10px;padding:4px;color:#10B981;border-color:#10B981">📋 등록예약 복사</button>
+        </div>
         <div style="font-size:10px;color:#6B7280;text-align:center;margin-top:6px;font-weight:700;line-height:1.4">왼쪽 정보 수정 후 바로 저장할 수 있습니다.</div>`
       : enrollMode
       ? `<div class="stu-popup-actions">
@@ -753,9 +783,13 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
 function buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml){
   const curLabel=classDates?.label || `${curPeriod.month}월 수업`;
   const nextLabel=classDates?.nextLabel || (nextPeriod?`${nextPeriod.month}월 수업`:'다음 수업');
+  const weekRows=classDates?.mode==='bangteuk';
+  const dateCols=Math.max(1, Math.min(5, Number(classDates?.dateCols)||3));
+  const rowClass=weekRows?' stu-dates-week-rows':'';
+  const rowStyle=weekRows?` style="--bt-date-cols:${dateCols}"`:'';
   return `<div class="stu-popup-right">
     <div class="stu-dates-label">${esc(curLabel)}</div>
-    <div class="stu-dates-row">${renderDateBoxes(classDates.cur, slotKey, selDate, retireDate, retireName, enrollDate, enrollName)}</div>
+    <div class="stu-dates-row${rowClass}"${rowStyle}>${renderDateBoxes(classDates.cur, slotKey, selDate, retireDate, retireName, enrollDate, enrollName, {weekRows})}</div>
     ${classDates.next.length?`
       <div class="stu-dates-label" style="margin-top:6px">${esc(nextLabel)}</div>
       <div class="stu-dates-row">${renderDateBoxes(classDates.next, slotKey, selDate, retireDate, retireName, enrollDate, enrollName)}</div>
@@ -898,6 +932,7 @@ function handleReenrollToggle(e, ctx){
 function handleMoveAll(e, ctx){ startMove('all'); }
 function handleMoveStu(e, ctx){ startMove('stu'); }
 function handleCopyStu(e, ctx){ startMove('copy'); }
+function handleEnrollCopy(e, ctx){ startMove('enrollCopy'); }
 function handleEnrollMove(e, ctx){ startMove('enroll'); }
 function handleMoveReserve(e, ctx){ startMove('reserve'); }
 function handleSwap(e, ctx){ startMove('swap'); }
@@ -1680,6 +1715,7 @@ const STU_POPUP_SIMPLE_HANDLERS = [
   ['#sp-move-all',        handleMoveAll],
   ['#sp-move-stu',        handleMoveStu],
   ['#sp-copy-stu',        handleCopyStu],
+  ['#sp-enroll-copy',     handleEnrollCopy],
   ['#sp-enroll-move',     handleEnrollMove],
   ['#sp-move-reserve',    handleMoveReserve],
   ['#sp-swap',            handleSwap],
@@ -1904,6 +1940,24 @@ function startMove(type){
   }
 
   // 등록 예약 이동 모드
+  if(type==='enrollCopy'){
+    const enrEntry=ENROLL_MAP[srcKey];
+    if(!enrEntry){toast('복사할 등록 예약이 없습니다','err');return;}
+    if(_isReserveMoveEntry(enrEntry)){toast('예약 이동으로 만든 등록은 복사할 수 없습니다','err');return;}
+    _moveMode={srcKey, type:'enrollCopy', enrData:JSON.parse(JSON.stringify(enrEntry))};
+    closeStuPopup();
+    document.getElementById('move-bar').style.display='flex';
+    document.getElementById('move-msg').textContent=
+      `📋 등록 예약 ${enrEntry.name||''} 복사 중 — 빈 셀을 클릭하세요`;
+    buildTable();
+    document.querySelectorAll('.stu-clickable').forEach(td=>{
+      if(td.dataset.t===t&&td.dataset.day===day&&parseInt(td.dataset.lane)===lane&&parseInt(td.dataset.ri)===row){
+        td.classList.add('stu-move-src');
+      }
+    });
+    return;
+  }
+
   if(type==='enroll'){
     const enrEntry=ENROLL_MAP[srcKey];
     if(!enrEntry){toast('이동할 등록 예약이 없습니다','err');return;}
@@ -2052,16 +2106,21 @@ function askDateForDay(day, callback, opts){
   const title=opts.title||`📅 ${dayTitle} 날짜 선택`;
   const subtitleText=opts.subtitle||classDates.label||'';
   const subtitle=subtitleText?`<div style="font-size:11px;color:#6B7280;line-height:1.4;margin:-2px 0 8px">${esc(subtitleText)}</div>`:'';
+  const useWeekRows=classDates?.mode==='bangteuk';
+  const dateCols=Math.max(1, Math.min(5, Number(classDates?.dateCols)||3));
+  const dateGridStyle=useWeekRows
+    ? 'display:flex;flex-direction:column;gap:4px;max-height:300px;overflow-y:auto'
+    : 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:300px;overflow-y:auto';
   box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">${esc(title)}</div>
     ${subtitle}
-    <div id="dpm-dates" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:300px;overflow-y:auto"></div>
+    <div id="dpm-dates" style="${dateGridStyle}"></div>
     <div style="margin-top:10px;display:flex;gap:4px">
       <button id="dpm-cancel" class="btn btn-o" style="flex:1;padding:6px;font-size:11px">취소</button>
     </div>`;
   backdrop.appendChild(box);
   document.body.appendChild(backdrop);
   const grid=box.querySelector('#dpm-dates');
-  allDates.forEach(d=>{
+  const makeDateButton=d=>{
     const btn=document.createElement('button');
     const mo=parseInt(d.ds.slice(5,7)),da=parseInt(d.ds.slice(8,10));
     const isPast=d.ds<todayStr;
@@ -2070,8 +2129,18 @@ function askDateForDay(day, callback, opts){
     btn.className='btn';
     btn.style.cssText=`padding:6px;font-size:11px;border:1px solid ${isToday?'#3B82F6':isPast?'#D1D5DB':'#9CA3AF'};background:${isToday?'#DBEAFE':isPast?'#F3F4F6':'#fff'};color:${isPast?'#9CA3AF':'#111'};font-weight:${isToday?'700':'500'}`;
     btn.onclick=()=>{backdrop.remove();callback(d.ds);};
-    grid.appendChild(btn);
-  });
+    return btn;
+  };
+  if(useWeekRows){
+    _groupDatesByWeek(allDates).forEach(group=>{
+      const row=document.createElement('div');
+      row.style.cssText=`display:grid;grid-template-columns:repeat(${dateCols},1fr);gap:4px`;
+      group.forEach(d=>row.appendChild(makeDateButton(d)));
+      grid.appendChild(row);
+    });
+  }else{
+    allDates.forEach(d=>grid.appendChild(makeDateButton(d)));
+  }
   box.querySelector('#dpm-cancel').onclick=()=>{backdrop.remove();callback(null);};
   backdrop.onclick=(e)=>{if(e.target===backdrop){backdrop.remove();callback(null);}};
 }
@@ -2104,6 +2173,20 @@ function _reservationEntryFromStudent(stu, ds, extra){
     if(stu.g) entry.g=stu.g;
   }
   return entry;
+}
+
+function _cloneEnrollEntryForCopy(entry, ds){
+  const copy={ds, name:entry?.name||''};
+  if(entry?.age) copy.age=entry.age;
+  if(entry?.p) copy.p=entry.p;
+  if(entry?.v) copy.v=true;
+  if(entry?.loc) copy.loc=entry.loc;
+  if(entry?.memo) copy.memo=entry.memo;
+  if(entry?.g) copy.g=entry.g;
+  if(entry?.isNew) copy.isNew=entry.isNew;
+  if(entry?.reenroll) copy.reenroll=entry.reenroll;
+  if(entry?.enrolled) copy.enrolled=entry.enrolled;
+  return copy;
 }
 function _popupStudentDraft(){
   const name=(document.getElementById('sp-name')?.value||'').trim();
@@ -2589,6 +2672,49 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   }
 
   // 등록 예약 이동
+  if(type==='enrollCopy'){
+    const {enrData}=_moveMode;
+    const [sT,sD,sL,sR]=srcKey.split('/');
+    const copyEnrollTo=async(newDs)=>{
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE], ctx=>{
+        const students=ctx.get(stuKey,[]);
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+        const srcEnroll=enroll[srcKey];
+        if(!srcEnroll){ctx.abort('원본 등록 예약이 이미 변경되었습니다');return;}
+        if(_isReserveMoveEntry(srcEnroll)){ctx.abort(_reserveMoveLockedMessage());return;}
+        if(_findStudentIndexAt(students,dstKey)>=0){ctx.abort('빈 셀에만 복사 가능합니다');return;}
+        if(enroll[dstKey]){ctx.abort('목적지에 이미 등록 예약이 있습니다');return;}
+        if(retire[dstKey]){ctx.abort('목적지에 제외 예약이 있습니다');return;}
+        enroll[dstKey]=_cloneEnrollEntryForCopy(enrData,newDs);
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        return true;
+      }, {type:'edit', label:'등록 예약 복사', detail:`${srcKey} → ${dstKey}`});
+    };
+    if(sD!==dstDay){
+      askDateForDay(dstDay, async function(newDs){
+        if(!newDs) return;
+        try{
+          await copyEnrollTo(newDs);
+          _finishMove('등록 예약 '+(enrData.name||'')+' 복사 완료 ('+newDs.slice(5)+')');
+        }catch(err){
+          toast(err?.message||'등록 예약 복사 실패','err');
+          console.error(err);
+        }
+      });
+      return;
+    }
+    try{
+      await copyEnrollTo(enrData.ds);
+      _finishMove('등록 예약 '+(enrData.name||'')+' 복사 완료');
+    }catch(err){
+      toast(err?.message||'등록 예약 복사 실패','err');
+      console.error(err);
+    }
+    return;
+  }
+
   if(type==='enroll'){
     const {enrData}=_moveMode;
     const [sT,sD,sL,sR]=srcKey.split('/');

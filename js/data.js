@@ -138,6 +138,7 @@ function getClassDatesForDay(dayName){
       next:[],
       label:`방특 ${startLabel}~${endLabel}`,
       mode:'bangteuk',
+      dateCols:dayIndexes.length,
     };
   }
 
