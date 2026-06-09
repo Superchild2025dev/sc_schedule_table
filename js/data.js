@@ -108,9 +108,6 @@ function getCurrentPeriod(){
 function getClassDatesForDay(dayName){
   const dayIndexes=getDayIndexes(dayName); // 단일 요일 또는 방특 묶음 요일
   if(!dayIndexes.length) return {cur:[],next:[]};
-  const pi=getCurrentPeriod();
-  const curP=SCHEDULE_PERIODS[pi];
-  const nextP=SCHEDULE_PERIODS[pi+1]||null;
 
   function collectDates(period){
     if(!period) return [];
@@ -129,6 +126,24 @@ function getClassDatesForDay(dayName){
     return dates;
   }
 
+  const activeTab=(typeof _tabById==='function')?_tabById(_activeTab):null;
+  if(activeTab?.type==='bangteuk'&&activeTab.seasonStart&&activeTab.seasonEnd){
+    const start=String(activeTab.seasonStart);
+    const end=String(activeTab.seasonEnd);
+    const period={start,end};
+    const startLabel=start.slice(5).replace('-','/');
+    const endLabel=end.slice(5).replace('-','/');
+    return {
+      cur:collectDates(period),
+      next:[],
+      label:`방특 ${startLabel}~${endLabel}`,
+      mode:'bangteuk',
+    };
+  }
+
+  const pi=getCurrentPeriod();
+  const curP=SCHEDULE_PERIODS[pi];
+  const nextP=SCHEDULE_PERIODS[pi+1]||null;
   return { cur: collectDates(curP), next: nextP?collectDates(nextP):[] };
 }
 

@@ -751,11 +751,13 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
  * 학생 팝업 우측 컬럼: 날짜 그리드 + 액션 패널
  */
 function buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml){
+  const curLabel=classDates?.label || `${curPeriod.month}월 수업`;
+  const nextLabel=classDates?.nextLabel || (nextPeriod?`${nextPeriod.month}월 수업`:'다음 수업');
   return `<div class="stu-popup-right">
-    <div class="stu-dates-label">${curPeriod.month}월 수업</div>
+    <div class="stu-dates-label">${esc(curLabel)}</div>
     <div class="stu-dates-row">${renderDateBoxes(classDates.cur, slotKey, selDate, retireDate, retireName, enrollDate, enrollName)}</div>
     ${classDates.next.length?`
-      <div class="stu-dates-label" style="margin-top:6px">${nextPeriod.month}월 수업</div>
+      <div class="stu-dates-label" style="margin-top:6px">${esc(nextLabel)}</div>
       <div class="stu-dates-row">${renderDateBoxes(classDates.next, slotKey, selDate, retireDate, retireName, enrollDate, enrollName)}</div>
     `:''}
     ${actionHtml}
@@ -2048,7 +2050,8 @@ function askDateForDay(day, callback, opts){
   box.style.cssText='background:#fff;padding:14px;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.2);max-width:320px;width:90%';
   const dayTitle=(typeof getDayIndexes==='function'&&getDayIndexes(day).length>1)?day:(day+'요일');
   const title=opts.title||`📅 ${dayTitle} 날짜 선택`;
-  const subtitle=opts.subtitle?`<div style="font-size:11px;color:#6B7280;line-height:1.4;margin:-2px 0 8px">${esc(opts.subtitle)}</div>`:'';
+  const subtitleText=opts.subtitle||classDates.label||'';
+  const subtitle=subtitleText?`<div style="font-size:11px;color:#6B7280;line-height:1.4;margin:-2px 0 8px">${esc(subtitleText)}</div>`:'';
   box.innerHTML=`<div style="font-weight:700;font-size:13px;margin-bottom:8px">${esc(title)}</div>
     ${subtitle}
     <div id="dpm-dates" style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:300px;overflow-y:auto"></div>
