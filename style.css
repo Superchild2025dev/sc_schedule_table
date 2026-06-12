@@ -668,6 +668,45 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .schedule-student-teacher-chip-row{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
 .schedule-student-teacher-chip{display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:999px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;font-size:11px;font-weight:900;white-space:nowrap}
 
+.mobile-schedule-view{display:none}
+.mobile-schedule-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.mobile-schedule-head strong{display:block;color:#111827;font-size:15px;font-weight:900;line-height:1.2}
+.mobile-schedule-head span{display:block;margin-top:2px;color:#6B7280;font-size:11px;font-weight:800}
+.mobile-schedule-head button{height:32px;padding:0 10px;border:1px solid #D1D5DB;border-radius:7px;background:#fff;color:#374151;font-size:12px;font-weight:900;font-family:inherit}
+.mobile-schedule-days{display:flex;gap:6px;overflow-x:auto;padding:1px 0 8px;margin-bottom:6px;scrollbar-width:thin}
+.mobile-schedule-days button{flex:0 0 auto;height:34px;min-width:48px;padding:0 12px;border:1px solid #D1D5DB;border-radius:999px;background:#fff;color:#374151;font-size:13px;font-weight:900;font-family:inherit}
+.mobile-schedule-days button.active{border-color:#0F9D58;background:#0F9D58;color:#fff}
+.mobile-schedule-body{display:flex;flex-direction:column;gap:10px}
+.mobile-schedule-time{overflow:hidden;border:1px solid #DDE3EC;border-radius:8px;background:#fff;box-shadow:0 1px 4px rgba(15,23,42,.06)}
+.mobile-schedule-time h3{margin:0;padding:9px 11px;background:#F8FAFC;border-bottom:1px solid #E5E7EB;color:#111827;font-size:14px;font-weight:900}
+.mobile-schedule-lanes{display:flex;flex-direction:column}
+.mobile-schedule-lane{padding:9px 10px;border-bottom:1px solid #F1F5F9}
+.mobile-schedule-lane:last-child{border-bottom:none}
+.mobile-schedule-lane-head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.mobile-schedule-lane-head span{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:6px;background:#EEF2FF;color:#1E3A8A;font-size:11px;font-weight:900;white-space:nowrap}
+.mobile-schedule-lane-head strong{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:6px;background:#E5E7EB;color:#111827;font-size:13px;font-weight:900;line-height:1.2}
+.mobile-schedule-students{display:flex;flex-direction:column;gap:5px}
+.mobile-schedule-student{display:flex;align-items:center;gap:5px;min-height:28px;padding:5px 6px;border:1px solid #333;border-radius:7px;background:#fff;color:#111827;flex-wrap:wrap}
+.mobile-schedule-student.vehicle{background:#FFF88D;color:#111}
+.mobile-schedule-student.new{background:#FF0000;color:#0000FF}
+.mobile-schedule-student.enrolled{background:#FF0000;color:#111}
+.mobile-schedule-student.enroll,.mobile-schedule-student.enroll-new{background:#DBEAFE;border-color:#1D4ED8}
+.mobile-schedule-student.enroll-new b{color:#1D4ED8}
+.mobile-schedule-student.retire{background:#555;color:#fff;border-color:#333}
+.mobile-schedule-student.bogang-only{background:#EDE9FE;border-color:#7C3AED}
+.mobile-schedule-student.badge-only{background:#fff}
+.mobile-schedule-row{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#F3F4F6;color:#4B5563;font-size:11px;font-weight:900;flex:0 0 auto}
+.mobile-schedule-student b{font-size:13px;font-weight:900;line-height:1.2;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mobile-schedule-chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:999px;background:#E5E7EB;color:#374151;font-size:10px;font-weight:900;white-space:nowrap;flex:0 0 auto}
+.mobile-schedule-chip.retire{background:#555;color:#fff}
+.mobile-schedule-chip.absent{background:#EF4444;color:#fff}
+.mobile-schedule-chip.bogang{background:#7C3AED;color:#fff}
+.mobile-schedule-chip.sample{background:#F59E0B;color:#333}
+.mobile-schedule-chip.enroll{background:#DBEAFE;color:#111}
+.mobile-schedule-chip.enroll-new{background:#DBEAFE;color:#1D4ED8}
+.mobile-schedule-chip.hyuwon{background:#0EA5E9;color:#fff}
+.mobile-schedule-empty,.mobile-schedule-none{display:block;padding:8px;color:#9CA3AF;font-size:12px;font-weight:800;text-align:center}
+
 @media (max-width:720px){
   .appbar{
     align-items:flex-start;flex-wrap:wrap;gap:6px;
@@ -697,12 +736,19 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
   .move-bar{top:0;padding:8px 10px;font-size:12px;flex-wrap:wrap}
 
   .page{padding:8px 6px 36px}
+  .mobile-schedule-view{display:block}
   .tbl-outer{
+    display:none;
     border-width:1px;border-radius:6px;
     max-height:calc(100vh - 126px);
     max-height:calc(100dvh - 126px);
   }
-  .tbl-scroll-proxy{height:20px;z-index:60}
+  .tbl-scroll-proxy{display:none!important;height:20px;z-index:60}
+  body.mobile-table-mode .mobile-schedule-view{display:block}
+  body.mobile-table-mode .mobile-schedule-days,
+  body.mobile-table-mode .mobile-schedule-body{display:none}
+  body.mobile-table-mode .tbl-outer{display:block}
+  body.mobile-table-mode .tbl-scroll-proxy{display:block!important}
   .tbl-scroll-proxy::-webkit-scrollbar{height:16px}
   .sched-tbl th.dc,.sched-tbl td.dc{padding:1px 2px}
   .dh{padding:6px 3px!important;letter-spacing:0}

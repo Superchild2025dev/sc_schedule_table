@@ -227,6 +227,19 @@
 <div id="snap-banner" class="snap-banner">📷 스냅샷 — 읽기 전용 (캡처 시점 그대로 고정)</div>
 
 <div class="page">
+  <div id="mobile-schedule-view" class="mobile-schedule-view" aria-label="모바일 시간표">
+    <div class="mobile-schedule-head">
+      <div>
+        <strong id="mobile-schedule-title">모바일 시간표</strong>
+        <span id="mobile-schedule-sub"></span>
+      </div>
+      <button type="button" id="mobile-schedule-table-toggle" onclick="toggleMobileTableView()">표 보기</button>
+    </div>
+    <div id="mobile-schedule-days" class="mobile-schedule-days"></div>
+    <div id="mobile-schedule-body" class="mobile-schedule-body">
+      <div class="mobile-schedule-none">지점을 선택하면 모바일 시간표가 표시됩니다.</div>
+    </div>
+  </div>
   <div id="tab-regular" class="tbl-outer"><div id="tbl"></div></div>
   <div id="scroll-proxy" class="tbl-scroll-proxy"><div class="tbl-scroll-proxy-inner" id="scroll-proxy-inner"></div></div>
 </div>

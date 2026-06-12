@@ -2023,6 +2023,7 @@ function buildTable(){
 
   // 학부모 요청 대기 카운트 업데이트
   try{ updateScheduleSummary(); }catch(e){ console.warn('[summary]', e); }
+  try{ renderMobileScheduleView({attendanceBasisByDay:_attendanceBasisByDay}); }catch(e){ console.warn('[mobile schedule]', e); }
   updateParentReqCount();
 
   // 스냅샷 사용했다면 원복
@@ -2047,6 +2048,193 @@ function buildTable(){
     Object.keys(RETIRE_MAP).forEach(k=>delete RETIRE_MAP[k]);
     Object.assign(RETIRE_MAP, _tmBackup.retire);
   }
+}
+
+let _mobileScheduleDay='';
+function _mobileSlotKey(t,day,lane,row){
+  return [t,day,lane,row].join('/');
+}
+function _mobileShortDate(ds){
+  if(!ds) return '';
+  const p=String(ds).slice(5).split('-');
+  const m=parseInt(p[0],10);
+  const d=parseInt(p[1],10);
+  return m&&d ? `${m}/${d}` : String(ds);
+}
+function _mobileTimeLabel(day,time){
+  try{
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.displayTimeForDay==='function'){
+      return window.SCScheduleTime.displayTimeForDay(day,time)||time;
+    }
+  }catch(e){}
+  return time;
+}
+function _mobileTabLabel(){
+  try{
+    const tab=(_tabList||[]).find(t=>t&&t.id===_activeTab);
+    if(!tab) return '';
+    if(tab.type==='bangteuk'&&tab.seasonStart&&tab.seasonEnd){
+      return `${tab.name||'방특 시간표'} · ${_mobileShortDate(tab.seasonStart)}~${_mobileShortDate(tab.seasonEnd)}`;
+    }
+    return tab.name||'정규시간표';
+  }catch(e){return '';}
+}
+function _mobileInstText(inst){
+  const text=instDisplay(inst);
+  return text ? text.replace(/^\d\)/,'') : '';
+}
+function _mobileSlotBadges(slotKey,day){
+  const badges=[];
+  const todayStr=toDateStr(getToday());
+  const dates=typeof getClassDatesForDay==='function' ? getClassDatesForDay(day) : {cur:[],next:[]};
+  const allDates=[...(dates.cur||[]),...(dates.next||[])];
+  const hyuwon=HYUWON_MAP&&HYUWON_MAP[slotKey];
+  if(hyuwon&&Array.isArray(hyuwon.dates)){
+    hyuwon.dates
+      .filter(ds=>ds>=todayStr)
+      .slice(0,2)
+      .forEach(ds=>badges.push({type:'hyuwon',text:`휴 ${_mobileShortDate(ds)}`}));
+  }
+  allDates.forEach(d=>{
+    if(!d||d.closed||d.ds<todayStr) return;
+    const mark=typeof getMark==='function'?getMark(slotKey,d.ds):null;
+    if(!mark) return;
+    const dl=_mobileShortDate(d.ds);
+    if(mark.type==='absent'){
+      badges.push({type:'absent',text:`결석 ${dl}`});
+      if(mark.sub){
+        const subType=mark.sub.type==='sample'?'sample':'bogang';
+        badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${mark.sub.n||''} ${dl}`.trim()});
+      }
+    }else if(mark.type==='bogang'||mark.type==='sample'){
+      badges.push({type:mark.type,text:`${mark.type==='sample'?'샘':'보'} ${mark.n||''} ${dl}`.trim()});
+    }
+  });
+  return badges.slice(0,4);
+}
+function _mobileStudentText(stu){
+  if(!stu) return '';
+  return `${stu.n||''}${stu.a||''}`.trim();
+}
+function _mobileStudentType(stu,enroll,badges,todayStr){
+  if(stu){
+    if(stu.v||_tableLocUsesVehicle(stu.loc)) return 'vehicle';
+    try{
+      const curMonth=(SCHEDULE_PERIODS[getCurrentPeriod()]||{}).month;
+      if(stu.isNew&&stu.isNew===curMonth) return 'new';
+      if(stu.reenroll&&stu.reenroll===curMonth) return 'enrolled';
+    }catch(e){}
+    if(stu.enrolled&&stu.enrolled>=todayStr) return 'enrolled';
+    return 'student';
+  }
+  if(badges&&badges.length&&badges.every(b=>b.type==='bogang')) return 'bogang-only';
+  if(enroll) return enroll.isNew?'enroll-new':'enroll';
+  return 'badge-only';
+}
+function _mobileCellItems(ctx,t,day,lane,row){
+  const slotKey=_mobileSlotKey(t,day,lane,row);
+  const stu=_ctxStu(ctx,t,day,lane,row);
+  const enroll=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  const retire=RETIRE_MAP&&RETIRE_MAP[slotKey];
+  const badges=_mobileSlotBadges(slotKey,day);
+  const items=[];
+  const todayStr=toDateStr(getToday());
+  if(stu){
+    const chips=[...badges];
+    const retDs=(typeof retire==='string'?retire:retire?.ds)||'';
+    if(retDs&&retDs>=todayStr) chips.unshift({type:'retire',text:`~${_mobileShortDate(retDs)}까지`});
+    const enrDs=enroll&&enroll.ds;
+    if(enrDs&&enrDs>todayStr) chips.unshift({type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enrDs)}부터`});
+    items.push({row,label:_mobileStudentText(stu),type:_mobileStudentType(stu,enroll,chips,todayStr),chips});
+  }else if(enroll&&enroll.ds>=todayStr){
+    items.push({
+      row,
+      label:`${enroll.name||'등록'}${enroll.age||''}`.trim(),
+      type:enroll.isNew?'enroll-new':'enroll',
+      chips:[{type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enroll.ds)}부터`},...badges]
+    });
+  }else if(retire){
+    const retDs=(typeof retire==='string'?retire:retire?.ds)||'';
+    const nm=_scheduleReservationName(retire,null)||'제외';
+    if(retDs>=todayStr){
+      items.push({row,label:nm,type:'retire',chips:[{type:'retire',text:`~${_mobileShortDate(retDs)}까지`},...badges]});
+    }
+  }else if(badges.length){
+    items.push({row,label:'일정',type:_mobileStudentType(null,null,badges,todayStr),chips:badges});
+  }
+  return items;
+}
+function _mobileRenderTimeCard(ctx,t,day,lanes){
+  const rows=getTimeRows(t);
+  const laneHtml=[];
+  for(let lane=1;lane<=lanes;lane++){
+    const inst=_ctxInst(ctx,t,day,lane);
+    const teacher=_mobileInstText(inst);
+    const items=[];
+    for(let row=1;row<=rows;row++){
+      items.push(..._mobileCellItems(ctx,t,day,lane,row));
+    }
+    if(!teacher&&!items.length) continue;
+    const itemHtml=items.map(item=>{
+      const chips=(item.chips||[]).map(chip=>`<span class="mobile-schedule-chip ${esc(chip.type||'')}">${esc(chip.text||'')}</span>`).join('');
+      return `<div class="mobile-schedule-student ${esc(item.type||'')}"><span class="mobile-schedule-row">${item.row}</span><b>${esc(item.label||'')}</b>${chips}</div>`;
+    }).join('');
+    laneHtml.push(`<section class="mobile-schedule-lane">
+      <div class="mobile-schedule-lane-head"><span>${lane}레인</span><strong>${teacher?esc(teacher):'담임 없음'}</strong></div>
+      <div class="mobile-schedule-students">${itemHtml||'<span class="mobile-schedule-empty">원생 없음</span>'}</div>
+    </section>`);
+  }
+  if(!laneHtml.length) return '';
+  return `<article class="mobile-schedule-time">
+    <h3>${esc(_mobileTimeLabel(day,t))}</h3>
+    <div class="mobile-schedule-lanes">${laneHtml.join('')}</div>
+  </article>`;
+}
+function _updateMobileTableButton(){
+  const btn=document.getElementById('mobile-schedule-table-toggle');
+  if(!btn) return;
+  btn.textContent=document.body.classList.contains('mobile-table-mode')?'모바일뷰':'표 보기';
+}
+function toggleMobileTableView(){
+  document.body.classList.toggle('mobile-table-mode');
+  _updateMobileTableButton();
+  try{ updateProxyPosition(); }catch(e){}
+}
+function setMobileScheduleDay(day){
+  _mobileScheduleDay=day;
+  renderMobileScheduleView();
+}
+function renderMobileScheduleView(ctx){
+  const root=document.getElementById('mobile-schedule-view');
+  if(!root) return;
+  const days=typeof getDays==='function'?getDays():[];
+  if(!days.length){
+    root.classList.add('is-empty');
+    return;
+  }
+  if(!_mobileScheduleDay||!days.includes(_mobileScheduleDay)) _mobileScheduleDay=days[0];
+  const day=_mobileScheduleDay;
+  const title=document.getElementById('mobile-schedule-title');
+  const sub=document.getElementById('mobile-schedule-sub');
+  const daysEl=document.getElementById('mobile-schedule-days');
+  const body=document.getElementById('mobile-schedule-body');
+  const dateHeaders=typeof getDateHeaders==='function'?getDateHeaders():{};
+  if(title) title.textContent=_mobileTabLabel()||'모바일 시간표';
+  if(sub) sub.textContent=(dateHeaders[day]&&dateHeaders[day].label)?dateHeaders[day].label:day;
+  if(daysEl){
+    daysEl.innerHTML=days.map(d=>`<button type="button" class="${d===day?'active':''}" data-mobile-day="${esc(d)}">${esc(d)}</button>`).join('');
+    daysEl.querySelectorAll('[data-mobile-day]').forEach(btn=>{
+      btn.onclick=()=>setMobileScheduleDay(btn.dataset.mobileDay||'');
+    });
+  }
+  if(body){
+    const renderCtx=ctx||{};
+    const times=(typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean);
+    const lanes=typeof getLanes==='function'?getLanes():5;
+    const html=times.map(t=>_mobileRenderTimeCard(renderCtx,t,day,lanes)).filter(Boolean).join('');
+    body.innerHTML=html||'<div class="mobile-schedule-none">표시할 수업이 없습니다.</div>';
+  }
+  _updateMobileTableButton();
 }
 
 function updateParentReqCount(){
