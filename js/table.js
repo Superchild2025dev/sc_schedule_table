@@ -2083,9 +2083,14 @@ function _summaryIsBangteukPreviewSlot(t,day,lane,row){
   const n=parseInt(row,10);
   return Number.isFinite(n)&&n>=1&&n<=6&&typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(t,day,lane);
 }
+function _summaryIsBangteukGroupDay(day){
+  const text=String(day||'').replace(/[\/\s]/g,'');
+  return text==='월수금'||text==='화목';
+}
 function _summaryIsBangteukSlotKey(slotKey){
   const p=String(slotKey||'').split('/');
   if(p.length<4) return false;
+  if(_summaryIsBangteukGroupDay(p[1])) return true;
   if(_summaryIsBangteukPreviewSlot(p[0],p[1],parseInt(p[2],10),p[3])) return true;
   const inst=INST_MAP&&INST_MAP[p.slice(0,3).join('/')];
   if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function') return window.SCScheduleTime.isBangteukSlot(inst,p[3],{bangteukTable:typeof isBangteuk==='function'&&isBangteuk()});
@@ -2356,6 +2361,7 @@ function getScheduleSummaryData(){
     const p=String(slotKey||'').split('/');
     const saturday=p[1]==='토';
     if(p.length<4) return {visible:false,saturday,reason:'슬롯 형식 오류'};
+    if(_summaryIsBangteukGroupDay(p[1])) return {visible:false,saturday:false,bangteuk:true,reason:'방특반'};
     if(!days.includes(p[1])) return {visible:false,saturday,reason:'현재 시간표 요일 아님'};
     if(!times.includes(p[0]) || (saturday&&!validSaturdayTime(p[0]))) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
     const lane=parseInt(p[2],10);
@@ -2385,6 +2391,10 @@ function getScheduleSummaryData(){
   });
 
   const hiddenPeople=new Map();
+  const bangteukPeople=new Map();
+  const addBangteukPerson=(entry,slotKey,fallback)=>{
+    _summaryAddPerson(bangteukPeople,_summaryRecord(entry,'방특',slotKey,'',fallback),true);
+  };
   const addHiddenSaturday=(entry,slotKey,fallback,reason)=>{
     if(!isSaturdaySlot(slotKey)) return;
     _summaryAddPerson(hiddenPeople,_summaryRecord(entry,'숨김후보',slotKey,reason||'시간표 밖',fallback),false);
@@ -2394,7 +2404,7 @@ function getScheduleSummaryData(){
     if(!stu || !stu.n) return;
     const slotKey=String(stu.t||'')+'/'+String(stu.d||'')+'/'+String(stu.l||'')+'/'+String(stu.r||'');
     const visibility=slotVisibility(slotKey);
-    if(visibility.bangteuk) return;
+    if(visibility.bangteuk){ addBangteukPerson(stu,slotKey,null); return; }
     if(visibility.visible) actualBySlot.set(slotKey,stu);
     else if(visibility.saturday) addHiddenSaturday(stu,slotKey,null,visibility.reason);
   });
@@ -2420,7 +2430,7 @@ function getScheduleSummaryData(){
   Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
     if(!entry) return;
     const visibility=slotVisibility(slotKey);
-    if(visibility.bangteuk) return;
+    if(visibility.bangteuk){ addBangteukPerson(entry,slotKey,null); return; }
     if(visibility.saturday&&!visibility.visible){
       addHiddenSaturday(entry,slotKey,null,visibility.reason);
       return;
@@ -2447,6 +2457,7 @@ function getScheduleSummaryData(){
   const countedRows=_summaryRowsFromMap(countedPeople);
   const excludedRows=_summaryRowsFromMap(excludedPeople);
   const hiddenRows=_summaryRowsFromMap(hiddenPeople);
+  const bangteukRows=_summaryRowsFromMap(bangteukPeople);
   const countedKeys=new Set(countedRows.map(row=>row.key));
   const excludedOnlyRows=excludedRows.filter(row=>!countedKeys.has(row.key));
   return {
@@ -2455,6 +2466,7 @@ function getScheduleSummaryData(){
     countedRows,
     excludedRows,
     hiddenRows,
+    bangteukRows,
     excludedOnlyRows,
     averageHours:countedRows.length ? occupiedSlots.size/countedRows.length : 0,
   };
@@ -2462,10 +2474,12 @@ function getScheduleSummaryData(){
 function updateScheduleSummary(){
   const hoursEl=document.getElementById('schedule-class-hours');
   const studentsEl=document.getElementById('schedule-student-total');
-  if(!hoursEl && !studentsEl) return;
+  const bangteukEl=document.getElementById('schedule-bangteuk-total');
+  if(!hoursEl && !studentsEl && !bangteukEl) return;
   const data=getScheduleSummaryData();
   if(hoursEl) hoursEl.textContent=_summaryNumber(data.hours)+'/'+_summaryNumber(data.capacity);
   if(studentsEl) studentsEl.textContent=_summaryNumber(data.countedRows.length);
+  if(bangteukEl) bangteukEl.textContent=_summaryNumber((data.bangteukRows||[]).length);
 }
 
 function _scheduleStudentRowsForModal(){
@@ -2507,6 +2521,7 @@ function _scheduleStudentRowsForModal(){
     to.countedCount+=from.countedCount||0;
     to.excludedCount+=from.excludedCount||0;
     to.hiddenCount+=from.hiddenCount||0;
+    to.bangteukCount+=from.bangteukCount||0;
     (from.members||new Map()).forEach((member,key)=>{
       if(!to.members.has(key)){
         to.members.set(key,member);
@@ -2540,11 +2555,12 @@ function _scheduleStudentRowsForModal(){
       if(existingPhoneKey) key=existingPhoneKey;
     }
     if(!contactMap.has(key)){
-      contactMap.set(key,{key,p:row.p||'',countedCount:0,excludedCount:0,hiddenCount:0,members:new Map(),searchParts:[]});
+      contactMap.set(key,{key,p:row.p||'',countedCount:0,excludedCount:0,hiddenCount:0,bangteukCount:0,members:new Map(),searchParts:[]});
     }
     const contact=contactMap.get(key);
     if(row.p&&!contact.p) contact.p=row.p;
     if(counted) contact.countedCount++;
+    else if(kind==='bangteuk') contact.bangteukCount++;
     else if(kind==='hidden') contact.hiddenCount++;
     else contact.excludedCount++;
     const memberKey=String(row.key||row.n)+'|'+String(row.status||'')+'|'+(kind||'normal')+'|'+(counted?'1':'0');
@@ -2557,10 +2573,11 @@ function _scheduleStudentRowsForModal(){
       if(slot.date) member.dates.add(slot.date);
       if(!member.slots.some(saved=>saved.key===slot.key)) member.slots.push(slot);
     });
-    contact.searchParts.push(row.n,row.p,row.status,row.slotText||'',kind==='hidden'?'숨김후보':(counted?'집계포함':'집계제외'));
+    contact.searchParts.push(row.n,row.p,row.status,row.slotText||'',kind==='bangteuk'?'방특':(kind==='hidden'?'숨김후보':(counted?'집계포함':'집계제외')));
   };
   data.countedRows.forEach(row=>addRow(row,true,'counted'));
   data.excludedRows.forEach(row=>addRow(row,false,'excluded'));
+  (data.bangteukRows||[]).forEach(row=>addRow(row,false,'bangteuk'));
   (data.hiddenRows||[]).forEach(row=>addRow(row,false,'hidden'));
   const rows=[...contactMap.values()].map(row=>{
     const members=[...row.members.values()].sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.status).localeCompare(String(b.status),'ko'));
@@ -2570,6 +2587,7 @@ function _scheduleStudentRowsForModal(){
       countedCount,
       excludedCount:countedCount?0:(row.excludedCount||0),
       hiddenCount:row.hiddenCount||0,
+      bangteukCount:row.bangteukCount||0,
       members,
       search:row.searchParts.join(' ').toLowerCase()
     };
@@ -2592,6 +2610,7 @@ function closeScheduleStudentList(){
   if(modal) modal.style.display='none';
 }
 function _scheduleStudentStatusClass(status,counted){
+  if(String(status||'').includes('방특')) return 'bangteuk';
   if(String(status||'').includes('숨김')) return 'hidden';
   if(String(status||'').includes('제외')) return 'exclude';
   if(String(status||'').includes('이동')) return 'move';
@@ -2612,12 +2631,13 @@ function renderScheduleStudentList(){
     return String(row.search||'').includes(q);
   });
   if(summary){
-    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
+    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 방특 ${_summaryNumber((data.bangteukRows||[]).length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
   }
   body.innerHTML=filtered.map(row=>{
     const badges=[
       row.countedCount?`<span class="schedule-student-badge counted">포함 ${_summaryNumber(row.countedCount)}</span>`:'',
       row.excludedCount?`<span class="schedule-student-badge excluded">제외 ${_summaryNumber(row.excludedCount)}</span>`:'',
+      row.bangteukCount?`<span class="schedule-student-badge bangteuk">방특 ${_summaryNumber(row.bangteukCount)}</span>`:'',
       row.hiddenCount?`<span class="schedule-student-badge hidden">숨김 ${_summaryNumber(row.hiddenCount)}</span>`:'',
     ].filter(Boolean).join('');
     const members=_scheduleNormalizeChangeMembers(row.members||[]).map(member=>{
@@ -2647,7 +2667,7 @@ function downloadScheduleStudentListCsv(){
   const filtered=rows.filter(row=>!q||String(row.search||'').includes(q));
   const csvRows=[['집계','전화번호','원생/상태','선생님','수업 위치']];
   filtered.forEach(row=>{
-    const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.excludedCount?`제외 ${row.excludedCount}`:'',row.hiddenCount?`숨김 ${row.hiddenCount}`:''].filter(Boolean).join(' / ');
+    const countText=[row.countedCount?`포함 ${row.countedCount}`:'',row.excludedCount?`제외 ${row.excludedCount}`:'',row.bangteukCount?`방특 ${row.bangteukCount}`:'',row.hiddenCount?`숨김 ${row.hiddenCount}`:''].filter(Boolean).join(' / ');
     const displayMembers=_scheduleNormalizeChangeMembers(row.members||[]);
     const memberText=displayMembers.map(m=>`${m.n}(${m.status}${[...(m.dates||[])].length?' '+[...m.dates].join(','):''})`).join(' / ');
     const teacherText=[...new Set(displayMembers.flatMap(m=>m.slots.map(slot=>slot.teacher).filter(Boolean)))].join(' / ');

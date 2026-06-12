@@ -85,12 +85,14 @@ button,input,textarea,select{font-family:inherit}
 .student-pill.counted{background:#DCFCE7;color:#047857}
 .student-pill.move{background:#FEF3C7;color:#B45309}
 .student-pill.excluded{background:#FEE2E2;color:#B91C1C}
+.student-pill.bangteuk{background:#CCFBF1;color:#0F766E}
 .student-pill.hidden{background:#EDE9FE;color:#6D28D9}
 .student-state{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:#E0F2FE;color:#0369A1;font-size:11px;font-weight:900;white-space:nowrap}
 .student-state.enroll{background:#DBEAFE;color:#1D4ED8}
 .student-state.exclude{background:#FEF3C7;color:#B45309}
 .student-state.retire{background:#FEE2E2;color:#B91C1C}
 .student-state.move{background:#FEF3C7;color:#B45309}
+.student-state.bangteuk{background:#CCFBF1;color:#0F766E}
 .student-state.hidden{background:#EDE9FE;color:#6D28D9}
 .student-hidden-warning{margin:10px 0 12px;padding:10px 12px;border:1px solid #DDD6FE;border-radius:8px;background:#F5F3FF;color:#5B21B6;font-size:12px;font-weight:900;line-height:1.45}
 .student-phone-editor{display:flex;flex-direction:column;gap:5px;min-width:160px}

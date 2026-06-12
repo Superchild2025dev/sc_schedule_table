@@ -615,12 +615,14 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .schedule-student-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;font-size:10px;font-weight:900;white-space:nowrap}
 .schedule-student-badge.counted{background:#DCFCE7;color:#047857}
 .schedule-student-badge.excluded{background:#FEE2E2;color:#B91C1C}
+.schedule-student-badge.bangteuk{background:#CCFBF1;color:#0F766E}
 .schedule-student-badge.hidden{background:#F3F4F6;color:#4B5563}
 .schedule-student-status{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;background:#E0F2FE;color:#0369A1;font-size:10px;font-weight:900;white-space:nowrap}
 .schedule-student-status.enroll{background:#DBEAFE;color:#1D4ED8}
 .schedule-student-status.exclude{background:#FEF3C7;color:#B45309}
 .schedule-student-status.move{background:#FEF3C7;color:#B45309}
 .schedule-student-status.retire{background:#FEE2E2;color:#B91C1C}
+.schedule-student-status.bangteuk{background:#CCFBF1;color:#0F766E}
 .schedule-student-status.hidden{background:#F3F4F6;color:#4B5563}
 .schedule-student-slots{line-height:1.45;color:#374151}
 .schedule-student-badge-stack{display:flex;flex-direction:column;align-items:center;gap:3px}
