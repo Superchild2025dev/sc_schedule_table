@@ -295,21 +295,91 @@ function _withAttendanceViewDay(stu,viewDay,sourceDay){
   if(viewDay===sourceDay) return stu;
   return Object.assign({},stu,{d:viewDay,sourceDay});
 }
+function _btPreviewSourceParts(t,day,lane){
+  if(typeof getBtPreviewSourceKey!=='function') return null;
+  if(!_btPreviewLaneVisible(t,day,lane)) return null;
+  const sourceKey=getBtPreviewSourceKey(t+'/'+day+'/'+lane);
+  if(!sourceKey) return null;
+  const p=sourceKey.split('/');
+  if(p.length<3) return null;
+  return {t:p[0],day:p[1],lane:p[2],key:sourceKey};
+}
+function _btPreviewDateAllows(meta){
+  if(!meta||!meta.seasonStart||!meta.seasonEnd) return true;
+  // 일반 시간표의 방특 토글은 배치 테스트용이므로 즉시 보여준다.
+  // 실제 날짜가 중요한 출석부 화면에서는 선택 날짜가 기간 안일 때만 표시한다.
+  if(!(_attendanceMode&&_attendanceDate)) return true;
+  let basis='';
+  try{
+    basis=_attendanceDate;
+  }catch(e){
+    basis=_attendanceDate||'';
+  }
+  if(!basis) return true;
+  return meta.seasonStart<=basis&&basis<=meta.seasonEnd;
+}
+function _btPreviewLaneVisible(t,day,lane){
+  if(typeof btPreviewLaneActive!=='function'||!btPreviewLaneActive(t,day,lane)) return false;
+  if(typeof getBtPreviewInst!=='function') return true;
+  return _btPreviewDateAllows(getBtPreviewInst(t+'/'+day+'/'+lane));
+}
+function _btPreviewTimeVisible(t){
+  if(typeof hasBtPreviewForTime!=='function'||!hasBtPreviewForTime(t)) return false;
+  const days=(typeof getDays==='function'?getDays():['월','화','수','목','금','토']);
+  const lanes=(typeof getLanes==='function'?getLanes():5);
+  return days.some(day=>{
+    for(let lane=1;lane<=lanes;lane++){
+      if(_btPreviewLaneVisible(t,day,lane)) return true;
+    }
+    return false;
+  });
+}
+function _withBtPreviewSlot(stu,t,day,lane,row,source){
+  if(!stu||!source) return null;
+  if(source.t===t&&source.day===day&&String(source.lane)===String(lane)) return stu;
+  return Object.assign({},stu,{t,d:day,l:parseInt(lane,10),r:parseInt(row,10),sourceDay:source.day,_btPreviewGhost:true});
+}
 function _ctxStu(ctx,t,day,lane,row){
   const data=ctx?.attendanceBasisByDay?.[day];
   if(data){
     const sourceDay=_attendanceSourceDay(data,day);
-    return _withAttendanceViewDay(data.stuIdx?.[t+'/'+sourceDay+'/'+lane+'/'+row] || null,day,sourceDay);
+    const exact=_withAttendanceViewDay(data.stuIdx?.[t+'/'+sourceDay+'/'+lane+'/'+row] || null,day,sourceDay);
+    if(exact) return exact;
+    const btSource=_btPreviewSourceParts(t,day,lane);
+    if(btSource){
+      return _withBtPreviewSlot(data.stuIdx?.[btSource.t+'/'+btSource.day+'/'+btSource.lane+'/'+row] || null,t,day,lane,row,btSource);
+    }
+    return null;
   }
-  return getStu(t,day,lane,row);
+  const exact=getStu(t,day,lane,row);
+  if(exact) return exact;
+  const btSource=_btPreviewSourceParts(t,day,lane);
+  if(btSource){
+    return _withBtPreviewSlot(getStu(btSource.t,btSource.day,btSource.lane,row),t,day,lane,row,btSource);
+  }
+  return null;
 }
 function _ctxInst(ctx,t,day,lane){
   const data=ctx?.attendanceBasisByDay?.[day];
   if(data){
     const sourceDay=_attendanceSourceDay(data,day);
-    return data.instMap?.[t+'/'+sourceDay+'/'+lane] || null;
+    const exact=data.instMap?.[t+'/'+sourceDay+'/'+lane] || null;
+    if(exact) return exact;
+    const btSource=_btPreviewSourceParts(t,day,lane);
+    if(btSource){
+      const inst=data.instMap?.[btSource.t+'/'+btSource.day+'/'+btSource.lane] || null;
+      return inst?Object.assign({},inst,{_btPreviewGhost:true,sourceDay:btSource.day}):null;
+    }
+    return null;
   }
-  return getInst(t,day,lane);
+  const exact=getInst(t,day,lane);
+  if(exact) return exact;
+  const btSource=_btPreviewSourceParts(t,day,lane);
+  if(btSource){
+    const inst=getInst(btSource.t,btSource.day,btSource.lane);
+    return inst?Object.assign({},inst,{_btPreviewGhost:true,sourceDay:btSource.day}):null;
+  }
+  return null;
 }
 function _ctxStudents(ctx,day){
   const data=ctx?.attendanceBasisByDay?.[day];
@@ -1177,6 +1247,8 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
       const pairEnd=getElmaPairEnd(kimhs,li);
       const isElma=isElmaLane(kimhs,li);
       const _lane=li+1;
+      const _btPreviewInst=_btPreviewLaneVisible(t,day,_lane);
+      const _btPreviewLabel=(_btPreviewInst&&typeof btPreviewLabelForInst==='function')?btPreviewLabelForInst(t+'/'+day+'/'+_lane):(_btPreviewInst?'(방특)':'');
 
       // 출석 모드 + 이 요일에 해당하는 + 버튼을 inst 셀에 추가하는 헬퍼
       const _addAttPlusBtn=(td, laneNum)=>{
@@ -1198,16 +1270,19 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
         // 인접 엘마/엘리트/마스터 쌍 시작 → 합치기 (colspan=2)
         td.colSpan=2;
         const elmaInst=inst||_ctxInst(ctx,t,day,li+2);
+        const _btPairPreview=_btPreviewInst||_btPreviewLaneVisible(t,day,li+2);
         // [v117] 선생님 색상 클래스 추가 (지정되어 있으면 디폴트 보라 대신 선생님 색상 사용)
         const _tCls=elmaInst?teacherCssClass(elmaInst.n):'';
         td.className='dc inst-cell-kimhs inst-clickable'+(_tCls?' '+_tCls:'');
+        if(_btPairPreview) td.classList.add('bt-preview-active');
         if(pairStart[1]>=4&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
         // [v117] cls(엘/마/엘리트/마스터)에 따라 라벨 동적
         const _cls=getInstCls(elmaInst);
         const _lbl=getInstClsLabel(_cls)||'(엘/마)';
         const _lblTextOnly=_lbl.replace(/[()]/g,'');
-        td.innerHTML=instCellHTML(elmaInst?(elmaInst.n+_lbl):_lblTextOnly,iKey);
+        const _pairBtLabel=(_btPairPreview&&typeof btPreviewLabelForInst==='function')?(btPreviewLabelForInst(iKey)||btPreviewLabelForInst(t+'/'+day+'/'+(li+2))||'(방특)'):_btPairPreview?'(방특)':'';
+        td.innerHTML=instCellHTML(elmaInst?(elmaInst.n+_lbl+_pairBtLabel):_lblTextOnly,iKey);
         td.style.fontWeight='700';td.style.fontSize='11px';
         td.addEventListener('click',function(){if(_attendanceMode) return; openInstPopup(this,t,day,_lane);});
         _addAttPlusBtn(td, _lane);
@@ -1221,13 +1296,14 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
         // [v117] 선생님 색상 클래스 추가
         const _tCls=inst?teacherCssClass(inst.n):'';
         td.className='dc inst-cell-kimhs inst-clickable'+(_tCls?' '+_tCls:'');
+        if(_btPreviewInst) td.classList.add('bt-preview-active');
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
         // [v117] cls(엘/마/엘리트/마스터)에 따라 라벨 동적
         const _cls=getInstCls(inst);
         const _lbl=getInstClsLabel(_cls)||'(엘/마)';
         const _lblTextOnly=_lbl.replace(/[()]/g,'');
-        td.innerHTML=instCellHTML(inst?(inst.n+_lbl):_lblTextOnly,iKey);
+        td.innerHTML=instCellHTML(inst?(inst.n+_lbl+_btPreviewLabel):_lblTextOnly,iKey);
         td.style.fontWeight='700';td.style.fontSize='11px';
         td.addEventListener('click',function(){if(_attendanceMode) return; openInstPopup(this,t,day,_lane);});
         _addAttPlusBtn(td, _lane);
@@ -1236,9 +1312,10 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
       } else {
         // 일반 담임 셀
         td.className='dc '+instClass(inst)+' inst-clickable';
+        if(_btPreviewInst) td.classList.add('bt-preview-active');
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
-        td.innerHTML=instCellHTML(instDisplay(inst),iKey);
+        td.innerHTML=instCellHTML(instDisplay(inst)+(_btPreviewInst&&inst?_btPreviewLabel:''),iKey);
         td.style.fontWeight='700';td.style.fontSize='11px';
         td.addEventListener('click',function(){if(_attendanceMode) return; openInstPopup(this,t,day,_lane);});
         if(inst && inst.n){
@@ -1265,9 +1342,16 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   const stuRow=document.createElement('tr');
   const isBangteukTable=typeof isBangteuk==='function'&&isBangteuk();
   const baseSlotRows=isBangteukTable?6:5;
+  const btPreviewTime=!isBangteukTable&&_btPreviewTimeVisible(t);
+  const btPreviewExtraRow=btPreviewTime&&ri===baseSlotRows;
+  const btPreviewDayActive=day=>{
+    if(!btPreviewExtraRow||typeof btPreviewLaneActive!=='function') return false;
+    for(let lane=1;lane<=LANE_COUNT;lane++) if(_btPreviewLaneVisible(t,day,lane)) return true;
+    return false;
+  };
   // 정규 5행(ri 0~4) 이후는 반칸 높이 (추가 학생용)
   // 단, 엘마 시간대는 6~8행도 엘마반 정규 자리이므로 풀 높이 유지
-  if(ri>=baseSlotRows && !hasElmaInTime(t)) stuRow.classList.add('half-row');
+  if(ri>=baseSlotRows && !hasElmaInTime(t) && !btPreviewExtraRow) stuRow.classList.add('half-row');
   const curMonth=SCHEDULE_PERIODS[getCurrentPeriod()].month;
 
   const slotHasStoredContent=(day,lane,row)=>{
@@ -1295,8 +1379,9 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
     const dayInstMap=_ctxInstMap(ctx,day);
     const kimhs=getElmaLanes(t,day,dayInstMap);
     const rowHasContent=rowHasStoredContent(day,ri+1);
-    const satSkip=isSat&&!satEmpty&&rows>5&&!kimhs&&ri>=5&&!rowHasContent;
-    const dayBlocked=!satSkip&&rows>baseSlotRows&&!kimhs&&ri>=baseSlotRows&&!rowHasContent;
+    const previewDayActive=btPreviewDayActive(day);
+    const satSkip=isSat&&!satEmpty&&rows>5&&!kimhs&&ri>=5&&!rowHasContent&&!previewDayActive;
+    const dayBlocked=!satSkip&&rows>baseSlotRows&&!kimhs&&ri>=baseSlotRows&&!rowHasContent&&!previewDayActive;
 
     // 번호 셀
     if(hasNum){
@@ -1333,9 +1418,11 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const isElma=isElmaLane(kimhs,li);
       const _l=li+1, _r=ri+1;
       const slotKey=t+'/'+day+'/'+_l+'/'+_r;
+      const previewCellActive=btPreviewTime&&ri<6&&_btPreviewLaneVisible(t,day,_l);
       // 일반 레인 5행 초과는 기본적으로 blocked
       // 단, 실제 저장 데이터가 있는 칸은 6~8번이어도 가리지 않는다.
       let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows&&!slotHasStoredContent(day,_l,_r);
+      if(btPreviewExtraRow) isBlocked=!previewCellActive;
       if(isBlocked && _attendanceMode && _attendanceDate){
         const _cellDsChk=_dayToCellDs(day);
         const _hasContent=MARK_MAP[slotKey+'/'+_cellDsChk]
@@ -1348,6 +1435,22 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       if(isBlocked){
         td.className='dc cell-blocked';
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
+        stuRow.appendChild(td);
+        continue;
+      }
+
+      if(previewCellActive&&ri>=baseSlotRows&&!slotHasStoredContent(day,_l,_r)){
+        td.className='stu-cell dc bt-preview-active bt-preview-slot';
+        td.innerHTML='<span class="bt-preview-chip">+ 방특</span>';
+        td.dataset.t=t;
+        td.dataset.day=day;
+        td.dataset.lane=_l;
+        td.dataset.ri=_r;
+        if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
+        td.addEventListener('click',function(e){
+          e.stopPropagation();
+          if(typeof toast==='function') toast('화면 테스트 전용입니다. 저장되지 않습니다.','ok');
+        });
         stuRow.appendChild(td);
         continue;
       }
@@ -1365,16 +1468,22 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 
       // 케이스 4: 일반 학생 셀 ─────────────────────────────
       const stu=_ctxStu(ctx,t,day,_l,_r);
+      const exactStu=getStu(t,day,_l,_r);
+      const isBtGhost=!!(stu&&stu._btPreviewGhost);
 
       td.className='stu-cell dc stu-clickable';
+      if(previewCellActive) td.classList.add('bt-preview-active','bt-preview-slot');
+      if(isBtGhost) td.classList.add('bt-preview-ghost');
       // 출석 모드 상태 판단 (특수 배경 클래스 분기에 필요)
       const _attIsActive=_attendanceMode && _attendanceDate;
       // 출석 모드면 특수 배경/마크 클래스 적용 안 함 (흰 배경 유지)
       if(!_attIsActive){
-        const stuVehicle=stu&&(stu.v||_tableLocUsesVehicle(stu.loc));
+        // 방특 묶음 미리보기 원생은 이름만 공유하고, 차량/신규/등원 배경은 현재 칸 데이터만 사용한다.
+        const slotVisualStu=isBtGhost?exactStu:stu;
+        const stuVehicle=slotVisualStu&&(slotVisualStu.v||_tableLocUsesVehicle(slotVisualStu.loc));
         if(stuVehicle) td.classList.add('stu-vehicle');
-        if(stu&&stu.isNew&&stu.isNew===curMonth) td.classList.add('stu-new');
-        if(stu&&(stu.memo||stuVehicle||stu.p||stu.g)) td.classList.add('stu-has-note');
+        if(slotVisualStu&&slotVisualStu.isNew&&slotVisualStu.isNew===curMonth) td.classList.add('stu-new');
+        if(slotVisualStu&&(slotVisualStu.memo||stuVehicle||slotVisualStu.p||slotVisualStu.g)) td.classList.add('stu-has-note');
       }
       if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
       td.dataset.t=t;td.dataset.day=day;td.dataset.lane=_l;td.dataset.ri=_r;
@@ -1476,20 +1585,30 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
           }
         });
       } else {
-        td.addEventListener('click',function(){openStuPopup(this,t,day,_l,_r);});
+        td.addEventListener('click',function(){
+          if(isBtGhost){
+            const src=stu.sourceDay?stu.sourceDay+'요일 원본 칸에서 수정해주세요.':'원본 칸에서 수정해주세요.';
+            if(typeof toast==='function') toast('방특 묶음 미리보기입니다. '+src,'ok');
+            return;
+          }
+          openStuPopup(this,t,day,_l,_r);
+        });
       }
 
       // 등원(비신규) 빨간 배경 — 등원일까지만 (출석 모드에선 스킵)
-      if(!_attIsActive && stu&&!td.classList.contains('stu-new')){
-        if(stu.reenroll&&stu.reenroll===curMonth){
+      if(!_attIsActive && exactStu&&!td.classList.contains('stu-new')){
+        if(exactStu.reenroll&&exactStu.reenroll===curMonth){
           td.classList.add('stu-enrolled');
-        } else if(stu.enrolled&&stu.enrolled>=todayStr){
+        } else if(exactStu.enrolled&&exactStu.enrolled>=todayStr){
           td.classList.add('stu-enrolled');
         }
       }
 
       // ── 이벤트 수집 (그리드 뱃지) ──
-      const classDates=classDatesCache[day];
+      const btSlotMeta=typeof getBangteukSlotMeta==='function'?getBangteukSlotMeta(t,day,_l):null;
+      const classDates=btSlotMeta&&typeof getClassDatesForDay==='function'
+        ? getClassDatesForDay(btSlotMeta.group||day,{bangteukGroup:btSlotMeta.group,bangteukTabId:btSlotMeta.tabId})
+        : classDatesCache[day];
       const allDates=[...classDates.cur,...classDates.next];
       const retEntry=RETIRE_MAP[slotKey];
       const retDs=(typeof retEntry==='string'?retEntry:retEntry?.ds)||null;
@@ -1502,8 +1621,8 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 
       // 출석 모드에서는 뱃지/마크 전부 숨김 (출석만 깔끔하게)
       const _skipBadges = _attendanceMode;
-      const retireInline=!_skipBadges&&!!stu&&hasFutureRetire;
-      const enrollInline=!_skipBadges&&hasFutureEnroll&&!hasFutureRetire;
+      const retireInline=!_skipBadges&&!!exactStu&&hasFutureRetire;
+      const enrollInline=!_skipBadges&&!isBtGhost&&hasFutureEnroll&&!hasFutureRetire;
 
       // 휴원
       const hyuwon=HYUWON_MAP[slotKey];
@@ -1811,6 +1930,9 @@ function buildTable(){
 
   TIMES.forEach(({t})=>{
     let rows=getTimeRows(t);
+    if(_btPreviewTimeVisible(t)){
+      rows=Math.max(rows,6);
+    }
     // 출석 모드: 해당 시간대의 해당 주에 추가된 row들(MARK_MAP)까지 확장
     if(_attendanceMode && _attendanceDate){
       let maxRi=rows;
@@ -1947,10 +2069,27 @@ function _summaryInstExists(inst){
   if(typeof inst==='string') return !!inst.trim();
   return !!String(inst.n||'').trim();
 }
-function _summaryRowsForInst(inst){
+function _summaryRowsForInst(inst,time){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.slotRowsForInst==='function') return window.SCScheduleTime.slotRowsForInst(inst,{bangteukTable:typeof isBangteuk==='function'&&isBangteuk()});
   if(typeof isBangteuk==='function' && isBangteuk()) return 6;
   if(typeof getInstCls==='function' && getInstCls(inst)) return 8;
   return 5;
+}
+function _summaryIsBangteukInst(inst){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukInst==='function') return window.SCScheduleTime.isBangteukInst(inst);
+  return typeof isBangteukInst==='function'&&isBangteukInst(inst);
+}
+function _summaryIsBangteukPreviewSlot(t,day,lane,row){
+  const n=parseInt(row,10);
+  return Number.isFinite(n)&&n>=1&&n<=6&&typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(t,day,lane);
+}
+function _summaryIsBangteukSlotKey(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4) return false;
+  if(_summaryIsBangteukPreviewSlot(p[0],p[1],parseInt(p[2],10),p[3])) return true;
+  const inst=INST_MAP&&INST_MAP[p.slice(0,3).join('/')];
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function') return window.SCScheduleTime.isBangteukSlot(inst,p[3],{bangteukTable:typeof isBangteuk==='function'&&isBangteuk()});
+  return _summaryIsBangteukInst(inst)&&parseInt(p[3],10)>=1&&parseInt(p[3],10)<=6;
 }
 function _summaryStudentKey(stu){
   const person=_summaryRecordPerson(stu,null);
@@ -2177,9 +2316,17 @@ function _summaryRowsFromMap(map){
 function getScheduleSummaryData(){
   const instRowsByKey={};
   let capacity=0;
-  const times=(typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean);
   const days=typeof getDays==='function'?getDays():[];
   const lanes=typeof getLanes==='function'?getLanes():0;
+  const timeSet=new Set((typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean));
+  Object.keys(INST_MAP||{}).forEach(key=>{
+    const p=String(key||'').split('/');
+    if(p.length>=3&&days.includes(p[1])) timeSet.add(p[0]);
+  });
+  const times=[...timeSet].sort((a,b)=>{
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.compareTimes==='function') return window.SCScheduleTime.compareTimes('',a,b);
+    return parseInt(a,10)-parseInt(b,10);
+  });
 
   times.forEach(t=>{
     days.forEach(day=>{
@@ -2187,7 +2334,9 @@ function getScheduleSummaryData(){
         const instKey=t+'/'+day+'/'+lane;
         const inst=INST_MAP&&INST_MAP[instKey];
         if(!_summaryInstExists(inst)) continue;
-        const rows=_summaryRowsForInst(inst);
+        if(typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(t,day,lane)) continue;
+        if(_summaryIsBangteukInst(inst)) continue;
+        const rows=_summaryRowsForInst(inst,t);
         instRowsByKey[instKey]=rows;
         for(let row=1;row<=rows;row++){
           if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) continue;
@@ -2200,7 +2349,8 @@ function getScheduleSummaryData(){
   const isSaturdaySlot=slotKey=>String(slotKey||'').split('/')[1]==='토';
   const validSaturdayTime=time=>{
     if(!window.SCScheduleTime||!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY) return true;
-    return !!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[String(time||'')];
+    const base=typeof window.SCScheduleTime.normalizeTimeBase==='function'?window.SCScheduleTime.normalizeTimeBase(time):String(time||'');
+    return !!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[base];
   };
   const slotVisibility=slotKey=>{
     const p=String(slotKey||'').split('/');
@@ -2211,6 +2361,7 @@ function getScheduleSummaryData(){
     const lane=parseInt(p[2],10);
     if(!Number.isFinite(lane)||lane<1||lane>lanes) return {visible:false,saturday,reason:'현재 시간표 레인 밖'};
     const instKey=p[0]+'/'+p[1]+'/'+p[2];
+    if(_summaryIsBangteukSlotKey(slotKey)) return {visible:false,saturday,bangteuk:true,reason:'방특반'};
     const maxRows=instRowsByKey[instKey];
     if(!maxRows) return {visible:false,saturday,reason:'담임 없는 칸'};
     const row=parseInt(p[3],10);
@@ -2243,6 +2394,7 @@ function getScheduleSummaryData(){
     if(!stu || !stu.n) return;
     const slotKey=String(stu.t||'')+'/'+String(stu.d||'')+'/'+String(stu.l||'')+'/'+String(stu.r||'');
     const visibility=slotVisibility(slotKey);
+    if(visibility.bangteuk) return;
     if(visibility.visible) actualBySlot.set(slotKey,stu);
     else if(visibility.saturday) addHiddenSaturday(stu,slotKey,null,visibility.reason);
   });
@@ -2268,6 +2420,7 @@ function getScheduleSummaryData(){
   Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
     if(!entry) return;
     const visibility=slotVisibility(slotKey);
+    if(visibility.bangteuk) return;
     if(visibility.saturday&&!visibility.visible){
       addHiddenSaturday(entry,slotKey,null,visibility.reason);
       return;
@@ -2280,6 +2433,7 @@ function getScheduleSummaryData(){
   activeRetireSlots.forEach((entry,slotKey)=>{
     if(actualBySlot.has(slotKey)) return;
     const visibility=slotVisibility(slotKey);
+    if(visibility.bangteuk) return;
     const ds=typeof entry==='string'?entry:entry.ds;
     const fallback=_summaryPairFallback(entry,ENROLL_MAP);
     if(visibility.saturday&&!visibility.visible){

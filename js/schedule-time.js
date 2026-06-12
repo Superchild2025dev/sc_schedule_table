@@ -20,11 +20,18 @@
     '오후 1시':'5시',
     '오후 2시':'6시'
   });
-
   function normalizeTimeText(value){
-    const text=String(value||'').trim();
+    let text=String(value||'').trim();
+    text=text.replace(/#BT(?:_PREVIEW)?/ig,'').replace(/\(?\s*방특(?:반|테스트)?\s*\)?/g,'').replace(/\bBT\b/ig,'');
+    text=text.replace(/\s+/g,'').trim();
     const m=text.match(/^0(\d)시$/);
     return m?m[1]+'시':text;
+  }
+  function normalizeTimeBase(value){
+    return normalizeTimeText(value);
+  }
+  function sameBaseTime(a,b){
+    return normalizeTimeBase(a)===normalizeTimeBase(b);
   }
   function normalizeDayText(value){
     return String(value||'').replace(/요일/g,'').trim();
@@ -44,6 +51,31 @@
     const internal=internalTimeForDay(day,time);
     const n=parseInt(String(internal).replace(/[^\d]/g,''),10);
     return Number.isFinite(n)?n:999;
+  }
+  function compareTimes(day,a,b){
+    return sortTimeValue(day,a)-sortTimeValue(day,b)||String(a||'').localeCompare(String(b||''),'ko');
+  }
+  function isBangteukInst(inst){
+    return !!(inst&&typeof inst==='object'&&(inst.bt||inst.bangteuk||inst.btGroup||inst.btTabId||inst.cls==='bt'||inst.cls==='bangteuk'));
+  }
+  function isElmaLikeInst(inst){
+    return !!(inst&&typeof inst==='object'&&(inst.elma||inst.cls==='elma'||inst.cls==='elite'||inst.cls==='master'));
+  }
+  function slotRowsForInst(inst,opts){
+    const options=opts||{};
+    if(options.bangteukTable||isBangteukInst(inst)) return 6;
+    if(isElmaLikeInst(inst)) return 8;
+    return 5;
+  }
+  function isBangteukSlot(inst,row,opts){
+    const n=parseInt(row,10);
+    return Number.isFinite(n)&&n>=1&&n<=6&&(opts&&opts.bangteukTable||isBangteukInst(inst));
+  }
+  function isBangteukSlotKey(slotKey,instMap,opts){
+    const p=String(slotKey||'').split('/');
+    if(p.length<4) return false;
+    const instKey=p.slice(0,3).join('/');
+    return isBangteukSlot(instMap&&instMap[instKey],p[3],opts);
   }
   function normalizeStudent(stu){
     if(stu&&isSaturday(stu.d)) stu.t=internalTimeForDay(stu.d,stu.t);
@@ -158,11 +190,19 @@
     SAT_INTERNAL_TO_DISPLAY,
     SAT_DISPLAY_TO_INTERNAL,
     normalizeTimeText,
+    normalizeTimeBase,
+    sameBaseTime,
     normalizeDayText,
     isSaturday,
     displayTimeForDay,
     internalTimeForDay,
     sortTimeValue,
+    compareTimes,
+    isBangteukInst,
+    isElmaLikeInst,
+    slotRowsForInst,
+    isBangteukSlot,
+    isBangteukSlotKey,
     normalizeStudent,
     normalizeStudents,
     normalizeSlotKey,

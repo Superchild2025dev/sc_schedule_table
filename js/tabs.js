@@ -11,7 +11,7 @@ const _REG_BASE={
 };
 const _BT_BASE={
   days:['월수금','화목'],
-  times:[{t:'9시'},{t:'10시'},{t:'11시'},{t:'14시'},{t:'15시'}],
+  times:[{t:'9시'},{t:'10시'},{t:'11시'}],
   lanes:5,
   hasNum:['월수금','화목'],
   satTimeLabel:{},
@@ -134,6 +134,44 @@ function _tabContainsDate(tab,ds){
     return !!(tab.seasonStart&&tab.seasonEnd&&tab.seasonStart<=ds&&tab.seasonEnd>=ds);
   }
   return _tabPeriodMonth(tab)===_periodMonthForDate(ds);
+}
+function _bangteukPeriodLabel(tab){
+  if(!tab||!tab.seasonStart||!tab.seasonEnd) return '';
+  return tab.seasonStart.slice(5).replace('-','/')+'~'+tab.seasonEnd.slice(5).replace('-','/');
+}
+function getActiveBangteukBasisTab(tabId){
+  const tabs=(_tabList||[]).filter(t=>t&&t.type==='bangteuk');
+  if(!tabs.length) return null;
+  if(tabId){
+    const exact=tabs.find(t=>t.id===tabId);
+    if(exact) return exact;
+  }
+  const active=_tabById(_activeTab);
+  if(active?.type==='bangteuk') return active;
+  let today='';
+  try{ today=toDateStr(getToday()); }catch(e){}
+  if(today){
+    const current=tabs.find(t=>_tabContainsDate(t,today));
+    if(current) return current;
+  }
+  const withPeriod=tabs
+    .filter(t=>t.seasonStart&&t.seasonEnd)
+    .sort((a,b)=>String(b.seasonStart||'').localeCompare(String(a.seasonStart||'')));
+  return withPeriod[0]||tabs[0]||null;
+}
+function getBangteukGroupOptions(tabId){
+  const tab=getActiveBangteukBasisTab(tabId);
+  if(!tab||!tab.seasonStart||!tab.seasonEnd) return [];
+  const label=_bangteukPeriodLabel(tab);
+  return ['월수금','화목'].map(group=>({
+    group,
+    tabId:tab.id,
+    tabName:tab.name||'방특 시간표',
+    seasonStart:tab.seasonStart,
+    seasonEnd:tab.seasonEnd,
+    label:`${group} 방특`,
+    periodLabel:label,
+  }));
 }
 function getAttendanceBasisTabForDate(ds){
   const active=_tabById(_activeTab);

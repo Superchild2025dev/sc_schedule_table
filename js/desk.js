@@ -212,7 +212,13 @@
       const inst=instBySlot(slotKey);
       list.push({slotKey, ds, stu, inst, mark});
     });
-    list.sort((a,b)=>a.ds.localeCompare(b.ds)||Number(normalizeSlotKeyParts(a.slotKey).t.replace(/\D/g,''))-Number(normalizeSlotKeyParts(b.slotKey).t.replace(/\D/g,'')));
+    list.sort((a,b)=>{
+      const pa=normalizeSlotKeyParts(a.slotKey);
+      const pb=normalizeSlotKeyParts(b.slotKey);
+      const ta=window.SCScheduleTime&&typeof SCScheduleTime.sortTimeValue==='function'?SCScheduleTime.sortTimeValue(pa.d,pa.t):Number(pa.t.replace(/\D/g,''));
+      const tb=window.SCScheduleTime&&typeof SCScheduleTime.sortTimeValue==='function'?SCScheduleTime.sortTimeValue(pb.d,pb.t):Number(pb.t.replace(/\D/g,''));
+      return a.ds.localeCompare(b.ds)||ta-tb;
+    });
     return list.slice(0,200);
   }
 

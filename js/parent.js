@@ -1182,6 +1182,9 @@ function _bgSlotLabel(slot){
 }
 
 function _bgSlotSortValue(slot){
+  if(window.SCScheduleTime&&typeof SCScheduleTime.sortTimeValue==='function'){
+    return SCScheduleTime.sortTimeValue(slot?.day||slot?.d,slot?.t);
+  }
   return parseInt(String(slot?.t||'').replace(/\D/g,''),10)||0;
 }
 
@@ -1217,6 +1220,7 @@ function _renderBogangSlotOptions(slots){
 
 // 해당 날짜에 자리 있는 슬롯 찾기 (기존 학생, 마크, 그리고 이미 대기중인 보강 요청 모두 제외)
 function _parentSlotMaxRows(inst){
+  if(window.SCScheduleTime&&typeof SCScheduleTime.isBangteukInst==='function'&&SCScheduleTime.isBangteukInst(inst)) return 6;
   if(inst && (inst.elma || inst.cls==='elma' || inst.cls==='elite' || inst.cls==='master')) return 8;
   return 5;
 }
@@ -1277,7 +1281,7 @@ function findAvailableSlots(ds){
     }
   }
   available.sort((a,b)=>{
-    const ta=parseInt(a.t);const tb=parseInt(b.t);
+    const ta=_bgSlotSortValue(a);const tb=_bgSlotSortValue(b);
     if(ta!==tb) return ta-tb;
     return String(a.instName||'').localeCompare(String(b.instName||''),'ko') || a.lane-b.lane;
   });

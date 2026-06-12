@@ -239,8 +239,107 @@ async function handleTeacherDelete(idx){
 
 let _instPopup={el:null,key:null};
 
+function _btPreviewStore(){
+  if(!window.SC_BT_PREVIEW_INST) window.SC_BT_PREVIEW_INST={};
+  return window.SC_BT_PREVIEW_INST;
+}
+function _btPreviewDefaultMeta(key){
+  const p=String(key||'').split('/');
+  const day=p[1]||'';
+  const group=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup('',day)
+    : ('화목'.includes(day)?'화목':'월수금');
+  const option=(typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions():[]).find(o=>o.group===group)||null;
+  return option?{...option}:{group};
+}
+function _btPreviewResolveMeta(raw,key){
+  const base=raw===true?_btPreviewDefaultMeta(key):(raw||{});
+  const p=String(key||'').split('/');
+  const day=p[1]||'';
+  const group=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup(base.group||base.btGroup||'',day)
+    : (base.group||base.btGroup||('화목'.includes(day)?'화목':'월수금'));
+  const option=(typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions():[]).find(o=>o.group===group)||null;
+  return option?Object.assign({},option,{sourceKey:base.sourceKey||key}):Object.assign({},base,{group,sourceKey:base.sourceKey||key});
+}
+function _btPreviewDayInGroup(day,group){
+  const g=String(group||'');
+  if(!g) return day==='월'||day==='수'||day==='금';
+  return g.includes(String(day||''));
+}
+function getBtPreviewSourceKey(key){
+  const p=String(key||'').split('/');
+  if(p.length<3) return '';
+  const [t,day,lane]=p;
+  const store=_btPreviewStore();
+  if(store[key]){
+    return key;
+  }
+  const order={'월':1,'화':2,'수':3,'목':4,'금':5,'토':6};
+  return Object.keys(store).sort((a,b)=>{
+    const ap=a.split('/'), bp=b.split('/');
+    return (order[ap[1]]||99)-(order[bp[1]]||99)||a.localeCompare(b,'ko');
+  }).find(src=>{
+    const sp=src.split('/');
+    if(sp.length<3||sp[0]!==t||String(sp[2])!==String(lane)) return false;
+    const raw=store[src];
+    const meta=_btPreviewResolveMeta(raw,src);
+    return _btPreviewDayInGroup(day,meta.group||meta.btGroup);
+  })||'';
+}
+function getBtPreviewInst(key){
+  const sourceKey=getBtPreviewSourceKey(key)||key;
+  const raw=_btPreviewStore()[sourceKey];
+  if(!raw) return null;
+  return _btPreviewResolveMeta(raw,sourceKey);
+}
+function isBtPreviewInst(key){
+  return !!getBtPreviewInst(key);
+}
+function btPreviewLabelForInst(key){
+  const meta=getBtPreviewInst(key);
+  if(!meta) return '';
+  const group=meta.group||meta.btGroup||'';
+  return group?`(${group} 방특)`:'(방특)';
+}
+function hasBtPreviewForTime(t){
+  return Object.keys(_btPreviewStore()).some(key=>key.startsWith(t+'/'));
+}
+function btPreviewLaneActive(t,day,lane){
+  return !!getBtPreviewSourceKey(t+'/'+day+'/'+lane);
+}
+function toggleBtPreviewInst(key,on,meta){
+  const store=_btPreviewStore();
+  if(on){
+    const resolved=meta||_btPreviewDefaultMeta(key);
+    store[key]={group:resolved.group||resolved.btGroup||''};
+  }
+  else delete store[getBtPreviewSourceKey(key)||key];
+}
+
 function instPopupCanEdit(){
   return !(window.SCAuth && !SCAuth.can('editSchedule'));
+}
+let _lastBtPreviewApply={sig:'',at:0};
+function _applyBtPreviewSelection(input){
+  if(!input||input.name!=='ip-bt-preview-group'||!instPopupCanEdit()) return false;
+  const key=_instPopup.key;
+  if(!key) return true;
+  const group=input.value||'';
+  const sig=key+'|'+group;
+  const now=Date.now();
+  if(_lastBtPreviewApply.sig===sig && now-_lastBtPreviewApply.at<120) return true;
+  _lastBtPreviewApply={sig,at:now};
+  if(group){
+    const option=(typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions():[]).find(o=>o.group===group)||{group};
+    toggleBtPreviewInst(key,true,option);
+  } else {
+    toggleBtPreviewInst(key,false);
+  }
+  buildTable();
+  renderInstPopup();
+  toast(group?group+' 방특 화면 테스트 표시':'방특반 화면 테스트 해제','ok');
+  return true;
 }
 
 function openInstPopup(td,t,day,lane){
@@ -342,6 +441,22 @@ function renderInstPopup(){
     html+=`<label><input type="checkbox" id="ip-elma" ${_curCls==='elma'?'checked':''}> 엘/마</label>`;
     html+=`<label><input type="checkbox" id="ip-elite" ${_curCls==='elite'?'checked':''}> 엘리트</label>`;
     html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
+    if(typeof isBangteuk==='function'&&!isBangteuk()){
+      const btMeta=getBtPreviewInst(key)||(cur&&(cur.btGroup||cur.btTabId||cur.bt||cur.bangteuk)?{group:cur.btGroup,tabId:cur.btTabId}:null);
+      const btOptions=typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions(btMeta?.tabId||cur?.btTabId||''):[];
+      html+=`<div class="inst-bt-options" title="화면 테스트 전용: 새로고침하면 사라지고 저장되지 않습니다">`;
+      html+=`<span class="inst-bt-title">방특반 테스트</span>`;
+      if(btOptions.length){
+        html+=`<label><input type="radio" name="ip-bt-preview-group" value="" ${btMeta?'':'checked'}> 해제</label>`;
+        btOptions.forEach(opt=>{
+          const checked=btMeta&&btMeta.group===opt.group?'checked':'';
+          html+=`<label><input type="radio" name="ip-bt-preview-group" value="${esc(opt.group)}" ${checked}> ${esc(opt.label)} <small>${esc(opt.periodLabel)}</small></label>`;
+        });
+      } else {
+        html+=`<span class="inst-bt-empty">방특 기간 설정 필요</span>`;
+      }
+      html+=`</div>`;
+    }
     if(cur) html+=`<button class="inst-btn-clear" data-name="__clear__">선생님 삭제</button>`;
     html+=`</div>`;
     html+=`<div class="inst-tool-row">`;
@@ -400,6 +515,15 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
     return;
   }
   if(!instPopupCanEdit()) return;
+  const btOption=e.target.closest('.inst-bt-options label');
+  const btInput=e.target.matches('input[name="ip-bt-preview-group"]')
+    ? e.target
+    : btOption?.querySelector('input[name="ip-bt-preview-group"]');
+  if(btInput){
+    e.stopPropagation();
+    setTimeout(()=>_applyBtPreviewSelection(btInput),0);
+    return;
+  }
   // 예약 삭제
   const rdel=e.target.closest('[data-rdel]');
   if(rdel){
@@ -493,6 +617,10 @@ document.getElementById('inst-popup').addEventListener('keydown',function(e){
 
 document.getElementById('inst-popup').addEventListener('change',async function(e){
   if(!instPopupCanEdit()) return;
+  if(e.target.name==='ip-bt-preview-group'){
+    _applyBtPreviewSelection(e.target);
+    return;
+  }
   if(e.target.id==='ip-rtoday'){
     const datePicker=document.getElementById('ip-rdate');
     if(datePicker){

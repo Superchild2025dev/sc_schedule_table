@@ -1390,7 +1390,10 @@ function getAllTimes(inst){
     const [t]=k.split('/');
     set.add(t);
   }
-  return [...set].sort((a,b)=>parseInt(a)-parseInt(b));
+  return [...set].sort((a,b)=>{
+    if(window.SCScheduleTime&&typeof SCScheduleTime.compareTimes==='function') return SCScheduleTime.compareTimes('',a,b);
+    return parseInt(a)-parseInt(b);
+  });
 }
 
 function renderAttendanceTimetable(){

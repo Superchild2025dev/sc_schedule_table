@@ -17,7 +17,7 @@
   };
   const BT_BASE={
     days:['월수금','화목'],
-    times:['9시','10시','11시','14시','15시'],
+    times:['9시','10시','11시'],
     lanes:5,
   };
   const BRANCHES={
@@ -367,7 +367,19 @@
     return '';
   }
   function studentRowsForInst(tab,inst){
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.slotRowsForInst==='function') return window.SCScheduleTime.slotRowsForInst(inst,{bangteukTable:tab&&tab.type==='bangteuk'});
     return tab&&tab.type==='bangteuk' ? 6 : (studentInstClass(inst)?8:5);
+  }
+  function studentIsBangteukInst(inst){
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukInst==='function') return window.SCScheduleTime.isBangteukInst(inst);
+    return !!(inst&&typeof inst==='object'&&(inst.bt||inst.bangteuk||inst.cls==='bt'||inst.cls==='bangteuk'));
+  }
+  function studentIsBangteukSlot(ctx,slotKey){
+    const p=String(slotKey||'').split('/');
+    if(p.length<4||!ctx) return false;
+    const inst=ctx.instMap&&ctx.instMap[p.slice(0,3).join('/')];
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function') return window.SCScheduleTime.isBangteukSlot(inst,p[3],{bangteukTable:ctx.tab&&ctx.tab.type==='bangteuk'});
+    return studentIsBangteukInst(inst)&&parseInt(p[3],10)>=1&&parseInt(p[3],10)<=6;
   }
   function shortDate(ds){
     if(!ds) return '';
@@ -673,11 +685,16 @@
       if(p.length<4) return {visible:false,saturday:false,reason:'슬롯 형식 오류'};
       const saturday=p[1]==='토';
       if(!ctx||!ctx.cfg||!ctx.cfg.days.includes(p[1])) return {visible:false,saturday,reason:'현재 시간표 요일 아님'};
-      const validSaturdayTime=!saturday||!window.SCScheduleTime||!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY||!!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[p[0]];
-      if(!ctx.cfg.times.includes(p[0])||!validSaturdayTime) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
+      const baseTime=window.SCScheduleTime&&typeof window.SCScheduleTime.normalizeTimeBase==='function'
+        ? window.SCScheduleTime.normalizeTimeBase(p[0])
+        : p[0];
+      const validSaturdayTime=!saturday||!window.SCScheduleTime||!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY||!!window.SCScheduleTime.SAT_INTERNAL_TO_DISPLAY[baseTime];
       const lane=parseInt(p[2],10);
       if(!Number.isFinite(lane)||lane<1||lane>ctx.cfg.lanes) return {visible:false,saturday,reason:'현재 시간표 레인 밖'};
       const instKey=p[0]+'/'+p[1]+'/'+p[2];
+      if(studentIsBangteukSlot(ctx,slotKey)) return {visible:false,saturday,bangteuk:true,reason:'방특반'};
+      const cfgHasTime=ctx.cfg.times.includes(p[0])||ctx.cfg.times.includes(baseTime)||!!ctx.instRowsByKey[instKey];
+      if(!cfgHasTime||!validSaturdayTime) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
       const maxRows=ctx.instRowsByKey[instKey];
       if(!maxRows) return {visible:false,saturday,reason:'담임 없는 칸'};
       const row=parseInt(p[3],10);
@@ -686,14 +703,18 @@
       return {visible:true,saturday,reason:''};
     };
     const checkSlotInAnyContext=slotKey=>{
-      if(!isSaturdaySlot(slotKey)) return {visible:true,saturday:false,reason:''};
+      let nonSaturdayFallback={visible:true,saturday:false,reason:''};
       let fallback={visible:false,saturday:true,reason:'토요일 운영 탭 없음'};
       for(const ctx of slotContexts){
         const res=checkSlotInContext(ctx,slotKey);
+        if(res.bangteuk) return res;
+        if(!res.saturday&&res.visible) return res;
+        if(!res.saturday&&res.reason) nonSaturdayFallback=res;
         if(!res.saturday) continue;
         if(res.visible) return res;
         if(res.reason&&fallback.reason==='토요일 운영 탭 없음') fallback=res;
       }
+      if(!isSaturdaySlot(slotKey)) return nonSaturdayFallback;
       return fallback;
     };
     const addHiddenSaturdayRecord=(entry,tab,slotKey,fallback,reason)=>{
@@ -707,19 +728,25 @@
       const instMap=studentRootValue(root,cfg.instKey,{})||{};
       const students=studentRootValue(root,cfg.stuKey,[])||[];
       const instRowsByKey={};
-      cfg.times.forEach(t=>{
+      const timeSet=new Set(cfg.times);
+      Object.keys(instMap||{}).forEach(key=>{
+        const p=String(key||'').split('/');
+        if(p.length>=3&&cfg.days.includes(p[1])) timeSet.add(p[0]);
+      });
+      [...timeSet].forEach(t=>{
         cfg.days.forEach(day=>{
           for(let lane=1;lane<=cfg.lanes;lane++){
             const instKey=t+'/'+day+'/'+lane;
             const inst=instMap[instKey];
             if(studentInstExists(inst)){
+              if(studentIsBangteukInst(inst)) continue;
               instRowsByKey[instKey]=studentRowsForInst(tab,inst);
               if(!teacherByInstKey[instKey]) teacherByInstKey[instKey]=studentTeacherName(inst);
             }
           }
         });
       });
-      const ctx={tab,cfg,instRowsByKey};
+      const ctx={tab,cfg,instMap,instRowsByKey};
       slotContexts.push(ctx);
       const canCountSlot=slotKey=>{
         return checkSlotInContext(ctx,slotKey).visible;
@@ -731,6 +758,7 @@
         if(canCountSlot(slotKey)) actualBySlot.set(slotKey,stu);
         else {
           const hidden=checkSlotInContext(ctx,slotKey);
+          if(hidden.bangteuk) return;
           if(hidden.saturday) addHiddenSaturdayRecord(stu,{id:cfg.tabId,name:cfg.tabName},slotKey,null,hidden.reason);
         }
       });
@@ -755,6 +783,7 @@
     Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
       if(!entry) return;
       const hidden=checkSlotInAnyContext(slotKey);
+      if(hidden.bangteuk) return;
       if(hidden.saturday&&!hidden.visible){
         addHiddenSaturdayRecord(entry,reservationTab,slotKey,null,hidden.reason);
         return;
@@ -766,6 +795,7 @@
     activeRetireSlots.forEach((entry,slotKey)=>{
       if(handledRetireSlots.has(slotKey)) return;
       const hidden=checkSlotInAnyContext(slotKey);
+      if(hidden.bangteuk) return;
       const ds=typeof entry==='string'?entry:entry.ds;
       const instKey=slotKey.split('/').slice(0,3).join('/');
       const fallback=studentPairFallback(entry,enrollMap);

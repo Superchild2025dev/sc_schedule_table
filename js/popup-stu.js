@@ -844,6 +844,93 @@ function restoreStuFormDraft(d){
   if(d.reenroll) get('sp-reenroll')?.classList.add('on');
 }
 
+function _btDateMetaForSlot(t,day,lane){
+  try{
+    if(typeof getBangteukSlotMeta==='function') return getBangteukSlotMeta(t,day,lane);
+  }catch(e){}
+  return null;
+}
+function _btDateDayForSlot(t,day,lane){
+  const meta=_btDateMetaForSlot(t,day,lane);
+  return meta?.group||day;
+}
+function _btDateOptsForSlot(t,day,lane,opts){
+  const meta=_btDateMetaForSlot(t,day,lane);
+  if(!meta) return opts||{};
+  return Object.assign({},opts||{},{
+    bangteukGroup:meta.group,
+    bangteukTabId:meta.tabId,
+    subtitle:(opts&&opts.subtitle)||meta.label||'',
+  });
+}
+function _btDateDayForSlotKey(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<3) return '';
+  return _btDateDayForSlot(p[0],p[1],p[2]);
+}
+function _btDateOptsForSlotKey(slotKey,opts){
+  const p=String(slotKey||'').split('/');
+  if(p.length<3) return opts||{};
+  return _btDateOptsForSlot(p[0],p[1],p[2],opts);
+}
+function _btGroupDayList(meta,day){
+  if(!meta||!meta.group) return [day];
+  const group=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup(meta.group,day)
+    : String(meta.group||'');
+  const days=(typeof getDays==='function'?getDays():['월','화','수','목','금','토'])
+    .filter(d=>group.includes(d));
+  return days.length?days:[day];
+}
+function _btGroupSlotsForParts(t,day,lane,row){
+  const meta=_btDateMetaForSlot(t,day,lane);
+  const days=_btGroupDayList(meta,day);
+  const li=parseInt(lane,10);
+  const ri=parseInt(row,10);
+  return days.map(d=>({
+    t,
+    day:d,
+    lane:li,
+    row:ri,
+    slotKey:t+'/'+d+'/'+li+'/'+ri,
+    grouped:days.length>1,
+    meta:meta||null,
+  }));
+}
+function _btGroupSlotsForSlotKey(slotKey){
+  const p=_slotParts(slotKey);
+  return _btGroupSlotsForParts(p.t,p.d,p.l,p.r);
+}
+function _btGroupToastSuffix(slots){
+  if(!Array.isArray(slots)||slots.length<2) return '';
+  return ' ('+slots.map(s=>s.day).join('')+' 방특)';
+}
+function _studentIdentityMatches(a,b){
+  if(!a||!b) return false;
+  const an=String(a.n||a.name||'').trim();
+  const bn=String(b.n||b.name||'').trim();
+  if(an&&bn&&an!==bn) return false;
+  const ap=normPhone(a.p||a.phone||'');
+  const bp=normPhone(b.p||b.phone||'');
+  if(ap&&bp&&ap!==bp) return false;
+  const aa=a.a==null?(a.age==null?'':String(a.age)):String(a.a);
+  const ba=b.a==null?(b.age==null?'':String(b.age)):String(b.a);
+  if(aa&&ba&&aa!==ba) return false;
+  return !!(an||bn);
+}
+function _studentFromFormForSlot(form,t,day,lane,row,ds){
+  const obj={n:form.name,a:form.age||null,t,d:day,l:parseInt(lane,10),r:parseInt(row,10)};
+  if(form.phone) obj.p=form.phone;
+  if(form.vehicle) obj.v=true;
+  if(form.gender) obj.g=form.gender;
+  if(form.loc) obj.loc=form.loc;
+  if(form.memo) obj.memo=form.memo;
+  if(form.isNew) obj.isNew=form.isNew;
+  if(form.reenroll) obj.reenroll=form.reenroll;
+  if(ds) obj.enrolled=ds;
+  return obj;
+}
+
 function renderStuPopup(freshOpen){
   // [v105] 첫 렌더가 아니면 좌측 폼 입력값을 보존 (re-render 시 텍스트 손실 방지)
   const draft = freshOpen ? null : captureStuFormDraft();
@@ -860,7 +947,7 @@ function renderStuPopup(freshOpen){
   const enrollDate=enrollEntry?.ds||null;
   const enrollName=enrollEntry?((enrollEntry.name||'')+(enrollEntry.age||'')):'';
 
-  const classDates=getClassDatesForDay(day);
+  const classDates=getClassDatesForDay(_btDateDayForSlot(t,day,lane),_btDateOptsForSlot(t,day,lane));
 
   const curPeriod=SCHEDULE_PERIODS[getCurrentPeriod()];
   const nextPeriod=SCHEDULE_PERIODS[getCurrentPeriod()+1]||null;
@@ -969,10 +1056,16 @@ async function handleDisable(e, ctx){
 async function handleSave(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
+  const groupSlots=_btGroupSlotsForParts(t,day,lane,row);
 
   // [FIX] 미래 등록 예약이 있는 빈 셀에서 저장 차단 → 등록일에 자동 등록됨
-  const pendingEnroll=ENROLL_MAP[slotKey];
-  if(pendingEnroll && pendingEnroll.ds>toDateStr(getToday()) && !getStu(t,day,lane,row)){
+  const todayStr=toDateStr(getToday());
+  const blockedEnroll=groupSlots.find(s=>{
+    const pending=ENROLL_MAP[s.slotKey];
+    return pending && pending.ds>todayStr && !getStu(s.t,s.day,s.lane,s.row);
+  });
+  if(blockedEnroll){
+    const pendingEnroll=ENROLL_MAP[blockedEnroll.slotKey];
     toast('등록 예약이 있습니다 ('+pendingEnroll.name+'). 등록일에 자동 등록됩니다.','err');
     return;
   }
@@ -997,42 +1090,60 @@ async function handleSave(e, ctx){
   const shouldBackfillPhone=!!(oldStu&&phone&&!oldPhone&&name&&String(oldStu.n||'').trim()===name);
   try{
     await updateStudentsTx((students,abort)=>{
-      const idx=students.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
-      const remoteOld=idx>=0?students[idx]:null;
-      if(!oldStu && remoteOld && name){
-        abort('이미 다른 학생이 등록된 자리입니다');
-        return;
+      const intended={n:name,a:age,p:phone};
+      const removeIndexes=[];
+      for(const slot of groupSlots){
+        const idx=students.findIndex(s=>s.t===slot.t&&s.d===slot.day&&parseInt(s.l)===slot.lane&&parseInt(s.r)===slot.row);
+        const remoteOld=idx>=0?students[idx]:null;
+        if(remoteOld){
+          const isCurrent=slot.day===day;
+          const sameAsOld=oldStu&&_studentIdentityMatches(remoteOld,oldStu);
+          const sameAsForm=name&&_studentIdentityMatches(remoteOld,intended);
+          if(isCurrent&&oldStu && !sameAsOld){
+            abort('다른 기기에서 먼저 변경된 자리입니다');
+            return;
+          }
+          if(!sameAsOld&&!sameAsForm){
+            abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
+            return;
+          }
+          removeIndexes.push(idx);
+        }
       }
-      if(oldStu && remoteOld && (remoteOld.n!==oldStu.n || remoteOld.a!==oldStu.a)){
-        abort('다른 기기에서 먼저 변경된 자리입니다');
-        return;
-      }
-      if(idx>=0) students.splice(idx,1);
+      removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
       if(shouldBackfillPhone){
         students.forEach(s=>{
           if(_sameStudentMissingPhone(s,name,age)) s.p=phone;
         });
       }
       if(name){
-        const obj={n:name,a:age,t,d:day,l:lane,r:row};
-        if(phone) obj.p=phone;
-        if(vehicle) obj.v=true;
-        if(gender) obj.g=gender;
-        if(isNewCheck) obj.isNew=oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month;
-        if(loc) obj.loc=loc;
-        if(memo) obj.memo=memo;
-        students.push(obj);
+        const form={
+          name,
+          age,
+          phone,
+          vehicle,
+          gender,
+          loc,
+          memo,
+          isNew:isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
+        };
+        groupSlots.forEach(slot=>{
+          students.push(_studentFromFormForSlot(form,slot.t,slot.day,slot.lane,slot.row));
+        });
       }
       return students;
     });
     // 비활성화 해제
-    if(name&&DISABLED_MAP[key]){
-      await updateDisabledMapTx(disabled=>{delete disabled[key];return disabled;});
+    if(name&&groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
+      await updateDisabledMapTx(disabled=>{
+        groupSlots.forEach(s=>{delete disabled[s.slotKey];});
+        return disabled;
+      });
     }
     _flashKey=key;
     closeStuPopup();
     buildTable();
-    toast(name?name+' 저장':'삭제 완료','ok');
+    toast(name?name+' 저장'+_btGroupToastSuffix(groupSlots):'삭제 완료','ok');
   }catch(err){
     toast(err?.message||'저장 실패','err');
     console.error(err);
@@ -1042,21 +1153,27 @@ async function handleSave(e, ctx){
 async function handleDelete(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const oldStu=getStu(t,day,lane,row);
+  const groupSlots=_btGroupSlotsForParts(t,day,lane,row);
   try{
     await updateStudentsTx((students,abort)=>{
-      const idx=students.findIndex(s=>s.t===t&&s.d===day&&s.l===lane&&s.r===row);
-      const remoteOld=idx>=0?students[idx]:null;
-      if(oldStu && remoteOld && (remoteOld.n!==oldStu.n || remoteOld.a!==oldStu.a)){
-        abort('다른 기기에서 먼저 변경된 자리입니다');
-        return;
+      const removeIndexes=[];
+      for(const slot of groupSlots){
+        const idx=students.findIndex(s=>s.t===slot.t&&s.d===slot.day&&parseInt(s.l)===slot.lane&&parseInt(s.r)===slot.row);
+        const remoteOld=idx>=0?students[idx]:null;
+        if(!remoteOld) continue;
+        if(oldStu&&!_studentIdentityMatches(remoteOld,oldStu)){
+          abort(slot.day+'요일 같은 자리 기존 원생이 변경되었습니다');
+          return;
+        }
+        removeIndexes.push(idx);
       }
-      if(idx>=0) students.splice(idx,1);
+      removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
       return students;
     });
     _flashKey=key;
     closeStuPopup();
     buildTable();
-    toast('학생 삭제','ok');
+    toast('학생 삭제'+_btGroupToastSuffix(groupSlots),'ok');
   }catch(err){
     toast(err?.message||'삭제 실패','err');
     console.error(err);
@@ -1412,17 +1529,17 @@ function handleRetirePastDate(e,ctx){
     toast('퇴원 기록을 남길 원생이 없습니다','err');
     return;
   }
-  askDateForDay(day, function(ds){
+  askDateForDay(_btDateDayForSlot(t,day,lane), function(ds){
     if(!ds) return;
     _stuPopup.selDate=ds;
     _stuPopup.showRetire=true;
     renderStuPopup();
-  }, {
+  }, _btDateOptsForSlot(t,day,lane,{
     title:'퇴원/제외 기준일 선택',
     subtitle:'직전 운영기간까지 포함합니다. 지난 날짜를 고르면 그 날짜 기준으로 퇴원 기록을 남길 수 있습니다.',
     includePrevPeriod:true,
     preferPast:true,
-  });
+  }));
 }
 
 async function handleRetireDelete(e,ctx){
@@ -1543,56 +1660,8 @@ function _periodMonthForDate(ds){
   return month;
 }
 
-async function _commitEnroll(slotKey, form){
-  if(!form.name){toast('이름을 입력하세요','err');return;}
-  const ds=_stuPopup.selDate;
-  const todayStr=toDateStr(getToday());
-  const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
-  const slotParts=_slotParts(slotKey);
-  const currentStu=getStu(slotParts.t,slotParts.d,slotParts.l,slotParts.r);
-  const convertedFromStudent=!!(currentStu && _enrollEntryMatchesStudent(currentStu,{
-    name:form.name,
-    age:form.age,
-    p:form.phone,
-  }));
-
-  // [FIX] 당일/과거 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
-  if(ds<=todayStr){
-    const [t,d,l,r]=slotKey.split('/');
-    const li=parseInt(l), ri=parseInt(r);
-    try{
-      await updateStudentsTx(students=>{
-        const existIdx=students.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-        if(existIdx>=0) students.splice(existIdx,1);
-        const obj={n:form.name, a:form.age||null, t, d, l:li, r:ri};
-        if(form.phone) obj.p=form.phone;
-        if(form.vehicle) obj.v=true;
-        if(form.gender) obj.g=form.gender;
-        if(form.loc) obj.loc=form.loc;
-        if(form.memo) obj.memo=form.memo;
-        if(form.isNew&&enrollMonth) obj.isNew=enrollMonth;
-        else if(form.reenroll&&enrollMonth) obj.reenroll=enrollMonth;
-        obj.enrolled=ds;  // 등록일 당일 출석부/시간표 표시용
-        students.push(obj);
-        return students;
-      });
-      if(DISABLED_MAP[slotKey]){
-        await updateDisabledMapTx(disabled=>{delete disabled[slotKey];return disabled;});
-      }
-      _stuPopup.selDate=null;
-      _stuPopup.showEnroll=false;
-      renderStuPopup(true);
-      buildTable();
-      toast(form.name+(form.age||'')+' 즉시 등록','ok');
-    }catch(err){
-      toast(err?.message||'등록 실패','err');
-      console.error(err);
-    }
-    return;
-  }
-
-  // 미래 → ENROLL_MAP에 예약 저장
-  const entry={
+function _enrollEntryForForm(form,ds,enrollMonth,convertedFromStudent){
+  return {
     ds,
     name:form.name, age:form.age,
     p:form.phone||undefined,
@@ -1605,34 +1674,104 @@ async function _commitEnroll(slotKey, form){
     g:form.gender||undefined,
     convertedFromStudent:convertedFromStudent||undefined,
   };
+}
+
+async function _commitEnroll(slotKey, form){
+  if(!form.name){toast('이름을 입력하세요','err');return;}
+  const ds=_stuPopup.selDate;
+  const todayStr=toDateStr(getToday());
+  const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
+  const slotParts=_slotParts(slotKey);
+  const groupSlots=_btGroupSlotsForSlotKey(slotKey);
+  const currentStu=getStu(slotParts.t,slotParts.d,slotParts.l,slotParts.r);
+  const convertedFromStudent=!!(currentStu && _enrollEntryMatchesStudent(currentStu,{
+    name:form.name,
+    age:form.age,
+    p:form.phone,
+  }));
+
+  // [FIX] 당일/과거 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
+  if(ds<=todayStr){
+    try{
+      await updateStudentsTx((students,abort)=>{
+        const intended={n:form.name,a:form.age,p:form.phone};
+        const removeIndexes=[];
+        for(const slot of groupSlots){
+          const existIdx=students.findIndex(s=>s.t===slot.t&&s.d===slot.day&&parseInt(s.l)===slot.lane&&parseInt(s.r)===slot.row);
+          if(existIdx<0) continue;
+          const existing=students[existIdx];
+          if(!_studentIdentityMatches(existing,intended)){
+            abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
+            return;
+          }
+          removeIndexes.push(existIdx);
+        }
+        removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
+        const directForm=Object.assign({},form,{
+          isNew:form.isNew&&enrollMonth?enrollMonth:null,
+          reenroll:form.reenroll&&enrollMonth?enrollMonth:null,
+        });
+        groupSlots.forEach(slot=>{
+          students.push(_studentFromFormForSlot(directForm,slot.t,slot.day,slot.lane,slot.row,ds));
+        });
+        return students;
+      });
+      if(groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
+        await updateDisabledMapTx(disabled=>{
+          groupSlots.forEach(s=>{delete disabled[s.slotKey];});
+          return disabled;
+        });
+      }
+      _stuPopup.selDate=null;
+      _stuPopup.showEnroll=false;
+      renderStuPopup(true);
+      buildTable();
+      toast(form.name+(form.age||'')+' 즉시 등록'+_btGroupToastSuffix(groupSlots),'ok');
+    }catch(err){
+      toast(err?.message||'등록 실패','err');
+      console.error(err);
+    }
+    return;
+  }
+
+  // 미래 → ENROLL_MAP에 예약 저장
+  const entry=_enrollEntryForForm(form,ds,enrollMonth,convertedFromStudent);
   try{
-    if(convertedFromStudent){
-      const stuKey=getTabConfig().stuKey;
-      await updateScheduleTx([STORAGE_KEYS.ENROLL,stuKey], ctx=>{
-        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
-        const students=ctx.get(stuKey,[]);
-        const idx=_findStudentIndexAt(students,slotKey);
-        if(idx<0 || !_enrollEntryMatchesStudent(students[idx],entry)){
-          ctx.abort('다른 기기에서 먼저 변경된 자리입니다');
+    const stuKey=getTabConfig().stuKey;
+    await updateScheduleTx([STORAGE_KEYS.ENROLL,stuKey], ctx=>{
+      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+      const students=ctx.get(stuKey,[]);
+      const removeIndexes=[];
+      for(const slot of groupSlots){
+        const existingEntry=enroll[slot.slotKey];
+        if(_isReserveMoveEntry(existingEntry)){
+          ctx.abort(slot.day+'요일 예약 이동이 먼저 걸려 있습니다');
           return;
         }
-        students.splice(idx,1);
-        enroll[slotKey]=entry;
-        ctx.set(stuKey,students);
-        ctx.set(STORAGE_KEYS.ENROLL,enroll);
-        return true;
-      }, {type:'edit', label:'등록 예약 전환', detail:`${form.name} ${ds}부터 등록 예약`});
-    } else {
-      await updateEnrollMapTx(enroll=>{
-        enroll[slotKey]=entry;
-        return enroll;
+        if(existingEntry&&!_studentIdentityMatches(existingEntry,entry)){
+          ctx.abort(slot.day+'요일 같은 자리 등록예약이 이미 있습니다');
+          return;
+        }
+        const idx=_findStudentIndexAt(students,slot.slotKey);
+        if(idx>=0){
+          if(_enrollEntryMatchesStudent(students[idx],entry)&&convertedFromStudent){
+            removeIndexes.push(idx);
+          }
+        }
+      }
+      removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
+      groupSlots.forEach(slot=>{
+        enroll[slot.slotKey]=Object.assign({},entry,{convertedFromStudent:convertedFromStudent||undefined});
       });
-    }
+      if(removeIndexes.length) ctx.set(stuKey,students);
+      ctx.set(STORAGE_KEYS.ENROLL,enroll);
+      return true;
+    }, {type:'edit', label:convertedFromStudent?'등록 예약 전환':'등록 예약', detail:`${form.name} ${ds}부터 등록 예약`});
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
     renderStuPopup(true);
     buildTable();
-    toast(form.name+(form.age||'')+(convertedFromStudent?' 등록 예약 전환':' 등록 예약'),'ok');
+    toast(form.name+(form.age||'')+(convertedFromStudent?' 등록 예약 전환':' 등록 예약')+_btGroupToastSuffix(groupSlots),'ok');
   }catch(err){
     toast(err?.message||'등록 예약 실패','err');
     console.error(err);
@@ -2071,13 +2210,14 @@ function _classDatesForPeriod(day, period){
 
 function askDateForDay(day, callback, opts){
   opts=opts||{};
-  const classDates=getClassDatesForDay(day);
+  const dateDay=opts.bangteukGroup||day;
+  const classDates=getClassDatesForDay(dateDay,opts);
   const todayStr=toDateStr(getToday());
   let allDates=[...classDates.cur,...classDates.next];
   if(opts.includePrevPeriod){
     const curIdx=getCurrentPeriod();
     const prevPeriod=SCHEDULE_PERIODS[curIdx-1]||null;
-    allDates=[..._classDatesForPeriod(day,prevPeriod),...allDates];
+    allDates=[..._classDatesForPeriod(dateDay,prevPeriod),...allDates];
   }
   allDates=allDates
     .filter(d=>!d.closed)
@@ -2090,7 +2230,7 @@ function askDateForDay(day, callback, opts){
     return aPast?b.ds.localeCompare(a.ds):a.ds.localeCompare(b.ds);
   });
   if(!allDates.length){
-    toast(day+'요일에 수업일이 없습니다','err');
+    toast(dateDay+'요일에 수업일이 없습니다','err');
     callback(null);
     return;
   }
@@ -2102,7 +2242,7 @@ function askDateForDay(day, callback, opts){
   backdrop.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99998;display:flex;align-items:center;justify-content:center';
   const box=document.createElement('div');
   box.style.cssText='background:#fff;padding:14px;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.2);max-width:320px;width:90%';
-  const dayTitle=(typeof getDayIndexes==='function'&&getDayIndexes(day).length>1)?day:(day+'요일');
+  const dayTitle=(typeof getDayIndexes==='function'&&getDayIndexes(dateDay).length>1)?dateDay:(dateDay+'요일');
   const title=opts.title||`📅 ${dayTitle} 날짜 선택`;
   const subtitleText=opts.subtitle||classDates.label||'';
   const subtitle=subtitleText?`<div style="font-size:11px;color:#6B7280;line-height:1.4;margin:-2px 0 8px">${esc(subtitleText)}</div>`:'';
@@ -2371,6 +2511,7 @@ async function deleteEnrollReservation(slotKey){
   let paired=false;
   let removedStudent=false;
   const stuKey=getTabConfig().stuKey;
+  const groupSlots=_btGroupSlotsForSlotKey(slotKey);
   await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,stuKey], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
@@ -2380,10 +2521,21 @@ async function deleteEnrollReservation(slotKey){
     paired=_deleteReserveMovePair(retire,enroll,'enroll',slotKey);
     if(paired) ctx.set(STORAGE_KEYS.RETIRE,retire);
     if(!paired){
-      const removeIdx=_convertedEnrollStudentIndex(students,slotKey,entry);
-      if(removeIdx>=0){
-        students.splice(removeIdx,1);
+      const removeIndexes=[];
+      for(const slot of groupSlots){
+        const cur=enroll[slot.slotKey];
+        if(!cur) continue;
+        if(_isReserveMoveEntry(cur)) continue;
+        if(slot.slotKey!==slotKey && (cur.ds!==entry.ds || !_studentIdentityMatches(cur,entry))) continue;
+        delete enroll[slot.slotKey];
+        const removeIdx=_convertedEnrollStudentIndex(students,slot.slotKey,cur);
+        if(removeIdx>=0) removeIndexes.push(removeIdx);
+      }
+      removeIndexes.sort((a,b)=>b-a).forEach(idx=>{
+        students.splice(idx,1);
         removedStudent=true;
+      });
+      if(removedStudent){
         ctx.set(stuKey,students);
       }
     }
@@ -2549,6 +2701,8 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   if(!_moveMode) return;
   const {srcKey, type}=_moveMode;
   const dstKey=dstT+'/'+dstDay+'/'+dstLane+'/'+dstRow;
+  const dstDateDay=_btDateDayForSlot(dstT,dstDay,dstLane);
+  const dstDateOpts=opts=>_btDateOptsForSlot(dstT,dstDay,dstLane,opts);
 
   // 같은 자리면 취소
   if(srcKey===dstKey){cancelMove();return;}
@@ -2648,7 +2802,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     };
     // 요일이 다르면 날짜 선택 모달
     if(sD!==dstDay){
-      askDateForDay(dstDay, async function(newDs){
+      askDateForDay(dstDateDay, async function(newDs){
         if(!newDs) return; // 취소
         try{
           await moveMarkTo(newDs);
@@ -2657,7 +2811,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           toast(err?.message||'마크 이동 실패','err');
           console.error(err);
         }
-      });
+      }, dstDateOpts());
       return;
     }
     // 같은 요일 → 같은 날짜 유지
@@ -2693,7 +2847,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
       }, {type:'edit', label:'등록 예약 복사', detail:`${srcKey} → ${dstKey}`});
     };
     if(sD!==dstDay){
-      askDateForDay(dstDay, async function(newDs){
+      askDateForDay(dstDateDay, async function(newDs){
         if(!newDs) return;
         try{
           await copyEnrollTo(newDs);
@@ -2702,7 +2856,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           toast(err?.message||'등록 예약 복사 실패','err');
           console.error(err);
         }
-      });
+      }, dstDateOpts());
       return;
     }
     try{
@@ -2738,7 +2892,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     };
     // 요일이 다르면 날짜 선택
     if(sD!==dstDay){
-      askDateForDay(dstDay, async function(newDs){
+      askDateForDay(dstDateDay, async function(newDs){
         if(!newDs) return;
         try{
           await moveEnrollTo(newDs);
@@ -2747,7 +2901,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           toast(err?.message||'등록 예약 이동 실패','err');
           console.error(err);
         }
-      });
+      }, dstDateOpts());
       return;
     }
     try{
@@ -2766,9 +2920,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
     const [srcT,srcDay]=srcKey.split('/');
     const srcTime=_moveDisplayTime(srcDay,srcT);
     const dstTime=_moveDisplayTime(dstDay,dstT);
-    askDateForDay(srcDay, function(sourceDs){
+    askDateForDay(_btDateDayForSlotKey(srcKey)||srcDay, function(sourceDs){
       if(!sourceDs){return;}
-      askDateForDay(dstDay, async function(newDs){
+      askDateForDay(dstDateDay, async function(newDs){
         if(!newDs){return;}
         const moveId='reserve-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);
         const enrollEntry={
@@ -2814,13 +2968,14 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           console.error(err);
         }
       }, {
+        ...dstDateOpts(),
         title:`📘 등록일 선택 (${dstDay}요일 ${dstTime})`,
         subtitle:'새 자리에서 시작할 날짜를 선택해주세요.'
       });
-    }, {
+    }, _btDateOptsForSlotKey(srcKey,{
       title:`🗑️ 삭제일 선택 (${srcDay}요일 ${srcTime})`,
       subtitle:'기존 자리에서 빠질 날짜를 먼저 선택해주세요.'
-    });
+    }));
     return;
   }
 

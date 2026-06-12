@@ -247,11 +247,17 @@ function _printSatHourValue(label){
 
 function _printTimesForDay(times,sourceDay){
   const list=Array.isArray(times)?times:[];
-  if(sourceDay!=='토') return list.filter(({t})=>String(t||'').trim()!=='1시');
+  const sorted=list.slice().sort((a,b)=>{
+    if(window.SCScheduleTime&&typeof SCScheduleTime.compareTimes==='function') return SCScheduleTime.compareTimes(sourceDay,a?.t,b?.t);
+    return parseInt(a?.t,10)-parseInt(b?.t,10);
+  });
+  const baseTime=t=>window.SCScheduleTime&&typeof SCScheduleTime.normalizeTimeBase==='function'?SCScheduleTime.normalizeTimeBase(t):String(t||'');
+  if(sourceDay!=='토') return sorted.filter(({t})=>baseTime(t)!=='1시');
   const sat=typeof getSatLabel==='function'?getSatLabel():{};
-  return list.filter(({t})=>{
-    if(!sat||!sat[t]) return false;
-    const hour=_printSatHourValue(sat[t]);
+  return sorted.filter(({t})=>{
+    const label=(sat&&sat[t])||_printTimeLabel(t,sourceDay);
+    if(!label) return false;
+    const hour=_printSatHourValue(label);
     return hour!==null&&hour<=14;
   });
 }
@@ -274,10 +280,19 @@ function _printHasElmaFrame(t,sourceDay){
   }
   return false;
 }
+function _printHasBangteukFrame(t,sourceDay){
+  if(typeof isBangteuk==='function'&&isBangteuk()) return true;
+  const lanes=typeof getLanes==='function'?getLanes():5;
+  for(let lane=1;lane<=lanes;lane++){
+    const inst=typeof getInst==='function'?getInst(t,sourceDay,lane):null;
+    if(window.SCScheduleTime&&typeof SCScheduleTime.isBangteukInst==='function'&&SCScheduleTime.isBangteukInst(inst)) return true;
+  }
+  return false;
+}
 
 function _printRowsForTime(t,sourceDay,ds){
   const isBt=typeof isBangteuk==='function'&&isBangteuk();
-  const baseRows=isBt?6:(_printHasElmaFrame(t,sourceDay)?8:5);
+  const baseRows=isBt?6:(_printHasElmaFrame(t,sourceDay)?8:(_printHasBangteukFrame(t,sourceDay)?6:5));
   const maxRows=isBt?6:8;
   let rows=baseRows;
   const useRow=row=>{
@@ -337,7 +352,12 @@ function _printLayoutStyle(totalRows){
 function _buildSchedulePrintHtml(ds){
   const info=_printDateInfo(ds);
   if(!info||!info.hasClass) throw new Error('선택한 날짜에 수업이 없습니다');
-  const rawTimes=_printTimesForDay(typeof getTimes==='function'?getTimes():[],info.sourceDay);
+  const printTimeSet=new Set((typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean));
+  Object.keys(INST_MAP||{}).forEach(key=>{
+    const p=String(key||'').split('/');
+    if(p.length>=3&&p[1]===info.sourceDay) printTimeSet.add(p[0]);
+  });
+  const rawTimes=_printTimesForDay([...printTimeSet].map(t=>({t})),info.sourceDay);
   const lanes=typeof getLanes==='function'?getLanes():5;
   const sourceDay=info.sourceDay;
   const closed=info.closed||'';

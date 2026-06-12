@@ -105,8 +105,32 @@ function getCurrentPeriod(){
   return 0;
 }
 
-function getClassDatesForDay(dayName){
-  const dayIndexes=getDayIndexes(dayName); // 단일 요일 또는 방특 묶음 요일
+function _normalizeBangteukGroup(group,fallbackDay){
+  const g=String(group||'').replace(/[\/\s]/g,'');
+  if(g==='월수금'||g==='화목') return g;
+  const d=String(fallbackDay||'');
+  if('월수금'.includes(d)) return '월수금';
+  if('화목'.includes(d)) return '화목';
+  return g||d;
+}
+function _bangteukTabForDates(opts){
+  opts=opts||{};
+  if(opts.bangteukTab&&opts.bangteukTab.type==='bangteuk') return opts.bangteukTab;
+  if(opts.bangteukTabId&&typeof _tabById==='function'){
+    const tab=_tabById(opts.bangteukTabId);
+    if(tab&&tab.type==='bangteuk') return tab;
+  }
+  if(typeof getActiveBangteukBasisTab==='function') return getActiveBangteukBasisTab(opts.bangteukTabId||'');
+  return null;
+}
+function getClassDatesForDay(dayName,opts){
+  opts=opts||{};
+  const forcedBtTab=opts.bangteukGroup||opts.bangteukTabId||opts.bangteukTab;
+  const btTab=forcedBtTab?_bangteukTabForDates(opts):null;
+  const basisDayName=(btTab&&btTab.seasonStart&&btTab.seasonEnd)
+    ? _normalizeBangteukGroup(opts.bangteukGroup||dayName,dayName)
+    : dayName;
+  const dayIndexes=getDayIndexes(basisDayName); // 단일 요일 또는 방특 묶음 요일
   if(!dayIndexes.length) return {cur:[],next:[]};
 
   function collectDates(period){
@@ -127,17 +151,20 @@ function getClassDatesForDay(dayName){
   }
 
   const activeTab=(typeof _tabById==='function')?_tabById(_activeTab):null;
-  if(activeTab?.type==='bangteuk'&&activeTab.seasonStart&&activeTab.seasonEnd){
-    const start=String(activeTab.seasonStart);
-    const end=String(activeTab.seasonEnd);
+  const dateTab=(btTab&&btTab.seasonStart&&btTab.seasonEnd)?btTab:activeTab;
+  if(dateTab?.type==='bangteuk'&&dateTab.seasonStart&&dateTab.seasonEnd){
+    const start=String(dateTab.seasonStart);
+    const end=String(dateTab.seasonEnd);
     const period={start,end};
     const startLabel=start.slice(5).replace('-','/');
     const endLabel=end.slice(5).replace('-','/');
     return {
       cur:collectDates(period),
       next:[],
-      label:`방특 ${startLabel}~${endLabel}`,
+      label:`${basisDayName} 방특 ${startLabel}~${endLabel}`,
       mode:'bangteuk',
+      tabId:dateTab.id||'',
+      group:basisDayName,
       dateCols:dayIndexes.length,
     };
   }
@@ -393,7 +420,7 @@ function getTimes(){ return _activeTab==='regular'?TIMES_REG:getTabConfig().time
 function getTimeRows(t){ 
   const baseRows=isBangteuk()?6:5;
   const maxRows=isBangteuk()?6:8;
-  let rows=hasElmaInTime(t)?maxRows:baseRows;
+  let rows=hasElmaInTime(t)?maxRows:(hasBangteukInTime(t)?6:baseRows);
   const useRow=row=>{
     const n=parseInt(row,10);
     if(Number.isFinite(n)&&n>rows) rows=n;
@@ -679,12 +706,46 @@ function getInstCls(inst){
 function getInstClsLabel(cls){
   return cls==='elma'?'(엘/마)':cls==='elite'?'(엘리트)':cls==='master'?'(마스터)':'';
 }
+function isBangteukInst(inst){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukInst==='function') return window.SCScheduleTime.isBangteukInst(inst);
+  return !!(inst&&typeof inst==='object'&&(inst.bt||inst.bangteuk||inst.btGroup||inst.btTabId||inst.cls==='bt'||inst.cls==='bangteuk'));
+}
+function _bangteukMetaFromRaw(raw,day){
+  if(!raw) return null;
+  const group=_normalizeBangteukGroup(raw.group||raw.btGroup||'',day);
+  const tabId=raw.tabId||raw.btTabId||'';
+  const tab=_bangteukTabForDates({bangteukTabId:tabId});
+  const label=tab&&tab.seasonStart&&tab.seasonEnd
+    ? `${group} 방특 ${tab.seasonStart.slice(5).replace('-','/')}~${tab.seasonEnd.slice(5).replace('-','/')}`
+    : `${group} 방특`;
+  return {
+    group,
+    tabId:tab?.id||tabId||'',
+    tabName:tab?.name||raw.tabName||'',
+    seasonStart:tab?.seasonStart||raw.seasonStart||'',
+    seasonEnd:tab?.seasonEnd||raw.seasonEnd||'',
+    label,
+  };
+}
+function getBangteukSlotMeta(t,day,lane){
+  const key=t+'/'+day+'/'+lane;
+  const inst=typeof getInst==='function'?getInst(t,day,lane):null;
+  if(isBangteukInst(inst)){
+    return _bangteukMetaFromRaw(inst,day);
+  }
+  if(typeof getBtPreviewInst==='function'){
+    const preview=getBtPreviewInst(key);
+    if(preview) return _bangteukMetaFromRaw(preview===true?{}:preview,day);
+  }
+  return null;
+}
 
 function instDisplay(inst){
   if(!inst) return '';
   let s=inst.n;
   if(inst.lead) s='1)'+s;
   if(inst.youth) s+='(유아)';
+  if(isBangteukInst(inst)) s+=inst.btGroup?`(${inst.btGroup} 방특)`:'(방특)';
   const cls=getInstCls(inst);
   if(cls) s+=getInstClsLabel(cls);
   return s;
@@ -762,6 +823,14 @@ function getElmaPairEnd(elma,li){ return elma&&elma.pairs.find(p=>p[1]===li); }
 // 시간대에 엘마가 있는지
 function hasElmaInTime(t){
   for(const d of getDays()){ if(getElmaLanes(t,d)) return true; }
+  return false;
+}
+function hasBangteukInTime(t){
+  for(const d of getDays()){
+    for(let l=1;l<=getLanes();l++){
+      if(isBangteukInst(getInst(t,d,l))) return true;
+    }
+  }
   return false;
 }
 
@@ -1499,6 +1568,29 @@ function _scheduleAuditTeacherFromSlot(slot,day,item){
   if(!user) return '-';
   return user.includes('@')?user.split('@')[0]:user;
 }
+function _scheduleAuditInstFromSlot(slot,day){
+  if(!slot||typeof getInst!=='function') return null;
+  const token=slot.dayToken||day;
+  const lookupDay=String(token||'').includes(day)?token:day;
+  return getInst(slot.time,lookupDay,slot.lane)||getInst(slot.time,day,slot.lane)||null;
+}
+function _scheduleAuditIsBangteukSlot(slot,day){
+  const inst=_scheduleAuditInstFromSlot(slot,day);
+  const row=slot?.row||'';
+  try{
+    if(window.SCScheduleTime&&typeof SCScheduleTime.isBangteukSlot==='function'&&SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:false})) return true;
+  }catch(e){}
+  try{
+    if(typeof isBangteukInst==='function'&&isBangteukInst(inst)){
+      const n=parseInt(row,10);
+      if(!row||(Number.isFinite(n)&&n>=1&&n<=6)) return true;
+    }
+  }catch(e){}
+  try{
+    if(typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(slot.time,day,slot.lane)) return true;
+  }catch(e){}
+  return false;
+}
 function _scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item){
   if(!fromSlot||!toSlot) return false;
   const allDays=['월','화','수','목','금','토','일'];
@@ -1611,6 +1703,7 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     const date=_scheduleAuditDateLabel(ds);
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
+      if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
       const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
       if(!target) return;
@@ -1818,6 +1911,7 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
   if(!target) return Promise.resolve(false);
   const additions=[];
   days.forEach(day=>{
+    if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
     if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
     const reason=_scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback);
     additions.push(_deskNoteFromScheduleRow({
@@ -1859,6 +1953,7 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
   const date=_scheduleAuditDateLabel(todayKey);
   const additions=[];
   _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
+    if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
     const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,sourceStu||stu);
     additions.push(_deskNoteFromScheduleRow({
       day,
@@ -1992,6 +2087,7 @@ function _syncDeskNotesFromRows(rows){
   const sourceKeys=new Set(DESK_NOTES.map(note=>String(note?.sourceKey||'')).filter(Boolean));
   const additions=[];
   (rows||[]).forEach(row=>{
+    if(row?.bangteuk) return;
     const sourceKey=_scheduleAuditRowKey(row);
     if(!sourceKey||sourceKeys.has(sourceKey)) return;
     sourceKeys.add(sourceKey);
@@ -2329,6 +2425,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     if(!date.key||date.key.slice(0,7)!==monthKey) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
+      if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
       const reason=_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot);
       rows.push({

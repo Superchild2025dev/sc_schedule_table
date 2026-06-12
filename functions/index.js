@@ -80,7 +80,9 @@ function isSaturday(day) {
   return normalizeDayText(day) === "토";
 }
 function normalizeTimeText(time) {
-  const text = String(time || "").trim();
+  let text = String(time || "").trim();
+  text = text.replace(/#BT(?:_PREVIEW)?/ig, "").replace(/\(?\s*방특(?:반|테스트)?\s*\)?/g, "").replace(/\bBT\b/ig, "");
+  text = text.replace(/\s+/g, "").trim();
   const match = text.match(/^0(\d)시$/);
   return match ? `${match[1]}시` : text;
 }
@@ -91,6 +93,14 @@ function displayTimeForDay(day, time) {
 function internalTimeForDay(day, time) {
   const t = normalizeTimeText(time);
   return isSaturday(day) ? (SAT_DISPLAY_TO_INTERNAL[t] || t || "") : (t || "");
+}
+function sortTimeValue(day, time) {
+  const internal = internalTimeForDay(day, time);
+  const n = parseInt(String(internal).replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(n) ? n : 999;
+}
+function isBangteukInst(inst) {
+  return !!(inst && typeof inst === "object" && (inst.bt || inst.bangteuk || inst.btGroup || inst.btTabId || inst.cls === "bt" || inst.cls === "bangteuk"));
 }
 function normalizeSlotKey(key) {
   const parts = String(key || "").split("/");
@@ -752,6 +762,7 @@ function bogangDateOptions(base, baseDs) {
 }
 
 function slotMaxRows(inst) {
+  if (isBangteukInst(inst)) return 6;
   return inst && (inst.elma || inst.cls === "elma" || inst.cls === "elite" || inst.cls === "master") ? 8 : 5;
 }
 
@@ -813,7 +824,7 @@ function availableSlotsFor(base, session, sourceSlotKey, ds, teacherMode) {
     }
   });
   candidates.sort((a, b) =>
-    parseInt(internalTimeForDay(a.day, a.t), 10) - parseInt(internalTimeForDay(b.day, b.t), 10) ||
+    sortTimeValue(a.day, a.t) - sortTimeValue(b.day, b.t) ||
     String(a.instName || "").localeCompare(String(b.instName || ""), "ko") ||
     Number(a.lane) - Number(b.lane) ||
     Number(a.row) - Number(b.row)
