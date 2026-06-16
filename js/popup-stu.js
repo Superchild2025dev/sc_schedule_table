@@ -282,10 +282,11 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
 
     const mark=getMark(slotKey,d.ds);
     const isAbsent=mark?.type==='absent';
+    const isAbsentRequest=isAbsent&&typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark);
     const sub=mark?.sub||null;
     const isBogangOnly=mark?.type==='bogang';
     const isSampleOnly=mark?.type==='sample';
-    if(isAbsent) cls+=' absent-set';
+    if(isAbsent) cls+=isAbsentRequest?' absent-request-set':' absent-set';
     if(sub?.type==='bogang'||isBogangOnly) cls+=(isAbsent?'':' bogang-set');
     if(sub?.type==='sample'||isSampleOnly) cls+=(isAbsent?'':' sample-set');
     const hyuwon=HYUWON_MAP[slotKey];
@@ -297,8 +298,16 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
     const retLabel=(retireDate&&d.ds===retireDate)?`<span class="date-retire-label">${esc(retireName)}</span>`:'';
     const enrLabel=(enrollDate&&d.ds===enrollDate)?`<span class="date-enroll-label">${esc(enrollName)}</span>`:'';
     let markLabel='';
-    if(isAbsent&&!sub) markLabel='<span class="date-absent-label">결석</span>';
-    if(isAbsent&&sub) markLabel=`<span class="date-absent-label">결석/${esc((sub.n||'')+(sub.a||''))}</span>`;
+    if(isAbsent&&!sub){
+      const clsName=isAbsentRequest?'date-absent-request-label':'date-absent-label';
+      const prefix=isAbsentRequest?'⏳ ':'';
+      markLabel=`<span class="${clsName}">${prefix}${esc(typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석')}</span>`;
+    }
+    if(isAbsent&&sub){
+      const clsName=isAbsentRequest?'date-absent-request-label':'date-absent-label';
+      const prefix=isAbsentRequest?'⏳ ':'';
+      markLabel=`<span class="${clsName}">${prefix}${esc(typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석')}/${esc((sub.n||'')+(sub.a||''))}</span>`;
+    }
     if(isBogangOnly) markLabel=`<span class="date-bogang-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
     if(isSampleOnly) markLabel=`<span class="date-sample-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
 

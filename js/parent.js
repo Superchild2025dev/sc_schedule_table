@@ -69,7 +69,18 @@ function branchContactText(){
   return `${contact.label} ${contact.phone}`;
 }
 function sameDayCancelMessage(){
-  return `당일 결석취소 요청은 온라인 접수가 불가합니다.\n유선문의 부탁드립니다.\n${branchContactText()}`;
+  return `당일 결석 취소는 유선 문의로 부탁드립니다.\n${branchContactText()}`;
+}
+function sameDayAbsentMessage(){
+  return `당일 결석 신청은 유선 문의로 부탁드립니다.\n${branchContactText()}`;
+}
+function isParentAbsentRequestMark(mark){
+  if(!mark||mark.type!=='absent') return false;
+  if(mark.status==='accepted'||mark.status==='confirmed'||mark.status==='processed') return false;
+  return mark.requiresDeskApproval===true && (mark.status==='requested'||mark.status==='pending');
+}
+function absentMarkLabel(mark){
+  return isParentAbsentRequestMark(mark)?'결석신청':'결석';
 }
 let _currentStudents=[];  // 로그인된 학생 그룹 (같은 이름+같은 전화번호)
 // 하위 호환: 첫 학생을 _currentStudent로도 노출
@@ -374,7 +385,7 @@ function addRequestEntries(entries){
           return;
         }
         if(seenTargets.has('cancel/'+key)){
-          abort('같은 결석 취소 신청이 중복되었습니다');
+          abort('같은 결석 신청 취소 요청이 중복되었습니다');
           return;
         }
         seenTargets.add('cancel/'+key);
@@ -583,12 +594,14 @@ function renderMyRequests(students){
     if(mark.type === 'absent'){
       const stu = students.find(s => slotKey === s.t+'/'+s.d+'/'+s.l+'/'+s.r);
       const classLabel = instClassText(instOfStudent(stu));
+      const absentLabel=typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석';
+      const isAbsentRequest=typeof isParentAbsentRequestMark==='function' && isParentAbsentRequestMark(mark);
       items.push({
         type: 'absent', ds,
-        title: '❌ 결석',
+        title: `${isAbsentRequest?'⏳':'❌'} ${absentLabel}`,
         sub: `${stu?.d}요일 ${displayStudentTime(stu)}${classLabel?' · '+classLabel:''}`,
-        status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : '대기',
-        color: '#EF4444'
+        status: mark.sub ? `보강 신청됨 (${mark.sub.n||''})` : (isAbsentRequest ? '접수' : '확정'),
+        color: isAbsentRequest ? '#F59E0B' : '#EF4444'
       });
     }
   });
@@ -646,11 +659,11 @@ function renderMyRequests(students){
     if(!t?.ds || t.ds < todayStr) return;
     const status = req.status === 'accepted' ? '✅ 취소 완료'
                  : req.status === 'rejected' ? '⛔ 거절'
-                 : '⏳ 선생님 승인 대기';
+                 : '⏳ 확인 대기';
     const classLabel = instClassText(INST_MAP[req.instKey]);
     items.push({
       type: 'absent-cancel', ds: t.ds,
-      title: '✓ 결석 취소',
+      title: '✓ 결석 신청 취소 요청',
       sub: `${t.d}요일 ${displayTargetTime(t)}${classLabel?' · '+classLabel:''}`,
       status,
       color: '#10B981'
@@ -837,7 +850,8 @@ function renderDateList(slotKey,period,day){
     if(isToday) cls+=' today';
     if(closedLabel) cls+=' closed';
     if(isHyuwon) cls+=' hyuwon';
-    if(mark?.type==='absent') cls+=' absent';
+    const isAbsentRequest=mark?.type==='absent'&&typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark);
+    if(mark?.type==='absent') cls+=isAbsentRequest?' absent-request':' absent';
     if(mark?.type==='bogang'||(mark?.type==='absent'&&mark.sub?.type==='bogang')) cls+=' bogang';
 
     const [y,m,dd]=ds.split('-');
@@ -855,8 +869,10 @@ function renderDateList(slotKey,period,day){
     if(mark?.type==='absent'){
       const vehicleLabel=mark.vehicleMode==='bus'?'차량이용':(mark.vehicleMode==='self'?'자가등하원':'');
       const vehicleText=vehicleLabel ? ` · ${vehicleLabel}` : '';
-      if(mark.sub?.type==='bogang') status='❌ 결석 / 보강: '+esc(mark.sub.n||'')+vehicleText;
-      else status='❌ 결석'+vehicleText;
+      const absentLabel=typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석';
+      const icon=isAbsentRequest?'⏳':'❌';
+      if(mark.sub?.type==='bogang') status=icon+' '+absentLabel+' / 보강: '+esc(mark.sub.n||'')+vehicleText;
+      else status=icon+' '+absentLabel+vehicleText;
     } else if(mark?.type==='bogang'){
       status='🟣 보강: '+esc(mark.n||'');
     }
@@ -894,7 +910,7 @@ function renderDateList(slotKey,period,day){
     } else if(acceptedBogang){
       status=`✅ ${formatParentBogangBookedButton(acceptedBogang)}`;
     } else if(pendingCancel){
-      status='⏳ 결석 취소 승인 대기';
+      status='⏳ 결석 신청 취소 확인 대기';
     }
 
     // 버튼: 미래 수업일만 조작 가능, 휴관일/휴원일 제외
@@ -904,8 +920,8 @@ function renderDateList(slotKey,period,day){
       if(absentOn){
         const bogangDone = pendingBogangCount > 0 || mark.sub?.type === 'bogang';
         if(pendingCancel){
-          actions=`<button class="btn-absent active is-disabled" type="button" disabled>결석 취소 요청중</button>
-                   <span class="action-note wait">⏳ 승인 대기</span>`;
+          actions=`<button class="btn-absent active is-disabled" type="button" disabled>결석 신청 취소 요청중</button>
+                   <span class="action-note wait">⏳ 확인 대기</span>`;
         } else {
           // [v118] 결석 누른 상태에서만 보강 신청 가능
           let bogangAction='';
@@ -922,9 +938,9 @@ function renderDateList(slotKey,period,day){
             bogangAction=`<button class="btn-bogang" data-action="request-bogang" data-ds="${ds}" data-slot="${slotKey}">보강 신청하기</button>`;
           }
           const cancelAction=isToday
-            ? `<button class="btn-absent active is-disabled" type="button" disabled>당일 취소 유선문의</button>
+            ? `<div class="same-day-cancel-notice" aria-disabled="true">당일 결석 취소는 유선 문의로 부탁드립니다.</div>
                <span class="action-note muted">${esc(branchContactText())}</span>`
-            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 취소 요청</button>`;
+            : `<button class="btn-absent active" data-action="cancel-absent" data-ds="${ds}" data-slot="${slotKey}">결석 신청 취소 요청</button>`;
           actions=sourceNoMakeup
             ? `${cancelAction}
                <span class="action-note muted">보강 불가</span>`
@@ -933,7 +949,10 @@ function renderDateList(slotKey,period,day){
         }
       } else {
         // [v118] 결석 안 한 상태 → 결석 버튼만 (보강 신청 X)
-        actions=`<button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석 신청</button>`;
+        actions=isToday
+          ? `<button class="btn-absent is-disabled" type="button" disabled>유선문의 부탁드립니다</button>
+             <span class="action-note muted">${esc(branchContactText())}</span>`
+          : `<button class="btn-absent" data-action="request-absent" data-ds="${ds}" data-slot="${slotKey}">결석 신청</button>`;
       }
     }
 
@@ -979,7 +998,7 @@ function openAbsentCancelModal(ds, slotKey){
   const [t,day,l,r]=slotKey.split('/');
   const slotInfo=`${day}요일 ${displayTimeForDay(day,t)}`;
   document.getElementById('ac-desc').innerHTML=
-    `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 취소를 신청하시겠습니까?`;
+    `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 신청 취소를 요청하시겠습니까?`;
   document.getElementById('ac-submit').dataset.ds=ds;
   document.getElementById('ac-submit').dataset.slot=slotKey;
   document.getElementById('ac-form').style.display='block';
@@ -1491,8 +1510,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const ds=btn.dataset.ds;
     const slotKey=btn.dataset.slot;
     const act=btn.dataset.action;
-    if(act==='request-absent') openAbsentModal(ds, slotKey);
-    else if(act==='cancel-absent') openAbsentCancelModal(ds, slotKey);
+    if(act==='request-absent'){
+      if(ds===toDateStr(new Date())){
+        alert(sameDayAbsentMessage());
+        return;
+      }
+      openAbsentModal(ds, slotKey);
+    }
+    else if(act==='cancel-absent'){
+      if(ds===toDateStr(new Date())){
+        alert(sameDayCancelMessage());
+        return;
+      }
+      openAbsentCancelModal(ds, slotKey);
+    }
     else if(act==='request-bogang') openBogangModal(ds, slotKey);
     else if(act==='cancel-bogang') cancelBogangRequest(ds, slotKey);
   });

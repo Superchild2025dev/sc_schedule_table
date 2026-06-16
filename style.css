@@ -447,13 +447,15 @@ body.is-snapshot .snap-banner{display:block}
 .stu-date-box.enroll-set .date-enroll-label{display:block}
 .stu-date-box.absent-set{background:#FEE2E2!important;color:#DC2626!important;border-color:#EF4444!important}
 .stu-date-box.absent-set .date-absent-label{display:block}
+.stu-date-box.absent-request-set{background:#FEF3C7!important;color:#92400E!important;border-color:#F59E0B!important}
+.stu-date-box.absent-request-set .date-absent-request-label{display:block}
 .stu-date-box.bogang-set{background:#EDE9FE!important;color:#7C3AED!important;border-color:#7C3AED!important}
 .stu-date-box.bogang-set .date-bogang-label{display:block}
 .stu-date-box.sample-set{background:#FEF3C7!important;color:#D97706!important;border-color:#F59E0B!important}
 .stu-date-box.sample-set .date-sample-label{display:block}
-.date-retire-label,.date-enroll-label,.date-absent-label,.date-bogang-label,.date-sample-label{display:none;font-size:var(--f-badge);font-weight:800;line-height:1.1;margin-top:calc(2px * var(--tbl-scale));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.date-retire-label,.date-enroll-label,.date-absent-label,.date-absent-request-label,.date-bogang-label,.date-sample-label{display:none;font-size:var(--f-badge);font-weight:800;line-height:1.1;margin-top:calc(2px * var(--tbl-scale));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .date-retire-label{color:#fff}.date-enroll-label{color:#fff}
-.date-absent-label{color:#DC2626}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
+.date-absent-label{color:#DC2626}.date-absent-request-label{color:#92400E}.date-bogang-label{color:#7C3AED}.date-sample-label{color:#D97706}
 .stu-date-box.hyuwon-set{background:#E0F2FE!important;color:#0369A1!important;border-color:#0EA5E9!important}
 
 .sp-retire-panel{margin-top:6px;padding-top:6px;border-top:1px solid #E5E7EB;display:flex;flex-direction:column;gap:5px}
@@ -498,6 +500,7 @@ body.is-snapshot .snap-banner{display:block}
 .cb-bogang{background:#7C3AED}
 .cb-sample{background:#F59E0B;color:#333}
 .cb-hyuwon{background:#0EA5E9}
+.cb-pending-absent{background:#F59E0B;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite;flex-basis:100%;padding:1px calc(2px * var(--tbl-scale))}
 .cb-pending-bogang{background:#F59E0B;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite;flex-basis:100%;padding:1px calc(2px * var(--tbl-scale))}
 .cb-pending-cancel{background:#EF4444;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite;flex-basis:100%;padding:1px calc(2px * var(--tbl-scale))}
 @keyframes pendingPulse{0%,100%{opacity:1}50%{opacity:0.7}}
@@ -706,6 +709,7 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .mobile-schedule-chip.enroll{background:#DBEAFE;color:#111}
 .mobile-schedule-chip.enroll-new{background:#DBEAFE;color:#1D4ED8}
 .mobile-schedule-chip.hyuwon{background:#0EA5E9;color:#fff}
+.mobile-schedule-chip.pending-absent{background:#F59E0B;color:#fff}
 .mobile-schedule-empty,.mobile-schedule-none{display:block;padding:8px;color:#9CA3AF;font-size:12px;font-weight:800;text-align:center}
 
 @media (max-width:720px){

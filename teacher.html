@@ -22,6 +22,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -70,7 +71,7 @@
       </select>
     </div>
     <button id="teacher-enter" class="btn-primary">입장</button>
-    <button id="teacher-all" class="btn-secondary">전체 보기 (관리자)</button>
+    <button id="teacher-all" class="btn-secondary" onclick="(function(){var b=new URLSearchParams(location.search).get('branch')||localStorage.getItem('selected_branch')||'';location.href='desk.html'+(b?'?branch='+b:'');})()">데스크 페이지</button>
   </div>
 </div>
 
@@ -87,7 +88,7 @@
   <div class="container">
     <div class="tab-row">
       <button class="tab-btn active" data-tab="bogang">보강 신청 <span id="cnt-bogang" class="cnt-badge">0</span></button>
-      <button class="tab-btn" data-tab="cancel">취소 요청 <span id="cnt-cancel" class="cnt-badge">0</span></button>
+      <button class="tab-btn" data-tab="cancel">보강 취소 <span id="cnt-cancel" class="cnt-badge">0</span></button>
     </div>
 
     <div id="bogang-list" class="req-list"></div>

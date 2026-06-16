@@ -342,6 +342,11 @@ function templateById(settings, id) {
   return tpl;
 }
 
+function alimtalkSkip(reason, templateId, detail) {
+  console.warn("alimtalk skipped", Object.assign({reason, templateId}, detail || {}));
+  return {skipped: true, reason};
+}
+
 function recipientPhone(settings, kind, name) {
   const recipients = settings && settings.recipients || {};
   if (kind === "parent") return normalizePhone(name);
@@ -368,10 +373,14 @@ function vehicleKeyOfStudent(stu) {
 
 async function sendAlimtalk(settings, templateId, receiverPhone, receiverName, vars) {
   const aligo = settings && settings.aligo || {};
-  if (!aligo.enabled) return {skipped: true, reason: "disabled"};
+  if (!aligo.enabled) return alimtalkSkip("disabled", templateId);
   const tpl = templateById(settings, templateId);
   const phone = normalizePhone(receiverPhone);
-  if (!tpl || !phone || !settings.aligoBranch || !aligo.senderKey || !aligo.sender) return {skipped: true, reason: "missing-config"};
+  if (!tpl) return alimtalkSkip("missing-template-or-code", templateId);
+  if (!phone) return alimtalkSkip("missing-receiver", templateId, {receiverName});
+  if (!settings.aligoBranch) return alimtalkSkip("missing-branch", templateId);
+  if (!aligo.senderKey) return alimtalkSkip("missing-senderkey", templateId);
+  if (!aligo.sender) return alimtalkSkip("missing-sender", templateId);
   const subject = renderTemplateText(tpl.emtitle || tpl.main || tpl.title || "슈퍼차일드 알림", vars);
   const message = renderTemplateText(tpl.body || "", vars);
   const body = new URLSearchParams();
@@ -439,6 +448,151 @@ async function notifyMany(settings, jobs) {
       console.error("notify job failed", job.templateId, error.message);
     })
   ));
+}
+
+async function notifyJobsWithResult(settings, jobs) {
+  return Promise.all((jobs || []).map(async job => {
+    try {
+      const result = await sendAlimtalk(settings, job.templateId, job.phone, job.name, job.vars);
+      const skipped = !!(result && result.skipped);
+      const error = result && result.error;
+      return {
+        templateId: job.templateId,
+        ok: !skipped && !error,
+        skipped,
+        reason: result && result.reason || "",
+        result,
+      };
+    } catch (error) {
+      console.error("notify job failed", job.templateId, error.message);
+      return {templateId: job.templateId, ok: false, error: error.message};
+    }
+  }));
+}
+
+function requireStaffAuth(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "직원 로그인이 필요합니다");
+  }
+  return request.auth;
+}
+
+function targetSlotKeyOfRequest(req) {
+  const parent = req && req.parent || {};
+  if (parent.studentSlotKey) return normalizeSlotKey(parent.studentSlotKey);
+  const target = req && req.target || {};
+  if (target.t && target.d && target.l && target.r) {
+    return normalizeSlotKey([target.t, target.d, target.l, target.r].join("/"));
+  }
+  return "";
+}
+
+function studentFromRequest(req) {
+  const parent = req && req.parent || {};
+  const target = req && req.target || {};
+  return {
+    n: parent.name || "",
+    a: parent.age || "",
+    p: parent.phone || "",
+    t: target.t || "",
+    d: target.d || "",
+    l: target.l || "",
+    r: target.r || "",
+  };
+}
+
+function instFromRequest(req) {
+  const target = req && req.target || {};
+  const parent = req && req.parent || {};
+  return {
+    n: target.instName || parent.sourceInstName || "",
+  };
+}
+
+async function findStudentForRequest(branch, req) {
+  const slotKey = targetSlotKeyOfRequest(req);
+  const parent = req && req.parent || {};
+  const name = String(parent.name || "").trim();
+  const phone = normalizePhone(parent.phone);
+  const tabs = await readScheduleTabs(branch);
+  for (const tab of tabs) {
+    const students = await readJSON(branch, tab.stuKey, []);
+    const list = Array.isArray(students) ? students : [];
+    const exact = list.find(stu =>
+      slotKeyOf(stu) === slotKey &&
+      (!name || stu.n === name) &&
+      (!phone || normalizePhone(stu.p) === phone)
+    );
+    if (exact) return exact;
+    const samePerson = list.find(stu =>
+      (!name || stu.n === name) &&
+      (!phone || normalizePhone(stu.p) === phone)
+    );
+    if (samePerson) return samePerson;
+  }
+  return null;
+}
+
+function requestVars(branch, req, targetOverride) {
+  const target = targetOverride || req && req.target || {};
+  const stu = Object.assign(studentFromRequest(req), {
+    t: target.t || "",
+    d: target.d || "",
+    l: target.l || "",
+    r: target.r || "",
+  });
+  const inst = instFromRequest(req);
+  const ds = target.ds || req && req.parent && req.parent.absentDs || "";
+  return classVars(branch, stu, inst, ds);
+}
+
+async function notifyStaffRequestProcessed(branch, data, request) {
+  requireStaffAuth(request);
+  const req = data.request && typeof data.request === "object" ? data.request : null;
+  const status = String(data.status || "");
+  if (!req || !req.type) throw new HttpsError("invalid-argument", "요청 정보가 없습니다");
+  if (!["accepted", "rejected"].includes(status)) throw new HttpsError("invalid-argument", "처리 상태가 올바르지 않습니다");
+
+  const settings = await readAligoSettings(branch);
+  const parent = req.parent || {};
+  const vars = requestVars(branch, req, req.target || {});
+  const jobs = [];
+
+  if (req.type === "bogang") {
+    if (status === "accepted") {
+      jobs.push({templateId: "parent_makeup_accepted", phone: parent.phone, name: parent.name, vars});
+    } else if (status === "rejected") {
+      jobs.push({templateId: "parent_makeup_rejected", phone: parent.phone, name: parent.name, vars});
+    }
+  } else if (req.type === "bogang-cancel") {
+    if (status === "accepted") {
+      jobs.push({templateId: "parent_makeup_cancelled", phone: parent.phone, name: parent.name, vars});
+    }
+  } else if (req.type === "absent-cancel") {
+    if (status === "accepted") {
+      const teacherName = (req.target && req.target.instName) || (req.parent && req.parent.sourceInstName) || "";
+      jobs.push(
+        {templateId: "parent_absent_cancel", phone: parent.phone, name: parent.name, vars},
+        {templateId: "staff_absent_cancel", phone: recipientPhone(settings, "teacher", teacherName), name: teacherName, vars},
+        {templateId: "staff_absent_cancel", phone: recipientPhone(settings, "desk"), name: "데스크", vars}
+      );
+      const stu = await findStudentForRequest(branch, req);
+      const vehicleKey = vehicleKeyOfStudent(stu);
+      if (vehicleKey) {
+        jobs.push({
+          templateId: "vehicle_absent_cancel",
+          phone: recipientPhone(settings, vehicleKey),
+          name: `${vehicleKey.replace("bus", "")}호차`,
+          vars: Object.assign({}, vars, {"차량명": `${vehicleKey.replace("bus", "")}호차`}),
+        });
+      }
+    }
+  } else {
+    throw new HttpsError("invalid-argument", "지원하지 않는 요청 종류입니다");
+  }
+
+  const results = await notifyJobsWithResult(settings, jobs);
+  return {ok: true, results};
 }
 
 async function readBaseData(branch, dataKeys) {
@@ -898,6 +1052,9 @@ async function submitAbsent(branch, data) {
     const current = base.mark[markKey];
     const absentMark = {
       type: "absent",
+      source: "parent",
+      status: "accepted",
+      acceptedAt: new Date().toISOString(),
       vehicleMode,
       vehicleLabel: vehicleMode === "bus" ? "차량이용" : "자가등하원",
     };
@@ -1205,5 +1362,6 @@ exports.parentPortal = onCall({
   if (action === "getBogangSlots") return getBogangSlots(branch, data);
   if (action === "submitBogang") return submitBogang(branch, data);
   if (action === "cancelBogang") return cancelBogang(branch, data);
+  if (action === "notifyStaffRequestProcessed") return notifyStaffRequestProcessed(branch, data, request);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
 });

@@ -3202,6 +3202,17 @@ function getMark(slotKey,ds){
   if(typeof v==='string') return {type:v}; // backward compat
   return v;
 }
+function isParentAbsentRequestMark(mark){
+  if(!mark||mark.type!=='absent') return false;
+  if(mark.status==='accepted'||mark.status==='confirmed'||mark.status==='processed') return false;
+  return mark.requiresDeskApproval===true && (mark.status==='requested'||mark.status==='pending');
+}
+function absentMarkLabel(mark){
+  return isParentAbsentRequestMark(mark)?'결석신청':'결석';
+}
+function absentMarkBadgeText(mark,dl){
+  return isParentAbsentRequestMark(mark)?`⏳신청 ${dl}`:dl;
+}
 function setMark(slotKey,ds,val){ setMarkEntryTx(slotKey+'/'+ds,val).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
 function clearMark(slotKey,ds){ clearMarkEntryTx(slotKey+'/'+ds).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
 

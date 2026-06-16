@@ -1676,7 +1676,10 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
         if(!mark) return;
         const dl=_dl(d.ds);
         if(mark.type==='absent'){
-          badges.push({type:'absent', ds:d.ds, text:dl, tip:'결석 '+dl});
+          const isAbsentRequest=typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark);
+          const label=typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석';
+          const text=typeof absentMarkBadgeText==='function'?absentMarkBadgeText(mark,dl):dl;
+          badges.push({type:isAbsentRequest?'pending-absent':'absent', ds:d.ds, text, tip:label+' '+dl});
           if(mark.sub){
             const nm=mark.sub.n||'';
             let stip=(mark.sub.type==='bogang'?'보강 ':'샘플 ')+nm+(mark.sub.a?' '+mark.sub.a:'')+' '+dl;
@@ -1725,7 +1728,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       // 등원 대기 → 빨간 테두리 (출석 모드에선 숨김)
       if(!_skipBadges && enrEntry&&enrEntry.ds>todayStr) td.classList.add('stu-enroll-pending');
       // 대기중 요청 있으면 주황 테두리
-      if(badges.some(b=>b.type==='pending-bogang'||b.type==='pending-cancel')){
+      if(badges.some(b=>b.type==='pending-bogang'||b.type==='pending-cancel'||b.type==='pending-absent')){
         td.classList.add('stu-req-pending');
       }
 
@@ -2147,7 +2150,9 @@ function _mobileSlotBadges(slotKey,day){
     if(!mark) return;
     const dl=_mobileShortDate(d.ds);
     if(mark.type==='absent'){
-      badges.push({type:'absent',text:`결석 ${dl}`,name:mark.n||mark.name||''});
+      const label=typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석';
+      const isAbsentRequest=typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark);
+      badges.push({type:isAbsentRequest?'pending-absent':'absent',text:`${isAbsentRequest?'⏳ ':''}${label} ${dl}`,name:mark.n||mark.name||''});
       if(mark.sub){
         const subType=mark.sub.type==='sample'?'sample':'bogang';
         badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${mark.sub.n||''} ${dl}`.trim(),name:mark.sub.n||''});
@@ -3073,6 +3078,7 @@ function _excelBadgeText(kind,name,ds){
   const md=_excelMd(ds);
   if((kind==='bogang'||kind==='sample'||kind==='pending-bogang')&&name&&md) return name+md+_excelBadgeTag(kind);
   if(kind==='absent'&&md) return '결석'+md;
+  if(kind==='absent-request'&&md) return '결석신청'+md;
   if(kind==='pending-cancel'&&md) return '취소요청'+md;
   return '';
 }
@@ -3094,7 +3100,7 @@ function _excelSlotBadgeEntries(slotKey,day,todayStr){
       if(!mark) return;
       if(mark.type==='bogang'||mark.type==='sample') add(mark.type,mark.n,date.ds);
       else if(mark.type==='absent'){
-        add('absent','',date.ds);
+        add(typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark)?'absent-request':'absent','',date.ds);
         if(mark.sub?.type==='bogang'||mark.sub?.type==='sample') add(mark.sub.type,mark.sub.n,date.ds);
       }
     });
@@ -3115,8 +3121,9 @@ function _excelBadgeDisplayForSlot(slotKey,day,todayStr){
 }
 function _excelBadgeFillKind(slotKey,day,todayStr){
   const entries=_excelSlotBadgeEntries(slotKey,day,todayStr);
-  const colored=entries.find(row=>row.kind==='bogang'||row.kind==='sample'||row.kind==='pending-bogang');
+  const colored=entries.find(row=>row.kind==='bogang'||row.kind==='sample'||row.kind==='pending-bogang'||row.kind==='absent-request');
   if(!colored) return '';
+  if(colored.kind==='absent-request') return 'pending';
   return colored.kind==='sample'?'sample':'bogang';
 }
 function _excelApplyBadgeOnlyStyle(style,kind){
@@ -3125,6 +3132,9 @@ function _excelApplyBadgeOnlyStyle(style,kind){
   }
   if(kind==='sample'){
     return {...style,fill:{patternType:'solid',fgColor:{rgb:'FFF59E0B'}},font:{...style.font,bold:true,color:{rgb:'FF111111'}}};
+  }
+  if(kind==='pending'){
+    return {...style,fill:{patternType:'solid',fgColor:{rgb:'FFF59E0B'}},font:{...style.font,bold:true,color:{rgb:'FFFFFFFF'}}};
   }
   return style;
 }
@@ -3169,7 +3179,8 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
       if(!mark) return;
       const dl=_excelMd(date.ds);
       if(mark.type==='absent'){
-        _excelAddLine(lines,'결석: '+dl);
+        const label=typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석';
+        _excelAddLine(lines,label+': '+dl);
         if(mark.sub){
           const type=mark.sub.type==='sample'?'샘플':'보강';
           _excelAddLine(lines,type+': '+[mark.sub.n,String(mark.sub.a||''),dl,mark.sub.p,mark.sub.memo].filter(Boolean).join(' '));

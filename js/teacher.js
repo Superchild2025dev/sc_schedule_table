@@ -1,6 +1,6 @@
 /* ════════════════════════════════════════════════════════════════
  * 선생님 승인 페이지
- * - 각 선생님별로 대기 중인 보강/결석취소 요청 리스트
+ * - 각 선생님별로 대기 중인 보강 요청 리스트
  * - 수락 → MARK_MAP에 실제 반영
  * - 거절 → 요청 삭제
  * ════════════════════════════════════════════════════════════════ */
@@ -22,7 +22,9 @@ let _activeTab='bogang';
 let _attWeekStart=null;
 let _teacherStuKey='swim_students';
 let _teacherInstKey='swim_inst';
+let _staffNotifyFn=null;
 const UNASSIGNED_TEACHER_LABEL='담당 미확인';
+const TEACHER_REQUEST_TYPES=new Set(['bogang','bogang-cancel']);
 
 function staffRole(){
   return window.SCAuth && typeof SCAuth.role==='function' ? SCAuth.role() : '';
@@ -71,9 +73,36 @@ function selectBranch(branch){
   try{ window.localStorage.setItem(SELECTED_BRANCH_KEY, branch); }catch(e){}
   window.location.href='teacher.html?branch='+branch;
 }
+function openDeskPage(){
+  const branch=(_selectedBranch || window.SC_SELECTED_BRANCH || '');
+  const qs=(branch==='gagyeong'||branch==='yongam') ? `?branch=${branch}` : '';
+  window.location.href='desk.html'+qs;
+}
+try{ window.openDeskPage=openDeskPage; }catch(e){}
 function openBranchModal(){
   const m=document.getElementById('branch-modal');
   if(m) m.classList.add('show');
+}
+
+function staffNotifyFn(){
+  if(_staffNotifyFn) return _staffNotifyFn;
+  if(!firebase.functions) throw new Error('Firebase Functions SDK가 로드되지 않았습니다');
+  if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  const app=firebase.app();
+  const fnSvc=app.functions ? app.functions('asia-northeast3') : firebase.functions('asia-northeast3');
+  _staffNotifyFn=fnSvc.httpsCallable('parentPortal');
+  return _staffNotifyFn;
+}
+async function callStaffNotification(req,status){
+  const branch=getBranchInfo();
+  if(!branch) throw new Error('지점을 선택해주세요');
+  const res=await staffNotifyFn()({
+    action:'notifyStaffRequestProcessed',
+    branch:branch.id,
+    status,
+    request:req,
+  });
+  return res&&res.data ? res.data : {};
 }
 
 function parseJSON(v,def){
@@ -221,9 +250,9 @@ function subscribeChanges(){
     else if(snap.key==='swim_att_guests') ATT_GUESTS=parseStoredJSON('swim_att_guests',asStr,{});
     else if(snap.key==='swim_day_snapshot') DAY_SNAPSHOT=parseStoredJSON('swim_day_snapshot',asStr,{});
     if(_currentTeacher!==null) render();
-    // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신 (REQUESTS / INST_MAP / TEACHERS 변경 반응)
+    // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신
     const selScreen = document.getElementById('teacher-select-screen');
-    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key===_teacherInstKey || snap.key==='swim_teachers')){
+    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key==='swim_mark' || snap.key===_teacherInstKey || snap.key==='swim_teachers')){
       if(typeof populateTeachers === 'function') populateTeachers();
     }
   });
@@ -475,7 +504,7 @@ function _applyRequestStatus(reqs,reqId,status,processedAt,processedBy,abort){
 }
 function claimRequest(reqId){
   const processingAt=new Date().toISOString();
-  const processingBy=_currentTeacher||'관리자';
+  const processingBy=_currentTeacher||'데스크';
   return updateRequestsTx((reqs,abort)=>{
     const req=reqs[reqId];
     if(!req){abort('요청을 찾을 수 없습니다');return;}
@@ -515,11 +544,20 @@ function releaseRequest(reqId){
 }
 function setRequestStatus(reqId,status){
   const processedAt=new Date().toISOString();
-  const processedBy=_currentTeacher||'관리자';
+  const processedBy=_currentTeacher||'데스크';
   return updateRequestsTx((reqs,abort)=>{
     if(!_applyRequestStatus(reqs,reqId,status,processedAt,processedBy,abort)) return;
     return reqs;
   });
+}
+
+function isParentAbsentRequestMark(mark){
+  if(!mark||mark.type!=='absent') return false;
+  if(mark.status==='accepted'||mark.status==='confirmed'||mark.status==='processed') return false;
+  return mark.requiresDeskApproval===true && (mark.status==='requested'||mark.status==='pending');
+}
+function teacherAbsentMarkLabel(mark){
+  return isParentAbsentRequestMark(mark)?'결석신청':'결석';
 }
 
 /* ── 선생님 선택 ── */
@@ -554,6 +592,7 @@ function populateTeachers(){
 function _countPendingByTeacher(){
   const counts = {};
   Object.values(REQUESTS||{}).forEach(r => {
+    if(!TEACHER_REQUEST_TYPES.has(r?.type)) return;
     if(r.status && r.status !== 'pending' && r.status !== 'processing') return;
     const name = reqAssignedTeacherName(r);
     if(name) counts[name] = (counts[name]||0) + 1;
@@ -585,7 +624,7 @@ function enterAsTeacher(teacherName){
   document.getElementById('teacher-select-screen').style.display='none';
   document.getElementById('teacher-dashboard').style.display='flex';
   document.getElementById('teacher-display').textContent=
-    teacherName ? (teacherName===UNASSIGNED_TEACHER_LABEL ? '담당 미확인 요청' : `${teacherName} 선생님`) : '전체 관리자';
+    teacherName ? (teacherName===UNASSIGNED_TEACHER_LABEL ? '담당 미확인 요청' : `${teacherName} 선생님`) : '데스크 페이지';
   render();
 }
 
@@ -598,6 +637,7 @@ function logout(){
 
 /* ── 요청 필터링 ── */
 function getMyRequests(type){
+  if(!TEACHER_REQUEST_TYPES.has(type)) return [];
   // _currentTeacher가 '' (전체)이면 모두 보기
   const results=[];
   for(const [reqId,req] of Object.entries(REQUESTS)){
@@ -605,7 +645,7 @@ function getMyRequests(type){
     if(req.status==='pending' || req.status==='processing' || !req.status){
       // 선생님 필터
       if(_currentTeacher){
-        // bogang/absent-cancel 모두 원생의 원래 담당 선생님 기준
+        // 보강/보강취소는 원생의 원래 담당 선생님 기준
         if(reqAssignedTeacherName(req) !== _currentTeacher) continue;
       }
       results.push([reqId,req]);
@@ -635,7 +675,7 @@ function render(){
   }
   const bogangReqs=getMyRequests('bogang');
   const bogangGroupCount=groupBogangRequests(bogangReqs).length;
-  const cancelReqs=[...getMyRequests('absent-cancel'),...getMyRequests('bogang-cancel')]
+  const cancelReqs=getMyRequests('bogang-cancel')
     .sort((a,b)=>(b[1].requestedAt||'').localeCompare(a[1].requestedAt||''));
 
   document.getElementById('cnt-bogang').textContent=bogangGroupCount;
@@ -644,7 +684,7 @@ function render(){
   document.getElementById('cnt-cancel').dataset.n=cancelReqs.length;
 
   document.getElementById('teacher-stats').textContent=
-    `승인 대기 — 보강 ${bogangGroupCount}건 · 취소 ${cancelReqs.length}건`;
+    `승인 대기 — 보강 ${bogangGroupCount}건 · 보강 취소 ${cancelReqs.length}건`;
 
   renderBogangList(bogangReqs);
   renderCancelList(cancelReqs);
@@ -904,7 +944,7 @@ function _renderClassmatesCompact(t, d, l, ds, targetR){
     const label=c.stu ? `${c.stu.n}${c.stu.a||''}` : (c.isTarget ? '보강 자리' : '-');
     const tags=[];
     if(c.isTarget) tags.push('선택');
-    if(isAbsent) tags.push('결석');
+    if(isAbsent) tags.push(teacherAbsentMarkLabel(c.mark));
     else if(isBogang) tags.push('보강');
     else if(isSample) tags.push('샘플');
     const tagHtml=tags.length ? `<span class="cm-slot-tag">${tags.join(' · ')}</span>` : '';
@@ -923,7 +963,7 @@ function _renderClassmatesCompact(t, d, l, ds, targetR){
 function renderCancelList(reqs){
   const container=document.getElementById('cancel-list');
   if(!reqs.length){
-    container.innerHTML='<div class="req-empty">승인 대기 중인 취소 신청이 없습니다.</div>';
+    container.innerHTML='<div class="req-empty">승인 대기 중인 보강 취소 요청이 없습니다.</div>';
     return;
   }
   container.innerHTML=reqs.map(([id,r])=>{
@@ -931,18 +971,12 @@ function renderCancelList(reqs){
     const parentInfo=`${p.name}${p.age?'('+p.age+'살)':''}`;
     const targetInst=reqTargetInst(r);
     const targetClass=instClassBadgeHtml(targetInst, t.classLabel||'');
-    const targetTeacher=r.type==='bogang-cancel' ? reqTargetTeacherName(r) : reqAssignedTeacherName(r);
+    const targetTeacher=reqTargetTeacherName(r);
     const warning=reqTeacherWarningHtml(r);
-    const isBogangCancel=r.type==='bogang-cancel';
-    const typeText=isBogangCancel ? '보강 취소 요청' : '결석 취소 요청';
-    const targetText=isBogangCancel
-      ? `📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 보강 취소`
-      : `❌ ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 결석 취소`;
-    const rejectText=isBogangCancel ? '거절 (보강 유지)' : '거절 (결석 유지)';
-    const acceptText=isBogangCancel ? '수락 (보강 취소)' : '수락 (결석 해제)';
+    const targetText=`📅 ${fmtDate(t.ds)} ${esc(t.d)}요일 ${esc(t.t)} · ${t.l}레인 ${t.r}번 · ${esc(targetTeacher)}${targetClass} 보강 취소`;
     return `<div class="req-card cancel">
       <div class="req-hdr">
-        <span class="req-type cancel">${typeText}</span>
+        <span class="req-type cancel">보강 취소 요청</span>
         <span class="req-time">${fmtTime(r.requestedAt)}</span>
       </div>
       <div class="req-main">
@@ -951,182 +985,20 @@ function renderCancelList(reqs){
         ${warning}
       </div>
       <div class="req-actions">
-        <button class="btn-reject" data-act="reject" data-id="${id}">${rejectText}</button>
-        <button class="btn-accept" data-act="accept" data-id="${id}">${acceptText}</button>
+        <button class="btn-reject" data-act="reject" data-id="${id}">거절 (보강 유지)</button>
+        <button class="btn-accept" data-act="accept" data-id="${id}">확인 (보강 취소)</button>
       </div>
     </div>`;
   }).join('');
 }
 
-function normalizeNotifyPhone(value){
-  return String(value||'').replace(/[^\d]/g,'');
-}
-function joinNotifyProxyUrl(base,path){
-  const cleanBase=String(base||'/aligo').trim()||'/aligo';
-  const cleanPath=String(path||'/alimtalk/send/').trim()||'/alimtalk/send/';
-  return cleanBase.replace(/\/+$/,'')+'/'+cleanPath.replace(/^\/+/,'');
-}
-function notifyDateParts(ds){
-  if(!ds) return {dateText:'',dayText:''};
-  const [y,m,d]=String(ds).split('-');
-  const date=new Date(ds);
-  const dayNames=['일요일','월요일','화요일','수요일','목요일','금요일','토요일'];
-  return {
-    dateText:`${parseInt(m)}월${parseInt(d)}일`,
-    dayText:Number.isNaN(date.getTime())?'':dayNames[date.getDay()],
-  };
-}
 function notifyDisplayTime(day,time){
   if(window.SCScheduleTime&&typeof SCScheduleTime.displayTimeForDay==='function') return SCScheduleTime.displayTimeForDay(day,time);
   const sat={'1시':'9시','2시':'10시','3시':'11시','4시':'12시','5시':'1시','6시':'2시'};
   return String(day||'').replace('요일','')==='토' ? (sat[time]||time||'') : (time||'');
 }
-function renderNotifyText(text,vars){
-  return String(text||'').replace(/#\{([^}]+)\}/g,(all,name)=>{
-    const key=String(name||'').trim();
-    return vars[key]===undefined||vars[key]===null?'':String(vars[key]);
-  });
-}
-async function loadAligoSettings(){
-  if(!_fbReady) return {};
-  try{
-    const snap=await _fb.child('swim_aligo_settings').once('value');
-    return parseJSON(snap.val(),{});
-  }catch(e){
-    console.warn('aligo settings load failed',e);
-    return {};
-  }
-}
-function notifyRecipientPhone(settings,kind,name){
-  const recipients=settings?.recipients||{};
-  if(kind==='parent') return normalizeNotifyPhone(name);
-  if(kind==='desk'){
-    const desk=recipients.fixed?.desk;
-    return desk&&desk.enabled!==false ? normalizeNotifyPhone(desk.phone) : '';
-  }
-  if(kind&&/^bus\d+$/.test(kind)){
-    const bus=recipients.fixed?.[kind];
-    return bus&&bus.enabled!==false ? normalizeNotifyPhone(bus.phone) : '';
-  }
-  if(kind==='teacher'){
-    const t=recipients.teachers?.[name];
-    return t&&t.enabled!==false ? normalizeNotifyPhone(t.phone) : '';
-  }
-  return '';
-}
-function notifyVehicleKeyOfStudent(stu){
-  const source=[stu?.bus,stu?.vehicleName,stu?.car,stu?.route,stu?.loc].filter(Boolean).join(' ');
-  const m=String(source||'').match(/([1-3])\s*호차/);
-  return m ? `bus${m[1]}` : '';
-}
-function notifyVehicleName(key){
-  const m=String(key||'').match(/^bus([1-3])$/);
-  return m ? `${m[1]}호차` : '';
-}
-function findNotifyStudent(req){
-  const t=req?.target||{};
-  const parentName=req?.parent?.name||'';
-  return STUDENTS.find(s=>
-    s.t===t.t && s.d===t.d
-    && parseInt(s.l)===parseInt(t.l)
-    && parseInt(s.r)===parseInt(t.r)
-  ) || STUDENTS.find(s=>s.n===parentName);
-}
-function requestNotifyVars(req, targetOverride){
-  const branch=getBranchInfo()||{name:''};
-  const p=req?.parent||{};
-  const target=targetOverride || req?.target || {};
-  const ds=target.ds || p.absentDs || '';
-  const parts=notifyDateParts(ds);
-  const teacherName=req?.type==='bogang' ? reqTargetTeacherName(req) : reqAssignedTeacherName(req);
-  return {
-    '지점명':branch.name,
-    '학생명':p.name||'',
-    '수업일':parts.dateText,
-    '요일':parts.dayText,
-    '수업시간':notifyDisplayTime(target.d,target.t),
-    '담당선생님':teacherName===UNASSIGNED_TEACHER_LABEL?'':teacherName,
-    '보류사유':'일정 조정 필요',
-    '차량명':'',
-    '차량시간':notifyDisplayTime(target.d,target.t),
-  };
-}
-async function sendTeacherAlimtalk(templateId,phone,name,vars){
-  const settings=await loadAligoSettings();
-  const aligo=settings.aligo||{};
-  const tpl=settings.templates&&settings.templates[templateId];
-  const receiver=normalizeNotifyPhone(phone);
-  const branch=getBranchInfo();
-  const aligoBranch=branch?.aligoBranch||settings.aligoBranch||branch?.name||'';
-  if(!aligo.enabled||!tpl||tpl.enabled===false||!tpl.code||!receiver||!aligoBranch||!aligo.senderKey||!aligo.sender) return;
-  const body=new URLSearchParams();
-  body.set('branch',aligoBranch);
-  body.set('senderkey',aligo.senderKey);
-  body.set('sender',normalizeNotifyPhone(aligo.sender));
-  body.set('tpl_code',tpl.code);
-  body.set('receiver_1',receiver);
-  if(name) body.set('recvname_1',name);
-  const subject=renderNotifyText(tpl.emtitle||tpl.main||tpl.title||'슈퍼차일드 알림',vars);
-  body.set('subject_1',subject);
-  body.set('emtitle_1',subject);
-  body.set('message_1',renderNotifyText(tpl.body||'',vars));
-  body.set('failover','N');
-  body.set('testMode',aligo.testMode?'Y':'N');
-  const linkM=renderNotifyText(tpl.linkM||tpl.link||'',vars);
-  const linkP=renderNotifyText(tpl.linkP||tpl.linkM||tpl.link||'',vars);
-  const buttonName=renderNotifyText(tpl.buttonName||'',vars);
-  if(linkM&&linkP&&buttonName){
-    body.set('button_1',JSON.stringify({button:[{name:buttonName,linkType:'WL',linkTypeName:'웹링크',linkM,linkP}]}));
-  }
-  try{
-    const res=await fetch(joinNotifyProxyUrl(aligo.proxyUrl,aligo.sendPath),{
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-      body,
-    });
-    if(!res.ok) console.warn('alimtalk send failed',templateId,await res.text());
-  }catch(e){
-    console.warn('alimtalk send error',templateId,e);
-  }
-}
 async function notifyRequestProcessed(req,status){
-  const settings=await loadAligoSettings();
-  const p=req?.parent||{};
-  if(req?.type==='bogang'){
-    if(status==='accepted'){
-      await sendTeacherAlimtalk('parent_makeup_accepted',p.phone,p.name,requestNotifyVars(req,req.target));
-    }else if(status==='rejected'){
-      await sendTeacherAlimtalk('parent_makeup_rejected',p.phone,p.name,requestNotifyVars(req,req.target));
-    }
-    return;
-  }
-  if(req?.type==='bogang-cancel'){
-    if(status==='accepted'){
-      await sendTeacherAlimtalk('parent_makeup_cancelled',p.phone,p.name,requestNotifyVars(req,req.target));
-    }
-    return;
-  }
-  if(req?.type==='absent-cancel' && status==='accepted'){
-    const vars=requestNotifyVars(req,req.target);
-    const teacherName=reqAssignedTeacherName(req);
-    const jobs=[
-      sendTeacherAlimtalk('parent_absent_cancel',p.phone,p.name,vars),
-      sendTeacherAlimtalk('staff_absent_cancel',notifyRecipientPhone(settings,'teacher',teacherName),teacherName,vars),
-      sendTeacherAlimtalk('staff_absent_cancel',notifyRecipientPhone(settings,'desk'),'데스크',vars),
-    ];
-    const stu=findNotifyStudent(req);
-    const vehicleKey=notifyVehicleKeyOfStudent(stu);
-    if(vehicleKey){
-      const vehicleName=notifyVehicleName(vehicleKey);
-      jobs.push(sendTeacherAlimtalk(
-        'vehicle_absent_cancel',
-        notifyRecipientPhone(settings,vehicleKey),
-        vehicleName,
-        Object.assign({},vars,{'차량명':vehicleName})
-      ));
-    }
-    await Promise.all(jobs);
-  }
+  await callStaffNotification(req,status);
 }
 
 /* ── 수락/거절 액션 ── */
@@ -1144,7 +1016,7 @@ async function acceptRequestAtomic(reqId){
   }
   let acceptedReq=null;
   const processedAt=new Date().toISOString();
-  const processedBy=_currentTeacher||'관리자';
+  const processedBy=_currentTeacher||'데스크';
   await updateTeacherKeysTx(keys,(ctx)=>{
     const reqs=ctx.get('swim_requests',{});
     const marks=ctx.get('swim_mark',{});
@@ -1212,9 +1084,14 @@ async function acceptRequestAtomic(reqId){
   return acceptedReq;
 }
 async function acceptRequest(reqId){
-  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강 요청 처리')) return;
   const req=REQUESTS[reqId];
   if(!req) return;
+  if(!TEACHER_REQUEST_TYPES.has(req.type)){
+    toast('결석 요청은 데스크 페이지에서만 처리합니다','err');
+    render();
+    return;
+  }
   try{
     const acceptedReq=await acceptRequestAtomic(reqId);
     recordTeacherRequestAudit(acceptedReq||req,'accepted').catch(e=>console.warn('audit failed',e));
@@ -1228,9 +1105,14 @@ async function acceptRequest(reqId){
 }
 
 async function rejectRequest(reqId){
-  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강/결석 요청 처리')) return;
+  if(window.SCAuth && !SCAuth.requirePermission('teacherRequests','보강 요청 처리')) return;
   const req=REQUESTS[reqId];
   if(!req) return;
+  if(!TEACHER_REQUEST_TYPES.has(req.type)){
+    toast('결석 요청은 데스크 페이지에서만 처리합니다','err');
+    render();
+    return;
+  }
   if(!confirm('이 요청을 거절하시겠습니까?')) return;
   try{
     await setRequestStatus(reqId,'rejected');
@@ -1268,7 +1150,7 @@ async function rejectBogangGroup(groupKey){
       await setRequestStatus(ids[0],'rejected');
     }else{
       const processedAt=new Date().toISOString();
-      const processedBy=_currentTeacher||'관리자';
+      const processedBy=_currentTeacher||'데스크';
       await updateRequestsTx((reqs,abort)=>{
         let changed=0;
         for(const id of ids){
@@ -1730,7 +1612,7 @@ async function markAllPresentToday(){
     if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
     recordTeacherAudit({
       label:'선생님 출석 일괄 체크',
-      target:_currentTeacher||'전체 관리자',
+      target:_currentTeacher||'데스크 페이지',
       detail:`${fmtDate(today)} ${cnt}명 출석`,
       keys:['swim_attendance'],
     }).catch(e=>console.warn('audit failed',e));
@@ -1776,7 +1658,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     enterAsTeacher(name);
   });
   document.getElementById('teacher-all').addEventListener('click',()=>{
-    enterAsTeacher('');
+    openDeskPage();
   });
   document.getElementById('teacher-logout').addEventListener('click',()=>{
     if(confirm('로그아웃하시겠습니까?')) logout();

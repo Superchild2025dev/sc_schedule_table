@@ -56,9 +56,11 @@ html,body{background:#F3F6FA}
 .cm-sub-absent{background:#FEE2E2;color:#991B1B}
 .cm-sub-bg{background:#EDE9FE;color:#5B21B6}
 .req-card.cancel{border-left-color:#EF4444}
+.req-card.absent-request{border-left-color:#F59E0B}
 .req-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
 .req-type{font-size:12px;font-weight:900;padding:4px 9px;border-radius:8px;background:#DBEAFE;color:#1E40AF}
 .req-type.cancel{background:#FEE2E2;color:#991B1B}
+.req-type.absent-request{background:#FEF3C7;color:#92400E}
 .req-time{font-size:12px;color:#9CA3AF;font-weight:700}
 .req-main{display:flex;flex-direction:column;gap:4px;font-size:14px}
 .req-main .parent-name{font-weight:900;color:#111;font-size:16px}

@@ -22,6 +22,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -60,7 +61,7 @@
 
   <section class="desk-summary">
     <div class="desk-stat urgent">
-      <span class="stat-label">결석 취소 대기</span>
+      <span class="stat-label">결석 요청 대기</span>
       <strong id="cancel-count">0</strong>
     </div>
     <div class="desk-stat">
@@ -72,7 +73,7 @@
   <section class="desk-grid">
     <article class="desk-panel">
       <div class="panel-head">
-        <h2>결석 취소 요청</h2>
+        <h2>결석 요청 현황</h2>
         <span>승인 대기</span>
       </div>
       <div id="cancel-list" class="desk-list"></div>
@@ -80,7 +81,7 @@
 
     <article class="desk-panel">
       <div class="panel-head">
-        <h2>결석 신청 현황</h2>
+        <h2>결석 현황</h2>
         <span>오늘 이후</span>
       </div>
       <div id="absent-list" class="desk-list"></div>

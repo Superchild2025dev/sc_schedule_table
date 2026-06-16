@@ -19,6 +19,7 @@
   let INST_MAP={};
   let MARK_MAP={};
   let REQUESTS={};
+  let _staffNotifyFn=null;
 
   try{
     const branchParam=new URLSearchParams(location.search).get('branch');
@@ -27,8 +28,8 @@
   }catch(e){}
 
   function getBranchInfo(){
-    if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam'};
-    if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule'};
+    if(_selectedBranch==='yongam') return {id:'yongam', name:'용암점', fbPath:'schedule_yongam', aligoBranch:'용암점'};
+    if(_selectedBranch==='gagyeong') return {id:'gagyeong', name:'가경점', fbPath:'schedule', aligoBranch:'가경동'};
     return null;
   }
 
@@ -39,7 +40,9 @@
       return;
     }
     try{localStorage.setItem(SELECTED_BRANCH_KEY,branch);}catch(e){}
-    location.reload();
+    _selectedBranch=branch;
+    try{window.SC_SELECTED_BRANCH=branch;}catch(e){}
+    window.location.href='desk.html?branch='+branch;
   };
 
   window.openBranchModal=function(){
@@ -142,7 +145,142 @@
     clearTimeout(toast._t);
     toast._t=setTimeout(()=>el.classList.remove('show'),2200);
   }
-
+  function staffNotifyFn(){
+    if(_staffNotifyFn) return _staffNotifyFn;
+    if(!firebase.functions) throw new Error('Firebase Functions SDK가 로드되지 않았습니다');
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    const app=firebase.app();
+    const fnSvc=app.functions ? app.functions('asia-northeast3') : firebase.functions('asia-northeast3');
+    _staffNotifyFn=fnSvc.httpsCallable('parentPortal');
+    return _staffNotifyFn;
+  }
+  async function callStaffNotification(req,status){
+    const branch=getBranchInfo();
+    if(!branch) throw new Error('지점을 선택해주세요');
+    const res=await staffNotifyFn()({
+      action:'notifyStaffRequestProcessed',
+      branch:branch.id,
+      status,
+      request:req,
+    });
+    return res&&res.data ? res.data : {};
+  }
+  async function notifyAbsentCancelAccepted(req){
+    const data=await callStaffNotification(req,'accepted');
+    return data.results||[];
+  }
+  function canProcessRequests(){
+    if(window.SCAuth&&typeof SCAuth.requirePermission==='function'){
+      return SCAuth.requirePermission('teacherRequests','결석취소 요청 처리');
+    }
+    return true;
+  }
+  function canWriteKey(key,label){
+    if(window.SCAuth&&typeof SCAuth.requireWriteKey==='function'){
+      return SCAuth.requireWriteKey(key,label||'저장');
+    }
+    return true;
+  }
+  function updateDeskKeysTx(keys,mutator){
+    if(!_fbReady) return Promise.reject(new Error('not ready'));
+    let abortReason='';
+    const makeCtx=root=>({
+      get(key,fallback){
+        const raw=root&&Object.prototype.hasOwnProperty.call(root,key)?root[key]:undefined;
+        return parseStoredJSON(key,raw,fallback);
+      },
+      set(key,val){
+        root[key]=JSON.stringify(normalizeStoredValue(key,val));
+      },
+      abort(reason){ abortReason=reason||''; },
+    });
+    const runTx=typeof _fb.transactionKeys==='function'
+      ? updateFn=>_fb.transactionKeys(keys,updateFn)
+      : updateFn=>_fb.transaction(updateFn);
+    return runTx(root=>{
+      root=root||{};
+      const result=mutator(makeCtx(root));
+      if(result===undefined) return;
+      return root;
+    }).then(res=>{
+      if(!res.committed) throw new Error(abortReason||'transaction aborted');
+      const root=res.snapshot.val()||{};
+      keys.forEach(key=>applyChangedKey(key,root[key]));
+      return root;
+    });
+  }
+  function requestTargetSlotKey(req){
+    const t=req&&req.target||{};
+    if(t.t&&t.d&&t.l&&t.r) return [t.t,t.d,t.l,t.r].join('/');
+    const p=req&&req.parent||{};
+    return p.studentSlotKey||'';
+  }
+  function acceptCancelRequest(id){
+    if(!id) return;
+    if(!canProcessRequests()) return;
+    if(!canWriteKey('swim_requests','요청 처리')) return;
+    if(!canWriteKey('swim_mark','결석 해제')) return;
+    const req=REQUESTS[id];
+    if(!req||req.type!=='absent-cancel'){
+      toast('요청을 찾을 수 없습니다','err');
+      return;
+    }
+    const p=req.parent||{};
+    const name=p.name||'원생';
+    if(!confirm(`${name} 결석취소 요청을 확인하고 결석을 해제할까요?`)) return;
+    const processedAt=new Date().toISOString();
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const processedBy=profile?.name||'데스크';
+    let saved=false;
+    updateDeskKeysTx(['swim_requests','swim_mark'],ctx=>{
+      const reqs=ctx.get('swim_requests',{});
+      const marks=ctx.get('swim_mark',{});
+      const curReq=reqs[id];
+      if(!curReq){ctx.abort('요청을 찾을 수 없습니다');return;}
+      if(curReq.status&&curReq.status!=='pending'&&curReq.status!=='processing'){
+        ctx.abort('이미 처리된 요청입니다');
+        return;
+      }
+      const slotKey=requestTargetSlotKey(curReq);
+      const ds=curReq.target?.ds||curReq.parent?.absentDs||'';
+      if(!slotKey||!ds){ctx.abort('결석 날짜 정보를 찾을 수 없습니다');return;}
+      const markKey=slotKey+'/'+ds;
+      const mark=marks[markKey];
+      if(mark?.type==='absent'){
+        if(mark.sub) marks[markKey]=mark.sub;
+        else delete marks[markKey];
+      }
+      curReq.status='accepted';
+      curReq.processedAt=processedAt;
+      curReq.processedBy=processedBy;
+      delete curReq.processingAt;
+      delete curReq.processingBy;
+      ctx.set('swim_mark',marks);
+      ctx.set('swim_requests',reqs);
+      return true;
+    }).then(()=>{
+      saved=true;
+      render();
+      return notifyAbsentCancelAccepted(req);
+    }).then(results=>{
+      const parentResult=(results||[]).find(r=>r&&r.templateId==='parent_absent_cancel');
+      if(parentResult&&parentResult.ok){
+        toast('결석취소 확인 및 학부모 알림톡 발송 완료','ok');
+      }else if(parentResult){
+        toast(`결석취소 완료 / 학부모 알림톡 미발송: ${parentResult.reason||parentResult.status||parentResult.error||'확인 필요'}`,'err');
+      }else{
+        toast('결석취소 확인 완료','ok');
+      }
+    }).catch(e=>{
+      if(saved){
+        console.warn('desk absent cancel notify failed',e);
+        toast('결석취소는 완료 / 알림톡 발송 확인 필요','err');
+        return;
+      }
+      console.error(e);
+      toast(e?.message||'처리 실패','err');
+    });
+  }
   function initFirebase(){
     const branch=getBranchInfo();
     if(!branch){ openBranchModal(); return false; }
@@ -191,11 +329,6 @@
   function subscribeChanges(){
     if(!_fbReady) return;
     _fb.on('child_changed',snap=>applyChangedKey(snap.key,snap.val()));
-    _fb.on('child_added',snap=>{
-      if(['swim_parent_tab',_stuKey,_instKey,'swim_mark','swim_requests'].includes(snap.key)){
-        applyChangedKey(snap.key,snap.val());
-      }
-    });
   }
 
   function getAbsences(){
@@ -240,6 +373,7 @@
     const name=p.n ? `${p.n}${p.a||''}` : '원생 미확인';
     const phone=p.p || '';
     const hasMakeup=item.mark&&item.mark.sub&&item.mark.sub.type==='bogang';
+    const vehicle=item.mark?.vehicleLabel ? ` · ${item.mark.vehicleLabel}` : '';
     return `<div class="desk-card">
       <div class="desk-date"><span class="md">${esc(date.md)}</span><span class="dow">${esc(date.dow)}요일</span></div>
       <div class="desk-main">
@@ -249,7 +383,7 @@
           <span class="desk-badge ${hasMakeup?'done':''}">${hasMakeup?'보강 있음':'결석'}</span>
         </div>
         <div class="desk-class">${esc(classText(item.slotKey,item.ds))}</div>
-        <div class="desk-meta">${esc(s.l)}레인 ${esc(s.r)}번</div>
+        <div class="desk-meta">${esc(s.l)}레인 ${esc(s.r)}번${esc(vehicle)}</div>
       </div>
     </div>`;
   }
@@ -272,7 +406,10 @@
         </div>
         <div class="desk-class">${esc(classText(slotKey,ds,target))}</div>
         <div class="desk-meta">접수 ${esc(fmtTime(req.requestedAt))}</div>
-        <div class="desk-note">선생님 승인 후 결석이 해제됩니다.</div>
+        <div class="desk-note">확인 버튼을 누르면 결석이 바로 해제됩니다.</div>
+        <div class="desk-card-actions">
+          <button type="button" class="desk-confirm-btn" data-desk-act="accept-cancel" data-id="${esc(item.id)}">확인 (결석 해제)</button>
+        </div>
       </div>
     </div>`;
   }
@@ -284,8 +421,8 @@
     document.getElementById('cancel-count').textContent=String(cancels.length);
     const absentList=document.getElementById('absent-list');
     const cancelList=document.getElementById('cancel-list');
-    absentList.innerHTML=absences.length ? absences.map(renderAbsentCard).join('') : '<div class="desk-empty">오늘 이후 결석 신청이 없습니다.</div>';
-    cancelList.innerHTML=cancels.length ? cancels.map(renderCancelCard).join('') : '<div class="desk-empty">승인 대기 중인 결석 취소 요청이 없습니다.</div>';
+    absentList.innerHTML=absences.length ? absences.map(renderAbsentCard).join('') : '<div class="desk-empty">오늘 이후 결석이 없습니다.</div>';
+    cancelList.innerHTML=cancels.length ? cancels.map(renderCancelCard).join('') : '<div class="desk-empty">확인 대기 중인 결석 취소 요청이 없습니다.</div>';
     setSync('실시간 연결됨 · '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));
   }
 
@@ -317,6 +454,13 @@
       toast('데이터 로드 실패','err');
     }
   }
+
+  document.addEventListener('click',e=>{
+    const btn=e.target.closest('[data-desk-act]');
+    if(!btn) return;
+    const act=btn.dataset.deskAct;
+    if(act==='accept-cancel') acceptCancelRequest(btn.dataset.id);
+  });
 
   document.addEventListener('DOMContentLoaded',start);
 })();

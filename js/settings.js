@@ -1365,10 +1365,21 @@
     return data;
   }
   function joinProxyUrl(base,path){
-    const cleanBase=String(base||'/aligo').trim()||'/aligo';
+    let cleanBase=String(base||'/aligo').trim()||'/aligo';
+    if(/^\/aligo(?:\/|$)/.test(cleanBase) && /^(localhost|127\.0\.0\.1)$/i.test(location.hostname)){
+      cleanBase='https://adminsuperchild.cloud/aligo';
+    }
     const cleanPath=String(path||'').trim();
     if(!cleanPath) return cleanBase;
     return cleanBase.replace(/\/+$/,'')+'/'+cleanPath.replace(/^\/+/,'');
+  }
+  function shouldUseOpaqueLocalProxy(url){
+    try{
+      const target=new URL(url,location.href);
+      return /^(localhost|127\.0\.0\.1)$/i.test(location.hostname) && target.origin!==location.origin;
+    }catch(e){
+      return false;
+    }
   }
   function testConfig(kind){
     if(kind==='sms'){
@@ -1441,6 +1452,14 @@
       button.textContent='확인 중';
     }
     try{
+      if(shouldUseOpaqueLocalProxy(url)){
+        showTestResult(cfg.resultId,false,`${titlePrefix} ${isHealth?'연결 확인':'잔여건수 조회'}는 운영 주소에서 확인해주세요: ${url}`,{
+          message:'로컬 테스트 주소에서는 CORS 정책 때문에 프록시 응답을 읽을 수 없습니다. 발송 요청은 로컬에서도 보낼 수 있지만, 잔여건수/응답 확인은 운영 사이트에서 테스트해주세요.',
+          local:true,
+        });
+        toast('운영 주소에서 확인해주세요','err');
+        return;
+      }
       const res=await fetch(url,isHealth?{method:'GET'}:{
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
@@ -1560,11 +1579,22 @@
       button.textContent='발송 중';
     }
     try{
-      const res=await fetch(url,{
-        method:'POST',
-        headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
-        body,
-      });
+      const opaqueLocal=shouldUseOpaqueLocalProxy(url);
+      const res=await fetch(url,opaqueLocal
+        ? {method:'POST',mode:'no-cors',body}
+        : {
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+          body,
+        });
+      if(opaqueLocal){
+        showTestResult(cfg.resultId,true,`알림톡 ${modeText} 요청 완료: ${url}`,{
+          message:'로컬 테스트에서는 CORS 정책 때문에 응답 내용을 읽을 수 없습니다. 알리고 발송내역에서 실제 도착 여부를 확인해주세요.',
+          opaque:true,
+        });
+        toast(`알림톡 ${modeText} 요청 완료`,'ok');
+        return;
+      }
       const data=await readTestResponse(res);
       showTestResult(cfg.resultId,true,`알림톡 ${modeText} 응답: ${url}`,data);
       toast(`알림톡 ${modeText} 요청 완료`,'ok');
