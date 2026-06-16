@@ -561,11 +561,38 @@ function _shortMd(ds){
   return ds.slice(5).replace('-','/');
 }
 
-function buildEnrollControlHtml(existing, selDate){
+function _enrollPanelFieldsHtml(entry){
+  const e=entry||{};
+  const loc=_parseLoc(e.loc||'');
+  return `<div class="sp-enroll-fields" style="display:flex;flex-direction:column;gap:4px;margin:6px 0">
+    <div style="display:flex;gap:4px">
+      <input class="fi" id="sp-enroll-name" placeholder="이름" value="${esc(e.name||'')}" style="flex:1;margin:0;padding:4px 6px;font-size:11px">
+      <input class="fi" id="sp-enroll-age" type="number" placeholder="나이" value="${e.age?esc(e.age):''}" style="width:54px;margin:0;padding:4px 5px;font-size:11px">
+    </div>
+    <input class="fi" id="sp-enroll-phone" placeholder="전화번호" value="${esc(e.p||'')}" style="margin:0;padding:4px 6px;font-size:11px">
+    <div style="display:flex;gap:4px;align-items:center">
+      <button type="button" class="sp-chip male ${e.g==='m'?'on':''}" id="sp-enroll-gender-m" style="flex:0 0 42px">남</button>
+      <button type="button" class="sp-chip female ${e.g==='f'?'on':''}" id="sp-enroll-gender-f" style="flex:0 0 42px">여</button>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input class="fi" id="sp-enroll-pickup" placeholder="승차 장소" value="${esc(loc.pickUp||'')}" style="flex:1;margin:0;padding:4px 6px;font-size:11px" ${loc.pickSelf?'disabled':''}>
+      <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;white-space:nowrap"><input type="checkbox" id="sp-enroll-pick-self" ${loc.pickSelf?'checked':''}> 자가</label>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input class="fi" id="sp-enroll-dropoff" placeholder="하차 장소" value="${esc(loc.dropOff||'')}" style="flex:1;margin:0;padding:4px 6px;font-size:11px" ${loc.dropSelf?'disabled':''}>
+      <label style="display:flex;align-items:center;gap:2px;font-size:10px;font-weight:600;white-space:nowrap"><input type="checkbox" id="sp-enroll-drop-self" ${loc.dropSelf?'checked':''}> 자가</label>
+    </div>
+    <textarea class="fi" id="sp-enroll-memo" placeholder="메모" style="margin:0;padding:4px 6px;font-size:11px;min-height:32px">${e.memo?esc(e.memo):''}</textarea>
+  </div>`;
+}
+
+function buildEnrollControlHtml(existing, selDate, opts){
+  opts=opts||{};
   const e=existing||null;
   const hasReservation=!!e;
   const sameDate=hasReservation&&e.ds===selDate;
   const locked=hasReservation&&_isReserveMoveEntry(e);
+  const showFields=!!opts.showFields;
   const primaryLabel=hasReservation
     ? (sameDate?'등록 옵션 저장':'등록일 변경')
     : '선택일로 등록 예약';
@@ -583,10 +610,12 @@ function buildEnrollControlHtml(existing, selDate){
       </div>
     </div>
     <div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin-bottom:6px">신규 OFF = 재등록</div>
+    ${showFields?_enrollPanelFieldsHtml(e):''}
     ${locked
       ? `<div style="font-size:10px;color:#6B7280;text-align:center;font-weight:700;line-height:1.4;margin-bottom:6px">예약 이동으로 만든 등록은 이동 취소로만 변경할 수 있습니다.</div>`
       : `<button class="btn btn-p" id="sp-enroll-set" style="width:100%;padding:5px;font-size:10px;background:#3B82F6">${primaryLabel}</button>`}
     ${hasReservation?`<button class="btn btn-d" id="sp-enroll-del" style="width:100%;padding:5px;font-size:10px;margin-top:4px">등록예약 해제</button>`:''}
+    ${showFields&&hasReservation?`<button class="btn btn-o" id="sp-enroll-copy" style="width:100%;font-size:10px;padding:5px;color:#10B981;border-color:#10B981;margin-top:4px">📋 등록예약 복사</button>`:''}
   </div>`;
 }
 
@@ -598,7 +627,12 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   if(!selDate) return '';
 
   const curMark=getMark(slotKey,selDate);
-  const retireEntry=RETIRE_MAP[slotKey]||null;
+  const stu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
+  const liveRetireEntry=RETIRE_MAP[slotKey]||null;
+  const historyRetireEntry=!liveRetireEntry&&typeof retireHistoryEntryForSlot==='function'
+    ? retireHistoryEntryForSlot(slotKey,stu)
+    : null;
+  const retireEntry=liveRetireEntry||historyRetireEntry;
   const isRetire=retireDate===selDate;
   const isEnroll=enrollDate===selDate;
 
@@ -614,7 +648,6 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
   // 폼 선택: 제외/보강/샘플/등록/휴원 중 하나만 표시
   let formHtml='';
   if(_stuPopup.showRetire){
-    const stu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
     formHtml=buildRetireChoiceFormHtml(slotKey,selDate,stu,isRetire?retireEntry:null);
   } else if(_stuPopup.showBogang){
     const existBo=boOn?(sub?.type==='bogang'?sub:(curMark?.type==='bogang'?curMark:null)):null;
@@ -623,7 +656,9 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     const existSa=saOn?(sub?.type==='sample'?sub:(curMark?.type==='sample'?curMark:null)):null;
     formHtml=buildSampleFormHtml(existSa);
   } else if(_stuPopup.showEnroll&&!enrollMode){
-    formHtml=buildEnrollControlHtml(ENROLL_MAP[slotKey]||null, selDate);
+    const enrollEntry=ENROLL_MAP[slotKey]||null;
+    const showRightEnrollFields=!!(enrollEntry||liveRetireEntry);
+    formHtml=buildEnrollControlHtml(enrollEntry, selDate, {showFields:showRightEnrollFields});
   } else if(_stuPopup.showHyuwon){
     formHtml=buildHyuwonFormHtml(hyuwon);
   }
@@ -940,7 +975,11 @@ function renderStuPopup(freshOpen){
   const stu=getStu(t,day,lane,row);
   const inst=getInst(t,day,lane);
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
-  const retireEntry=RETIRE_MAP[slotKey]||null;
+  const liveRetireEntry=RETIRE_MAP[slotKey]||null;
+  const historyRetireEntry=!liveRetireEntry&&typeof retireHistoryEntryForSlot==='function'
+    ? retireHistoryEntryForSlot(slotKey,stu)
+    : null;
+  const retireEntry=liveRetireEntry||historyRetireEntry;
   const retireDate=(typeof retireEntry==='string'?retireEntry:retireEntry?.ds)||null;
   const retireName=retireEntry?_popupRetireDateLabel(retireEntry,stu,slotKey):'';
   const enrollEntry=ENROLL_MAP[slotKey]||null;
@@ -953,15 +992,15 @@ function renderStuPopup(freshOpen){
   const nextPeriod=SCHEDULE_PERIODS[getCurrentPeriod()+1]||null;
 
   // 빈 칸 또는 제외/퇴원 예약이 있는 칸에서 등록 버튼을 누르면 좌측 폼이 등록 입력 모드로 동작한다.
-  const enrollMode = !enrollEntry && _stuPopup.showEnroll && !!selDate && (!stu || !!retireEntry);
-  const popupLeftStu = enrollMode && retireEntry ? null : stu;
+  const enrollMode = !enrollEntry && _stuPopup.showEnroll && !!selDate && !stu;
+  const rightEnrollInfo=!!(enrollEntry||liveRetireEntry);
 
   const actionHtml=renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, !!stu);
 
   popup.innerHTML=`
     <div class="stu-popup-hd">${day} ${t} ${lane}레인 ${row}번${inst?' · '+instDisplay(inst):''}<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeStuPopup()">✕</span></div>
     <div class="stu-popup-body">
-      ${buildStuPopupLeft(popupLeftStu, slotKey, enrollMode, enrollEntry)}
+      ${buildStuPopupLeft(stu, slotKey, enrollMode, rightEnrollInfo?null:enrollEntry)}
       ${buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml)}
     </div>
   `;
@@ -1235,7 +1274,7 @@ async function handleDateBoxClick(dateBox, ctx, clickTarget){
     _stuPopup.showRetire=false;
     renderStuPopup();
     setTimeout(()=>{
-      const target=document.getElementById('sp-name')||document.getElementById('sp-enroll-set');
+      const target=document.getElementById('sp-enroll-name')||document.getElementById('sp-enroll-set');
       if(target){
         target.focus();
         try{ target.setSelectionRange(target.value.length, target.value.length); }catch(e){}
@@ -1259,7 +1298,7 @@ async function handleDateBoxClick(dateBox, ctx, clickTarget){
     _stuPopup.showHyuwon=false;
     renderStuPopup();
     setTimeout(()=>{
-      document.getElementById('sp-enroll-set')?.focus();
+      (document.getElementById('sp-enroll-name')||document.getElementById('sp-enroll-set'))?.focus();
     },30);
     return;
   }
@@ -1480,6 +1519,9 @@ async function _setRetireChoice(slotKey,ds,stu,existingEntry,kind){
     toast('예약 이동 제외는 이동으로 고정됩니다','err');
     return;
   }
+  const previousEntry=RETIRE_MAP[slotKey]||existingEntry||null;
+  const previousDs=_retireEntryDate(previousEntry);
+  const previousWasRetire=!!(previousEntry&&_retireChoiceKind(previousEntry,stu,slotKey)==='retire');
   let savedEntry=null;
   await updateRetireMapTx(retire=>{
     const extra=kind==='retire'
@@ -1495,8 +1537,12 @@ async function _setRetireChoice(slotKey,ds,stu,existingEntry,kind){
     });
   }
   if(kind==='retire'){
+    if(previousWasRetire&&previousDs&&previousDs!==ds) _removeMatchingRetireHistory(stu,previousDs,slotKey);
+    _removeOtherRetireHistories(stu,ds,slotKey);
     if(stu && typeof addRetireHistory==='function'&&!_hasMatchingRetireHistory(stu,ds,slotKey)) addRetireHistory(stu,ds);
   } else {
+    _removeOtherRetireHistories(stu,'',slotKey);
+    if(previousDs) _removeMatchingRetireHistory(stu,previousDs,slotKey);
     _removeMatchingRetireHistory(stu,ds,slotKey);
   }
   _flashKey=slotKey;
@@ -1545,13 +1591,23 @@ function handleRetirePastDate(e,ctx){
 async function handleRetireDelete(e,ctx){
   const {slotKey,t,day,lane,row}=ctx;
   const ds=_stuPopup.selDate;
-  const existingEntry=RETIRE_MAP[slotKey]||null;
+  const liveRetireEntry=RETIRE_MAP[slotKey]||null;
+  const stu=getStu(t,day,lane,row);
+  const historyRetireEntry=!liveRetireEntry&&typeof retireHistoryEntryForSlot==='function'
+    ? retireHistoryEntryForSlot(slotKey,stu)
+    : null;
+  const existingEntry=liveRetireEntry||historyRetireEntry;
   if(!existingEntry) return;
   if(!confirm(_reserveMoveDeleteMessage(existingEntry))) return;
-  const stu=getStu(t,day,lane,row);
   try{
-    const paired=await deleteRetireReservation(slotKey);
-    _removeMatchingRetireHistory(stu,ds,slotKey);
+    let paired=false;
+    if(liveRetireEntry){
+      paired=await deleteRetireReservation(slotKey);
+      _removeMatchingRetireHistory(stu,ds,slotKey);
+    }else{
+      const historyStu={n:historyRetireEntry.name||'',p:historyRetireEntry.p||''};
+      _removeMatchingRetireHistory(historyStu,historyRetireEntry.ds||ds,slotKey);
+    }
     _stuPopup.selDate=null;
     _stuPopup.showRetire=false;
     _stuPopup.showEnroll=false;
@@ -1589,10 +1645,11 @@ function handleEnrollShow(e, ctx){
     const stu=getStu(ctx.t,ctx.day,ctx.lane,ctx.row);
     const retireEntry=RETIRE_MAP[slotKey]||null;
     const enrollEntry=ENROLL_MAP[slotKey]||null;
-    const useLeftInput=_stuPopup.showEnroll && (!!enrollEntry || (!enrollEntry && (!stu || !!retireEntry)));
-    const target=useLeftInput
-      ? document.getElementById('sp-name')
-      : document.getElementById('sp-enroll-set');
+    const useRightInput=_stuPopup.showEnroll && (!!enrollEntry || (!!stu && !!retireEntry));
+    const useLeftInput=_stuPopup.showEnroll && !useRightInput && (!enrollEntry && !stu);
+    const target=useRightInput
+      ? (document.getElementById('sp-enroll-name')||document.getElementById('sp-enroll-set'))
+      : (useLeftInput ? document.getElementById('sp-name') : document.getElementById('sp-enroll-set'));
     if(target){
       target.focus();
       try{ target.setSelectionRange(target.value.length, target.value.length); }catch(e){}
@@ -1628,6 +1685,11 @@ function _readEnrollForm(prefix){
 }
 
 function _readEnrollReservationForm(){
+  if(document.getElementById('sp-enroll-name')){
+    const form=_readEnrollForm('sp-enroll-');
+    form.reenroll=!form.isNew;
+    return form;
+  }
   const form=_readEnrollForm('sp-');
   const newBtn=document.getElementById('sp-enroll-new');
   if(newBtn){
@@ -1992,6 +2054,8 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
       document.getElementById('sp-mark-bogang')?.click();
     } else if(ae?.id==='sp-sample-name'||ae?.id==='sp-sample-age'||ae?.id==='sp-sample-phone'||ae?.id==='sp-sample-memo'){
       document.getElementById('sp-mark-sample')?.click();
+    } else if(ae?.id==='sp-enroll-name'||ae?.id==='sp-enroll-age'||ae?.id==='sp-enroll-phone'||ae?.id==='sp-enroll-pickup'||ae?.id==='sp-enroll-dropoff'){
+      document.getElementById('sp-enroll-set')?.click();
     } else if(ae?.id==='sp-name'||ae?.id==='sp-age'||ae?.id==='sp-phone'){
       // [v100] 좌측 폼이 등록 모드면 등록 버튼, 아니면 저장 버튼
       const enrollBtn=document.getElementById('sp-enroll-from-left');
@@ -2019,6 +2083,15 @@ document.getElementById('stu-popup').addEventListener('change',function(e){
   }
   if(id==='sp-drop-self'){
     const inp=document.getElementById('sp-dropoff');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  // 우측 등록 예약 폼
+  if(id==='sp-enroll-pick-self'){
+    const inp=document.getElementById('sp-enroll-pickup');
+    if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
+  }
+  if(id==='sp-enroll-drop-self'){
+    const inp=document.getElementById('sp-enroll-dropoff');
     if(inp){ inp.disabled=e.target.checked; if(e.target.checked) inp.value=''; }
   }
 });
@@ -2430,6 +2503,11 @@ function _popupRetireReasonText(entry){
 
 function _retireHistoryMatches(r,stu,ds,slotKey){
   if(!r||(r.retiredAt||'')!==ds) return false;
+  return _retireHistoryPersonSlotMatches(r,stu,slotKey);
+}
+
+function _retireHistoryPersonSlotMatches(r,stu,slotKey){
+  if(!r) return false;
   const name=String(stu?.n||'').trim();
   if(name&&String(r.n||'').trim()!==name) return false;
   const phone=String(stu?.p||'').replace(/\D/g,'');
@@ -2450,6 +2528,20 @@ function _removeMatchingRetireHistory(stu,ds,slotKey){
   if(!Array.isArray(RETIRE_HISTORY)) return false;
   const before=RETIRE_HISTORY.length;
   RETIRE_HISTORY=RETIRE_HISTORY.filter(r=>!_retireHistoryMatches(r,stu,ds,slotKey));
+  if(RETIRE_HISTORY.length!==before){
+    if(typeof saveRetireHistory==='function') saveRetireHistory();
+    return true;
+  }
+  return false;
+}
+
+function _removeOtherRetireHistories(stu,keepDs,slotKey){
+  if(!Array.isArray(RETIRE_HISTORY)) return false;
+  const before=RETIRE_HISTORY.length;
+  RETIRE_HISTORY=RETIRE_HISTORY.filter(r=>{
+    if(!_retireHistoryPersonSlotMatches(r,stu,slotKey)) return true;
+    return (r.retiredAt||'')===keepDs;
+  });
   if(RETIRE_HISTORY.length!==before){
     if(typeof saveRetireHistory==='function') saveRetireHistory();
     return true;

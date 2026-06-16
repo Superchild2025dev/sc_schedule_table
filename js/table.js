@@ -1342,6 +1342,8 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   const stuRow=document.createElement('tr');
   const isBangteukTable=typeof isBangteuk==='function'&&isBangteuk();
   const baseSlotRows=isBangteukTable?6:5;
+  const storedBtTime=!isBangteukTable&&typeof hasBangteukInTime==='function'&&hasBangteukInTime(t);
+  const storedBtExtraRow=storedBtTime&&ri>=baseSlotRows&&ri<6;
   const btPreviewTime=!isBangteukTable&&_btPreviewTimeVisible(t);
   const btPreviewExtraRow=btPreviewTime&&ri===baseSlotRows;
   const btPreviewDayActive=day=>{
@@ -1350,12 +1352,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
     return false;
   };
   // 정규 5행(ri 0~4) 이후는 반칸 높이 (추가 학생용)
-  // 단, 엘마 시간대는 6~8행도 엘마반 정규 자리이므로 풀 높이 유지
-  if(ri>=baseSlotRows && !hasElmaInTime(t) && !btPreviewExtraRow) stuRow.classList.add('half-row');
+  // 단, 엘마/방특 시간대의 정규 확장 줄은 풀 높이 유지
+  if(ri>=baseSlotRows && !hasElmaInTime(t) && !btPreviewExtraRow && !storedBtExtraRow) stuRow.classList.add('half-row');
   const curMonth=SCHEDULE_PERIODS[getCurrentPeriod()].month;
 
   const slotHasStoredContent=(day,lane,row)=>{
     const slotKey=t+'/'+day+'/'+lane+'/'+row;
+    const inst=_ctxInst(ctx,t,day,lane);
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'&&window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:isBangteukTable})) return true;
     if(_ctxStu(ctx,t,day,lane,row)) return true;
     if(RETIRE_MAP[slotKey]||ENROLL_MAP[slotKey]||DISABLED_MAP[slotKey]||HYUWON_MAP[slotKey]) return true;
     if(_attendanceMode && _attendanceDate){
@@ -1418,10 +1422,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const isElma=isElmaLane(kimhs,li);
       const _l=li+1, _r=ri+1;
       const slotKey=t+'/'+day+'/'+_l+'/'+_r;
+      const btSlotInst=_ctxInst(ctx,t,day,_l);
+      const btStoredSlot=window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'
+        ? window.SCScheduleTime.isBangteukSlot(btSlotInst,_r,{bangteukTable:isBangteukTable})
+        : false;
       const previewCellActive=btPreviewTime&&ri<6&&_btPreviewLaneVisible(t,day,_l);
       // 일반 레인 5행 초과는 기본적으로 blocked
       // 단, 실제 저장 데이터가 있는 칸은 6~8번이어도 가리지 않는다.
-      let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows&&!slotHasStoredContent(day,_l,_r);
+      let isBlocked=rows>baseSlotRows&&!isElma&&ri>=baseSlotRows&&!btStoredSlot&&!slotHasStoredContent(day,_l,_r);
       if(btPreviewExtraRow) isBlocked=!previewCellActive;
       if(isBlocked && _attendanceMode && _attendanceDate){
         const _cellDsChk=_dayToCellDs(day);
@@ -1434,6 +1442,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       // 케이스 2: 평일 5행 초과 (엘마 제외)
       if(isBlocked){
         td.className='dc cell-blocked';
+        if(storedBtExtraRow) td.classList.add('bt-slot-blocked');
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         stuRow.appendChild(td);
         continue;
@@ -1830,6 +1839,36 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   return stuRow;
 }
 
+function _rowHasRenderableContent(t,row,DAYS,LANE_COUNT,ctx){
+  const isBangteukTable=typeof isBangteuk==='function'&&isBangteuk();
+  for(const day of DAYS){
+    for(let lane=1;lane<=LANE_COUNT;lane++){
+      const slotKey=t+'/'+day+'/'+lane+'/'+row;
+      const inst=_ctxInst(ctx,t,day,lane);
+      if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'&&window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:isBangteukTable})) return true;
+      if(_ctxStu(ctx,t,day,lane,row)) return true;
+      if(RETIRE_MAP[slotKey]||ENROLL_MAP[slotKey]||HYUWON_MAP[slotKey]) return true;
+      if(_attendanceMode && _attendanceDate){
+        const ds=_dayToCellDs(day);
+        if(ds && _attGuestAtSlot(t,day,lane,slotKey,ds)) return true;
+      }
+      const markPrefix=slotKey+'/';
+      if(Object.keys(MARK_MAP||{}).some(k=>k.startsWith(markPrefix))) return true;
+    }
+  }
+  return false;
+}
+function _trimEmptyTrailingRows(t,rows,DAYS,LANE_COUNT,ctx){
+  const baseRows=(typeof isBangteuk==='function'&&isBangteuk())?6:5;
+  if(typeof hasElmaInTime==='function'&&hasElmaInTime(t)) return rows;
+  if(typeof _btPreviewTimeVisible==='function'&&_btPreviewTimeVisible(t)) return rows;
+  let next=rows;
+  while(next>baseRows&&!_rowHasRenderableContent(t,next,DAYS,LANE_COUNT,ctx)){
+    next--;
+  }
+  return next;
+}
+
 function buildTable(){
   const DAYS=getDays(),TIMES=getTimes(),SAT_TIME_LABEL=getSatLabel(),HAS_NUM=getHasNum(),LANE_COUNT=getLanes();
 
@@ -1967,6 +2006,7 @@ function buildTable(){
       });
       rows=Math.max(rows, maxRi);
     }
+    rows=_trimEmptyTrailingRows(t,rows,DAYS,LANE_COUNT,{attendanceBasisByDay:_attendanceBasisByDay});
     const hasSat=!!SAT_TIME_LABEL[t];
 
     const basisCtx={attendanceBasisByDay:_attendanceBasisByDay};
@@ -2083,6 +2123,12 @@ function _mobileInstText(inst){
   const text=instDisplay(inst);
   return text ? text.replace(/^\d\)/,'') : '';
 }
+function _mobileInstClass(inst){
+  try{
+    if(typeof instClass==='function') return instClass(inst);
+  }catch(e){}
+  return 'i-none';
+}
 function _mobileSlotBadges(slotKey,day){
   const badges=[];
   const todayStr=toDateStr(getToday());
@@ -2101,16 +2147,24 @@ function _mobileSlotBadges(slotKey,day){
     if(!mark) return;
     const dl=_mobileShortDate(d.ds);
     if(mark.type==='absent'){
-      badges.push({type:'absent',text:`결석 ${dl}`});
+      badges.push({type:'absent',text:`결석 ${dl}`,name:mark.n||mark.name||''});
       if(mark.sub){
         const subType=mark.sub.type==='sample'?'sample':'bogang';
-        badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${mark.sub.n||''} ${dl}`.trim()});
+        badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${mark.sub.n||''} ${dl}`.trim(),name:mark.sub.n||''});
       }
     }else if(mark.type==='bogang'||mark.type==='sample'){
-      badges.push({type:mark.type,text:`${mark.type==='sample'?'샘':'보'} ${mark.n||''} ${dl}`.trim()});
+      badges.push({type:mark.type,text:`${mark.type==='sample'?'샘':'보'} ${mark.n||''} ${dl}`.trim(),name:mark.n||mark.name||''});
     }
   });
   return badges.slice(0,4);
+}
+function _mobileBadgeLabel(badges){
+  const names=[];
+  (badges||[]).forEach(b=>{
+    const nm=(b&&b.name?String(b.name):'').trim();
+    if(nm&&!names.includes(nm)) names.push(nm);
+  });
+  return names.join(', ');
 }
 function _mobileStudentText(stu){
   if(!stu) return '';
@@ -2160,7 +2214,7 @@ function _mobileCellItems(ctx,t,day,lane,row){
       items.push({row,label:nm,type:'retire',chips:[{type:'retire',text:`~${_mobileShortDate(retDs)}까지`},...badges]});
     }
   }else if(badges.length){
-    items.push({row,label:'일정',type:_mobileStudentType(null,null,badges,todayStr),chips:badges});
+    items.push({row,label:_mobileBadgeLabel(badges),type:_mobileStudentType(null,null,badges,todayStr),chips:badges});
   }
   return items;
 }
@@ -2170,6 +2224,7 @@ function _mobileRenderTimeCard(ctx,t,day,lanes){
   for(let lane=1;lane<=lanes;lane++){
     const inst=_ctxInst(ctx,t,day,lane);
     const teacher=_mobileInstText(inst);
+    const teacherClass=_mobileInstClass(inst);
     const items=[];
     for(let row=1;row<=rows;row++){
       items.push(..._mobileCellItems(ctx,t,day,lane,row));
@@ -2177,16 +2232,17 @@ function _mobileRenderTimeCard(ctx,t,day,lanes){
     if(!teacher&&!items.length) continue;
     const itemHtml=items.map(item=>{
       const chips=(item.chips||[]).map(chip=>`<span class="mobile-schedule-chip ${esc(chip.type||'')}">${esc(chip.text||'')}</span>`).join('');
-      return `<div class="mobile-schedule-student ${esc(item.type||'')}"><span class="mobile-schedule-row">${item.row}</span><b>${esc(item.label||'')}</b>${chips}</div>`;
+      const label=item.label?`<b>${esc(item.label)}</b>`:'';
+      return `<div class="mobile-schedule-student ${esc(item.type||'')}">${label}${chips}</div>`;
     }).join('');
     laneHtml.push(`<section class="mobile-schedule-lane">
-      <div class="mobile-schedule-lane-head"><span>${lane}레인</span><strong>${teacher?esc(teacher):'담임 없음'}</strong></div>
+      <div class="mobile-schedule-lane-head"><strong class="${esc(teacherClass)}">${teacher?esc(teacher):`${lane}레인`}</strong></div>
       <div class="mobile-schedule-students">${itemHtml||'<span class="mobile-schedule-empty">원생 없음</span>'}</div>
     </section>`);
   }
   if(!laneHtml.length) return '';
   return `<article class="mobile-schedule-time">
-    <h3>${esc(_mobileTimeLabel(day,t))}</h3>
+    <h3>${esc(`${day} ${_mobileTimeLabel(day,t)}`)}</h3>
     <div class="mobile-schedule-lanes">${laneHtml.join('')}</div>
   </article>`;
 }

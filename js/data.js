@@ -2729,6 +2729,31 @@ function addRetireHistory(stu, retiredAt){
   RETIRE_HISTORY.push(rec);
   saveRetireHistory();
 }
+function retireHistoryEntryForSlot(slotKey,fallback){
+  const parts=String(slotKey||'').split('/');
+  if(parts.length!==4||!Array.isArray(RETIRE_HISTORY)) return null;
+  const [t,d,l,r]=parts.map(v=>String(v||''));
+  const fallbackName=String(fallback?.n||fallback?.name||'').trim();
+  const fallbackPhone=String(fallback?.p||fallback?.phone||'').replace(/\D/g,'');
+  const rows=RETIRE_HISTORY.filter(row=>{
+    if(!row) return false;
+    if(String(row.t||'')!==t||String(row.d||'')!==d||String(row.l||'')!==l||String(row.r||'')!==r) return false;
+    if(fallbackName&&String(row.n||'').trim()&&String(row.n||'').trim()!==fallbackName) return false;
+    const rowPhone=String(row.p||'').replace(/\D/g,'');
+    if(fallbackPhone&&rowPhone&&fallbackPhone!==rowPhone) return false;
+    return !!row.retiredAt;
+  }).sort((a,b)=>String(b.recordedAt||'').localeCompare(String(a.recordedAt||'')));
+  const hit=rows[0];
+  if(!hit) return null;
+  return {
+    ds:hit.retiredAt,
+    name:hit.n||'',
+    age:hit.a||null,
+    p:hit.p||'',
+    retireType:'retire',
+    _history:true,
+  };
+}
 
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 퇴원 기록 모달 (조회/검색/CSV)

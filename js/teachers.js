@@ -239,7 +239,14 @@ async function handleTeacherDelete(idx){
 
 let _instPopup={el:null,key:null};
 
+function _btPreviewEnabled(){
+  return window.SC_BT_PREVIEW_ENABLED===true;
+}
 function _btPreviewStore(){
+  if(!_btPreviewEnabled()){
+    window.SC_BT_PREVIEW_INST={};
+    return window.SC_BT_PREVIEW_INST;
+  }
   if(!window.SC_BT_PREVIEW_INST) window.SC_BT_PREVIEW_INST={};
   return window.SC_BT_PREVIEW_INST;
 }
@@ -309,6 +316,10 @@ function btPreviewLaneActive(t,day,lane){
   return !!getBtPreviewSourceKey(t+'/'+day+'/'+lane);
 }
 function toggleBtPreviewInst(key,on,meta){
+  if(!_btPreviewEnabled()){
+    window.SC_BT_PREVIEW_INST={};
+    return;
+  }
   const store=_btPreviewStore();
   if(on){
     const resolved=meta||_btPreviewDefaultMeta(key);
@@ -316,30 +327,135 @@ function toggleBtPreviewInst(key,on,meta){
   }
   else delete store[getBtPreviewSourceKey(key)||key];
 }
-
-function instPopupCanEdit(){
-  return !(window.SCAuth && !SCAuth.can('editSchedule'));
+function _btEditGroupDays(group,day){
+  const normalized=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup(group||'',day)
+    : (String(group||'').includes('화')||String(day||'')==='화'||String(day||'')==='목'?'화목':'월수금');
+  return normalized==='화목'?['화','목']:['월','수','금'];
 }
-let _lastBtPreviewApply={sig:'',at:0};
-function _applyBtPreviewSelection(input){
-  if(!input||input.name!=='ip-bt-preview-group'||!instPopupCanEdit()) return false;
+function _btEditAllWeekDays(){
+  const days=typeof getDays==='function'?getDays():['월','화','수','목','금'];
+  return days.filter(d=>['월','화','수','목','금'].includes(d));
+}
+function _btEditMetaFromInst(inst,day){
+  if(!inst||typeof inst!=='object') return null;
+  if(!(inst.bt||inst.bangteuk||inst.btGroup||inst.btTabId||inst.cls==='bt'||inst.cls==='bangteuk')) return null;
+  const group=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup(inst.btGroup||'',day)
+    : (inst.btGroup||('화목'.includes(day)?'화목':'월수금'));
+  return {group,tabId:inst.btTabId||''};
+}
+function _btEditSetMeta(inst,option,day){
+  const group=typeof _normalizeBangteukGroup==='function'
+    ? _normalizeBangteukGroup(option?.group||'',day)
+    : (option?.group||('화목'.includes(day)?'화목':'월수금'));
+  inst.bt=true;
+  inst.bangteuk=true;
+  inst.btGroup=group;
+  if(option?.tabId) inst.btTabId=option.tabId;
+  else delete inst.btTabId;
+}
+function _btEditClearMeta(inst){
+  if(!inst||typeof inst!=='object') return inst;
+  delete inst.bt;
+  delete inst.bangteuk;
+  delete inst.btGroup;
+  delete inst.btTabId;
+  if(inst.cls==='bt'||inst.cls==='bangteuk') delete inst.cls;
+  return inst;
+}
+function _btEditIsEmptyInst(inst){
+  if(!inst||typeof inst!=='object') return true;
+  return !Object.keys(inst).some(k=>inst[k]!==undefined&&inst[k]!==null&&inst[k]!==''&&inst[k]!==false);
+}
+function _deleteInstWithBangteukGroup(inst,key,cur){
+  const parts=String(key||'').split('/');
+  const [t,day,lane]=parts;
+  const meta=_btEditMetaFromInst(cur,day);
+  if(parts.length!==3||!meta){
+    delete inst[key];
+    return 1;
+  }
+  let removed=0;
+  _btEditGroupDays(meta.group,day).forEach(targetDay=>{
+    const targetKey=t+'/'+targetDay+'/'+lane;
+    const target=inst[targetKey];
+    const targetMeta=_btEditMetaFromInst(target,targetDay);
+    const sameGroup=targetMeta&&targetMeta.group===meta.group;
+    const sameTab=!meta.tabId||!targetMeta?.tabId||targetMeta.tabId===meta.tabId;
+    if(targetKey===key || (sameGroup&&sameTab)){
+      delete inst[targetKey];
+      removed++;
+    }
+  });
+  if(!removed){
+    delete inst[key];
+    removed=1;
+  }
+  return removed;
+}
+let _lastBtEditApply={sig:'',at:0};
+async function _applyBtEditSelection(input){
+  if(!input||input.name!=='ip-bt-group'||!instPopupCanEdit()) return false;
   const key=_instPopup.key;
   if(!key) return true;
+  const [t,day,lane]=key.split('/');
   const group=input.value||'';
   const sig=key+'|'+group;
   const now=Date.now();
-  if(_lastBtPreviewApply.sig===sig && now-_lastBtPreviewApply.at<120) return true;
-  _lastBtPreviewApply={sig,at:now};
-  if(group){
-    const option=(typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions():[]).find(o=>o.group===group)||{group};
-    toggleBtPreviewInst(key,true,option);
-  } else {
-    toggleBtPreviewInst(key,false);
+  if(_lastBtEditApply.sig===sig && now-_lastBtEditApply.at<120) return true;
+  _lastBtEditApply={sig,at:now};
+  const cur=INST_MAP[key]||null;
+  const activeMeta=_btEditMetaFromInst(cur,day);
+  const option=group
+    ? ((typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions(cur?.btTabId||''):[]).find(o=>o.group===group)||{group})
+    : null;
+  const targetDays=group?_btEditGroupDays(group,day):_btEditAllWeekDays();
+  const oldGroupDays=(group&&activeMeta&&activeMeta.group!==group)?_btEditGroupDays(activeMeta.group,day):[];
+  try{
+    await updateInstMapTx(inst=>{
+      const source=inst[key]||cur||{};
+      if(group&&!source.n){
+        throw new Error('방특반은 선생님을 먼저 선택한 뒤 설정하세요');
+      }
+      oldGroupDays.forEach(targetDay=>{
+        const targetKey=t+'/'+targetDay+'/'+lane;
+        if(!inst[targetKey]) return;
+        const targetMeta=_btEditMetaFromInst(inst[targetKey],targetDay);
+        if(targetMeta&&targetMeta.group!==activeMeta.group) return;
+        const cleared=_btEditClearMeta(Object.assign({},inst[targetKey]));
+        if(_btEditIsEmptyInst(cleared)) delete inst[targetKey];
+        else inst[targetKey]=cleared;
+      });
+      targetDays.forEach(targetDay=>{
+        const targetKey=t+'/'+targetDay+'/'+lane;
+        const next=Object.assign({},inst[targetKey]||source);
+        if(group){
+          if(!next.n&&source.n) next.n=source.n;
+          _btEditSetMeta(next,option,targetDay);
+          inst[targetKey]=next;
+        } else {
+          if(!inst[targetKey]) return;
+          const cleared=_btEditClearMeta(Object.assign({},inst[targetKey]));
+          if(_btEditIsEmptyInst(cleared)) delete inst[targetKey];
+          else inst[targetKey]=cleared;
+        }
+      });
+      return inst;
+    });
+  }catch(err){
+    toast(err?.message||'방특반 저장 실패','err');
+    console.error(err);
+    return true;
   }
   buildTable();
   renderInstPopup();
-  toast(group?group+' 방특 화면 테스트 표시':'방특반 화면 테스트 해제','ok');
+  toast(group?group+' 방특반으로 저장':'방특반 해제 완료','ok');
   return true;
+}
+
+function instPopupCanEdit(){
+  return !(window.SCAuth && !SCAuth.can('editSchedule'));
 }
 
 function openInstPopup(td,t,day,lane){
@@ -442,15 +558,15 @@ function renderInstPopup(){
     html+=`<label><input type="checkbox" id="ip-elite" ${_curCls==='elite'?'checked':''}> 엘리트</label>`;
     html+=`<label><input type="checkbox" id="ip-master" ${_curCls==='master'?'checked':''}> 마스터</label>`;
     if(typeof isBangteuk==='function'&&!isBangteuk()){
-      const btMeta=getBtPreviewInst(key)||(cur&&(cur.btGroup||cur.btTabId||cur.bt||cur.bangteuk)?{group:cur.btGroup,tabId:cur.btTabId}:null);
+      const btMeta=_btEditMetaFromInst(cur,_instPopup.day);
       const btOptions=typeof getBangteukGroupOptions==='function'?getBangteukGroupOptions(btMeta?.tabId||cur?.btTabId||''):[];
-      html+=`<div class="inst-bt-options" title="화면 테스트 전용: 새로고침하면 사라지고 저장되지 않습니다">`;
-      html+=`<span class="inst-bt-title">방특반 테스트</span>`;
+      html+=`<div class="inst-bt-options" title="선택한 시간/레인을 방특반으로 저장합니다">`;
+      html+=`<span class="inst-bt-title">방특반 편집</span>`;
       if(btOptions.length){
-        html+=`<label><input type="radio" name="ip-bt-preview-group" value="" ${btMeta?'':'checked'}> 해제</label>`;
+        html+=`<label><input type="radio" name="ip-bt-group" value="" ${btMeta?'':'checked'}> 해제</label>`;
         btOptions.forEach(opt=>{
           const checked=btMeta&&btMeta.group===opt.group?'checked':'';
-          html+=`<label><input type="radio" name="ip-bt-preview-group" value="${esc(opt.group)}" ${checked}> ${esc(opt.label)} <small>${esc(opt.periodLabel)}</small></label>`;
+          html+=`<label><input type="radio" name="ip-bt-group" value="${esc(opt.group)}" ${checked}> ${esc(opt.label)} <small>${esc(opt.periodLabel)}</small></label>`;
         });
       } else {
         html+=`<span class="inst-bt-empty">방특 기간 설정 필요</span>`;
@@ -516,12 +632,12 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
   }
   if(!instPopupCanEdit()) return;
   const btOption=e.target.closest('.inst-bt-options label');
-  const btInput=e.target.matches('input[name="ip-bt-preview-group"]')
+  const btInput=e.target.matches('input[name="ip-bt-group"]')
     ? e.target
-    : btOption?.querySelector('input[name="ip-bt-preview-group"]');
+    : btOption?.querySelector('input[name="ip-bt-group"]');
   if(btInput){
     e.stopPropagation();
-    setTimeout(()=>_applyBtPreviewSelection(btInput),0);
+    setTimeout(()=>_applyBtEditSelection(btInput),0);
     return;
   }
   // 예약 삭제
@@ -573,19 +689,26 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
   const key=_instPopup.key;
   if(!key) return;
   const name=btn.dataset.name;
+  const clearBtMeta=_btEditMetaFromInst(INST_MAP[key]||null,_instPopup.day);
 
   try{
     await updateInstMapTx(inst=>{
       const cur=inst[key]||null;
       if(name==='__clear__'){
-        delete inst[key];
+        _deleteInstWithBangteukGroup(inst,key,cur);
       } else if(cur&&cur.n===name){
-        delete inst[key];
+        _deleteInstWithBangteukGroup(inst,key,cur);
       } else {
         // [v117] 선생님 변경 시 기존 cls(엘/마/엘리트/마스터) 보존
         const oldCls=getInstCls(cur);
         const obj={n:name};
         if(oldCls) obj.cls=oldCls;
+        if(cur&&typeof cur==='object'){
+          if(cur.bt) obj.bt=cur.bt;
+          if(cur.bangteuk) obj.bangteuk=cur.bangteuk;
+          if(cur.btGroup) obj.btGroup=cur.btGroup;
+          if(cur.btTabId) obj.btTabId=cur.btTabId;
+        }
         inst[key]=obj;
       }
       return inst;
@@ -599,6 +722,7 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
   if(name==='__clear__'){
     closeInstPopup();
     buildTable();
+    if(clearBtMeta) toast(clearBtMeta.group+' 방특 선생님 삭제 완료','ok');
     return;
   }
   _instBusy=true;
@@ -617,8 +741,8 @@ document.getElementById('inst-popup').addEventListener('keydown',function(e){
 
 document.getElementById('inst-popup').addEventListener('change',async function(e){
   if(!instPopupCanEdit()) return;
-  if(e.target.name==='ip-bt-preview-group'){
-    _applyBtPreviewSelection(e.target);
+  if(e.target.name==='ip-bt-group'){
+    _applyBtEditSelection(e.target);
     return;
   }
   if(e.target.id==='ip-rtoday'){
