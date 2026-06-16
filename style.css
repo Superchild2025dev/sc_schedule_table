@@ -217,6 +217,7 @@ body.is-snapshot .snap-banner{display:block}
 .stu-vehicle{background:#FFF88D!important}
 .stu-new{background:#FF0000!important;color:#0000FF!important}
 .stu-enrolled{background:#FF0000!important}
+.stu-paid{background:#BBF7D0!important}
 .stu-enroll-pending{background:#FF0000!important;outline:none!important}
 .stu-req-pending{outline:2.5px solid #F59E0B!important;outline-offset:-1px}
 .stu-bogang-only{background:#EDE9FE!important}
@@ -496,6 +497,7 @@ body.is-snapshot .snap-banner{display:block}
 .cb-enroll-new{background:#DBEAFE;color:#1D4ED8}
 .stu-enroll-inline{color:#111!important;font-weight:900}
 .stu-enroll-inline-new{color:#1D4ED8!important}
+.stu-bt-new-text{color:#DC2626!important}
 .cb-absent{background:#EF4444}
 .cb-bogang{background:#7C3AED}
 .cb-sample{background:#F59E0B;color:#333}
@@ -692,8 +694,10 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .mobile-schedule-students{display:flex;flex-direction:column;gap:0}
 .mobile-schedule-student{display:flex;align-items:center;justify-content:center;gap:4px;min-height:34px;padding:4px 6px;border:0;border-top:1px solid #333;border-radius:0;background:#fff;color:#111827;text-align:center;flex-wrap:wrap}
 .mobile-schedule-student.vehicle{background:#FFF88D;color:#111}
+.mobile-schedule-student.bt-new b{color:#DC2626}
 .mobile-schedule-student.new{background:#FF0000;color:#0000FF}
 .mobile-schedule-student.enrolled{background:#FF0000;color:#111}
+.mobile-schedule-student.paid{background:#BBF7D0}
 .mobile-schedule-student.enroll,.mobile-schedule-student.enroll-new{background:#DBEAFE;border-color:#1D4ED8}
 .mobile-schedule-student.enroll-new b{color:#1D4ED8}
 .mobile-schedule-student.retire{background:#555;color:#fff;border-color:#333}

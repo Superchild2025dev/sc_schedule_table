@@ -252,10 +252,72 @@ function _attReservationNameMatches(entry,item){
   if(pa&&pb&&pa!==pb) return false;
   return !!(name||pa||pb);
 }
+function _isBangteukTableActive(){
+  try{return typeof isBangteuk==='function'&&isBangteuk();}catch(e){return false;}
+}
+function _isBangteukSlotKey(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<4) return false;
+  const t=p[0], day=p[1], lane=parseInt(p[2],10), row=parseInt(p[3],10);
+  if(_isBangteukTableActive()){
+    try{
+      const cfg=typeof getTabConfig==='function'?getTabConfig():null;
+      const days=Array.isArray(cfg?.days)?cfg.days:[];
+      const times=Array.isArray(cfg?.times)?cfg.times.map(x=>x&&x.t):[];
+      const laneMax=parseInt(cfg?.lanes||5,10);
+      return !!(days.includes(day)&&times.includes(t)&&lane>=1&&lane<=laneMax&&row>=1&&row<=6);
+    }catch(e){return false;}
+  }
+  try{
+    if(typeof getBangteukSlotMeta==='function'&&getBangteukSlotMeta(t,day,lane)) return true;
+    const inst=typeof getInst==='function'?getInst(t,day,lane):null;
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'){
+      return window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:false});
+    }
+  }catch(e){}
+  return false;
+}
+function _bangteukMetaForSlotKey(slotKey){
+  const p=String(slotKey||'').split('/');
+  if(p.length<3) return null;
+  const [t,day,lane]=p;
+  try{
+    const meta=typeof getBangteukSlotMeta==='function'?getBangteukSlotMeta(t,day,parseInt(lane,10)):null;
+    if(meta&&(meta.seasonStart||meta.seasonEnd)) return meta;
+  }catch(e){}
+  if(_isBangteukTableActive()){
+    try{
+      const tab=typeof getActiveBangteukBasisTab==='function'?getActiveBangteukBasisTab():null;
+      if(tab) return {seasonStart:tab.seasonStart||'', seasonEnd:tab.seasonEnd||'', tabId:tab.id||''};
+    }catch(e){}
+  }
+  return null;
+}
+function _bangteukInfoVisible(slotKey,basisDs){
+  const meta=_bangteukMetaForSlotKey(slotKey);
+  if(!meta||!meta.seasonStart) return true;
+  let basis=basisDs||'';
+  if(!basis){
+    try{ basis=toDateStr(getToday()); }catch(e){ basis=''; }
+  }
+  if(!basis) return true;
+  return basis<meta.seasonStart;
+}
+function _bangteukClassActive(slotKey,basisDs){
+  const meta=_bangteukMetaForSlotKey(slotKey);
+  if(!meta||!meta.seasonStart||!meta.seasonEnd) return true;
+  let basis=basisDs||'';
+  if(!basis){
+    try{ basis=toDateStr(getToday()); }catch(e){ basis=''; }
+  }
+  if(!basis) return true;
+  return meta.seasonStart<=basis&&basis<=meta.seasonEnd;
+}
 function _attDisplayName(item,slotKey,ds){
   if(!item) return '';
   const name=String(item.n||item.name||'');
   const age=item.a||item.age||'';
+  const isBt=_isBangteukSlotKey(slotKey);
   if(item.type&&item.type!=='regular') return name+age;
   const suffixes=[];
   const ret=RETIRE_MAP&&RETIRE_MAP[slotKey];
@@ -264,8 +326,8 @@ function _attDisplayName(item,slotKey,ds){
     const suffix=(typeof _retireReservationSuffix==='function')?_retireReservationSuffix(ret,slotKey,item):'까지';
     suffixes.push('~'+_attMd(retDs)+suffix);
   }
-  const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
-  const enDs=String(item._attEnrollDs||item.enrolled||enr?.ds||'');
+  const enr=!isBt&&ENROLL_MAP&&ENROLL_MAP[slotKey];
+  const enDs=isBt?'':String(item._attEnrollDs||item.enrolled||enr?.ds||'');
   if(enDs&&enDs===ds&&(!enr||_attReservationNameMatches(enr,item)||item._attEnrollDs===enDs)){
     suffixes.push(_attMd(enDs)+'부터~');
   }
@@ -276,7 +338,9 @@ function _buildAttendanceBasisByDay(days){
   if(!_attendanceMode||!_attendanceDate||typeof getAttendanceBasisDataForDate!=='function') return map;
   days.forEach(day=>{
     const ds=_dayToCellDs(day);
-    map[day]=getAttendanceBasisDataForDate(ds);
+    const basis=getAttendanceBasisDataForDate(ds);
+    if(basis) basis._basisDate=ds;
+    map[day]=basis;
   });
   return map;
 }
@@ -343,11 +407,16 @@ function _ctxStu(ctx,t,day,lane,row){
   const data=ctx?.attendanceBasisByDay?.[day];
   if(data){
     const sourceDay=_attendanceSourceDay(data,day);
-    const exact=_withAttendanceViewDay(data.stuIdx?.[t+'/'+sourceDay+'/'+lane+'/'+row] || null,day,sourceDay);
+    const exactKey=t+'/'+sourceDay+'/'+lane+'/'+row;
+    const exact=_bangteukClassActive(exactKey,data._basisDate)
+      ? _withAttendanceViewDay(data.stuIdx?.[exactKey] || null,day,sourceDay)
+      : null;
     if(exact) return exact;
     const btSource=_btPreviewSourceParts(t,day,lane);
     if(btSource){
-      return _withBtPreviewSlot(data.stuIdx?.[btSource.t+'/'+btSource.day+'/'+btSource.lane+'/'+row] || null,t,day,lane,row,btSource);
+      const btKey=btSource.t+'/'+btSource.day+'/'+btSource.lane+'/'+row;
+      if(!_bangteukClassActive(btKey,data._basisDate)) return null;
+      return _withBtPreviewSlot(data.stuIdx?.[btKey] || null,t,day,lane,row,btSource);
     }
     return null;
   }
@@ -363,11 +432,16 @@ function _ctxInst(ctx,t,day,lane){
   const data=ctx?.attendanceBasisByDay?.[day];
   if(data){
     const sourceDay=_attendanceSourceDay(data,day);
-    const exact=data.instMap?.[t+'/'+sourceDay+'/'+lane] || null;
+    const exactKey=t+'/'+sourceDay+'/'+lane;
+    const exact=_bangteukClassActive(exactKey+'/1',data._basisDate)
+      ? (data.instMap?.[exactKey] || null)
+      : null;
     if(exact) return exact;
     const btSource=_btPreviewSourceParts(t,day,lane);
     if(btSource){
-      const inst=data.instMap?.[btSource.t+'/'+btSource.day+'/'+btSource.lane] || null;
+      const btKey=btSource.t+'/'+btSource.day+'/'+btSource.lane;
+      if(!_bangteukClassActive(btKey+'/1',data._basisDate)) return null;
+      const inst=data.instMap?.[btKey] || null;
       return inst?Object.assign({},inst,{_btPreviewGhost:true,sourceDay:btSource.day}):null;
     }
     return null;
@@ -385,10 +459,12 @@ function _ctxStudents(ctx,day){
   const data=ctx?.attendanceBasisByDay?.[day];
   if(data){
     const sourceDay=_attendanceSourceDay(data,day);
-    if(sourceDay===day) return data.students;
-    return (data.students||[])
-      .filter(stu=>stu&&stu.d===sourceDay)
-      .map(stu=>_withAttendanceViewDay(stu,day,sourceDay));
+    const list=sourceDay===day
+      ? (data.students||[])
+      : (data.students||[])
+        .filter(stu=>stu&&stu.d===sourceDay)
+        .map(stu=>_withAttendanceViewDay(stu,day,sourceDay));
+    return list.filter(stu=>stu&&_bangteukClassActive(stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r,data._basisDate));
   }
   return STUDENTS;
 }
@@ -1023,18 +1099,26 @@ function syncStudentsBeforeRender(){
 
   // 등원일 된 학생 자동 등록
   for(const [slotKey,entry] of Object.entries(ENROLL_MAP)){
-    if(entry.ds<=todayStr){
+    const isBtEnroll=_isBangteukSlotKey(slotKey);
+    if(!isBtEnroll&&(entry.paid||entry.btNew)){
+      delete entry.paid;
+      delete entry.btNew;
+      enrollChanged=true;
+    }
+    if(isBtEnroll||entry.ds<=todayStr){
       const [t,d,l,r]=slotKey.split('/');
       const li=parseInt(l),ri=parseInt(r);
       const existing=getStu(t,d,li,ri);
       if(!existing){
         const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
         if(entry.p) obj.p=entry.p;
-        if(entry.isNew) obj.isNew=entry.isNew;
-        else if(entry.reenroll) obj.reenroll=entry.reenroll;
-        if(entry.enrolled||entry.isNew||entry.reenroll) obj.enrolled=entry.ds;
+        if(isBtEnroll&&(entry.btNew||entry.isNew)) obj.btNew=true;
+        else if(entry.isNew) obj.isNew=entry.isNew;
+        else if(!isBtEnroll&&entry.reenroll) obj.reenroll=entry.reenroll;
+        if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
         // [v99] 등원 예약 시 입력한 차량/승하차/메모 적용
         if(entry.v) obj.v=true;
+        if(entry.paid) obj.paid=true;
         if(entry.loc) obj.loc=entry.loc;
         if(entry.memo) obj.memo=entry.memo;
         // [v100] 성별도 적용
@@ -1062,9 +1146,12 @@ function syncStudentsBeforeRender(){
   // [FIX] 이전엔 in-memory만 mutate하고 저장하지 않아 새로고침/다른 디바이스에서 플래그가 부활했음.
   let flagChanged=false;
   STUDENTS.forEach(s=>{
-    if(s.isNew&&s.isNew!==cp.month){ delete s.isNew; flagChanged=true; }
-    if(s.reenroll&&s.reenroll!==cp.month){ delete s.reenroll; flagChanged=true; }
-    if(s.enrolled&&s.enrolled<todayStr){ delete s.enrolled; flagChanged=true; }
+    const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+    if(!isBtStu&&s.paid){ delete s.paid; flagChanged=true; }
+    if(isBtStu&&s.isNew){ s.btNew=true; delete s.isNew; flagChanged=true; }
+    if(s.isNew&&!isBtStu&&s.isNew!==cp.month){ delete s.isNew; flagChanged=true; }
+    if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)){ delete s.reenroll; flagChanged=true; }
+    if(s.enrolled&&(isBtStu||s.enrolled<todayStr)){ delete s.enrolled; flagChanged=true; }
   });
   if(changed||enrollChanged||retireChanged||hyuwonChanged||flagChanged){
     const periodMonth=cp.month;
@@ -1098,17 +1185,25 @@ function syncStudentsBeforeRender(){
       }
 
       for(const [slotKey,entry] of Object.entries(enroll)){
-        if(entry.ds<=todayStr){
+        const isBtEnroll=_isBangteukSlotKey(slotKey);
+        if(!isBtEnroll&&(entry.paid||entry.btNew)){
+          delete entry.paid;
+          delete entry.btNew;
+          txEnrollChanged=true;
+        }
+        if(isBtEnroll||entry.ds<=todayStr){
           const [t,d,l,r]=slotKey.split('/');
           const li=parseInt(l),ri=parseInt(r);
           const existing=students.find(s=>slotMatch(s,slotKey));
           if(!existing){
             const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
             if(entry.p) obj.p=entry.p;
-            if(entry.isNew) obj.isNew=entry.isNew;
-            else if(entry.reenroll) obj.reenroll=entry.reenroll;
-            if(entry.enrolled||entry.isNew||entry.reenroll) obj.enrolled=entry.ds;
+            if(isBtEnroll&&(entry.btNew||entry.isNew)) obj.btNew=true;
+            else if(entry.isNew) obj.isNew=entry.isNew;
+            else if(!isBtEnroll&&entry.reenroll) obj.reenroll=entry.reenroll;
+            if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
             if(entry.v) obj.v=true;
+            if(entry.paid) obj.paid=true;
             if(entry.loc) obj.loc=entry.loc;
             if(entry.memo) obj.memo=entry.memo;
             if(entry.g) obj.g=entry.g;
@@ -1124,9 +1219,12 @@ function syncStudentsBeforeRender(){
       }
 
       students.forEach(s=>{
-        if(s.isNew&&s.isNew!==periodMonth){delete s.isNew;txStudentsChanged=true;}
-        if(s.reenroll&&s.reenroll!==periodMonth){delete s.reenroll;txStudentsChanged=true;}
-        if(s.enrolled&&s.enrolled<todayStr){delete s.enrolled;txStudentsChanged=true;}
+        const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+        if(!isBtStu&&s.paid){delete s.paid;txStudentsChanged=true;}
+        if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;txStudentsChanged=true;}
+        if(s.isNew&&!isBtStu&&s.isNew!==periodMonth){delete s.isNew;txStudentsChanged=true;}
+        if(s.reenroll&&(isBtStu||s.reenroll!==periodMonth)){delete s.reenroll;txStudentsChanged=true;}
+        if(s.enrolled&&(isBtStu||s.enrolled<todayStr)){delete s.enrolled;txStudentsChanged=true;}
       });
 
       if(txStudentsChanged) ctx.set(stuKey,students);
@@ -1358,6 +1456,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 
   const slotHasStoredContent=(day,lane,row)=>{
     const slotKey=t+'/'+day+'/'+lane+'/'+row;
+    if(_attendanceMode&&_attendanceDate&&_isBangteukSlotKey(slotKey)&&!_bangteukClassActive(slotKey,_dayToCellDs(day))) return false;
     const inst=_ctxInst(ctx,t,day,lane);
     if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'&&window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:isBangteukTable})) return true;
     if(_ctxStu(ctx,t,day,lane,row)) return true;
@@ -1426,6 +1525,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const btStoredSlot=window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'
         ? window.SCScheduleTime.isBangteukSlot(btSlotInst,_r,{bangteukTable:isBangteukTable})
         : false;
+      const isBtCell=isBangteukTable||btStoredSlot||_isBangteukSlotKey(slotKey);
       const previewCellActive=btPreviewTime&&ri<6&&_btPreviewLaneVisible(t,day,_l);
       // 일반 레인 5행 초과는 기본적으로 blocked
       // 단, 실제 저장 데이터가 있는 칸은 6~8번이어도 가리지 않는다.
@@ -1485,20 +1585,22 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       if(isBtGhost) td.classList.add('bt-preview-ghost');
       // 출석 모드 상태 판단 (특수 배경 클래스 분기에 필요)
       const _attIsActive=_attendanceMode && _attendanceDate;
+      const _cellDs=_attIsActive?_dayToCellDs(day):null;
+      const btInfoVisible=isBtCell&&_bangteukInfoVisible(slotKey,_cellDs);
       // 출석 모드면 특수 배경/마크 클래스 적용 안 함 (흰 배경 유지)
       if(!_attIsActive){
         // 방특 묶음 미리보기 원생은 이름만 공유하고, 차량/신규/등원 배경은 현재 칸 데이터만 사용한다.
         const slotVisualStu=isBtGhost?exactStu:stu;
         const stuVehicle=slotVisualStu&&(slotVisualStu.v||_tableLocUsesVehicle(slotVisualStu.loc));
         if(stuVehicle) td.classList.add('stu-vehicle');
-        if(slotVisualStu&&slotVisualStu.isNew&&slotVisualStu.isNew===curMonth) td.classList.add('stu-new');
+        if(btInfoVisible&&slotVisualStu&&slotVisualStu.paid) td.classList.add('stu-paid');
+        if(!isBtCell&&slotVisualStu&&slotVisualStu.isNew&&slotVisualStu.isNew===curMonth) td.classList.add('stu-new');
         if(slotVisualStu&&(slotVisualStu.memo||stuVehicle||slotVisualStu.p||slotVisualStu.g)) td.classList.add('stu-has-note');
       }
       if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
       td.dataset.t=t;td.dataset.day=day;td.dataset.lane=_l;td.dataset.ri=_r;
       // 출석 모드에서는 각 요일 셀이 해당 주의 그 날짜로 작동 (모든 요일 활성)
       const _attDayMatch=_attIsActive;
-      const _cellDs=_attIsActive?_dayToCellDs(day):null;
 
       // 출석 모드 + 해당 요일이 휴관일이면 흐림 처리
       let _attDayClosed=false;
@@ -1605,7 +1707,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       }
 
       // 등원(비신규) 빨간 배경 — 등원일까지만 (출석 모드에선 스킵)
-      if(!_attIsActive && exactStu&&!td.classList.contains('stu-new')){
+      if(!isBtCell&&!_attIsActive && exactStu&&!td.classList.contains('stu-new')){
         if(exactStu.reenroll&&exactStu.reenroll===curMonth){
           td.classList.add('stu-enrolled');
         } else if(exactStu.enrolled&&exactStu.enrolled>=todayStr){
@@ -1621,7 +1723,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       const allDates=[...classDates.cur,...classDates.next];
       const retEntry=RETIRE_MAP[slotKey];
       const retDs=(typeof retEntry==='string'?retEntry:retEntry?.ds)||null;
-      const enrEntry=ENROLL_MAP[slotKey];
+      const enrEntry=isBtCell?null:ENROLL_MAP[slotKey];
       const hasFutureRetire=!!(retDs&&retDs>=todayStr);
       const hasFutureEnroll=!!(enrEntry&&enrEntry.ds>todayStr);
 
@@ -1807,7 +1909,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
         const hideAgeForReservation=retireInline||enrollInline;
         let display=(prefix?prefix+'.':'')+stu.n+(hideAgeForReservation?'':(stu.a||''));
         if(retireInline) display+=' ~'+_dl(retDs)+_retireReservationSuffix(retEntry,slotKey,stu);
-        let html=`<span class="stu-name-text">${esc(display)}</span>`;
+        let html=`<span class="stu-name-text${btInfoVisible&&(stu.btNew||stu.isNew)?' stu-bt-new-text':''}">${esc(display)}</span>`;
         if(enrollInline) html+=` <span class="stu-enroll-inline${enrEntry.isNew?' stu-enroll-inline-new':''}">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;
         if(badgeHtml) html+=badgeHtml;
         td.innerHTML=html;
@@ -1847,6 +1949,7 @@ function _rowHasRenderableContent(t,row,DAYS,LANE_COUNT,ctx){
   for(const day of DAYS){
     for(let lane=1;lane<=LANE_COUNT;lane++){
       const slotKey=t+'/'+day+'/'+lane+'/'+row;
+      if(_attendanceMode&&_attendanceDate&&_isBangteukSlotKey(slotKey)&&!_bangteukClassActive(slotKey,_dayToCellDs(day))) continue;
       const inst=_ctxInst(ctx,t,day,lane);
       if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'&&window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:isBangteukTable})) return true;
       if(_ctxStu(ctx,t,day,lane,row)) return true;
@@ -2176,15 +2279,26 @@ function _mobileStudentText(stu){
   return `${stu.n||''}${stu.a||''}`.trim();
 }
 function _mobileStudentType(stu,enroll,badges,todayStr){
-  if(stu){
-    if(stu.v||_tableLocUsesVehicle(stu.loc)) return 'vehicle';
-    try{
-      const curMonth=(SCHEDULE_PERIODS[getCurrentPeriod()]||{}).month;
-      if(stu.isNew&&stu.isNew===curMonth) return 'new';
-      if(stu.reenroll&&stu.reenroll===curMonth) return 'enrolled';
-    }catch(e){}
-    if(stu.enrolled&&stu.enrolled>=todayStr) return 'enrolled';
-    return 'student';
+    if(stu){
+    const classes=[];
+    const slotKey=stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r;
+    const isBt=_isBangteukSlotKey(stu.t+'/'+stu.d+'/'+stu.l+'/'+stu.r);
+    const btInfoVisible=isBt&&_bangteukInfoVisible(slotKey,todayStr);
+    if(btInfoVisible&&stu.paid) classes.push('paid');
+    if(stu.v||_tableLocUsesVehicle(stu.loc)) classes.push('vehicle');
+    if(btInfoVisible&&(stu.btNew||stu.isNew)){
+      classes.push('bt-new');
+      return classes.join(' ')||'bt-new';
+    }
+    if(!isBt){
+      try{
+        const curMonth=(SCHEDULE_PERIODS[getCurrentPeriod()]||{}).month;
+        if(stu.isNew&&stu.isNew===curMonth){classes.push('new');return classes.join(' ');}
+        if(stu.reenroll&&stu.reenroll===curMonth){classes.push('enrolled');return classes.join(' ');}
+      }catch(e){}
+      if(stu.enrolled&&stu.enrolled>=todayStr){classes.push('enrolled');return classes.join(' ');}
+    }
+    return classes.join(' ')||'student';
   }
   if(badges&&badges.length&&badges.every(b=>b.type==='bogang')) return 'bogang-only';
   if(enroll) return enroll.isNew?'enroll-new':'enroll';
@@ -2192,8 +2306,9 @@ function _mobileStudentType(stu,enroll,badges,todayStr){
 }
 function _mobileCellItems(ctx,t,day,lane,row){
   const slotKey=_mobileSlotKey(t,day,lane,row);
+  const isBtCell=_isBangteukSlotKey(slotKey);
   const stu=_ctxStu(ctx,t,day,lane,row);
-  const enroll=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  const enroll=!isBtCell&&ENROLL_MAP&&ENROLL_MAP[slotKey];
   const retire=RETIRE_MAP&&RETIRE_MAP[slotKey];
   const badges=_mobileSlotBadges(slotKey,day);
   const items=[];

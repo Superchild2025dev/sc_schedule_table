@@ -570,7 +570,34 @@ function _shortMd(ds){
   return ds.slice(5).replace('-','/');
 }
 
-function _enrollPanelFieldsHtml(entry){
+function _isBangteukPopupSlot(t,day,lane){
+  try{
+    if(typeof isBangteuk==='function'&&isBangteuk()){
+      const cfg=typeof getTabConfig==='function'?getTabConfig():null;
+      const days=Array.isArray(cfg?.days)?cfg.days:[];
+      const times=Array.isArray(cfg?.times)?cfg.times.map(x=>x&&x.t):[];
+      const laneNo=parseInt(lane,10);
+      return !!(t&&day&&days.includes(day)&&times.includes(t)&&laneNo>=1&&laneNo<=parseInt(cfg?.lanes||5,10));
+    }
+    if(typeof getBangteukSlotMeta==='function'&&getBangteukSlotMeta(t,day,lane)) return true;
+    const inst=typeof getInst==='function'?getInst(t,day,parseInt(lane,10)):null;
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'){
+      return window.SCScheduleTime.isBangteukSlot(inst,1,{bangteukTable:false});
+    }
+  }catch(e){}
+  return false;
+}
+
+function _isBangteukPopupActive(){
+  const p=_stuPopup||{};
+  return _isBangteukPopupSlot(p.t,p.day,p.lane);
+}
+
+function _bangteukPlainEnrollForm(form){
+  return Object.assign({},form,{btNew:!!form.isNew,isNew:false,reenroll:false});
+}
+
+function _enrollPanelFieldsHtml(entry, showPaid){
   const e=entry||{};
   const loc=_parseLoc(e.loc||'');
   return `<div class="sp-enroll-fields" style="display:flex;flex-direction:column;gap:4px;margin:6px 0">
@@ -582,6 +609,7 @@ function _enrollPanelFieldsHtml(entry){
     <div style="display:flex;gap:4px;align-items:center">
       <button type="button" class="sp-chip male ${e.g==='m'?'on':''}" id="sp-enroll-gender-m" style="flex:0 0 42px">남</button>
       <button type="button" class="sp-chip female ${e.g==='f'?'on':''}" id="sp-enroll-gender-f" style="flex:0 0 42px">여</button>
+      ${showPaid?`<label style="display:flex;align-items:center;gap:4px;margin-left:auto;font-size:10px;font-weight:800;white-space:nowrap;color:#047857"><input type="checkbox" id="sp-enroll-paid" ${e.paid?'checked':''}> 결제</label>`:''}
     </div>
     <div style="display:flex;gap:4px;align-items:center">
       <input class="fi" id="sp-enroll-pickup" placeholder="승차 장소" value="${esc(loc.pickUp||'')}" style="flex:1;margin:0;padding:4px 6px;font-size:11px" ${loc.pickSelf?'disabled':''}>
@@ -598,14 +626,19 @@ function _enrollPanelFieldsHtml(entry){
 function buildEnrollControlHtml(existing, selDate, opts){
   opts=opts||{};
   const e=existing||null;
+  const isBt=_isBangteukPopupActive();
   const hasReservation=!!e;
   const sameDate=hasReservation&&e.ds===selDate;
   const locked=hasReservation&&_isReserveMoveEntry(e);
   const showFields=!!opts.showFields;
-  const primaryLabel=hasReservation
+  const primaryLabel=isBt
+    ? '원생정보 저장'
+    : hasReservation
     ? (sameDate?'등록 옵션 저장':'등록일 변경')
     : '선택일로 등록 예약';
-  const statusText=hasReservation
+  const statusText=isBt
+    ? '방특 원생정보로 바로 저장'
+    : hasReservation
     ? `현재 등록일 ${esc(_shortMd(e.ds))}${sameDate?'':' → 선택일 '+esc(_shortMd(selDate))}`
     : `선택일 ${esc(_shortMd(selDate))}부터 등록 예약`;
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
@@ -618,8 +651,8 @@ function buildEnrollControlHtml(existing, selDate, opts){
         <span class="sp-vt-toggle"></span>
       </div>
     </div>
-    <div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin-bottom:6px">신규 OFF = 재등록</div>
-    ${showFields?_enrollPanelFieldsHtml(e):''}
+    <div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin-bottom:6px">${isBt?'신규 ON = 빨간글씨':'신규 OFF = 재등록'}</div>
+    ${showFields?_enrollPanelFieldsHtml(e,isBt):''}
     ${locked
       ? `<div style="font-size:10px;color:#6B7280;text-align:center;font-weight:700;line-height:1.4;margin-bottom:6px">예약 이동으로 만든 등록은 이동 취소로만 변경할 수 있습니다.</div>`
       : `<button class="btn btn-p" id="sp-enroll-set" style="width:100%;padding:5px;font-size:10px;background:#3B82F6">${primaryLabel}</button>`}
@@ -731,6 +764,8 @@ function _stuLikeFromEnrollEntry(entry){
     loc:entry.loc||'',
     memo:entry.memo||'',
     g:entry.g||null,
+    paid:!!entry.paid,
+    btNew:entry.btNew||null,
     isNew:entry.isNew||null,
     reenroll:entry.reenroll||null,
     __pendingEnroll:true,
@@ -739,13 +774,14 @@ function _stuLikeFromEnrollEntry(entry){
 
 function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const curMonth = SCHEDULE_PERIODS[getCurrentPeriod()].month;
-  const pendingEnrollInfo=!!pendingEnrollEntry&&(_stuPopup.showEnroll||!stu);
+  const isBt=_isBangteukPopupActive();
+  const pendingEnrollInfo=!isBt&&!!pendingEnrollEntry&&(_stuPopup.showEnroll||!stu);
   const viewStu=pendingEnrollInfo?_stuLikeFromEnrollEntry(pendingEnrollEntry):(stu||_stuLikeFromEnrollEntry(pendingEnrollEntry));
   const inputLock='';
   const checkLock='';
   const chipLock='';
   const chipStyle='';
-  const isNewOn=!!(viewStu&&viewStu.isNew&&(pendingEnrollInfo||viewStu.isNew===curMonth));
+  const isNewOn=!!(viewStu&&((isBt&&viewStu.btNew)||viewStu.isNew&&(pendingEnrollInfo||isBt||viewStu.isNew===curMonth)));
   const infoDate=pendingEnrollEntry?.ds?pendingEnrollEntry.ds.slice(5).replace('-','/'):'';
   return `<div class="stu-popup-left">
     ${pendingEnrollInfo?`<div style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1D4ED8;border-radius:8px;padding:6px 8px;margin-bottom:8px;font-size:11px;font-weight:800;text-align:center">${esc(infoDate)}부터 등록 예약된 원생</div>`:''}
@@ -770,8 +806,9 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
       </div>
       <button type="button" class="sp-chip male ${viewStu&&viewStu.g==='m'?'on':''}" id="sp-gender-m" ${checkLock}>남</button>
       <button type="button" class="sp-chip female ${viewStu&&viewStu.g==='f'?'on':''}" id="sp-gender-f" ${checkLock}>여</button>
+      ${isBt?`<label style="display:flex;align-items:center;gap:4px;margin-left:auto;font-size:10px;font-weight:800;white-space:nowrap;color:#047857"><input type="checkbox" id="sp-paid" ${viewStu&&viewStu.paid?'checked':''} ${checkLock}> 결제</label>`:''}
     </div>
-    ${enrollMode||pendingEnrollInfo?`<div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin:-1px 0 5px">신규 OFF = 재등록</div>`:''}
+    ${enrollMode||pendingEnrollInfo?`<div style="font-size:9px;color:#6B7280;font-weight:700;text-align:center;margin:-1px 0 5px">${isBt?'신규 ON = 빨간글씨':'신규 OFF = 재등록'}</div>`:''}
     <div style="margin-bottom:4px">
       <label class="fl">승하차</label>
       ${(()=>{ const p=_parseLoc(viewStu&&viewStu.loc); return `
@@ -800,9 +837,9 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
         <div style="font-size:10px;color:#6B7280;text-align:center;margin-top:6px;font-weight:700;line-height:1.4">왼쪽 정보 수정 후 바로 저장할 수 있습니다.</div>`
       : enrollMode
       ? `<div class="stu-popup-actions">
-          <button class="btn btn-p" id="sp-enroll-from-left" style="flex:1;background:#3B82F6">📅 등록 예약</button>
+          <button class="btn btn-p" id="sp-enroll-from-left" style="flex:1;background:#3B82F6">${isBt?'원생정보 저장':'📅 등록 예약'}</button>
         </div>
-        <div style="font-size:10px;color:#3B82F6;text-align:center;margin-top:4px;font-weight:700">${_stuPopup.selDate?_stuPopup.selDate.slice(5).replace('-','/')+' 등록 예약 입력 중':''}</div>`
+        <div style="font-size:10px;color:#3B82F6;text-align:center;margin-top:4px;font-weight:700">${isBt?'방특 원생정보로 바로 저장':(_stuPopup.selDate?_stuPopup.selDate.slice(5).replace('-','/')+' 등록 예약 입력 중':'')}</div>`
       : `<div class="stu-popup-actions">
           <button class="btn btn-p" id="sp-save" style="flex:1">저장</button>
           ${stu?'<button class="btn btn-d" id="sp-del">삭제</button>':''}
@@ -864,6 +901,7 @@ function captureStuFormDraft(){
     memo: get('sp-memo')?.value || '',
     gender: get('sp-gender-m')?.classList.contains('on') ? 'm'
           : get('sp-gender-f')?.classList.contains('on') ? 'f' : null,
+    paid: get('sp-paid')?.checked || false,
     isNew: get('sp-new')?.classList.contains('on') || false,
     reenroll: get('sp-reenroll')?.classList.contains('on') || false,
   };
@@ -884,6 +922,7 @@ function restoreStuFormDraft(d){
   setVal('sp-memo', d.memo);
   if(d.gender==='m') get('sp-gender-m')?.classList.add('on');
   if(d.gender==='f') get('sp-gender-f')?.classList.add('on');
+  if(d.paid){ const paid=get('sp-paid'); if(paid) paid.checked=true; }
   if(d.isNew) get('sp-new')?.classList.add('on');
   if(d.reenroll) get('sp-reenroll')?.classList.add('on');
 }
@@ -967,8 +1006,10 @@ function _studentFromFormForSlot(form,t,day,lane,row,ds){
   if(form.phone) obj.p=form.phone;
   if(form.vehicle) obj.v=true;
   if(form.gender) obj.g=form.gender;
+  if(form.paid) obj.paid=true;
   if(form.loc) obj.loc=form.loc;
   if(form.memo) obj.memo=form.memo;
+  if(form.btNew) obj.btNew=true;
   if(form.isNew) obj.isNew=form.isNew;
   if(form.reenroll) obj.reenroll=form.reenroll;
   if(ds) obj.enrolled=ds;
@@ -1105,10 +1146,12 @@ async function handleSave(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
   const groupSlots=_btGroupSlotsForParts(t,day,lane,row);
+  const isBt=_isBangteukPopupSlot(t,day,lane);
 
   // [FIX] 미래 등록 예약이 있는 빈 셀에서 저장 차단 → 등록일에 자동 등록됨
   const todayStr=toDateStr(getToday());
   const blockedEnroll=groupSlots.find(s=>{
+    if(isBt) return false;
     const pending=ENROLL_MAP[s.slotKey];
     return pending && pending.ds>todayStr && !getStu(s.t,s.day,s.lane,s.row);
   });
@@ -1124,6 +1167,7 @@ async function handleSave(e, ctx){
   const isNewCheck=document.getElementById('sp-new')?.classList.contains('on')||false;
   const gender=document.getElementById('sp-gender-m')?.classList.contains('on')?'m'
     :(document.getElementById('sp-gender-f')?.classList.contains('on')?'f':null);
+  const paid=isBt&&(document.getElementById('sp-paid')?.checked||false);
   // [v118] 승차/하차 각각 자가 → loc 합성
   const _pickUp = document.getElementById('sp-pickup')?.value.trim() || '';
   const _dropOff = document.getElementById('sp-dropoff')?.value.trim() || '';
@@ -1171,9 +1215,11 @@ async function handleSave(e, ctx){
           phone,
           vehicle,
           gender,
+          paid,
           loc,
           memo,
-          isNew:isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
+          btNew:isBt&&isNewCheck?true:null,
+          isNew:!isBt&&isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
         };
         groupSlots.forEach(slot=>{
           students.push(_studentFromFormForSlot(form,slot.t,slot.day,slot.lane,slot.row));
@@ -1181,6 +1227,12 @@ async function handleSave(e, ctx){
       }
       return students;
     });
+    if(isBt){
+      await updateEnrollMapTx(enroll=>{
+        groupSlots.forEach(s=>{delete enroll[s.slotKey];});
+        return enroll;
+      });
+    }
     // 비활성화 해제
     if(name&&groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
       await updateDisabledMapTx(disabled=>{
@@ -1687,16 +1739,18 @@ function _readEnrollForm(prefix){
     ? _buildLoc(_pickUp, _dropOff, _pickSelf, _dropSelf)
     : (g(prefix+'loc')?.value.trim() || '');
   const memo=g(prefix+'memo')?.value.trim()||'';
+  const paid=g(prefix+'paid')?.checked||false;
   const isNew=g(prefix+'new')?.classList.contains('on')||false;
   const reenroll=!isNew && (g(prefix+'reenroll')?.classList.contains('on')||false);
   const vehicle=_locUsesVehicle(loc);
-  return {name,age,phone,vehicle,gender,loc,memo,isNew,reenroll};
+  return {name,age,phone,vehicle,gender,paid,loc,memo,isNew,reenroll};
 }
 
 function _readEnrollReservationForm(){
+  const isBt=_isBangteukPopupActive();
   if(document.getElementById('sp-enroll-name')){
     const form=_readEnrollForm('sp-enroll-');
-    form.reenroll=!form.isNew;
+    form.reenroll=isBt?false:!form.isNew;
     return form;
   }
   const form=_readEnrollForm('sp-');
@@ -1705,12 +1759,19 @@ function _readEnrollReservationForm(){
     form.isNew=!!newBtn?.classList.contains('on');
     form.reenroll=!form.isNew;
   }
+  if(isBt){
+    form.reenroll=false;
+  }
   return form;
 }
 
 function _readEnrollLeftForm(){
   const form=_readEnrollForm('sp-');
-  form.reenroll=!form.isNew;
+  if(_isBangteukPopupActive()){
+    form.reenroll=false;
+  } else {
+    form.reenroll=!form.isNew;
+  }
   return form;
 }
 
@@ -1743,6 +1804,7 @@ function _enrollEntryForForm(form,ds,enrollMonth,convertedFromStudent){
     loc:form.loc||undefined,
     memo:form.memo||undefined,
     g:form.gender||undefined,
+    paid:form.paid||undefined,
     convertedFromStudent:convertedFromStudent||undefined,
   };
 }
@@ -1751,8 +1813,10 @@ async function _commitEnroll(slotKey, form){
   if(!form.name){toast('이름을 입력하세요','err');return;}
   const ds=_stuPopup.selDate;
   const todayStr=toDateStr(getToday());
-  const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
   const slotParts=_slotParts(slotKey);
+  const isBt=_isBangteukPopupSlot(slotParts.t,slotParts.d,slotParts.l);
+  form=isBt?_bangteukPlainEnrollForm(form):form;
+  const enrollMonth=(form.isNew||form.reenroll) ? _periodMonthForDate(ds) : null;
   const groupSlots=_btGroupSlotsForSlotKey(slotKey);
   const currentStu=getStu(slotParts.t,slotParts.d,slotParts.l,slotParts.r);
   const convertedFromStudent=!!(currentStu && _enrollEntryMatchesStudent(currentStu,{
@@ -1761,10 +1825,13 @@ async function _commitEnroll(slotKey, form){
     p:form.phone,
   }));
 
-  // [FIX] 당일/과거 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
-  if(ds<=todayStr){
+  // [FIX] 당일/과거 등록 또는 방특 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
+  if(isBt||ds<=todayStr){
     try{
-      await updateStudentsTx((students,abort)=>{
+      const stuKey=getTabConfig().stuKey;
+      await updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL], ctx=>{
+        const students=ctx.get(stuKey,[]);
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
         const intended={n:form.name,a:form.age,p:form.phone};
         const removeIndexes=[];
         for(const slot of groupSlots){
@@ -1772,21 +1839,26 @@ async function _commitEnroll(slotKey, form){
           if(existIdx<0) continue;
           const existing=students[existIdx];
           if(!_studentIdentityMatches(existing,intended)){
-            abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
+            ctx.abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
             return;
           }
           removeIndexes.push(existIdx);
         }
         removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
-        const directForm=Object.assign({},form,{
-          isNew:form.isNew&&enrollMonth?enrollMonth:null,
-          reenroll:form.reenroll&&enrollMonth?enrollMonth:null,
-        });
+        const directForm=isBt
+          ? Object.assign({},form,{btNew:!!form.btNew,isNew:null,reenroll:null})
+          : Object.assign({},form,{
+            isNew:form.isNew&&enrollMonth?enrollMonth:null,
+            reenroll:form.reenroll&&enrollMonth?enrollMonth:null,
+          });
         groupSlots.forEach(slot=>{
-          students.push(_studentFromFormForSlot(directForm,slot.t,slot.day,slot.lane,slot.row,ds));
+          students.push(_studentFromFormForSlot(directForm,slot.t,slot.day,slot.lane,slot.row,isBt?null:ds));
+          if(isBt) delete enroll[slot.slotKey];
         });
-        return students;
-      });
+        ctx.set(stuKey,students);
+        if(isBt) ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        return true;
+      }, {type:'edit', label:isBt?'방특 원생 저장':'즉시 등록', detail:isBt?`${form.name} 방특 원생 저장`:`${form.name} ${ds} 즉시 등록`});
       if(groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
         await updateDisabledMapTx(disabled=>{
           groupSlots.forEach(s=>{delete disabled[s.slotKey];});
@@ -1797,7 +1869,7 @@ async function _commitEnroll(slotKey, form){
       _stuPopup.showEnroll=false;
       renderStuPopup(true);
       buildTable();
-      toast(form.name+(form.age||'')+' 즉시 등록'+_btGroupToastSuffix(groupSlots),'ok');
+      toast(form.name+(form.age||'')+(isBt?' 원생정보 저장':' 즉시 등록')+_btGroupToastSuffix(groupSlots),'ok');
     }catch(err){
       toast(err?.message||'등록 실패','err');
       console.error(err);
@@ -2417,11 +2489,13 @@ function _popupStudentDraft(){
   const phone=normPhone(document.getElementById('sp-phone')?.value||'');
   const gender=document.getElementById('sp-gender-m')?.classList.contains('on')?'m'
     :(document.getElementById('sp-gender-f')?.classList.contains('on')?'f':null);
+  const paid=_isBangteukPopupActive()&&(document.getElementById('sp-paid')?.checked||false);
   return {
     n:name,
     a:age,
     p:phone,
     g:gender,
+    paid,
     memo:(document.getElementById('sp-memo')?.value||'').trim(),
   };
 }
