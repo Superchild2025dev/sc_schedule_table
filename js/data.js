@@ -1730,13 +1730,38 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
 function _scheduleAuditRowKey(row){
   return [row.day,row.teacher,row.target,row.reason,row.date,row.time].map(v=>String(v||'').trim()).join('|');
 }
+function _scheduleAuditNormalizeMonthKey(value){
+  const raw=String(value||'').trim();
+  if(!raw) return '';
+  try{
+    if(typeof _normalizeMonthKey==='function') return _normalizeMonthKey(raw)||raw;
+  }catch(e){}
+  const m=raw.match(/^(20\d{2})[-./년\s]*(\d{1,2})/);
+  if(m) return m[1]+'-'+String(m[2]).padStart(2,'0');
+  return raw;
+}
 function _scheduleAuditActiveScope(){
   const tab=(typeof _tabById==='function')?_tabById(_activeTab):null;
   const type=tab?.type||'regular';
+  if(type==='snapshot'){
+    let info=null;
+    try{ info=typeof getSnapshotSourceInfo==='function'?getSnapshotSourceInfo(tab.id):null; }catch(e){}
+    const sourceType=info?.sourceTabType||tab?.sourceTabType||'regular';
+    const sourceId=info?.sourceTabId||tab?.sourceTabId||tab?.id||_activeTab||'regular';
+    return {
+      tabId:String(sourceId),
+      tabName:String(info?.sourceTabName||tab?.sourceTabName||tab?.name||''),
+      tabType:sourceType==='bangteuk'?'bangteuk':'regular',
+      snapshotId:String(info?.snapshotId||tab?.id||''),
+      periodMonth:_scheduleAuditNormalizeMonthKey(info?.periodMonth||tab?.periodMonth||''),
+    };
+  }
   return {
     tabId:String(tab?.id||_activeTab||'regular'),
     tabName:String(tab?.name||''),
     tabType:type==='bangteuk'?'bangteuk':'regular',
+    snapshotId:'',
+    periodMonth:_scheduleAuditNormalizeMonthKey(tab?.periodMonth||''),
   };
 }
 function _scheduleAuditScopeFromItem(item){
@@ -1755,7 +1780,7 @@ function _scheduleAuditScopeFromItem(item){
 function _scheduleAuditMatchesActiveScope(item){
   const scope=_scheduleAuditScopeFromItem(item);
   const active=scope.active||_scheduleAuditActiveScope();
-  if(scope.tabId) return scope.tabId===active.tabId;
+  if(scope.tabId) return scope.tabId===active.tabId || (!!active.snapshotId&&scope.tabId===active.snapshotId);
   // 오래된 기록에는 탭 정보가 없어서 정규 탭에서만 보여준다. 방특에 섞이지 않게 막는 용도.
   return active.tabType==='regular';
 }
@@ -1794,6 +1819,23 @@ function _scheduleAuditDateInputValue(note){
   const md=label.match(/^(\d{1,2})\/(\d{1,2})$/);
   if(md){
     return parseInt(md[1],10)+'/'+parseInt(md[2],10);
+  }
+  return '';
+}
+function _deskNoteMonthFromDateKey(key){
+  const raw=String(key||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw.slice(0,7);
+  return '';
+}
+function _deskNoteMonthFromDateText(text,monthKey){
+  const raw=String(text||'').trim();
+  if(!raw||raw==='-') return '';
+  let m=raw.match(/^(20\d{2})[-./년\s]+(\d{1,2})[-./월\s]+(\d{1,2})(?:일)?$/);
+  if(m) return m[1]+'-'+String(m[2]).padStart(2,'0');
+  m=raw.match(/^(\d{1,2})\s*(?:\/|\.|월)\s*(\d{1,2})(?:일)?$/);
+  if(m){
+    const year=String(monthKey||'').slice(0,4)||String(getToday().getFullYear());
+    return year+'-'+String(m[1]).padStart(2,'0');
   }
   return '';
 }
@@ -1846,7 +1888,7 @@ function _deskNoteRecordedDate(row){
 function _deskNoteFromScheduleRow(row){
   const written=_deskNoteRecordedDate(row);
   const now=new Date().toISOString();
-  const sourceKey=_scheduleAuditRowKey(row);
+  const sourceKey=_deskNoteSourceKeyForRow(row);
   const scope=_scheduleAuditScopeFromItem(row);
   const active=scope.active||_scheduleAuditActiveScope();
   const tabId=scope.tabId||active.tabId;
@@ -2088,8 +2130,9 @@ function _syncDeskNotesFromRows(rows){
   const additions=[];
   (rows||[]).forEach(row=>{
     if(row?.bangteuk) return;
-    const sourceKey=_scheduleAuditRowKey(row);
-    if(!sourceKey||sourceKeys.has(sourceKey)) return;
+    const sourceKey=_deskNoteSourceKeyForRow(row);
+    const legacyKey=_scheduleAuditRowKey(row);
+    if(!sourceKey||sourceKeys.has(sourceKey)||sourceKeys.has(legacyKey)) return;
     sourceKeys.add(sourceKey);
     additions.push(_deskNoteFromScheduleRow(row));
   });
@@ -2102,17 +2145,32 @@ function _syncDeskNotesFromRows(rows){
   }
   return DESK_NOTES.concat(additions);
 }
+function _deskNoteSourceKeyForRow(row){
+  if(!row) return '';
+  const scope=_scheduleAuditScopeFromItem(row);
+  const active=scope.active||_scheduleAuditActiveScope();
+  const tabId=scope.tabId||active.tabId||'regular';
+  const monthKey=row.monthKey||_scheduleAuditMonthKey();
+  const rowKey=_scheduleAuditRowKey(row);
+  return [tabId,monthKey,rowKey].map(v=>String(v||'').trim()).join('|');
+}
 function _deskNoteVisible(note,monthKey,visibleDays){
   if(!note||note.deleted) return false;
   if(!_scheduleAuditMatchesActiveScope(note)) return false;
   const day=note.day||'기타';
   if(day!=='기타'&&!visibleDays.includes(day)) return false;
-  if(note.monthKey) return String(note.monthKey)===String(monthKey||'');
-  if(note.recordMonthKey) return String(note.recordMonthKey)===String(monthKey||'');
-  // recordMonthKey가 없는 기존 기록은 과거 표시 위치를 유지한다.
-  const basisKey=String(note.effectiveDateKey||note.original?.dateKey||note.dateKey||'');
-  if(basisKey&&monthKey&&basisKey.slice(0,7)!==monthKey) return false;
-  return true;
+  const targetMonth=String(monthKey||'');
+  const noteMonth=_scheduleAuditNormalizeMonthKey(note.monthKey);
+  if(noteMonth) return noteMonth===targetMonth;
+  const keyMonth=_deskNoteMonthFromDateKey(note.effectiveDateKey||note.original?.dateKey||note.dateKey);
+  if(keyMonth) return keyMonth===targetMonth;
+  const recordMonth=_scheduleAuditNormalizeMonthKey(note.recordMonthKey);
+  if(recordMonth) return recordMonth===targetMonth;
+  const textMonth=_deskNoteMonthFromDateText(note.date||note.original?.date,targetMonth);
+  if(textMonth) return textMonth===targetMonth;
+  const createdMonth=_deskNoteMonthFromDateKey(_recordLocalDateKey(note.createdAt||note.at||note.updatedAt));
+  if(createdMonth) return createdMonth===targetMonth;
+  return false;
 }
 function _findDeskNote(id){
   DESK_NOTES=Array.isArray(DESK_NOTES)?DESK_NOTES:[];

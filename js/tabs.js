@@ -51,6 +51,19 @@ function getSnapshotCapturedAt(){
   const tab=_tabList.find(t=>t.id===_activeTab);
   return tab&&tab.type==='snapshot'?tab.capturedAt:null;
 }
+function getSnapshotSourceInfo(tabId){
+  const tab=_tabById(tabId||_activeTab);
+  if(!tab||tab.type!=='snapshot') return null;
+  let data=null;
+  try{ data=loadJSON(SNAP_KEY_PREFIX+tab.id, null); }catch(e){}
+  return {
+    snapshotId:tab.id,
+    sourceTabId:tab.sourceTabId||data?.sourceTabId||'',
+    sourceTabType:tab.sourceTabType||data?.sourceTabType||'regular',
+    sourceTabName:tab.sourceTabName||data?.sourceTabName||'',
+    periodMonth:tab.periodMonth||data?.periodMonth||'',
+  };
+}
 
 /* ──── 탭 목록 관리 ──── */
 let _tabList = loadJSON(STORAGE_KEYS.TAB_LIST, []);
@@ -1014,6 +1027,7 @@ function _snapshotDataForTab(srcTab,capturedAt){
     sourceTabId:srcTab.id,
     sourceTabType:srcTab.type,
     sourceTabName:srcTab.name,
+    periodMonth:_tabPeriodMonth(srcTab)||'',
   };
 }
 
@@ -1046,7 +1060,12 @@ async function rolloverScheduleTab(srcId){
   const newId='snap_'+Date.now();
   const snapData=_snapshotDataForTab(srcTab,today);
   dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
-  const snapTab={id:newId,name:snapshotName,type:'snapshot',capturedAt:today,periodMonth:currentMonth};
+  const snapTab={
+    id:newId,name:snapshotName,type:'snapshot',capturedAt:today,periodMonth:currentMonth,
+    sourceTabId:srcTab.id,
+    sourceTabType:srcTab.type||'regular',
+    sourceTabName:srcTab.name||''
+  };
   if(srcTab.folder) snapTab.folder=srcTab.folder;
   try{
     await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.MAIN_TAB,STORAGE_KEYS.PARENT_TAB],state=>{
@@ -1086,7 +1105,12 @@ async function createSnapshot(srcId){
   // 직접 dbSet (saveJSON 가드 통과 위해)
   dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
   const snapMonth=_tabPeriodMonth(srcTab);
-  const newTab={id:newId,name,type:'snapshot',capturedAt:today};
+  const newTab={
+    id:newId,name,type:'snapshot',capturedAt:today,
+    sourceTabId:srcTab.id,
+    sourceTabType:srcTab.type||'regular',
+    sourceTabName:srcTab.name||''
+  };
   if(snapMonth) newTab.periodMonth=snapMonth;
   if(srcTab.folder) newTab.folder=srcTab.folder;
   try{
