@@ -348,16 +348,22 @@ body.is-snapshot .snap-banner{display:block}
 .inst-reserve-item .redit:hover{background:#F9FAFB}
 .inst-reserve-item .rdel{color:#DC2626;cursor:pointer;font-size:10px;opacity:.5}
 .inst-reserve-item .rdel:hover{opacity:1}
-.inst-reserve-editor{padding:8px;border:1px solid #D1D5DB;border-radius:8px;background:#F9FAFB;margin:6px 0}
-.reserve-edit-row{display:flex;gap:6px;margin-bottom:6px}
+.inst-reserve-editor{padding:10px;border:1px solid #D1D5DB;border-radius:8px;background:#F9FAFB;margin:8px 0}
+.inst-reserve-add{background:#FFFFFF;border-style:dashed;margin-top:10px}
+.inst-reserve-form-title{font-size:12px;font-weight:900;color:#111827;margin-bottom:7px}
+.reserve-edit-row{display:flex;gap:7px;margin-bottom:7px}
 .reserve-edit-row:last-child{margin-bottom:0}
-.reserve-edit-row .fi{margin:0;padding:6px 8px;font-size:12px;min-width:0}
-.reserve-edit-row #ip-re-name{width:110px;flex:0 0 110px}
-.reserve-edit-row #ip-re-phone,.reserve-edit-row #ip-re-memo{flex:1}
+.reserve-edit-row .fi{margin:0;padding:7px 9px;font-size:12px;min-width:0;height:32px}
+.reserve-edit-row #ip-re-name,.reserve-edit-row #ip-rname{width:112px;flex:0 0 112px}
+.reserve-edit-row #ip-re-phone,.reserve-edit-row #ip-re-memo,.reserve-edit-row #ip-rphone,.reserve-edit-row #ip-rmemo{flex:1}
 .reserve-edit-meta{align-items:center}
-.reserve-edit-meta #ip-re-date{width:132px;flex:0 0 132px}
-.reserve-edit-meta #ip-re-teacher{flex:1}
-.reserve-edit-meta .btn{padding:6px 9px!important;font-size:11px!important;font-weight:900!important}
+.reserve-edit-meta #ip-re-date,.reserve-edit-meta #ip-rdate{width:132px;flex:0 0 132px}
+.reserve-edit-meta #ip-re-teacher,.reserve-edit-meta #ip-rteacher{flex:1}
+.reserve-check{height:32px;display:inline-flex;align-items:center;gap:5px;padding:0 9px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;font-size:11px;font-weight:800;color:#374151;white-space:nowrap}
+.reserve-add-actions{align-items:center}
+.reserve-add-actions #ip-rteacher{flex:1}
+.reserve-add-actions #ip-radd{margin-left:auto}
+.reserve-edit-meta .btn,.reserve-add-actions .btn{padding:7px 10px!important;font-size:11px!important;font-weight:900!important;height:32px!important}
 
 /* 학생 셀 클릭 */
 .stu-clickable{cursor:pointer;transition:filter .1s}

@@ -609,6 +609,7 @@ function renderInstPopup(){
     if(canEdit&&_instReserveEditIdx===i){
       const teacherOpts=_instTeacherOptions(r.teacher||'');
       html+=`<div class="inst-reserve-editor" data-redit-form="${i}">
+        <div class="inst-reserve-form-title">대기자 수정</div>
         <div class="reserve-edit-row">
           <input class="fi" id="ip-re-name" value="${_instInputValue(r.n)}" placeholder="이름">
           <input class="fi" id="ip-re-phone" value="${_instInputValue(r.p||'')}" placeholder="전화번호">
@@ -625,27 +626,32 @@ function renderInstPopup(){
       </div>`;
     } else {
       html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}${canEdit?`<button type="button" class="redit" data-redit="${i}">수정</button><span class="rdel" data-rdel="${i}">✕</span>`:''}</div>`;
-      if(r.m) html+=`<div class="inst-reserve-memo">메모 ${esc(r.m)}</div>`;
+      if(r.m) html+=`<div class="inst-reserve-memo">${esc(r.m)}</div>`;
     }
   });
   if(canEdit){
-    html+=`<div style="display:flex;gap:4px;margin-top:4px">`;
     const todayVal=toDateStr(getToday());
-    html+=`<input class="fi" id="ip-rname" placeholder="이름" style="width:70px;margin:0;padding:3px 6px;font-size:11px">`;
-    html+=`<input class="fi" id="ip-rphone" placeholder="전화번호" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
-    html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rtoday" checked> 오늘</label>`;
-    html+=`<input class="fi" id="ip-rdate" type="date" value="${todayVal}" style="width:100px;margin:0;padding:3px 4px;font-size:10px;display:none">`;
-    html+=`</div>`;
-    html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
-    html+=`<input class="fi" id="ip-rmemo" placeholder="메모" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
-    html+=`</div>`;
     // 선생님 지정/무관
     const teacherOpts=_instTeacherOptions('');
-    html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
-    html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rany" checked> 무관</label>`;
-    html+=`<select class="fi" id="ip-rteacher" style="flex:1;margin:0;padding:3px 4px;font-size:10px;display:none"><option value="">선생님 선택</option>${teacherOpts}</select>`;
-    html+=`<button class="btn btn-p" id="ip-radd" style="padding:3px 8px;font-size:10px">대기 추가</button>`;
-    html+=`</div>`;
+    html+=`<div class="inst-reserve-editor inst-reserve-add">
+      <div class="inst-reserve-form-title">대기 추가</div>
+      <div class="reserve-edit-row">
+        <input class="fi" id="ip-rname" placeholder="이름">
+        <input class="fi" id="ip-rphone" placeholder="전화번호">
+      </div>
+      <div class="reserve-edit-row">
+        <input class="fi" id="ip-rmemo" placeholder="메모">
+      </div>
+      <div class="reserve-edit-row reserve-edit-meta">
+        <label class="reserve-check"><input type="checkbox" id="ip-rtoday" checked> 오늘</label>
+        <input class="fi" id="ip-rdate" type="date" value="${todayVal}" style="display:none">
+        <label class="reserve-check"><input type="checkbox" id="ip-rany" checked> 선생님 무관</label>
+      </div>
+      <div class="reserve-edit-row reserve-add-actions">
+        <select class="fi" id="ip-rteacher" style="display:none"><option value="">선생님 선택</option>${teacherOpts}</select>
+        <button class="btn btn-p" id="ip-radd">대기 추가</button>
+      </div>
+    </div>`;
   } else if(!reserves.length){
     html+=`<div style="font-size:10px;color:#9CA3AF;padding:4px 0">등록된 대기자가 없습니다</div>`;
   }
