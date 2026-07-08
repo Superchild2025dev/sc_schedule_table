@@ -2156,6 +2156,8 @@ function _deskNoteSourceKeyForRow(row){
 }
 function _deskNoteVisible(note,monthKey,visibleDays){
   if(!note||note.deleted) return false;
+  if(String(note.change||'').trim()==='휴원') return false;
+  if(/휴원/.test(String(note.detail||'')+' '+String(note.original?.detail||''))) return false;
   if(!_scheduleAuditMatchesActiveScope(note)) return false;
   const day=note.day||'기타';
   if(day!=='기타'&&!visibleDays.includes(day)) return false;
@@ -2471,6 +2473,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
   const rows=[];
   segments.forEach(segment=>{
     const text=[item?.label,item?.target,segment].map(v=>String(v||'')).join(' ');
+    if(/휴원/.test(text)) return;
     const isDisappear=/원생\s*(이동|삭제)|퇴원|제외|→/.test(text);
     if(!isDisappear) return;
     if(/등록/.test(text)&&!/원생\s*이동|→|퇴원|제외|삭제/.test(text)) return;
