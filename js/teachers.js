@@ -238,6 +238,19 @@ async function handleTeacherDelete(idx){
 }
 
 let _instPopup={el:null,key:null};
+let _instReserveEditIdx=null;
+
+function _instInputValue(v){
+  return esc(String(v||'')).replace(/"/g,'&quot;');
+}
+
+function _instTeacherOptions(selected){
+  selected=String(selected||'');
+  return TEACHERS.map(t=>{
+    const name=String(t.n||'');
+    return `<option value="${_instInputValue(name)}" ${name===selected?'selected':''}>${esc(name)}</option>`;
+  }).join('');
+}
 
 function _btPreviewEnabled(){
   return window.SC_BT_PREVIEW_ENABLED===true;
@@ -494,6 +507,7 @@ function openInstPopup(td,t,day,lane){
   _instPopup.key=key;
   _instPopup.td=td;
   _instPopup.t=t;_instPopup.day=day;_instPopup.lane=lane;
+  _instReserveEditIdx=null;
 
   renderInstPopup();
   popup.classList.add('show');
@@ -588,12 +602,31 @@ function renderInstPopup(){
   // 예약 목록
   const reserves=getReserves(key);
   html+=`<div class="inst-reserve-list">`;
-  html+=`<div style="font-weight:700;font-size:11px;margin-bottom:4px">대기자 (${reserves.length})</div>`;
+  html+=`<div class="inst-reserve-title">대기자 (${reserves.length})</div>`;
   reserves.forEach((r,i)=>{
     const dateLabel=r.d?`<span style="font-size:9px;color:#0F9D58;margin-left:auto">${parseInt(r.d.split('-')[1])}/${parseInt(r.d.split('-')[2])}</span>`:'';
     const teacherLabel=r.teacher?`<span style="font-size:9px;color:#3B82F6;margin-left:4px">[${esc(r.teacher)}]</span>`:'';
-    html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}${canEdit?`<span class="rdel" data-rdel="${i}">✕</span>`:''}</div>`;
-    if(r.m) html+=`<div style="font-size:9px;color:#888;padding-left:4px;margin-top:-2px;margin-bottom:2px">📝 ${esc(r.m)}</div>`;
+    if(canEdit&&_instReserveEditIdx===i){
+      const teacherOpts=_instTeacherOptions(r.teacher||'');
+      html+=`<div class="inst-reserve-editor" data-redit-form="${i}">
+        <div class="reserve-edit-row">
+          <input class="fi" id="ip-re-name" value="${_instInputValue(r.n)}" placeholder="이름">
+          <input class="fi" id="ip-re-phone" value="${_instInputValue(r.p||'')}" placeholder="전화번호">
+        </div>
+        <div class="reserve-edit-row">
+          <input class="fi" id="ip-re-memo" value="${_instInputValue(r.m||'')}" placeholder="메모">
+        </div>
+        <div class="reserve-edit-row reserve-edit-meta">
+          <input class="fi" id="ip-re-date" type="date" value="${_instInputValue(r.d||toDateStr(getToday()))}">
+          <select class="fi" id="ip-re-teacher"><option value="">선생님 무관</option>${teacherOpts}</select>
+          <button class="btn btn-p" data-rsave="${i}">저장</button>
+          <button class="btn btn-o" data-rcancel>취소</button>
+        </div>
+      </div>`;
+    } else {
+      html+=`<div class="inst-reserve-item"><span class="rname">${esc(r.n)}</span><span class="rphone">${esc(r.p||'')}</span>${teacherLabel}${dateLabel}${canEdit?`<button type="button" class="redit" data-redit="${i}">수정</button><span class="rdel" data-rdel="${i}">✕</span>`:''}</div>`;
+      if(r.m) html+=`<div class="inst-reserve-memo">메모 ${esc(r.m)}</div>`;
+    }
   });
   if(canEdit){
     html+=`<div style="display:flex;gap:4px;margin-top:4px">`;
@@ -607,7 +640,7 @@ function renderInstPopup(){
     html+=`<input class="fi" id="ip-rmemo" placeholder="메모" style="flex:1;margin:0;padding:3px 6px;font-size:11px">`;
     html+=`</div>`;
     // 선생님 지정/무관
-    const teacherOpts=TEACHERS.map(t=>`<option value="${esc(t.n)}">${esc(t.n)}</option>`).join('');
+    const teacherOpts=_instTeacherOptions('');
     html+=`<div style="display:flex;gap:4px;margin-top:3px;align-items:center">`;
     html+=`<label style="font-size:10px;font-weight:600;display:flex;align-items:center;gap:2px;white-space:nowrap"><input type="checkbox" id="ip-rany" checked> 무관</label>`;
     html+=`<select class="fi" id="ip-rteacher" style="flex:1;margin:0;padding:3px 4px;font-size:10px;display:none"><option value="">선생님 선택</option>${teacherOpts}</select>`;
@@ -645,7 +678,46 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
   if(rdel){
     e.stopPropagation();
     await removeReserve(_instPopup.key,parseInt(rdel.dataset.rdel));
+    _instReserveEditIdx=null;
     renderInstPopup();buildTable();
+    return;
+  }
+  // 예약 수정 폼 열기
+  const redit=e.target.closest('[data-redit]');
+  if(redit){
+    e.stopPropagation();
+    _instReserveEditIdx=parseInt(redit.dataset.redit,10);
+    renderInstPopup();
+    setTimeout(()=>document.getElementById('ip-re-name')?.focus(),50);
+    return;
+  }
+  // 예약 수정 취소
+  if(e.target.closest('[data-rcancel]')){
+    e.stopPropagation();
+    _instReserveEditIdx=null;
+    renderInstPopup();
+    return;
+  }
+  // 예약 수정 저장
+  const rsave=e.target.closest('[data-rsave]');
+  if(rsave){
+    e.stopPropagation();
+    const idx=parseInt(rsave.dataset.rsave,10);
+    const n=document.getElementById('ip-re-name')?.value.trim();
+    if(!n){toast('이름을 입력하세요','err');return;}
+    const p=document.getElementById('ip-re-phone')?.value.trim()||'';
+    const m=document.getElementById('ip-re-memo')?.value.trim()||'';
+    const d=document.getElementById('ip-re-date')?.value||toDateStr(getToday());
+    const teacher=document.getElementById('ip-re-teacher')?.value||'';
+    try{
+      await updateReserve(_instPopup.key,idx,{n,p,m,d,teacher});
+      _instReserveEditIdx=null;
+      renderInstPopup();buildTable();
+      toast('대기자 수정 완료','ok');
+    }catch(err){
+      toast(err?.message||'대기자 수정 실패','err');
+      console.error(err);
+    }
     return;
   }
   // 위치 교환
@@ -678,6 +750,7 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
     const isAny=document.getElementById('ip-rany')?.checked;
     const teacher=isAny?'':(document.getElementById('ip-rteacher')?.value||'');
     await addReserve(_instPopup.key,n,p,m,d,teacher);
+    _instReserveEditIdx=null;
     renderInstPopup();buildTable();
     setTimeout(()=>document.getElementById('ip-rname')?.focus(),50);
     return;
@@ -733,6 +806,11 @@ document.getElementById('inst-popup').addEventListener('click',async function(e)
 
 document.getElementById('inst-popup').addEventListener('keydown',function(e){
   if(!instPopupCanEdit()) return;
+  if(e.key==='Enter'&&(e.target.id==='ip-re-name'||e.target.id==='ip-re-phone'||e.target.id==='ip-re-memo'||e.target.id==='ip-re-date')){
+    e.preventDefault();
+    document.querySelector('[data-rsave]')?.click();
+    return;
+  }
   if(e.key==='Enter'&&(e.target.id==='ip-rname'||e.target.id==='ip-rphone'||e.target.id==='ip-rmemo'||e.target.id==='ip-rdate')){
     e.preventDefault();
     document.getElementById('ip-radd')?.click();
@@ -1119,6 +1197,7 @@ async function executeInstSwap(dstT,dstDay,dstLane){
 function closeInstPopup(){
   document.getElementById('inst-popup').classList.remove('show');
   _instPopup.key=null;
+  _instReserveEditIdx=null;
   if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
 }
 

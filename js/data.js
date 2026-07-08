@@ -3246,6 +3246,22 @@ function addReserve(instKey,name,phone,memo,date,teacher){
     return reserve;
   }).catch(e=>{toast('예약 저장 실패','err');console.error(e);});
 }
+function updateReserve(instKey,idx,patch){
+  idx=parseInt(idx,10);
+  if(!RESERVE_MAP[instKey]||!RESERVE_MAP[instKey][idx]) return Promise.resolve(false);
+  const obj={n:String(patch?.n||'').trim()};
+  if(!obj.n) return Promise.reject(new Error('이름을 입력하세요'));
+  if(patch?.p) obj.p=normPhone(String(patch.p));
+  if(patch?.m) obj.m=String(patch.m).trim();
+  if(patch?.d) obj.d=String(patch.d).trim();
+  if(patch?.teacher) obj.teacher=String(patch.teacher).trim();
+  RESERVE_MAP[instKey][idx]=obj;
+  return updateReserveMapTx(reserve=>{
+    if(!reserve[instKey]||!reserve[instKey][idx]) return reserve;
+    reserve[instKey][idx]=obj;
+    return reserve;
+  }).catch(e=>{console.error(e);throw e;});
+}
 function removeReserve(instKey,idx){
   if(!RESERVE_MAP[instKey]) return;
   RESERVE_MAP[instKey].splice(idx,1);
