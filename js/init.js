@@ -32,26 +32,44 @@ function startScheduleApp(){
       }
       runSettingsActionFromUrl();
     };
-    if(typeof applyAnnualAgeIncrement==='function'){
-      applyAnnualAgeIncrement()
-        .then(changed=>{
-          if(changed){
-            loadTabData();
-            toast('새해 나이 +1 반영 완료','ok');
-          }
-        })
-        .catch(err=>{
-          if(String(err&&err.message||err).includes('permission_denied')){
-            console.warn('나이 자동 증가 건너뜀:',err);
-            return;
-          }
-          console.error('나이 자동 증가 실패:',err);
-          toast(err?.message||'나이 자동 증가 실패','err');
-        })
-        .finally(render);
-    } else {
-      render();
-    }
+    const continueStartup=()=>{
+      if(typeof applyAnnualAgeIncrement==='function'){
+        applyAnnualAgeIncrement()
+          .then(changed=>{
+            if(changed){
+              loadTabData();
+              toast('새해 나이 +1 반영 완료','ok');
+            }
+          })
+          .catch(err=>{
+            if(String(err&&err.message||err).includes('permission_denied')){
+              console.warn('나이 자동 증가 건너뜀:',err);
+              return;
+            }
+            console.error('나이 자동 증가 실패:',err);
+            toast(err?.message||'나이 자동 증가 실패','err');
+          })
+          .finally(render);
+      } else {
+        render();
+      }
+    };
+    const autoRoll=typeof autoRolloverRegularScheduleIfNeeded==='function'
+      ? autoRolloverRegularScheduleIfNeeded()
+      : Promise.resolve(false);
+    autoRoll
+      .then(changed=>{
+        if(changed){
+          reloadGlobalData();
+          if(typeof activateMainTabForStartup==='function') activateMainTabForStartup();
+          loadTabData();
+          if(typeof toast==='function') toast('정규 시간표 운영월 자동 반영 완료','ok');
+        }
+      })
+      .catch(err=>{
+        console.warn('정규 시간표 자동 이월 건너뜀:',err);
+      })
+      .finally(continueStartup);
   });
 }
 

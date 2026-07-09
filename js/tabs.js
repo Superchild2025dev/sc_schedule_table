@@ -141,6 +141,21 @@ function _tabPeriodMonth(tab){
   const year=m[1]||String(_defaultPeriodMonth()).slice(0,4);
   return year+'-'+_pad2(m[2]);
 }
+function _tabStoredPeriodMonth(tab){
+  if(!tab) return '';
+  if(tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
+  const m=String(tab.name||'').match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
+  if(!m) return '';
+  const year=m[1]||String(_defaultPeriodMonth()).slice(0,4);
+  return year+'-'+_pad2(m[2]);
+}
+function _compareMonthKey(a,b){
+  const aa=_normalizeMonthKey(a);
+  const bb=_normalizeMonthKey(b);
+  if(!aa||!bb) return 0;
+  if(aa===bb) return 0;
+  return aa<bb?-1:1;
+}
 function _tabContainsDate(tab,ds){
   if(!tab||!ds) return false;
   if(tab.type==='bangteuk'){
@@ -1089,6 +1104,95 @@ async function rolloverScheduleTab(srcId){
     console.error(e);
     dbRemove(SNAP_KEY_PREFIX+newId);
     toast(e.message||'시간표 이월 실패','err');
+  }
+}
+
+let _autoRolloverRunning=false;
+function _autoRolloverAllowed(){
+  if(isSnapshotTab()) return false;
+  if(window.SCAuth && typeof SCAuth.can==='function' && !SCAuth.can('editSchedule')) return false;
+  return true;
+}
+function _autoSnapshotId(srcId,monthKey){
+  const id=String(srcId||'regular').replace(/[^A-Za-z0-9_-]/g,'_');
+  const month=String(_normalizeMonthKey(monthKey)||monthKey||'').replace(/[^0-9]/g,'');
+  return 'snap_auto_'+id+'_'+month;
+}
+function _liveRegularMainTab(){
+  const mainId=_mainTabId(_tabList);
+  const main=_tabById(mainId);
+  if(main && (!main.type || main.type==='regular')) return main;
+  return (_tabList||[]).find(t=>t&&(!t.type||t.type==='regular'))||null;
+}
+async function autoRolloverRegularScheduleIfNeeded(){
+  if(_autoRolloverRunning || !_autoRolloverAllowed()) return false;
+  const targetMonth=_defaultPeriodMonth();
+  const srcTab=_liveRegularMainTab();
+  if(!srcTab || srcTab.type==='snapshot' || srcTab.type==='bangteuk') return false;
+  const storedMonth=_tabStoredPeriodMonth(srcTab);
+  const currentMonth=storedMonth||targetMonth;
+  if(!targetMonth || !currentMonth) return false;
+
+  const needsSnapshot=_compareMonthKey(currentMonth,targetMonth)<0;
+  const needsBind=!srcTab.periodLocked || _normalizeMonthKey(srcTab.periodMonth)!==targetMonth;
+  if(!needsSnapshot && !needsBind) return false;
+
+  _autoRolloverRunning=true;
+  const today=toDateStr(getToday());
+  const snapId=needsSnapshot?_autoSnapshotId(srcTab.id,currentMonth):'';
+  const snapshotName=_monthTabName(currentMonth)+' 박제';
+  const nextName=_monthTabName(targetMonth);
+  let wroteSnapshot=false;
+  if(needsSnapshot){
+    const snapKey=SNAP_KEY_PREFIX+snapId;
+    const hasSnapData=!!loadJSON(snapKey, null);
+    if(!hasSnapData){
+      dbSet(snapKey, JSON.stringify(_snapshotDataForTab(srcTab,today)));
+      wroteSnapshot=true;
+    }
+  }
+  try{
+    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.MAIN_TAB,STORAGE_KEYS.PARENT_TAB],state=>{
+      const idx=state.tabs.findIndex(t=>t&&t.id===srcTab.id);
+      if(idx<0) throw new Error('자동 이월할 정규 시간표를 찾을 수 없습니다');
+      const live=state.tabs[idx];
+      if(live.type==='snapshot'||live.type==='bangteuk') throw new Error('정규 운영 시간표만 자동 이월할 수 있습니다');
+      const liveStored=_tabStoredPeriodMonth(live)||currentMonth;
+      const txNeedsSnapshot=_compareMonthKey(liveStored,targetMonth)<0;
+      const txSnapId=_autoSnapshotId(live.id,liveStored);
+      if(txNeedsSnapshot && !state.tabs.some(t=>t&&t.id===txSnapId)){
+        const snapTab={
+          id:txSnapId,
+          name:_monthTabName(liveStored)+' 박제',
+          type:'snapshot',
+          capturedAt:today,
+          periodMonth:liveStored,
+          sourceTabId:live.id,
+          sourceTabType:live.type||'regular',
+          sourceTabName:live.name||'',
+          autoRollover:true
+        };
+        if(live.folder) snapTab.folder=live.folder;
+        state.tabs.splice(idx,0,snapTab);
+      }
+      const liveName=String(live.name||'').trim();
+      if(txNeedsSnapshot || !liveName || liveName==='정규시간표' || /^\d{1,2}월출석부$/.test(liveName)){
+        live.name=nextName;
+      }
+      live.periodMonth=targetMonth;
+      live.periodLocked=true;
+      const liveKeys=_tabStorageKeys(live);
+      state.main={...liveKeys,setAt:new Date().toISOString(),autoRollover:true};
+      state.parent={...liveKeys,setAt:new Date().toISOString(),autoRollover:true};
+      return state;
+    },{label:needsSnapshot?'정규 시간표 자동 이월':'정규 시간표 운영월 자동 설정',target:nextName,detail:needsSnapshot?`${snapshotName} → ${nextName}`:nextName});
+    _activeTab=srcTab.id;
+    return true;
+  }catch(e){
+    if(wroteSnapshot) dbRemove(SNAP_KEY_PREFIX+snapId);
+    throw e;
+  }finally{
+    _autoRolloverRunning=false;
   }
 }
 
