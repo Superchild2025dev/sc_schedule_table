@@ -248,11 +248,16 @@
     if(!key) return true;
 
     if(key === 'swim_mark' || key === 'swim_requests' || key === 'swim_attendance' ||
-       key === 'swim_att_guests' || key === 'swim_day_snapshot'){
+       key === 'swim_att_guests' || key === 'swim_day_snapshot' ||
+       /^zz_swim_day_snapshot__/.test(key)){
       return hasPermission('teacherRequests') || hasPermission('attendanceCheck');
     }
     if(key === 'swim_closed' || key === 'swim_periods') return hasPermission('manageCalendar');
-    if(key === 'swim_audit_log' || key === 'swim_restore_points' || key === 'swim_retire_history' ||
+    if(key === 'swim_audit_log' || key === 'swim_restore_points' ||
+       key === 'zz_swim_audit_index' || key === 'zz_swim_restore_index' ||
+       key === 'zz_swim_student_delete_index' ||
+       /^zz_swim_(audit_entry|restore_point|student_delete)__/.test(key) || /^swim_restore_point_/.test(key) ||
+       key === 'swim_retire_history' ||
        key === 'swim_desk_notes'){
       return hasPermission('manageRecords');
     }
@@ -261,7 +266,7 @@
        key === 'swim_main_tab' || key === 'swim_students' ||
        key === 'swim_inst' || key === 'swim_retire' || key === 'swim_enroll' ||
        key === 'swim_disabled' || key === 'swim_reserve' || key === 'swim_hyuwon' ||
-       key === 'swim_move' || key === 'swim_age_year' ||
+       key === 'swim_move' || key === 'swim_age_year' || key === 'swim_student_id_version' ||
        /^swim_stu_/.test(key) || /^swim_inst_/.test(key) || /^swim_bt_.+_(stu|inst)$/.test(key)){
       return hasPermission('editSchedule');
     }

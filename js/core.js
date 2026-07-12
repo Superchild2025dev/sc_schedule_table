@@ -11,6 +11,11 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
   messagingSenderId: "45509278949",
   appId: "1:45509278949:web:f16989a9c416f06e25e80c"
 };
+const SC_READ_ONLY_PREVIEW=(()=>{
+  try{return new URLSearchParams(window.location.search||'').get('preview')==='1';}
+  catch(e){return false;}
+})();
+window.SC_READ_ONLY_PREVIEW=SC_READ_ONLY_PREVIEW;
 
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 지점(브랜치) 선택 — 가경점 vs 용암점
@@ -58,6 +63,43 @@ let _offlineWarningShown=false;
 let _firebaseUsingLocalFallback=false;
 let _writeBlockedWarnedAt=0;
 const _dbCache={};
+const _snapshotParsedCache=new Map();
+const SNAPSHOT_PARSED_CACHE_LIMIT=3;
+
+function _isSnapshotStorageKey(key){
+  return String(key||'').startsWith('swim_snap_');
+}
+function _isEphemeralDeferredStorageKey(key){
+  key=String(key||'');
+  return key.startsWith('zz_swim_day_snapshot__')
+      || key.startsWith('zz_swim_restore_point__');
+}
+function releaseDeferredJSONMemory(key){
+  if(!_isEphemeralDeferredStorageKey(key)) return;
+  delete _dbCache[key];
+  try{ localStorage.removeItem(_lsKey(key)); }catch(e){}
+}
+function _getParsedSnapshotCache(key){
+  if(!_isSnapshotStorageKey(key)||!_snapshotParsedCache.has(key)) return null;
+  const value=_snapshotParsedCache.get(key);
+  // Map insertion order is used as a small LRU queue.
+  _snapshotParsedCache.delete(key);
+  _snapshotParsedCache.set(key,value);
+  return value;
+}
+function _setParsedSnapshotCache(key,value){
+  if(!_isSnapshotStorageKey(key)||!value) return value;
+  _snapshotParsedCache.delete(key);
+  _snapshotParsedCache.set(key,value);
+  while(_snapshotParsedCache.size>SNAPSHOT_PARSED_CACHE_LIMIT){
+    const oldest=_snapshotParsedCache.keys().next().value;
+    _snapshotParsedCache.delete(oldest);
+  }
+  return value;
+}
+function _dropParsedSnapshotCache(key){
+  if(_isSnapshotStorageKey(key)) _snapshotParsedCache.delete(key);
+}
 
 function initFirebaseStore(){
   if(_fbReady) return true;
@@ -109,14 +151,20 @@ function dbSet(key,val){
     _warnBlockedWrite(key,'서버 데이터 로드 실패 상태');
     return false;
   }
+  _dropParsedSnapshotCache(key);
   const json=typeof val==='string'?val:JSON.stringify(val);
   _dbCache[key]=json;
-  try{localStorage.setItem(_lsKey(key),json);}catch(e){}
+  try{
+    if(_isEphemeralDeferredStorageKey(key)) localStorage.removeItem(_lsKey(key));
+    else localStorage.setItem(_lsKey(key),json);
+  }catch(e){}
   if(_fbReady){
     // Firebase SDK가 자체 큐잉을 지원 — _fbConnected 무관하게 시도
     // (오프라인이면 SDK가 큐에 쌓아뒀다가 재연결시 자동 push)
     const sk=key.replace(/[.#$/\[\]]/g,'_');
-    (_localWriteQueue[sk]=_localWriteQueue[sk]||[]).push(json);
+    if(typeof _isDeferredStorageKey!=='function'||!_isDeferredStorageKey(sk)){
+      (_localWriteQueue[sk]=_localWriteQueue[sk]||[]).push(json);
+    }
     _fb.child(sk).set(json).catch(e=>{
       console.error('[FB SAVE FAIL]',key,e);
       _showOfflineWarning();
@@ -154,6 +202,15 @@ function _warnBlockedWrite(key,reason){
   }
 }
 function canPersistScheduleData(key,label){
+  if(SC_READ_ONLY_PREVIEW){
+    console.warn('[READ ONLY PREVIEW] 저장 차단:',key,label||'');
+    const now=Date.now();
+    if(now-_writeBlockedWarnedAt>1500){
+      _writeBlockedWarnedAt=now;
+      if(typeof toast==='function') toast('안전 미리보기에서는 운영 데이터가 저장되지 않습니다','err');
+    }
+    return false;
+  }
   if(!_firebaseLoaded){
     console.warn('[v98 SAFETY] Firebase 로드 전 저장 차단:', key);
     return false;
@@ -169,6 +226,7 @@ function dbGet(key){
   try{return localStorage.getItem(_lsKey(key));}catch(e){return null;}
 }
 function dbRemove(key){
+  _dropParsedSnapshotCache(key);
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
   if(_fbReady) _fb.child(key.replace(/[.#$/\[\]]/g,'_')).remove();
@@ -178,9 +236,23 @@ function dbRemove(key){
 const _localWriteQueue={};
 
 function _isDeferredStorageKey(key){
-  return key===STORAGE_KEYS.AUDIT_LOG
-      || key===STORAGE_KEYS.RESTORE_POINTS
-      || String(key||'').startsWith('swim_restore_point_');
+  return _isAuditStorageKey(key)
+      || key===STORAGE_KEYS.DAY_SNAPSHOT
+      || String(key||'').startsWith('swim_snap_')
+      || String(key||'').startsWith('swim_bt_day_snapshot_')
+      || String(key||'').startsWith('zz_swim_day_snapshot__');
+}
+function _isAuditStorageKey(key){
+  key=String(key||'');
+  return key==='swim_audit_log'
+      || key==='swim_restore_points'
+      || key==='zz_swim_audit_index'
+      || key==='zz_swim_restore_index'
+      || key==='zz_swim_student_delete_index'
+      || key.startsWith('swim_restore_point_')
+      || key.startsWith('zz_swim_audit_entry__')
+      || key.startsWith('zz_swim_restore_point__')
+      || key.startsWith('zz_swim_student_delete__');
 }
 function _localStorageKeyToStorageKey(lsKey){
   const b=typeof getBranchInfo==='function' ? getBranchInfo() : null;
@@ -241,9 +313,13 @@ const STORAGE_KEYS = {
   PERIODS:  'swim_periods',     // 수업 기간 목록
   RETIRE_HISTORY: 'swim_retire_history', // [v118] 퇴원 기록 보관 (영구)
   AUDIT_LOG: 'swim_audit_log',   // 기록관리: 이동/편집 로그
+  AUDIT_INDEX: 'zz_swim_audit_index', // 증분 기록 인덱스 (표시용 요약만 저장)
   DESK_NOTES: 'swim_desk_notes', // 하단 전달사항: 원본 기록에서 분리된 데스크 편집용 표
   RESTORE_POINTS: 'swim_restore_points', // 기록관리: 특정 시점 복구 포인트
+  RESTORE_INDEX: 'zz_swim_restore_index', // 증분 복원점 인덱스 (본문은 개별 키에 저장)
+  STUDENT_DELETE_INDEX: 'zz_swim_student_delete_index', // 원생 삭제 안전기록 인덱스
   AGE_YEAR: 'swim_age_year',     // 학생 나이 자동 증가 마지막 반영 연도
+  STUDENT_ID_VERSION: 'swim_student_id_version', // 원생 고유 ID 마이그레이션 버전
   VERSION:  'swim_ver',
 };
 
@@ -261,11 +337,56 @@ function normalizeStoredScheduleValue(key,val){
 /* JSON 로드/저장 헬퍼 (try/catch + Undo 푸시 통합) */
 function loadJSON(key, defaultVal){
   try{
+    const parsedSnapshot=_getParsedSnapshotCache(key);
+    if(parsedSnapshot) return parsedSnapshot;
     const r = dbGet(key);
     const val = r ? JSON.parse(r) : (defaultVal!==undefined ? defaultVal : null);
-    return normalizeStoredScheduleValue(key,val);
+    const normalized=normalizeStoredScheduleValue(key,val);
+    return _setParsedSnapshotCache(key,normalized);
   }catch(e){
     return defaultVal!==undefined ? defaultVal : null;
+  }
+}
+
+// Initial sync skips large deferred values such as snapshots. Fetch one value
+// only when the user opens it, then keep the raw JSON in the existing cache.
+async function loadDeferredJSON(key, defaultVal){
+  const fallback=defaultVal!==undefined ? defaultVal : null;
+  const parsedSnapshot=_getParsedSnapshotCache(key);
+  if(parsedSnapshot) return parsedSnapshot;
+  const cached=dbGet(key);
+  if(cached!==null&&cached!==undefined&&cached!==''){
+    try{
+      const val=typeof cached==='string' ? JSON.parse(cached) : cached;
+      const normalized=normalizeStoredScheduleValue(key,val);
+      return _setParsedSnapshotCache(key,normalized);
+    }catch(e){
+      console.warn('deferred cache parse failed; refetching',key,e);
+    }
+  }
+
+  if(!_fbReady&&_selectedBranch) initFirebaseStore();
+  if(!_fbReady) return fallback;
+
+  const safeKey=String(key||'').replace(/[.#$/\[\]]/g,'_');
+  const snap=await _fb.child(safeKey).once('value');
+  const raw=snap?snap.val():null;
+  if(raw===null||raw===undefined) return fallback;
+
+  const asStr=typeof raw==='string' ? raw : JSON.stringify(raw);
+  _dbCache[key]=asStr;
+  try{
+    if(_isEphemeralDeferredStorageKey(key)) localStorage.removeItem(_lsKey(key));
+    else localStorage.setItem(_lsKey(key),asStr);
+  }catch(e){}
+
+  try{
+    const val=typeof raw==='string' ? JSON.parse(raw) : raw;
+    const normalized=normalizeStoredScheduleValue(key,val);
+    return _setParsedSnapshotCache(key,normalized);
+  }catch(e){
+    console.error('deferred data parse failed',key,e);
+    return fallback;
   }
 }
 // [v98] 데이터 안전 가드
@@ -305,7 +426,7 @@ function saveJSON(key, val, skipUndo){
   }
   val=normalizeStoredScheduleValue(key,val);
   let auditPoint=null;
-  if(key!==STORAGE_KEYS.AUDIT_LOG && key!==STORAGE_KEYS.RESTORE_POINTS && typeof createAuditPoint==='function'){
+  if(!_isAuditStorageKey(key) && typeof createAuditPoint==='function'){
     auditPoint=createAuditPoint([key], {
       type:(typeof describeStorageChangeType==='function')?describeStorageChangeType(key):'edit',
       label:(typeof describeStorageChange==='function')?describeStorageChange(key):'편집'

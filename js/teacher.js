@@ -23,6 +23,13 @@ let _attWeekStart=null;
 let _teacherStuKey='swim_students';
 let _teacherInstKey='swim_inst';
 let _staffNotifyFn=null;
+const TEACHER_DAY_SNAPSHOT_PREFIX='zz_swim_day_snapshot__';
+const TEACHER_DAY_SNAPSHOT_CACHE_LIMIT=18;
+const _teacherDaySnapshotCache=new Map();
+const _teacherDaySnapshotLoads=new Map();
+const _teacherLegacySnapshotCache=new Map();
+const _teacherLegacySnapshotLoads=new Map();
+let _attendanceRenderSeq=0;
 const UNASSIGNED_TEACHER_LABEL='담당 미확인';
 const TEACHER_REQUEST_TYPES=new Set(['bogang','bogang-cancel']);
 
@@ -131,6 +138,96 @@ function applyTeacherDataKeys(data){
   _teacherInstKey=keys.instKey;
 }
 
+function teacherDaySnapshotScope(){
+  const m=String(_teacherStuKey||'').match(/^swim_bt_(.+)_stu$/);
+  return m?'bt_'+String(m[1]).replace(/[^\w-]/g,'_'):'regular';
+}
+function teacherDaySnapshotLegacyKey(){
+  const m=String(_teacherStuKey||'').match(/^swim_bt_(.+)_stu$/);
+  return m?'swim_bt_day_snapshot_'+m[1]:'swim_day_snapshot';
+}
+function teacherDaySnapshotKey(ds,scope){
+  return TEACHER_DAY_SNAPSHOT_PREFIX+(scope||teacherDaySnapshotScope())+'__'+String(ds||'');
+}
+function isTeacherDaySnapshot(value){
+  return !!(value&&typeof value==='object'&&!Array.isArray(value)&&Array.isArray(value.students));
+}
+function cacheTeacherDaySnapshot(ds,snapshot,scope){
+  const targetScope=scope||teacherDaySnapshotScope();
+  const key=teacherDaySnapshotKey(ds,targetScope);
+  _teacherDaySnapshotCache.delete(key);
+  _teacherDaySnapshotCache.set(key,snapshot||null);
+  while(_teacherDaySnapshotCache.size>TEACHER_DAY_SNAPSHOT_CACHE_LIMIT){
+    const oldest=_teacherDaySnapshotCache.keys().next().value;
+    const oldValue=_teacherDaySnapshotCache.get(oldest);
+    _teacherDaySnapshotCache.delete(oldest);
+    const split=String(oldest).lastIndexOf('__');
+    const oldDs=split>=0?String(oldest).slice(split+2):'';
+    if(oldDs&&DAY_SNAPSHOT[oldDs]===oldValue) delete DAY_SNAPSHOT[oldDs];
+  }
+  if(targetScope===teacherDaySnapshotScope()){
+    if(snapshot) DAY_SNAPSHOT[ds]=snapshot;
+    else delete DAY_SNAPSHOT[ds];
+  }
+  return snapshot||null;
+}
+function teacherLoadedDaySnapshotMap(){
+  const prefix=TEACHER_DAY_SNAPSHOT_PREFIX+teacherDaySnapshotScope()+'__';
+  const out={};
+  _teacherDaySnapshotCache.forEach((snapshot,key)=>{
+    if(snapshot&&key.startsWith(prefix)) out[key.slice(prefix.length)]=snapshot;
+  });
+  return out;
+}
+async function loadTeacherLegacySnapshotMap(key){
+  key=key||teacherDaySnapshotLegacyKey();
+  if(_teacherLegacySnapshotCache.has(key)) return _teacherLegacySnapshotCache.get(key);
+  if(_teacherLegacySnapshotLoads.has(key)) return _teacherLegacySnapshotLoads.get(key);
+  const pending=_fb.child(key).once('value').then(snap=>{
+    const map=parseStoredJSON(key,snap.val(),{});
+    const value=(map&&typeof map==='object'&&!Array.isArray(map))?map:{};
+    _teacherLegacySnapshotCache.set(key,value);
+    return value;
+  }).catch(error=>{
+    console.warn('legacy day snapshot load failed',key,error);
+    _teacherLegacySnapshotCache.set(key,{});
+    return {};
+  }).finally(()=>_teacherLegacySnapshotLoads.delete(key));
+  _teacherLegacySnapshotLoads.set(key,pending);
+  return pending;
+}
+async function ensureTeacherDaySnapshotLoaded(ds){
+  if(!ds||!_fbReady) return null;
+  const scope=teacherDaySnapshotScope();
+  const legacyKey=teacherDaySnapshotLegacyKey();
+  const key=teacherDaySnapshotKey(ds,scope);
+  if(_teacherDaySnapshotCache.has(key)){
+    const cached=_teacherDaySnapshotCache.get(key);
+    _teacherDaySnapshotCache.delete(key);
+    _teacherDaySnapshotCache.set(key,cached);
+    return cached||null;
+  }
+  if(_teacherDaySnapshotLoads.has(key)) return _teacherDaySnapshotLoads.get(key);
+  const pending=(async()=>{
+    const exactSnap=await _fb.child(key).once('value');
+    let snapshot=parseStoredJSON(key,exactSnap.val(),null);
+    if(!isTeacherDaySnapshot(snapshot)){
+      const legacy=await loadTeacherLegacySnapshotMap(legacyKey);
+      const old=legacy&&legacy[ds];
+      snapshot=isTeacherDaySnapshot(old)?JSON.parse(JSON.stringify(old)):null;
+    }
+    return cacheTeacherDaySnapshot(ds,snapshot,scope);
+  })().catch(error=>{
+    console.warn('day snapshot load failed',key,error);
+    return cacheTeacherDaySnapshot(ds,null,scope);
+  }).finally(()=>_teacherDaySnapshotLoads.delete(key));
+  _teacherDaySnapshotLoads.set(key,pending);
+  return pending;
+}
+function ensureTeacherDaySnapshotsLoaded(dates){
+  return Promise.all([...new Set((dates||[]).filter(Boolean))].map(ensureTeacherDaySnapshotLoaded));
+}
+
 function instKind(inst){
   if(!inst) return null;
   if(inst.cls==='elma'||inst.cls==='elite'||inst.cls==='master') return inst.cls;
@@ -223,7 +320,7 @@ function loadAllData(){
       TEACHERS=parseJSON(data.swim_teachers,[]);
       ATTENDANCE=parseStoredJSON('swim_attendance',data.swim_attendance,{});
       ATT_GUESTS=parseStoredJSON('swim_att_guests',data.swim_att_guests,{});
-      DAY_SNAPSHOT=parseStoredJSON('swim_day_snapshot',data.swim_day_snapshot,{});
+      DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
       resolve();
     }).catch(reject);
   });
@@ -265,7 +362,16 @@ function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')
 function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _fb.child('swim_requests').set(JSON.stringify(REQUESTS)); }
 function saveAttendance(){ if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue('swim_attendance',ATTENDANCE); return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
 function saveAttGuests(){ if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue('swim_att_guests',ATT_GUESTS); return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
-function saveDaySnapshot(){ if(!_canWriteTeacherKey('swim_day_snapshot','출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다')); DAY_SNAPSHOT=normalizeStoredValue('swim_day_snapshot',DAY_SNAPSHOT); return _fb.child('swim_day_snapshot').set(JSON.stringify(DAY_SNAPSHOT)); }
+function saveDaySnapshot(ds){
+  const date=String(ds||'');
+  const snapshot=DAY_SNAPSHOT[date];
+  const key=teacherDaySnapshotKey(date);
+  if(!date||!snapshot) return Promise.resolve(false);
+  if(!_canWriteTeacherKey(key,'출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다'));
+  const normalized=normalizeStoredValue(key,snapshot);
+  cacheTeacherDaySnapshot(date,normalized);
+  return _fb.child(key).set(JSON.stringify(normalized));
+}
 function updateAttendanceMapTx(mutator){
   if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
@@ -413,6 +519,25 @@ function _teacherAuditRequestLabel(req,status){
   if(req?.type==='bogang-cancel') return `선생님 보강취소 ${action}`;
   return `선생님 요청 ${action}`;
 }
+const TEACHER_AUDIT_INDEX_KEY='zz_swim_audit_index';
+const TEACHER_AUDIT_MAX=200;
+function _teacherAuditEntryKey(id){
+  return 'zz_swim_audit_entry__'+String(id||'');
+}
+function _teacherAuditAppendIndex(raw,item){
+  const parsed=parseJSON(raw,[]);
+  let list=Array.isArray(parsed)?parsed.filter(row=>row&&row.id!==item.id):[];
+  list.push(item);
+  list.sort((a,b)=>String(a?.at||'').localeCompare(String(b?.at||'')));
+  const removed=list.length>TEACHER_AUDIT_MAX?list.slice(0,list.length-TEACHER_AUDIT_MAX):[];
+  return {list:list.slice(Math.max(0,list.length-TEACHER_AUDIT_MAX)),removed};
+}
+function _teacherAuditCleanup(keys){
+  const unique=[...new Set((keys||[]).filter(key=>String(key||'').startsWith('zz_swim_audit_entry__')))];
+  return Promise.all(unique.map(key=>_fb.child(key).remove().catch(e=>{
+    console.warn('teacher audit cleanup failed',key,e);
+  })));
+}
 function recordTeacherAudit(entry){
   if(!_fbReady||!_fb) return Promise.resolve();
   const item=Object.assign({
@@ -428,13 +553,27 @@ function recordTeacherAudit(entry){
     user:_teacherAuditUser(),
     source:'teacher',
   }, entry||{});
-  return _fb.child('swim_audit_log').transaction(raw=>{
-    const parsed=parseJSON(raw,[]);
-    const list=Array.isArray(parsed)?parsed:[];
-    list.push(item);
-    while(list.length>200) list.shift();
-    return JSON.stringify(list);
-  }).catch(e=>{
+  const entryKey=_teacherAuditEntryKey(item.id);
+  item.entryKey=entryKey;
+  let removedKeys=[];
+  const save=typeof _fb.transactionKeys==='function'&&!_fb.disabled
+    ? _fb.transactionKeys([TEACHER_AUDIT_INDEX_KEY,entryKey],root=>{
+        root=root||{};
+        removedKeys=[];
+        const next=_teacherAuditAppendIndex(root[TEACHER_AUDIT_INDEX_KEY],item);
+        root[TEACHER_AUDIT_INDEX_KEY]=JSON.stringify(next.list);
+        root[entryKey]=JSON.stringify(item);
+        removedKeys.push(...next.removed.map(row=>row.entryKey));
+        return root;
+      }).then(()=>_teacherAuditCleanup(removedKeys))
+    : _fb.child(entryKey).set(JSON.stringify(item)).then(()=>{
+        return _fb.child(TEACHER_AUDIT_INDEX_KEY).transaction(raw=>{
+          const next=_teacherAuditAppendIndex(raw,item);
+          removedKeys.push(...next.removed.map(row=>row.entryKey));
+          return JSON.stringify(next.list);
+        });
+      }).then(()=>_teacherAuditCleanup(removedKeys));
+  return save.catch(e=>{
     console.warn('teacher audit save failed',e);
   });
 }
@@ -1252,17 +1391,18 @@ function attendanceStateLabel(state){
 let _snapshotTimer=null;
 function ensureTodaySnapshot(){
   const today=toDateStr(new Date());
+  const scope=teacherDaySnapshotScope();
   if(_snapshotTimer) clearTimeout(_snapshotTimer);
   _snapshotTimer=setTimeout(async ()=>{
-    const existing=DAY_SNAPSHOT[today];
-    const nowStr=new Date().toISOString().slice(0,10);
-    if(existing && existing.date===nowStr) return;
+    const existing=await ensureTeacherDaySnapshotLoaded(today);
+    if(existing&&existing.date===today) return;
+    if(scope!==teacherDaySnapshotScope()) return;
     DAY_SNAPSHOT[today]={
-      date:nowStr,
+      date:today,
       students:JSON.parse(JSON.stringify(STUDENTS)),
       inst:JSON.parse(JSON.stringify(INST_MAP)),
     };
-    try{await saveDaySnapshot();}catch(e){console.warn('snapshot save failed',e);}
+    try{await saveDaySnapshot(today);}catch(e){console.warn('snapshot save failed',e);}
   },500);
 }
 
@@ -1278,10 +1418,14 @@ function getAllTimes(inst){
   });
 }
 
-function renderAttendanceTimetable(){
+async function renderAttendanceTimetable(){
+  const renderSeq=++_attendanceRenderSeq;
   if(!_attWeekStart) _attWeekStart=getMondayOf(new Date());
   const weekDates=getWeekDates(_attWeekStart);
   const todayStr=toDateStr(new Date());
+  await ensureTeacherDaySnapshotsLoaded(weekDates.filter(item=>item.ds<todayStr).map(item=>item.ds));
+  if(renderSeq!==_attendanceRenderSeq) return;
+  DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
 
   const start=weekDates[0].ds, end=weekDates[weekDates.length-1].ds;
   const [,sm,sd]=start.split('-');

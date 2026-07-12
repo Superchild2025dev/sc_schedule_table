@@ -569,24 +569,29 @@ async function _saveAttAdd(status){
 }
 
 // 과거 날짜 스냅샷 or 현재 STUDENTS 학생 편집 (모달)
-function _editAttCell(slotKey, cellDs){
+async function _editAttCell(slotKey, cellDs){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 편집')) return;
   const [t,d,l,r]=slotKey.split('/');
   const li=parseInt(l), ri=parseInt(r);
   const targetDs=cellDs||_attendanceDate;
   const isPast=targetDs < toDateStr(getToday());
-  const usingSnapshot=isPast && DAY_SNAPSHOT[targetDs];
+  const basisTab=typeof getAttendanceBasisTabForDate==='function'?getAttendanceBasisTabForDate(targetDs):null;
+  let snapshotForDate=null;
+  if(isPast&&typeof ensureAttendanceDaySnapshotLoaded==='function'){
+    snapshotForDate=await ensureAttendanceDaySnapshotLoaded(targetDs,basisTab?.id,true);
+  }
+  const usingSnapshot=!!(isPast&&snapshotForDate);
 
   let curStu;
   if(usingSnapshot){
-    curStu=(DAY_SNAPSHOT[targetDs].students||[]).find(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
+    curStu=(snapshotForDate.students||[]).find(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
   } else {
     const basis=(targetDs&&typeof getAttendanceBasisDataForDate==='function')?getAttendanceBasisDataForDate(targetDs):null;
     const sourceDay=basis?_attendanceSourceDay(basis,d):d;
     curStu=basis?_withAttendanceViewDay(basis.stuIdx?.[t+'/'+sourceDay+'/'+li+'/'+ri]||null,d,sourceDay):getStu(t,d,li,ri);
   }
 
-  _editModalCtx={slotKey, usingSnapshot, exists:!!curStu, ds:targetDs};
+  _editModalCtx={slotKey, usingSnapshot, snapshot:snapshotForDate, exists:!!curStu, ds:targetDs, tabId:basisTab?.id||_activeTab};
   document.getElementById('att-edit-name').value=curStu?.n||'';
   document.getElementById('att-edit-age').value=curStu?.a||'';
   const infoLabel=`${t} ${d}요일 ${l}레인 ${r}번${isPast?' · '+targetDs+' 스냅샷':''}`;
@@ -604,7 +609,7 @@ function _closeEditModal(){
 async function _saveEditModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 편집')) return;
   if(!_editModalCtx) return;
-  const {slotKey, usingSnapshot, ds}=_editModalCtx;
+  const {slotKey, usingSnapshot, snapshot, ds, tabId}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
   const li=parseInt(l), ri=parseInt(r);
   const newName=document.getElementById('att-edit-name').value.trim();
@@ -612,12 +617,12 @@ async function _saveEditModal(){
   if(!newName){toast('이름을 입력하세요','err');return;}
 
   if(usingSnapshot){
-    const arr=DAY_SNAPSHOT[ds].students||[];
+    const arr=snapshot.students||[];
     const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
     if(idx>=0){arr[idx].n=newName; arr[idx].a=newAge;}
     else arr.push({n:newName, a:newAge, t, d, l:li, r:ri});
-    DAY_SNAPSHOT[ds].students=arr;
-    saveDaySnapshot();
+    snapshot.students=arr;
+    saveDaySnapshot(ds,tabId,snapshot);
     toast('과거 시간표 저장','ok');
   } else {
     toast('운영 시간표 원생 수정은 시간표에서 해주세요','err');
@@ -631,14 +636,15 @@ async function _deleteEditModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
   if(!_editModalCtx) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
-  const {slotKey, usingSnapshot, ds}=_editModalCtx;
+  const {slotKey, usingSnapshot, snapshot, ds, tabId}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
   const li=parseInt(l), ri=parseInt(r);
   if(usingSnapshot){
-    const arr=DAY_SNAPSHOT[ds].students||[];
+    const arr=snapshot.students||[];
     const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
     if(idx>=0) arr.splice(idx,1);
-    saveDaySnapshot();
+    snapshot.students=arr;
+    saveDaySnapshot(ds,tabId,snapshot);
   } else {
     toast('운영 시간표 원생 삭제는 시간표에서 해주세요','err');
     return;
@@ -661,6 +667,7 @@ function toggleAttendanceMode(){
     // 오늘 스냅샷 저장
     _ensureTodaySnapshot();
   } else {
+    _attSnapshotRefreshSeq++;
     bar.style.display='none';
     btn.style.background='';
     btn.style.fontWeight='';
@@ -673,6 +680,7 @@ function toggleAttendanceMode(){
   _updateAttBatchUi();
   buildTable();
   _updateAttBarInfo();
+  if(_attendanceMode) _queueAttendanceSnapshotRefresh();
 }
 
 function setAttendanceDate(ds){
@@ -681,6 +689,7 @@ function setAttendanceDate(ds){
   _updateAttBatchUi();
   buildTable();
   _updateAttBarInfo();
+  _queueAttendanceSnapshotRefresh();
 }
 
 function attDayShift(delta){
@@ -692,6 +701,7 @@ function attDayShift(delta){
   _updateAttBatchUi();
   buildTable();
   _updateAttBarInfo();
+  _queueAttendanceSnapshotRefresh();
 }
 
 function attWeekShift(delta){
@@ -703,6 +713,7 @@ function attWeekShift(delta){
   _updateAttBatchUi();
   buildTable();
   _updateAttBarInfo();
+  _queueAttendanceSnapshotRefresh();
 }
 
 function setAttToday(){
@@ -712,6 +723,35 @@ function setAttToday(){
   _updateAttBatchUi();
   buildTable();
   _updateAttBarInfo();
+  _queueAttendanceSnapshotRefresh();
+}
+
+let _attSnapshotRefreshSeq=0;
+function _attendanceSnapshotDatesForView(){
+  if(!_attendanceDate) return [];
+  const mon=_getWeekMon(_attendanceDate);
+  const count=(typeof isBangteuk==='function'&&isBangteuk())?5:6;
+  const today=toDateStr(getToday());
+  const dates=[];
+  for(let i=0;i<count;i++){
+    const d=new Date(mon);
+    d.setDate(d.getDate()+i);
+    const ds=toDateStr(d);
+    if(ds<today) dates.push(ds);
+  }
+  return dates;
+}
+function _queueAttendanceSnapshotRefresh(){
+  if(!_attendanceMode||typeof ensureAttendanceDaySnapshotsLoaded!=='function') return Promise.resolve();
+  const seq=++_attSnapshotRefreshSeq;
+  const anchor=_attendanceDate;
+  const dates=_attendanceSnapshotDatesForView();
+  if(!dates.length) return Promise.resolve();
+  return ensureAttendanceDaySnapshotsLoaded(dates).then(()=>{
+    if(seq!==_attSnapshotRefreshSeq||!_attendanceMode||anchor!==_attendanceDate) return;
+    buildTable();
+    _updateAttBarInfo();
+  }).catch(error=>console.warn('attendance snapshot refresh failed',error));
 }
 
 function _updateAttBarInfo(){
@@ -949,18 +989,24 @@ async function markAllPresentForDate(){
 let _snapshotTimer=null;
 function _ensureTodaySnapshot(){
   if(window.SCAuth && !SCAuth.can('editSchedule') && !SCAuth.can('attendanceCheck')) return;
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()) return;
   const today=toDateStr(getToday());
+  const activeTabId=_activeTab;
   if(_snapshotTimer) clearTimeout(_snapshotTimer);
-  _snapshotTimer=setTimeout(()=>{
-    const existing=DAY_SNAPSHOT[today];
-    const nowStr=new Date().toISOString().slice(0,10);
-    if(existing && existing.date===nowStr) return;
+  _snapshotTimer=setTimeout(async()=>{
+    const basisTab=typeof getAttendanceBasisTabForDate==='function'?getAttendanceBasisTabForDate(today):null;
+    const targetTabId=basisTab?.id||activeTabId;
+    const existing=typeof ensureAttendanceDaySnapshotLoaded==='function'
+      ? await ensureAttendanceDaySnapshotLoaded(today,targetTabId)
+      : DAY_SNAPSHOT[today];
+    if(existing&&existing.date===today) return;
+    if(activeTabId!==_activeTab) return;
     DAY_SNAPSHOT[today]={
-      date:nowStr,
+      date:today,
       students:JSON.parse(JSON.stringify(STUDENTS)),
       inst:JSON.parse(JSON.stringify(INST_MAP)),
     };
-    try{saveDaySnapshot();}catch(e){console.warn('snapshot save failed',e);}
+    try{saveDaySnapshot(today,targetTabId);}catch(e){console.warn('snapshot save failed',e);}
   },500);
 }
 
@@ -1055,185 +1101,249 @@ document.addEventListener('mouseout',function(e){
  * - 앱바 타이틀 갱신
  * - 만료된 isNew/enrolled 플래그 정리
  */
-function syncStudentsBeforeRender(){
-  // [v118] 타임머신 모드에서도 sync는 실행 (ENROLL_MAP→STUDENTS 옮겨야 미래 학생이 보임).
-  //   영구 저장은 saveJSON 타임머신 가드로 차단됨.
-  //   buildTable 끝에서 메모리 복원되므로 일반 모드 데이터 손상 X.
-  let changed=false;
-  let enrollChanged=false;
-  let retireChanged=false;
-  let hyuwonChanged=false;
-  const todayStr=toDateStr(getToday());
+function _buildStudentDatePreview(todayStr,cp){
+  const students=JSON.parse(JSON.stringify(STUDENTS||[]));
+  const enroll=JSON.parse(JSON.stringify(ENROLL_MAP||{}));
+  const retire=JSON.parse(JSON.stringify(RETIRE_MAP||{}));
+  const hyuwon=JSON.parse(JSON.stringify(HYUWON_MAP||{}));
+  const identityMatches=(student,entry)=>{
+    if(!student||!entry||typeof entry!=='object') return false;
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
+      return window.SCScheduleTime.sameStudentIdentity(student,entry);
+    }
+    return String(student.n||'').trim()===String(entry.name||entry.n||'').trim();
+  };
+  const slotMatch=(s,slotKey)=>{
+    const [t,d,l,r]=String(slotKey||'').split('/');
+    return s.t===t&&s.d===d&&parseInt(s.l,10)===parseInt(l,10)&&parseInt(s.r,10)===parseInt(r,10);
+  };
 
-  // 퇴원일 지난 학생 자동 삭제
-  for(const [slotKey,entry] of Object.entries(RETIRE_MAP)){
-    const retDs=entry?.ds||entry; // backward compat
-    if(retDs<todayStr){
+  for(const [slotKey,entry] of Object.entries(retire)){
+    const retDs=entry?.ds||entry;
+    if(entry?.blocked||!retDs||retDs>=todayStr) continue;
+    const idx=students.findIndex(s=>slotMatch(s,slotKey));
+    const current=idx>=0?students[idx]:null;
+    if(current&&!identityMatches(current,entry)) continue;
+    if(current) students.splice(idx,1);
+    if(enroll[slotKey]&&enroll[slotKey].ds<retDs) delete enroll[slotKey];
+    delete retire[slotKey];
+    delete hyuwon[slotKey];
+  }
+  for(const [slotKey,entry] of Object.entries(enroll)){
+    if(!entry||typeof entry!=='object') continue;
+    const isBtEnroll=_isBangteukSlotKey(slotKey);
+    if(!isBtEnroll){
+      delete entry.paid;
+      delete entry.btNew;
+      if(entry.ds>todayStr) continue;
+    }
+    const existing=students.find(s=>slotMatch(s,slotKey));
+    if(existing&&!identityMatches(existing,entry)) continue;
+    if(!existing){
       const [t,d,l,r]=slotKey.split('/');
-      const idx=STUDENTS.findIndex(s=>s.t===t&&s.d===d&&s.l===parseInt(l)&&s.r===parseInt(r));
-      if(idx>=0){STUDENTS.splice(idx,1);changed=true;}
-      delete _stuIdx[slotKey];
+      const obj={sid:entry.sid||undefined,n:entry.name,a:entry.age||null,t,d,l:parseInt(l,10),r:parseInt(r,10)};
+      if(entry.p) obj.p=entry.p;
+      if(isBtEnroll&&(entry.btNew||entry.isNew)) obj.btNew=true;
+      else if(entry.isNew) obj.isNew=entry.isNew;
+      else if(!isBtEnroll&&entry.reenroll) obj.reenroll=entry.reenroll;
+      if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
+      if(entry.v) obj.v=true;
+      if(entry.paid) obj.paid=true;
+      if(entry.loc) obj.loc=entry.loc;
+      if(entry.memo) obj.memo=entry.memo;
+      if(entry.g) obj.g=entry.g;
+      students.push(obj);
+    }
+    delete enroll[slotKey];
+  }
+  students.forEach(s=>{
+    const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+    if(!isBtStu&&s.paid) delete s.paid;
+    if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;}
+    if(s.isNew&&!isBtStu&&s.isNew!==cp.month) delete s.isNew;
+    if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)) delete s.reenroll;
+    if(s.enrolled&&(isBtStu||s.enrolled<todayStr)) delete s.enrolled;
+  });
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.normalizeStudents==='function'){
+    window.SCScheduleTime.normalizeStudents(students);
+  }
+  return {students,enroll,retire,hyuwon};
+}
+let _studentSyncInFlight=null;
+function syncStudentsBeforeRender(){
+  const cp=SCHEDULE_PERIODS[getCurrentPeriod()];
+  if(cp){
+    const period=document.getElementById('app-period');
+    if(period) period.textContent=String(cp.start||'').split('-')[0]+'년 '+cp.month+'월';
+  }
+  if(_studentSyncInFlight||!cp) return;
+  if(window.SC_READ_ONLY_PREVIEW) return;
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()) return;
+  if(typeof _fakeDate!=='undefined'&&_fakeDate) return;
+  if(window.SCAuth&&typeof SCAuth.can==='function'&&!SCAuth.can('editSchedule')) return;
 
-      // 같은 슬롯의 등원 항목이 퇴원일보다 이전이면(소비된 과거 등원) 같이 삭제
-      // → 다음 enroll 패스에서 학생이 재등록되는 버그 방지
-      const enr=ENROLL_MAP[slotKey];
-      if(enr && enr.ds < retDs){
-        delete ENROLL_MAP[slotKey];
+  const todayStr=toDateStr(getToday());
+  const identityMatches=(student,entry)=>{
+    if(!student||!entry||typeof entry!=='object') return false;
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
+      return window.SCScheduleTime.sameStudentIdentity(student,entry);
+    }
+    return String(student.n||'').trim()===String(entry.name||entry.n||'').trim();
+  };
+  const localStudentAt=slotKey=>{
+    const [t,d,l,r]=String(slotKey||'').split('/');
+    return (STUDENTS||[]).find(s=>s.t===t&&s.d===d&&parseInt(s.l,10)===parseInt(l,10)&&parseInt(s.r,10)===parseInt(r,10));
+  };
+  let needsSync=false;
+  Object.entries(RETIRE_MAP||{}).some(([slotKey,entry])=>{
+    const retDs=entry?.ds||entry;
+    if(entry?.blocked||!retDs||retDs>=todayStr) return false;
+    needsSync=true;
+    return true;
+  });
+  if(!needsSync){
+    Object.entries(ENROLL_MAP||{}).some(([slotKey,entry])=>{
+      if(!entry||typeof entry!=='object') return false;
+      const isBtEnroll=_isBangteukSlotKey(slotKey);
+      if(!isBtEnroll&&(entry.paid||entry.btNew)){
+        needsSync=true;
+        return true;
+      }
+      if(!isBtEnroll&&entry.ds>todayStr) return false;
+      const existing=localStudentAt(slotKey);
+      if(!existing||identityMatches(existing,entry)){
+        needsSync=true;
+        return true;
+      }
+      return false;
+    });
+  }
+  if(!needsSync){
+    (STUDENTS||[]).some(s=>{
+      const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+      needsSync=!!(
+        (!isBtStu&&s.paid)
+        || (isBtStu&&s.isNew)
+        || (s.isNew&&!isBtStu&&s.isNew!==cp.month)
+        || (s.reenroll&&(isBtStu||s.reenroll!==cp.month))
+        || (s.enrolled&&(isBtStu||s.enrolled<todayStr))
+      );
+      return needsSync;
+    });
+  }
+  if(!needsSync) return;
+
+  const stuKey=getTabConfig().stuKey;
+  let committedChange=false;
+  let blockedRetireCount=0;
+  _studentSyncInFlight=updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE,STORAGE_KEYS.休원],ctx=>{
+    committedChange=false;
+    blockedRetireCount=0;
+    const students=ctx.get(stuKey,[]);
+    const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+    const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+    const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+    let studentsChanged=false;
+    let enrollChanged=false;
+    let retireChanged=false;
+    let hyuwonChanged=false;
+    const slotMatch=(s,slotKey)=>{
+      const [t,d,l,r]=String(slotKey||'').split('/');
+      return s.t===t&&s.d===d&&parseInt(s.l,10)===parseInt(l,10)&&parseInt(s.r,10)===parseInt(r,10);
+    };
+
+    for(const [slotKey,entry] of Object.entries(retire)){
+      const retDs=entry?.ds||entry;
+      if(entry?.blocked||!retDs||retDs>=todayStr) continue;
+      const idx=students.findIndex(s=>slotMatch(s,slotKey));
+      const current=idx>=0?students[idx]:null;
+      if(current&&!identityMatches(current,entry)){
+        retire[slotKey]={
+          ...(entry&&typeof entry==='object'?entry:{ds:retDs}),
+          blocked:true,
+          blockedReason:'student-mismatch',
+          blockedAt:new Date().toISOString(),
+          blockedStudentSid:current.sid||'',
+          blockedStudentName:current.n||'',
+        };
+        retireChanged=true;
+        blockedRetireCount++;
+        console.warn('[자동 제외 차단] 예약 원생과 현재 원생이 다릅니다:',slotKey,entry,current);
+        continue;
+      }
+      if(current){
+        students.splice(idx,1);
+        studentsChanged=true;
+      }
+      const pendingEnroll=enroll[slotKey];
+      if(pendingEnroll&&pendingEnroll.ds<retDs){
+        delete enroll[slotKey];
         enrollChanged=true;
       }
-
-      // [FIX #15] 퇴원 항목 소비 → 삭제 (재처리 방지).
-      //  이전엔 RETIRE_MAP 항목이 영구히 남아, 같은 슬롯에 새 학생이 들어오면
-      //  (등원 패스로 push되든 사용자가 직접 등록하든) 다음 render에서 슬롯키만 보고
-      //  그 새 학생까지 splice해서 죽이는 race가 있었음.
-      //  특히 "4/20 퇴원 + 4/27 신규 등원" 시나리오에서 4/27에 등원이 사라짐.
-      delete RETIRE_MAP[slotKey];
+      delete retire[slotKey];
       retireChanged=true;
-      // 퇴원한 슬롯의 휴원도 정리 (orphan 방지 — 빈 셀에 휴원 뱃지 안 남음)
-      if(HYUWON_MAP[slotKey]){
-        delete HYUWON_MAP[slotKey];
+      if(hyuwon[slotKey]){
+        delete hyuwon[slotKey];
         hyuwonChanged=true;
       }
     }
-  }
 
-  // 등원일 된 학생 자동 등록
-  for(const [slotKey,entry] of Object.entries(ENROLL_MAP)){
-    const isBtEnroll=_isBangteukSlotKey(slotKey);
-    if(!isBtEnroll&&(entry.paid||entry.btNew)){
-      delete entry.paid;
-      delete entry.btNew;
-      enrollChanged=true;
-    }
-    if(isBtEnroll||entry.ds<=todayStr){
+    for(const [slotKey,entry] of Object.entries(enroll)){
+      if(!entry||typeof entry!=='object') continue;
+      const isBtEnroll=_isBangteukSlotKey(slotKey);
+      if(!isBtEnroll&&(entry.paid||entry.btNew)){
+        delete entry.paid;
+        delete entry.btNew;
+        enrollChanged=true;
+      }
+      if(!isBtEnroll&&entry.ds>todayStr) continue;
       const [t,d,l,r]=slotKey.split('/');
-      const li=parseInt(l),ri=parseInt(r);
-      const existing=getStu(t,d,li,ri);
+      const li=parseInt(l,10),ri=parseInt(r,10);
+      const existing=students.find(s=>slotMatch(s,slotKey));
+      if(existing&&!identityMatches(existing,entry)) continue;
       if(!existing){
-        const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
+        const obj={sid:entry.sid||undefined,n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
         if(entry.p) obj.p=entry.p;
         if(isBtEnroll&&(entry.btNew||entry.isNew)) obj.btNew=true;
         else if(entry.isNew) obj.isNew=entry.isNew;
         else if(!isBtEnroll&&entry.reenroll) obj.reenroll=entry.reenroll;
         if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
-        // [v99] 등원 예약 시 입력한 차량/승하차/메모 적용
         if(entry.v) obj.v=true;
         if(entry.paid) obj.paid=true;
         if(entry.loc) obj.loc=entry.loc;
         if(entry.memo) obj.memo=entry.memo;
-        // [v100] 성별도 적용
         if(entry.g) obj.g=entry.g;
-        STUDENTS.push(obj);
-        _stuIdx[slotKey]=obj;
-        changed=true;
-        // 등원 항목 소비 → 삭제 (재등록 방지)
-        delete ENROLL_MAP[slotKey];
-        enrollChanged=true;
-      } else if(existing.n===entry.name){
-        // 이미 등록된 같은 이름 → 과거 잔여 항목 정리
-        delete ENROLL_MAP[slotKey];
-        enrollChanged=true;
+        students.push(obj);
+        studentsChanged=true;
       }
+      delete enroll[slotKey];
+      enrollChanged=true;
     }
-  }
 
-  // 앱바 타이틀 업데이트
-  const cp=SCHEDULE_PERIODS[getCurrentPeriod()];
-  const yr=cp.start.split('-')[0];
-  document.getElementById('app-period').textContent=yr+'년 '+cp.month+'월';
+    students.forEach(s=>{
+      const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
+      if(!isBtStu&&s.paid){delete s.paid;studentsChanged=true;}
+      if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;studentsChanged=true;}
+      if(s.isNew&&!isBtStu&&s.isNew!==cp.month){delete s.isNew;studentsChanged=true;}
+      if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)){delete s.reenroll;studentsChanged=true;}
+      if(s.enrolled&&(isBtStu||s.enrolled<todayStr)){delete s.enrolled;studentsChanged=true;}
+    });
 
-  // 만료된 신규/등원 플래그 정리
-  // [FIX] 이전엔 in-memory만 mutate하고 저장하지 않아 새로고침/다른 디바이스에서 플래그가 부활했음.
-  let flagChanged=false;
-  STUDENTS.forEach(s=>{
-    const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
-    if(!isBtStu&&s.paid){ delete s.paid; flagChanged=true; }
-    if(isBtStu&&s.isNew){ s.btNew=true; delete s.isNew; flagChanged=true; }
-    if(s.isNew&&!isBtStu&&s.isNew!==cp.month){ delete s.isNew; flagChanged=true; }
-    if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)){ delete s.reenroll; flagChanged=true; }
-    if(s.enrolled&&(isBtStu||s.enrolled<todayStr)){ delete s.enrolled; flagChanged=true; }
-  });
-  if(changed||enrollChanged||retireChanged||hyuwonChanged||flagChanged){
-    const periodMonth=cp.month;
-    const stuKey=getTabConfig().stuKey;
-    updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE,STORAGE_KEYS.休원], ctx=>{
-      const students=ctx.get(stuKey,[]);
-      const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
-      const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
-      const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
-      let txStudentsChanged=false;
-      let txEnrollChanged=false;
-      let txRetireChanged=false;
-      let txHyuwonChanged=false;
-
-      const slotMatch=(s,slotKey)=>{
-        const [t,d,l,r]=slotKey.split('/');
-        return s.t===t&&s.d===d&&parseInt(s.l)===parseInt(l)&&parseInt(s.r)===parseInt(r);
-      };
-
-      for(const [slotKey,entry] of Object.entries(retire)){
-        const retDs=entry?.ds||entry;
-        if(retDs<todayStr){
-          const idx=students.findIndex(s=>slotMatch(s,slotKey));
-          if(idx>=0){students.splice(idx,1);txStudentsChanged=true;}
-          const enr=enroll[slotKey];
-          if(enr&&enr.ds<retDs){delete enroll[slotKey];txEnrollChanged=true;}
-          delete retire[slotKey];
-          txRetireChanged=true;
-          if(hyuwon[slotKey]){delete hyuwon[slotKey];txHyuwonChanged=true;}
-        }
+    if(studentsChanged) ctx.set(stuKey,students);
+    if(enrollChanged) ctx.set(STORAGE_KEYS.ENROLL,enroll);
+    if(retireChanged) ctx.set(STORAGE_KEYS.RETIRE,retire);
+    if(hyuwonChanged) ctx.set(STORAGE_KEYS.休원,hyuwon);
+    committedChange=studentsChanged||enrollChanged||retireChanged||hyuwonChanged;
+    return true;
+  }, {type:'edit',label:'자동 등록·제외 처리',deleteReason:'auto-retire',skipUndo:true})
+    .then(()=>{
+      if(blockedRetireCount&&typeof toast==='function'){
+        toast('예약 원생과 현재 원생이 달라 자동 제외 '+blockedRetireCount+'건을 차단했습니다','err');
       }
-
-      for(const [slotKey,entry] of Object.entries(enroll)){
-        const isBtEnroll=_isBangteukSlotKey(slotKey);
-        if(!isBtEnroll&&(entry.paid||entry.btNew)){
-          delete entry.paid;
-          delete entry.btNew;
-          txEnrollChanged=true;
-        }
-        if(isBtEnroll||entry.ds<=todayStr){
-          const [t,d,l,r]=slotKey.split('/');
-          const li=parseInt(l),ri=parseInt(r);
-          const existing=students.find(s=>slotMatch(s,slotKey));
-          if(!existing){
-            const obj={n:entry.name,a:entry.age||null,t,d,l:li,r:ri};
-            if(entry.p) obj.p=entry.p;
-            if(isBtEnroll&&(entry.btNew||entry.isNew)) obj.btNew=true;
-            else if(entry.isNew) obj.isNew=entry.isNew;
-            else if(!isBtEnroll&&entry.reenroll) obj.reenroll=entry.reenroll;
-            if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
-            if(entry.v) obj.v=true;
-            if(entry.paid) obj.paid=true;
-            if(entry.loc) obj.loc=entry.loc;
-            if(entry.memo) obj.memo=entry.memo;
-            if(entry.g) obj.g=entry.g;
-            students.push(obj);
-            txStudentsChanged=true;
-            delete enroll[slotKey];
-            txEnrollChanged=true;
-          } else if(existing.n===entry.name){
-            delete enroll[slotKey];
-            txEnrollChanged=true;
-          }
-        }
-      }
-
-      students.forEach(s=>{
-        const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
-        if(!isBtStu&&s.paid){delete s.paid;txStudentsChanged=true;}
-        if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;txStudentsChanged=true;}
-        if(s.isNew&&!isBtStu&&s.isNew!==periodMonth){delete s.isNew;txStudentsChanged=true;}
-        if(s.reenroll&&(isBtStu||s.reenroll!==periodMonth)){delete s.reenroll;txStudentsChanged=true;}
-        if(s.enrolled&&(isBtStu||s.enrolled<todayStr)){delete s.enrolled;txStudentsChanged=true;}
-      });
-
-      if(txStudentsChanged) ctx.set(stuKey,students);
-      if(txEnrollChanged) ctx.set(STORAGE_KEYS.ENROLL,enroll);
-      if(txRetireChanged) ctx.set(STORAGE_KEYS.RETIRE,retire);
-      if(txHyuwonChanged) ctx.set(STORAGE_KEYS.休원,hyuwon);
-      return true;
-    }).catch(e=>{console.error('syncStudentsBeforeRender transaction failed',e);});
-  }
+      if(committedChange) buildTable();
+    })
+    .catch(err=>{console.error('syncStudentsBeforeRender transaction failed',err);})
+    .finally(()=>{_studentSyncInFlight=null;});
 }
 
 /**
@@ -1444,6 +1554,20 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   const storedBtExtraRow=storedBtTime&&ri>=baseSlotRows&&ri<6;
   const btPreviewTime=!isBangteukTable&&_btPreviewTimeVisible(t);
   const btPreviewExtraRow=btPreviewTime&&ri===baseSlotRows;
+  const rowHasBangteukSlot=()=>{
+    if((isBangteukTable&&ri<6)||storedBtExtraRow||btPreviewExtraRow) return true;
+    if(ri<baseSlotRows||ri>=6) return false;
+    const row=ri+1;
+    for(const day of DAYS){
+      for(let lane=1;lane<=LANE_COUNT;lane++){
+        const inst=_ctxInst(ctx,t,day,lane);
+        if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function'&&window.SCScheduleTime.isBangteukSlot(inst,row,{bangteukTable:isBangteukTable})) return true;
+        if(typeof _isBangteukSlotKey==='function'&&_isBangteukSlotKey(t+'/'+day+'/'+lane+'/'+row)) return true;
+      }
+    }
+    return false;
+  };
+  const isBangteukExtraRow=rowHasBangteukSlot();
   const btPreviewDayActive=day=>{
     if(!btPreviewExtraRow||typeof btPreviewLaneActive!=='function') return false;
     for(let lane=1;lane<=LANE_COUNT;lane++) if(_btPreviewLaneVisible(t,day,lane)) return true;
@@ -1451,7 +1575,8 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
   };
   // 정규 5행(ri 0~4) 이후는 반칸 높이 (추가 학생용)
   // 단, 엘마/방특 시간대의 정규 확장 줄은 풀 높이 유지
-  if(ri>=baseSlotRows && !hasElmaInTime(t) && !btPreviewExtraRow && !storedBtExtraRow) stuRow.classList.add('half-row');
+  if(ri>=baseSlotRows && !hasElmaInTime(t) && !isBangteukExtraRow) stuRow.classList.add('half-row');
+  if(isBangteukExtraRow) stuRow.classList.add('bt-full-row');
   const curMonth=SCHEDULE_PERIODS[getCurrentPeriod()].month;
 
   const slotHasStoredContent=(day,lane,row)=>{
@@ -1978,15 +2103,21 @@ function _trimEmptyTrailingRows(t,rows,DAYS,LANE_COUNT,ctx){
 function buildTable(){
   const DAYS=getDays(),TIMES=getTimes(),SAT_TIME_LABEL=getSatLabel(),HAS_NUM=getHasNum(),LANE_COUNT=getLanes();
 
-  // [v118] 타임머신 모드: sync로 메모리 변경되더라도 buildTable 끝에 복원 → 영구 손상 X
+  // 타임머신은 실제 원본이 아닌 복제본만 계산해 화면에 사용한다.
   let _tmBackup = null;
   if(typeof _fakeDate !== 'undefined' && _fakeDate){
     _tmBackup = {
-      stu: STUDENTS.slice(),
-      stuIdx: Object.assign({}, _stuIdx),
-      enroll: JSON.parse(JSON.stringify(ENROLL_MAP)),
-      retire: JSON.parse(JSON.stringify(RETIRE_MAP)),
+      stu:STUDENTS,
+      enroll:ENROLL_MAP,
+      retire:RETIRE_MAP,
+      hyuwon:HYUWON_MAP,
     };
+    const preview=_buildStudentDatePreview(toDateStr(getToday()),SCHEDULE_PERIODS[getCurrentPeriod()]);
+    STUDENTS=preview.students;
+    ENROLL_MAP=preview.enroll;
+    RETIRE_MAP=preview.retire;
+    HYUWON_MAP=preview.hyuwon;
+    rebuildStuIdx();
   }
 
   syncStudentsBeforeRender();
@@ -2183,16 +2314,13 @@ function buildTable(){
     STUDENTS.forEach(s=>{_stuIdx[s.t+'/'+s.d+'/'+s.l+'/'+s.r]=s;});
   }
 
-  // [v118] 타임머신 모드: 화면용으로 sync한 메모리를 원본으로 복원
+  // 타임머신 화면용 복제본을 버리고 실제 원본 참조를 복원
   if(_tmBackup){
-    STUDENTS.length=0;
-    _tmBackup.stu.forEach(s=>STUDENTS.push(s));
-    Object.keys(_stuIdx).forEach(k=>delete _stuIdx[k]);
-    Object.assign(_stuIdx, _tmBackup.stuIdx);
-    Object.keys(ENROLL_MAP).forEach(k=>delete ENROLL_MAP[k]);
-    Object.assign(ENROLL_MAP, _tmBackup.enroll);
-    Object.keys(RETIRE_MAP).forEach(k=>delete RETIRE_MAP[k]);
-    Object.assign(RETIRE_MAP, _tmBackup.retire);
+    STUDENTS=_tmBackup.stu;
+    ENROLL_MAP=_tmBackup.enroll;
+    RETIRE_MAP=_tmBackup.retire;
+    HYUWON_MAP=_tmBackup.hyuwon;
+    rebuildStuIdx();
   }
 }
 

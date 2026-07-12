@@ -278,7 +278,16 @@
     key=String(key||'');
     return key==='swim_audit_log'
       || key==='swim_restore_points'
-      || key.startsWith('swim_restore_point_');
+      || key==='zz_swim_audit_index'
+      || key==='zz_swim_restore_index'
+      || key==='zz_swim_student_delete_index'
+      || key==='swim_day_snapshot'
+      || key.startsWith('swim_restore_point_')
+      || key.startsWith('swim_bt_day_snapshot_')
+      || key.startsWith('zz_swim_day_snapshot__')
+      || key.startsWith('zz_swim_audit_entry__')
+      || key.startsWith('zz_swim_restore_point__')
+      || key.startsWith('zz_swim_student_delete__');
   }
   function backupStatus(message,type){
     const el=$('backup-status');

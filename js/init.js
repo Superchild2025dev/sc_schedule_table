@@ -2,6 +2,7 @@
  * SECTION: 초기 로드 (Firebase fetch → loadTabData → buildTable)
  * ════════════════════════════════════════════════════════════════ */
 function startScheduleApp(){
+  showReadOnlyPreviewBanner();
   // [지점] 선택 안 됐으면 모달만 띄우고 init 중단
   if(!_selectedBranch){
     const m=document.getElementById('branch-modal');
@@ -33,8 +34,20 @@ function startScheduleApp(){
       runSettingsActionFromUrl();
     };
     const continueStartup=()=>{
-      if(typeof applyAnnualAgeIncrement==='function'){
-        applyAnnualAgeIncrement()
+      const migrateIds=typeof ensureStudentIdsPersisted==='function'
+        ? ensureStudentIdsPersisted()
+        : Promise.resolve(false);
+      migrateIds
+        .then(changed=>{
+          if(changed) loadTabData();
+        })
+        .catch(err=>{
+          console.error('원생 고유 ID 초기화 실패:',err);
+          toast(err?.message||'원생 고유 ID 초기화 실패','err');
+        })
+        .then(()=>{
+          if(typeof applyAnnualAgeIncrement!=='function') return false;
+          return applyAnnualAgeIncrement()
           .then(changed=>{
             if(changed){
               loadTabData();
@@ -48,13 +61,11 @@ function startScheduleApp(){
             }
             console.error('나이 자동 증가 실패:',err);
             toast(err?.message||'나이 자동 증가 실패','err');
-          })
-          .finally(render);
-      } else {
-        render();
-      }
+          });
+        })
+        .finally(render);
     };
-    const autoRoll=typeof autoRolloverRegularScheduleIfNeeded==='function'
+    const autoRoll=!window.SC_READ_ONLY_PREVIEW&&typeof autoRolloverRegularScheduleIfNeeded==='function'
       ? autoRolloverRegularScheduleIfNeeded()
       : Promise.resolve(false);
     autoRoll
@@ -74,6 +85,10 @@ function startScheduleApp(){
 }
 
 function resetAllScheduleData(){
+  if(window.SC_READ_ONLY_PREVIEW){
+    toast('안전 미리보기에서는 초기화할 수 없습니다','err');
+    return;
+  }
   if(window.SCAuth && !SCAuth.requirePermission('resetData','초기화')) return;
   if(!confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')) return;
   Object.keys(_dbCache).forEach(k=>dbRemove(k));
@@ -104,6 +119,7 @@ function runSettingsActionFromUrl(){
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  showReadOnlyPreviewBanner();
   const authReady = window.SCAuth && typeof SCAuth.requireAuth === 'function'
     ? SCAuth.requireAuth()
     : Promise.resolve();
@@ -114,7 +130,15 @@ document.addEventListener('DOMContentLoaded', () => {
 function selectBranch(branch){
   if(branch!=='gagyeong' && branch!=='yongam') return;
   try{window.localStorage.setItem(SELECTED_BRANCH_KEY, branch);}catch(e){}
-  window.location.href='index.html?branch='+branch;
+  window.location.href='index.html?branch='+branch+(window.SC_READ_ONLY_PREVIEW?'&preview=1':'');
+}
+function showReadOnlyPreviewBanner(){
+  if(!window.SC_READ_ONLY_PREVIEW||document.getElementById('readonly-preview-banner')) return;
+  document.body.classList.add('readonly-preview');
+  const banner=document.createElement('div');
+  banner.id='readonly-preview-banner';
+  banner.innerHTML='<strong>안전 미리보기</strong><span>운영 데이터 저장이 차단되어 있습니다</span>';
+  document.body.appendChild(banner);
 }
 function openBranchModal(){
   const m=document.getElementById('branch-modal');

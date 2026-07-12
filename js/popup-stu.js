@@ -1,8 +1,19 @@
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 학생 셀 팝업 (renderStuPopup ~200줄, 분할 대상)
  * ════════════════════════════════════════════════════════════════ */
-let _stuPopup={key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,showEnroll:false,showBogang:false,showSample:false,showHyuwon:false,showRetire:false};
+let _stuPopup={
+  key:null,td:null,t:null,day:null,lane:null,row:null,selDate:null,
+  showEnroll:false,showBogang:false,showSample:false,showHyuwon:false,showRetire:false,
+  replaceMode:false,identityConfirm:false,identityEditConfirmed:false,
+  replaceLinkedSid:null,replaceIdentitySignature:'',replaceNoPhoneConfirmed:false,
+};
 let _stuBusy=false;
+
+function _resetReplacementIdentityState(){
+  _stuPopup.replaceLinkedSid=null;
+  _stuPopup.replaceIdentitySignature='';
+  _stuPopup.replaceNoPhoneConfirmed=false;
+}
 
 function stuPopupCanEdit(){
   return !(window.SCAuth && !SCAuth.can('editSchedule'));
@@ -52,6 +63,10 @@ function handleReadOnlyDateBoxClick(dateBox){
   _stuPopup.showSample=false;
   _stuPopup.showHyuwon=false;
   _stuPopup.showRetire=false;
+  _stuPopup.replaceMode=false;
+  _stuPopup.identityConfirm=false;
+  _stuPopup.identityEditConfirmed=false;
+  _resetReplacementIdentityState();
 
   const mark=getMark(slotKey,ds);
   const sub=mark?.sub||null;
@@ -184,6 +199,11 @@ function openStuPopup(td,t,day,lane,row){
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
   _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
+  _stuPopup.replaceMode=false;
+  _stuPopup.identityConfirm=false;
+  _stuPopup.identityEditConfirmed=false;
+  _resetReplacementIdentityState();
 
   renderStuPopup(true); // [v105] freshOpen — 이전 슬롯의 폼 draft 무시
 
@@ -758,6 +778,7 @@ function buildRetireChoiceFormHtml(slotKey, ds, stu, existingEntry){
 function _stuLikeFromEnrollEntry(entry){
   if(!entry) return null;
   return {
+    sid:entry.sid||'',
     n:entry.name||'',
     a:entry.age||null,
     p:entry.p||'',
@@ -776,7 +797,8 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const curMonth = SCHEDULE_PERIODS[getCurrentPeriod()].month;
   const isBt=_isBangteukPopupActive();
   const pendingEnrollInfo=!isBt&&!!pendingEnrollEntry&&(_stuPopup.showEnroll||!stu);
-  const viewStu=pendingEnrollInfo?_stuLikeFromEnrollEntry(pendingEnrollEntry):(stu||_stuLikeFromEnrollEntry(pendingEnrollEntry));
+  const replacing=!!(_stuPopup.replaceMode&&stu&&!pendingEnrollInfo&&!enrollMode);
+  const viewStu=replacing?null:(pendingEnrollInfo?_stuLikeFromEnrollEntry(pendingEnrollEntry):(stu||_stuLikeFromEnrollEntry(pendingEnrollEntry)));
   const inputLock='';
   const checkLock='';
   const chipLock='';
@@ -784,6 +806,10 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
   const isNewOn=!!(viewStu&&((isBt&&viewStu.btNew)||viewStu.isNew&&(pendingEnrollInfo||isBt||viewStu.isNew===curMonth)));
   const infoDate=pendingEnrollEntry?.ds?pendingEnrollEntry.ds.slice(5).replace('-','/'):'';
   return `<div class="stu-popup-left">
+    ${replacing?`<div class="sp-replace-banner">
+      <div><b>원생 교체</b><span>${esc(stu.n||'기존 원생')}의 과거 기록은 유지됩니다. 이름과 전화번호로 기존 원생 연결 여부를 확인합니다.</span></div>
+      <button type="button" class="sp-replace-cancel" title="교체 취소">취소</button>
+    </div>`:''}
     ${pendingEnrollInfo?`<div style="background:#EFF6FF;border:1.5px solid #BFDBFE;color:#1D4ED8;border-radius:8px;padding:6px 8px;margin-bottom:8px;font-size:11px;font-weight:800;text-align:center">${esc(infoDate)}부터 등록 예약된 원생</div>`:''}
     <div class="stu-popup-row">
       <div style="flex:1">
@@ -799,6 +825,7 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
       <label class="fl">전화번호</label>
       <input class="fi" id="sp-phone" value="${viewStu&&viewStu.p?esc(viewStu.p):''}" placeholder="010-0000-0000" style="margin-top:2px" ${inputLock}>
     </div>
+    ${replacing?'<div id="sp-replace-match" aria-live="polite"></div>':''}
     <div class="sp-chip-row">
       <div class="sp-vt-col new-col ${isNewOn?'on':''}${chipLock}" id="sp-new" style="${chipStyle}">
         <span class="sp-vt-label">신규</span>
@@ -840,11 +867,24 @@ function buildStuPopupLeft(stu, slotKey, enrollMode, pendingEnrollEntry){
           <button class="btn btn-p" id="sp-enroll-from-left" style="flex:1;background:#3B82F6">${isBt?'원생정보 저장':'📅 등록 예약'}</button>
         </div>
         <div style="font-size:10px;color:#3B82F6;text-align:center;margin-top:4px;font-weight:700">${isBt?'방특 원생정보로 바로 저장':(_stuPopup.selDate?_stuPopup.selDate.slice(5).replace('-','/')+' 등록 예약 입력 중':'')}</div>`
+      : replacing
+      ? `<div class="stu-popup-actions sp-replace-actions">
+          <button class="btn btn-p" id="sp-save" style="flex:1">새 원생으로 교체 저장</button>
+        </div>`
       : `<div class="stu-popup-actions">
           <button class="btn btn-p" id="sp-save" style="flex:1">저장</button>
           ${stu?'<button class="btn btn-d" id="sp-del">삭제</button>':''}
           ${!stu?`<button class="btn btn-o" id="sp-disable" style="font-size:10px;padding:4px 8px;color:#888;border-color:#888">${isDisabled(slotKey)?'활성화':'비활성화'}</button>`:''}
         </div>
+        ${_stuPopup.identityConfirm?`<div class="sp-identity-warning">
+          <b>이름이 변경되었습니다</b>
+          <span>같은 원생의 이름 수정인지, 다른 원생으로 교체하는지 선택해주세요.</span>
+          <div>
+            <button type="button" id="sp-identity-edit-confirm">같은 원생 정보 수정</button>
+            <button type="button" id="sp-identity-replace">다른 원생으로 교체</button>
+          </div>
+        </div>`:''}
+        ${stu&&!_stuPopup.identityConfirm?`<button type="button" class="sp-replace-start" id="sp-replace-start">다른 원생으로 교체</button>`:''}
         ${stu?`<div style="display:flex;gap:4px;margin-top:4px">
           <button class="btn btn-o" id="sp-move-all" style="flex:1;font-size:10px;padding:4px;color:#F59E0B;border-color:#F59E0B">📦 전체 이동</button>
           <button class="btn btn-o" id="sp-move-stu" style="flex:1;font-size:10px;padding:4px;color:#F59E0B;border-color:#F59E0B">👤 원생만 이동</button>
@@ -989,6 +1029,9 @@ function _btGroupToastSuffix(slots){
   return ' ('+slots.map(s=>s.day).join('')+' 방특)';
 }
 function _studentIdentityMatches(a,b){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
+    return window.SCScheduleTime.sameStudentIdentity(a,b);
+  }
   if(!a||!b) return false;
   const an=String(a.n||a.name||'').trim();
   const bn=String(b.n||b.name||'').trim();
@@ -1001,8 +1044,135 @@ function _studentIdentityMatches(a,b){
   if(aa&&ba&&aa!==ba) return false;
   return !!(an||bn);
 }
+function _replacementIdentitySignature(name,phone){
+  const normalName=window.SCScheduleTime?.normalizeIdentityName
+    ? window.SCScheduleTime.normalizeIdentityName(name)
+    : String(name||'').trim().replace(/\s+/g,' ').toLowerCase();
+  return normalName+'|'+normPhone(phone||'');
+}
+function _replacementIdentityRows(students,enrollMap){
+  const rows=Array.isArray(students)?students.slice():[];
+  Object.entries(enrollMap&&typeof enrollMap==='object'?enrollMap:{}).forEach(([slotKey,entry])=>{
+    if(!entry||!entry.name) return;
+    const parts=String(slotKey||'').split('/');
+    if(parts.length!==4) return;
+    rows.push({
+      sid:entry.sid||'',n:entry.name,a:entry.age||null,p:entry.p||'',
+      t:parts[0],d:parts[1],l:parseInt(parts[2],10),r:parseInt(parts[3],10),
+      __pendingEnroll:true,
+    });
+  });
+  return rows;
+}
+function _replacementIdentityAnalysis(name,phone,oldStu,groupSlots,students,selectedSid,enrollMap){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.analyzeStudentIdentity==='function'){
+    return window.SCScheduleTime.analyzeStudentIdentity(_replacementIdentityRows(students,enrollMap),{n:name,p:phone},{
+      oldStudent:oldStu,
+      excludeSlotKeys:(groupSlots||[]).map(slot=>slot.slotKey),
+      selectedSid:selectedSid||'',
+    });
+  }
+  const hasName=!!String(name||'').trim();
+  const hasPhone=!!normPhone(phone||'');
+  return {
+    status:!hasName?'incomplete-name':(!hasPhone?'incomplete-phone':'new'),
+    groups:[],selected:null,sameName:[],samePhone:[],
+  };
+}
+function _replacementPositionLabel(stu){
+  if(!stu) return '';
+  const time=_moveDisplayTime(stu.d,stu.t);
+  const inst=typeof getInst==='function'?getInst(stu.t,stu.d,stu.l):null;
+  const teacher=inst&&typeof instDisplay==='function'?instDisplay(inst):'';
+  return `${stu.d||''} ${time||''}${teacher?' · '+teacher:''}${stu.__pendingEnroll?' · 등록 예정':''}`.trim();
+}
+function _replacementGroupPositionText(group){
+  const labels=[];
+  (group?.entries||[]).forEach(stu=>{
+    const label=_replacementPositionLabel(stu);
+    if(label&&!labels.includes(label)) labels.push(label);
+  });
+  if(!labels.length) return '기존 등록 위치';
+  const visible=labels.slice(0,4).join(' / ');
+  return labels.length>4?visible+` 외 ${labels.length-4}곳`:visible;
+}
+function _replacementCandidateButton(group,index,selectedSid){
+  const sample=group?.entries?.[0]||{};
+  const selected=group?.sid===selectedSid;
+  const person=`${sample.n||'기존 원생'}${sample.a||''}`;
+  return `<button type="button" class="sp-replace-candidate ${selected?'selected':''}" data-sid="${esc(group?.sid||'')}">
+    <span><b>${esc(person)}</b><small>${esc(_replacementGroupPositionText(group))}</small></span>
+    <em>${selected?'선택됨':`${index+1}번 연결`}</em>
+  </button>`;
+}
+function _replacementMatchHtml(analysis){
+  if(!analysis||analysis.status==='incomplete-name') return '';
+  if(analysis.status==='same-current'){
+    return `<div class="sp-replace-match danger"><b>현재 원생과 같은 정보입니다</b><span>교체가 아니라면 위의 취소를 누른 뒤 기존 정보를 수정해주세요.</span></div>`;
+  }
+  if(analysis.status==='incomplete-phone'){
+    const confirmed=!!_stuPopup.replaceNoPhoneConfirmed;
+    return `<div class="sp-replace-match ${confirmed?'new':'warning'}">
+      <b>${confirmed?'전화번호 없이 새 원생으로 처리':'전화번호 확인이 필요합니다'}</b>
+      <span>${confirmed?'기존 원생 자동 연결 없이 새 ID가 발급됩니다.':'전화번호가 없으면 동명이인과 기존 원생을 안전하게 구분할 수 없습니다.'}</span>
+      ${confirmed?'':`<button type="button" id="sp-replace-new-confirm">전화번호 없이 새 원생으로 계속</button>`}
+    </div>`;
+  }
+  if(analysis.groups?.length>1){
+    return `<div class="sp-replace-match conflict">
+      <b>같은 정보에 기존 기록이 ${analysis.groups.length}개 있습니다</b>
+      <span>등록 위치를 확인하고 연결할 원생을 선택해주세요. ID만 연결되며 각 요일 정보는 그대로 분리됩니다.</span>
+      <div class="sp-replace-candidates">${analysis.groups.map((group,index)=>_replacementCandidateButton(group,index,analysis.selected?.sid||'')).join('')}</div>
+    </div>`;
+  }
+  if(analysis.status==='linked'&&analysis.selected){
+    const sample=analysis.selected.entries?.[0]||{};
+    return `<div class="sp-replace-match linked">
+      <b>기존 원생으로 자동 연결</b>
+      <span>${esc(`${sample.n||''}${sample.a||''}`)} · ${esc(_replacementGroupPositionText(analysis.selected))}</span>
+      <small>원생 ID만 연결됩니다. 승하차·메모 등은 현재 요일에 입력한 값으로 별도 저장됩니다.</small>
+    </div>`;
+  }
+  const sameNameCount=analysis.sameName?.length||0;
+  const samePhoneNames=[...new Set((analysis.samePhone||[]).map(stu=>String(stu.n||'').trim()).filter(Boolean))];
+  const caution=sameNameCount
+    ? `같은 이름의 다른 전화번호 원생 ${sameNameCount}명이 있습니다. 전화번호를 확인해주세요.`
+    : samePhoneNames.length
+      ? `같은 전화번호의 ${samePhoneNames.slice(0,3).join(', ')} 원생이 있습니다. 형제라면 새 원생 처리가 맞습니다.`
+      : '일치하는 기존 원생이 없어 새 ID가 발급됩니다.';
+  return `<div class="sp-replace-match new"><b>새 원생으로 등록</b><span>${esc(caution)}</span></div>`;
+}
+function _updateReplacementMatchUi(){
+  if(!_stuPopup.replaceMode) return null;
+  const box=document.getElementById('sp-replace-match');
+  if(!box) return null;
+  const name=document.getElementById('sp-name')?.value||'';
+  const phone=normPhone(document.getElementById('sp-phone')?.value||'');
+  const oldStu=getStu(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
+  const groupSlots=_btGroupSlotsForParts(_stuPopup.t,_stuPopup.day,_stuPopup.lane,_stuPopup.row);
+  let analysis=_replacementIdentityAnalysis(name,phone,oldStu,groupSlots,STUDENTS,_stuPopup.replaceLinkedSid,ENROLL_MAP);
+  if(_stuPopup.replaceLinkedSid&&analysis.groups?.length>1&&!analysis.groups.some(group=>group.sid===_stuPopup.replaceLinkedSid)){
+    _stuPopup.replaceLinkedSid=null;
+    analysis=_replacementIdentityAnalysis(name,phone,oldStu,groupSlots,STUDENTS,null,ENROLL_MAP);
+  }
+  if(analysis.status==='linked'&&analysis.groups?.length===1){
+    _stuPopup.replaceLinkedSid=analysis.selected.sid;
+  }
+  _stuPopup.replaceIdentitySignature=_replacementIdentitySignature(name,phone);
+  box.innerHTML=_replacementMatchHtml(analysis);
+  const save=document.getElementById('sp-save');
+  if(save){
+    const blocked=analysis.status==='incomplete-name'||analysis.status==='same-current'||analysis.status==='conflict'||
+      (analysis.status==='incomplete-phone'&&!_stuPopup.replaceNoPhoneConfirmed);
+    save.disabled=blocked;
+    save.textContent=analysis.status==='linked'?'기존 원생 연결 후 교체':
+      (analysis.status==='incomplete-phone'&&_stuPopup.replaceNoPhoneConfirmed?'새 ID로 교체 저장':'새 원생으로 교체 저장');
+  }
+  return analysis;
+}
 function _studentFromFormForSlot(form,t,day,lane,row,ds){
   const obj={n:form.name,a:form.age||null,t,d:day,l:parseInt(lane,10),r:parseInt(row,10)};
+  if(form.sid) obj.sid=form.sid;
   if(form.phone) obj.p=form.phone;
   if(form.vehicle) obj.v=true;
   if(form.gender) obj.g=form.gender;
@@ -1013,6 +1183,9 @@ function _studentFromFormForSlot(form,t,day,lane,row,ds){
   if(form.isNew) obj.isNew=form.isNew;
   if(form.reenroll) obj.reenroll=form.reenroll;
   if(ds) obj.enrolled=ds;
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.ensureStudentId==='function'){
+    return window.SCScheduleTime.ensureStudentId(obj);
+  }
   return obj;
 }
 
@@ -1047,8 +1220,9 @@ function renderStuPopup(freshOpen){
 
   const actionHtml=renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode, !!stu);
 
+  const modeLabel=_stuPopup.replaceMode?' · 원생 교체':(stu?' · 정보 수정':'');
   popup.innerHTML=`
-    <div class="stu-popup-hd">${day} ${t} ${lane}레인 ${row}번${inst?' · '+instDisplay(inst):''}<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeStuPopup()">✕</span></div>
+    <div class="stu-popup-hd">${day} ${t} ${lane}레인 ${row}번${inst?' · '+instDisplay(inst):''}${modeLabel}<span style="margin-left:auto;cursor:pointer;opacity:.5;font-size:16px" onclick="closeStuPopup()">✕</span></div>
     <div class="stu-popup-body">
       ${buildStuPopupLeft(stu, slotKey, enrollMode, rightEnrollInfo?null:enrollEntry)}
       ${buildStuPopupRight(slotKey, selDate, classDates, curPeriod, nextPeriod, retireDate, retireName, enrollDate, enrollName, actionHtml)}
@@ -1056,6 +1230,7 @@ function renderStuPopup(freshOpen){
   `;
   // [v105] 입력값 복원
   if(draft) restoreStuFormDraft(draft);
+  if(_stuPopup.replaceMode) _updateReplacementMatchUi();
   applyStuPopupReadOnlyState();
 }
 
@@ -1105,6 +1280,69 @@ function handleReenrollToggle(e, ctx){
   }
 }
 
+function handleReplaceStart(e,ctx){
+  const stu=getStu(ctx.t,ctx.day,ctx.lane,ctx.row);
+  if(!stu){
+    toast('교체할 기존 원생이 없습니다','err');
+    return;
+  }
+  const sourceDraft=e.target.closest('#sp-identity-replace')?captureStuFormDraft():null;
+  const carryDraft=sourceDraft?{
+    name:sourceDraft.name,
+    age:String(sourceDraft.age||'')!==String(stu.a||'')?sourceDraft.age:'',
+    phone:normPhone(sourceDraft.phone)!==normPhone(stu.p)?sourceDraft.phone:'',
+    loc:'',
+    memo:'',
+    gender:(sourceDraft.gender||null)!==(stu.g||null)?sourceDraft.gender:null,
+    paid:false,
+    isNew:false,
+    reenroll:false,
+  }:null;
+  _stuPopup.replaceMode=true;
+  _stuPopup.identityConfirm=false;
+  _stuPopup.identityEditConfirmed=false;
+  _resetReplacementIdentityState();
+  _stuPopup.showEnroll=false;
+  _stuPopup.showBogang=false;
+  _stuPopup.showSample=false;
+  _stuPopup.showHyuwon=false;
+  _stuPopup.showRetire=false;
+  renderStuPopup(true);
+  if(carryDraft){
+    restoreStuFormDraft(carryDraft);
+    _updateReplacementMatchUi();
+  }
+  setTimeout(()=>document.getElementById('sp-name')?.focus(),30);
+}
+
+function handleReplaceCancel(){
+  _stuPopup.replaceMode=false;
+  _stuPopup.identityConfirm=false;
+  _stuPopup.identityEditConfirmed=false;
+  _resetReplacementIdentityState();
+  renderStuPopup(true);
+}
+
+function handleReplacementCandidate(e){
+  const button=e.target.closest('.sp-replace-candidate');
+  if(!button) return;
+  _stuPopup.replaceLinkedSid=button.dataset.sid||null;
+  _stuPopup.replaceNoPhoneConfirmed=false;
+  _updateReplacementMatchUi();
+}
+
+function handleReplacementNoPhoneConfirm(){
+  _stuPopup.replaceLinkedSid=null;
+  _stuPopup.replaceNoPhoneConfirmed=true;
+  _updateReplacementMatchUi();
+}
+
+function handleIdentityEditConfirm(e,ctx){
+  _stuPopup.identityEditConfirmed=true;
+  _stuPopup.identityConfirm=false;
+  handleSave(e,ctx);
+}
+
 function handleMoveAll(e, ctx){ startMove('all'); }
 function handleMoveStu(e, ctx){ startMove('stu'); }
 function handleCopyStu(e, ctx){ startMove('copy'); }
@@ -1142,11 +1380,43 @@ async function handleDisable(e, ctx){
 
 /* ── 저장/삭제/날짜박스 핸들러 ── */
 
+function _clearReplacementFutureState(state,groupSlots,todayStr){
+  const {retire,enroll,marks,hyuwon,disabled,requests,attendance}=state;
+  const groupKeys=new Set((groupSlots||[]).map(slot=>slot.slotKey));
+  groupKeys.forEach(groupKey=>{
+    if(retire[groupKey]) _deleteReserveMovePair(retire,enroll,'retire',groupKey);
+    if(enroll[groupKey]) _deleteReserveMovePair(retire,enroll,'enroll',groupKey);
+    delete retire[groupKey];
+    delete enroll[groupKey];
+    delete hyuwon[groupKey];
+    delete disabled[groupKey];
+    Object.keys(marks).forEach(markKey=>{
+      if(!markKey.startsWith(groupKey+'/')) return;
+      const ds=markKey.split('/').pop()||'';
+      if(!ds||ds>=todayStr) delete marks[markKey];
+    });
+    Object.keys(attendance).forEach(attendanceKey=>{
+      if(!attendanceKey.startsWith(groupKey+'/')) return;
+      const ds=attendanceKey.split('/').pop()||'';
+      if(!ds||ds>=todayStr) delete attendance[attendanceKey];
+    });
+  });
+  Object.values(requests).forEach(req=>{
+    const affected=[...groupKeys].some(groupKey=>_isActiveFutureRequestForSlot(req,groupKey,todayStr));
+    if(!affected) return;
+    req.status='cancelled';
+    req.cancelReason='student-replaced';
+    req.cancelledAt=new Date().toISOString();
+  });
+}
+
 async function handleSave(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const slotKey=t+'/'+day+'/'+lane+'/'+row;
   const groupSlots=_btGroupSlotsForParts(t,day,lane,row);
   const isBt=_isBangteukPopupSlot(t,day,lane);
+  const oldStu=getStu(t,day,lane,row);
+  const replaceMode=!!(_stuPopup.replaceMode&&oldStu);
 
   // [FIX] 미래 등록 예약이 있는 빈 셀에서 저장 차단 → 등록일에 자동 등록됨
   const todayStr=toDateStr(getToday());
@@ -1177,64 +1447,172 @@ async function handleSave(e, ctx){
   const vehicle=_locUsesVehicle(loc);
   const memo=document.getElementById('sp-memo')?.value.trim()||'';
 
-  const oldStu=getStu(t,day,lane,row);
+  if(oldStu&&!name){
+    toast('원생을 삭제하려면 삭제 버튼을 이용해주세요','err');
+    return;
+  }
+  if(replaceMode&&!name){
+    toast('새 원생 이름을 입력해주세요','err');
+    return;
+  }
+  const oldName=String(oldStu?.n||'').trim().replace(/\s+/g,' ');
+  const nextName=String(name||'').trim().replace(/\s+/g,' ');
+  if(oldStu&&!replaceMode&&!_stuPopup.identityEditConfirmed&&oldName!==nextName){
+    _stuPopup.identityConfirm=true;
+    renderStuPopup();
+    toast('이름 변경이 감지되었습니다. 수정 또는 교체를 선택해주세요','err');
+    return;
+  }
+
   const oldPhone=oldStu?normPhone(oldStu.p):'';
-  const shouldBackfillPhone=!!(oldStu&&phone&&!oldPhone&&name&&String(oldStu.n||'').trim()===name);
-  try{
-    await updateStudentsTx((students,abort)=>{
-      const intended={n:name,a:age,p:phone};
-      const removeIndexes=[];
-      for(const slot of groupSlots){
-        const idx=students.findIndex(s=>s.t===slot.t&&s.d===slot.day&&parseInt(s.l)===slot.lane&&parseInt(s.r)===slot.row);
-        const remoteOld=idx>=0?students[idx]:null;
-        if(remoteOld){
-          const isCurrent=slot.day===day;
-          const sameAsOld=oldStu&&_studentIdentityMatches(remoteOld,oldStu);
-          const sameAsForm=name&&_studentIdentityMatches(remoteOld,intended);
-          if(isCurrent&&oldStu && !sameAsOld){
-            abort('다른 기기에서 먼저 변경된 자리입니다');
-            return;
-          }
-          if(!sameAsOld&&!sameAsForm){
-            abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
-            return;
-          }
-          removeIndexes.push(idx);
+  const shouldBackfillPhone=!!(!replaceMode&&oldStu&&phone&&!oldPhone&&name&&String(oldStu.n||'').trim()===name);
+  let requestedLinkedSid='';
+  if(replaceMode){
+    const identity=_replacementIdentityAnalysis(name,phone,oldStu,groupSlots,STUDENTS,_stuPopup.replaceLinkedSid,ENROLL_MAP);
+    if(identity.status==='same-current'){
+      _updateReplacementMatchUi();
+      toast('현재 원생과 같은 정보입니다. 교체 취소 후 정보를 수정해주세요','err');
+      return;
+    }
+    if(identity.status==='incomplete-phone'&&!_stuPopup.replaceNoPhoneConfirmed){
+      _updateReplacementMatchUi();
+      toast('전화번호를 입력하거나 새 원생 처리를 확인해주세요','err');
+      return;
+    }
+    if(identity.status==='conflict'){
+      _updateReplacementMatchUi();
+      toast('연결할 기존 원생을 선택해주세요','err');
+      return;
+    }
+    requestedLinkedSid=identity.selected?.sid||'';
+  }
+  const freshReplacementSid=replaceMode&&window.SCScheduleTime&&typeof window.SCScheduleTime.createStudentId==='function'
+    ? window.SCScheduleTime.createStudentId()
+    : '';
+  let resolvedReplacementSid=requestedLinkedSid||freshReplacementSid;
+  let replacementWasLinked=!!requestedLinkedSid;
+  const mutateStudents=(students,abort)=>{
+    const intended={n:name,a:age,p:phone};
+    const removeIndexes=[];
+    for(const slot of groupSlots){
+      const idx=students.findIndex(s=>s.t===slot.t&&s.d===slot.day&&parseInt(s.l)===slot.lane&&parseInt(s.r)===slot.row);
+      const remoteOld=idx>=0?students[idx]:null;
+      if(remoteOld){
+        const isCurrent=slot.day===day;
+        const sameAsOld=oldStu&&_studentIdentityMatches(remoteOld,oldStu);
+        const sameAsForm=name&&_studentIdentityMatches(remoteOld,intended);
+        if(oldStu&&replaceMode&&!sameAsOld){
+          abort(slot.day+'요일 기존 원생이 다른 기기에서 변경되었습니다');
+          return;
         }
+        if(isCurrent&&oldStu&&!sameAsOld){
+          abort('다른 기기에서 먼저 변경된 자리입니다');
+          return;
+        }
+        if(!replaceMode&&!sameAsOld&&!sameAsForm){
+          abort(slot.day+'요일 같은 자리 기존 원생이 있습니다');
+          return;
+        }
+        removeIndexes.push(idx);
       }
-      removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
-      if(shouldBackfillPhone){
-        students.forEach(s=>{
-          if(_sameStudentMissingPhone(s,name,age)) s.p=phone;
-        });
-      }
-      if(name){
-        const form={
-          name,
-          age,
-          phone,
-          vehicle,
-          gender,
-          paid,
-          loc,
-          memo,
-          btNew:isBt&&isNewCheck?true:null,
-          isNew:!isBt&&isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
-        };
-        groupSlots.forEach(slot=>{
-          students.push(_studentFromFormForSlot(form,slot.t,slot.day,slot.lane,slot.row));
-        });
-      }
-      return students;
-    });
-    if(isBt){
+    }
+    removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
+    if(shouldBackfillPhone){
+      students.forEach(s=>{
+        if(_sameStudentMissingPhone(s,name,age)) s.p=phone;
+      });
+    }
+    if(name){
+      const form={
+        name,
+        age,
+        phone,
+        sid:replaceMode?(resolvedReplacementSid||null):(oldStu?.sid||null),
+        vehicle,
+        gender,
+        paid,
+        loc,
+        memo,
+        btNew:isBt&&isNewCheck?true:null,
+        isNew:!isBt&&isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
+      };
+      groupSlots.forEach(slot=>{
+        students.push(_studentFromFormForSlot(form,slot.t,slot.day,slot.lane,slot.row));
+      });
+    }
+    return students;
+  };
+
+  try{
+    if(replaceMode){
+      const stuKey=getTabConfig().stuKey;
+      const attKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attendance'):STORAGE_KEYS.ATTENDANCE;
+      await updateScheduleTx([
+        stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,
+        STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED,STORAGE_KEYS.REQUESTS,attKey,
+      ],ctx=>{
+        const students=ctx.get(stuKey,[]);
+        const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
+        const remoteIdentity=_replacementIdentityAnalysis(name,phone,oldStu,groupSlots,students,requestedLinkedSid,enroll);
+        if(remoteIdentity.status==='same-current'){
+          ctx.abort('현재 원생과 같은 정보입니다. 교체 취소 후 정보를 수정해주세요');
+          return;
+        }
+        if(remoteIdentity.status==='conflict'){
+          ctx.abort('저장 중 기존 원생 정보가 겹쳤습니다. 다시 열어 연결할 원생을 선택해주세요');
+          return;
+        }
+        if(requestedLinkedSid&&remoteIdentity.selected?.sid!==requestedLinkedSid){
+          ctx.abort('연결할 기존 원생 정보가 다른 기기에서 변경되었습니다');
+          return;
+        }
+        if(remoteIdentity.status==='linked'&&remoteIdentity.selected){
+          resolvedReplacementSid=remoteIdentity.selected.sid;
+          replacementWasLinked=true;
+        }else{
+          resolvedReplacementSid=freshReplacementSid;
+          replacementWasLinked=false;
+        }
+        if(mutateStudents(students,reason=>ctx.abort(reason))===undefined) return;
+        const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        const hyuwon=ctx.get(STORAGE_KEYS.休원,{});
+        const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
+        const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
+        const attendance=ctx.get(attKey,{});
+        _clearReplacementFutureState({retire,enroll,marks,hyuwon,disabled,requests,attendance},groupSlots,todayStr);
+        ctx.set(stuKey,students);
+        ctx.set(STORAGE_KEYS.RETIRE,retire);
+        ctx.set(STORAGE_KEYS.ENROLL,enroll);
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        ctx.set(STORAGE_KEYS.休원,hyuwon);
+        ctx.set(STORAGE_KEYS.DISABLED,disabled);
+        ctx.set(STORAGE_KEYS.REQUESTS,requests);
+        ctx.set(attKey,attendance);
+        return true;
+      }, {
+        type:'edit',
+        label:'원생 교체',
+        target:`${oldStu.n||''} → ${name}`,
+        detail:`${slotKey} 원생 교체 · ID 연결 자동 확인`,
+        deleteReason:'student-replace',
+        skipUndo:true,
+      });
+    }else{
+      await updateStudentsTx(mutateStudents, {
+        type:'edit',
+        label:'원생 정보 저장',
+        deleteReason:'schedule-edit',
+      });
+    }
+    if(isBt&&!replaceMode){
       await updateEnrollMapTx(enroll=>{
         groupSlots.forEach(s=>{delete enroll[s.slotKey];});
         return enroll;
       });
     }
     // 비활성화 해제
-    if(name&&groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
+    if(name&&!replaceMode&&groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
       await updateDisabledMapTx(disabled=>{
         groupSlots.forEach(s=>{delete disabled[s.slotKey];});
         return disabled;
@@ -1243,7 +1621,9 @@ async function handleSave(e, ctx){
     _flashKey=key;
     closeStuPopup();
     buildTable();
-    toast(name?name+' 저장'+_btGroupToastSuffix(groupSlots):'삭제 완료','ok');
+    toast(replaceMode
+      ? `${oldStu.n||'기존 원생'} → ${name} 교체 완료${replacementWasLinked?' · 기존 원생 연결':''}`
+      : name+' 저장'+_btGroupToastSuffix(groupSlots),'ok');
   }catch(err){
     toast(err?.message||'저장 실패','err');
     console.error(err);
@@ -1269,7 +1649,7 @@ async function handleDelete(e, ctx){
       }
       removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
       return students;
-    });
+    }, {type:'edit', label:'학생 직접 삭제', deleteReason:'manual-delete'});
     _flashKey=key;
     closeStuPopup();
     buildTable();
@@ -1795,6 +2175,7 @@ function _periodMonthForDate(ds){
 function _enrollEntryForForm(form,ds,enrollMonth,convertedFromStudent){
   return {
     ds,
+    sid:form.sid||undefined,
     name:form.name, age:form.age,
     p:form.phone||undefined,
     isNew:form.isNew ? enrollMonth||undefined : undefined,
@@ -1824,6 +2205,10 @@ async function _commitEnroll(slotKey, form){
     age:form.age,
     p:form.phone,
   }));
+  if(convertedFromStudent&&currentStu?.sid) form.sid=currentStu.sid;
+  if(!form.sid&&window.SCScheduleTime&&typeof window.SCScheduleTime.studentIdFor==='function'){
+    form.sid=window.SCScheduleTime.studentIdFor({n:form.name,a:form.age,p:form.phone,g:form.gender});
+  }
 
   // [FIX] 당일/과거 등록 또는 방특 등록 → ENROLL_MAP 거치지 않고 즉시 STUDENTS에 등록
   if(isBt||ds<=todayStr){
@@ -1909,7 +2294,12 @@ async function _commitEnroll(slotKey, form){
       if(removeIndexes.length) ctx.set(stuKey,students);
       ctx.set(STORAGE_KEYS.ENROLL,enroll);
       return true;
-    }, {type:'edit', label:convertedFromStudent?'등록 예약 전환':'등록 예약', detail:`${form.name} ${ds}부터 등록 예약`});
+    }, {
+      type:'edit',
+      label:convertedFromStudent?'등록 예약 전환':'등록 예약',
+      detail:`${form.name} ${ds}부터 등록 예약`,
+      deleteReason:convertedFromStudent?'convert-to-enroll':'enroll-reservation',
+    });
     _stuPopup.selDate=null;
     _stuPopup.showEnroll=false;
     renderStuPopup(true);
@@ -1991,6 +2381,12 @@ const STU_POPUP_SIMPLE_HANDLERS = [
   ['#sp-gender-f',        handleGenderF],
   ['#sp-new',             handleNewToggle],
   ['#sp-reenroll',        handleReenrollToggle],
+  ['#sp-replace-start',   handleReplaceStart],
+  ['#sp-identity-replace',handleReplaceStart],
+  ['.sp-replace-cancel',  handleReplaceCancel],
+  ['.sp-replace-candidate',handleReplacementCandidate],
+  ['#sp-replace-new-confirm',handleReplacementNoPhoneConfirm],
+  ['#sp-identity-edit-confirm', handleIdentityEditConfirm],
   ['#sp-enroll-gender-m', handleEnrollGenderM],
   ['#sp-enroll-gender-f', handleEnrollGenderF],
   ['#sp-enroll-new',      handleEnrollNewToggle],
@@ -2148,6 +2544,17 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
 
 document.getElementById('stu-popup').addEventListener('input',function(e){
   if(isStuPopupReadOnly()) return;
+  if(_stuPopup.replaceMode&&(e.target?.id==='sp-name'||e.target?.id==='sp-phone')){
+    const name=document.getElementById('sp-name')?.value||'';
+    const phone=document.getElementById('sp-phone')?.value||'';
+    const signature=_replacementIdentitySignature(name,phone);
+    if(signature!==_stuPopup.replaceIdentitySignature){
+      _stuPopup.replaceLinkedSid=null;
+      _stuPopup.replaceNoPhoneConfirmed=false;
+      _stuPopup.replaceIdentitySignature=signature;
+    }
+    _updateReplacementMatchUi();
+  }
   if(e.target?.id==='sp-bogang-name'){
     _setBogangSelected(null);
     _renderBogangCandidates();
@@ -2183,6 +2590,8 @@ function closeStuPopup(){
   document.getElementById('stu-popup').classList.remove('show');
   if(_stuPopup.td) _stuPopup.td.classList.remove('stu-active');
   _stuPopup.key=null;_stuPopup.selDate=null;_stuPopup.showEnroll=false;_stuPopup.showBogang=false;_stuPopup.showSample=false;_stuPopup.showHyuwon=false;_stuPopup.showRetire=false;
+  _stuPopup.replaceMode=false;_stuPopup.identityConfirm=false;_stuPopup.identityEditConfirmed=false;
+  _resetReplacementIdentityState();
   if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
 }
 
@@ -2459,6 +2868,7 @@ function _reserveMoveDeleteMessage(entry){
 function _reservationEntryFromStudent(stu, ds, extra){
   const entry=Object.assign({ds, name:stu?(stu.n||''):''}, extra||{});
   if(stu){
+    if(stu.sid) entry.sid=stu.sid;
     if(stu.a) entry.age=stu.a;
     if(stu.p) entry.p=stu.p;
     if(stu.v) entry.v=true;
@@ -2471,6 +2881,7 @@ function _reservationEntryFromStudent(stu, ds, extra){
 
 function _cloneEnrollEntryForCopy(entry, ds){
   const copy={ds, name:entry?.name||''};
+  if(entry?.sid) copy.sid=entry.sid;
   if(entry?.age) copy.age=entry.age;
   if(entry?.p) copy.p=entry.p;
   if(entry?.v) copy.v=true;
@@ -2505,6 +2916,9 @@ function _normEnrollPhone(v){
 }
 
 function _enrollEntryMatchesStudent(stu, entry){
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
+    return window.SCScheduleTime.sameStudentIdentity(stu,entry);
+  }
   if(!stu||!entry) return false;
   const stuName=String(stu.n||'').trim();
   const entryName=String(entry.name||entry.n||'').trim();
@@ -2591,6 +3005,7 @@ function _retireHistoryMatches(r,stu,ds,slotKey){
 
 function _retireHistoryPersonSlotMatches(r,stu,slotKey){
   if(!r) return false;
+  if(r.sid&&stu?.sid&&String(r.sid)!==String(stu.sid)) return false;
   const name=String(stu?.n||'').trim();
   if(name&&String(r.n||'').trim()!==name) return false;
   const phone=String(stu?.p||'').replace(/\D/g,'');
@@ -2716,7 +3131,7 @@ async function deleteEnrollReservation(slotKey){
     }
     ctx.set(STORAGE_KEYS.ENROLL,enroll);
     return true;
-  });
+  }, {type:'edit', label:'등록 예약 취소', deleteReason:'enroll-cancel'});
   return {paired, removedStudent};
 }
 
@@ -3158,7 +3573,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   if(type==='copy'){
     const {stu}=_moveMode;
     // 신규 학생 객체: 위치만 변경, isNew/movedUntil/enrolled 등 메타는 제외
-    const newStu={n:stu.n,a:stu.a,t:dstT,d:dstDay,l:dstLane,r:dstRow};
+    const newStu={sid:stu.sid||undefined,n:stu.n,a:stu.a,t:dstT,d:dstDay,l:dstLane,r:dstRow};
     if(stu.p) newStu.p=stu.p;
     if(stu.v) newStu.v=true;
     if(stu.g) newStu.g=stu.g;

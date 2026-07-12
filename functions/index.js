@@ -12,7 +12,8 @@ setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
 const db = getFirestore();
 const CHUNK_THRESHOLD = 650000;
 const CHUNK_SIZE = 600000;
-const AUDIT_LOG_KEY = "swim_audit_log";
+const AUDIT_INDEX_KEY = "zz_swim_audit_index";
+const AUDIT_ENTRY_PREFIX = "zz_swim_audit_entry__";
 const AUDIT_LOG_MAX = 200;
 
 const BRANCHES = {
@@ -203,12 +204,12 @@ function auditClassDetail(branch, stu, inst, ds) {
 }
 
 async function appendAuditLogTx(tx, branch, entry) {
-  const stored = await readStoredValueWithMeta(branch, AUDIT_LOG_KEY, tx);
+  const stored = await readStoredValueWithMeta(branch, AUDIT_INDEX_KEY, tx);
   const raw = stored.value;
   const parsed = parseJSON(raw, []);
-  const list = Array.isArray(parsed) ? parsed : [];
+  let list = Array.isArray(parsed) ? parsed : [];
   const now = new Date().toISOString();
-  list.push(Object.assign({
+  const item = Object.assign({
     id: auditId(),
     at: now,
     type: "edit",
@@ -221,9 +222,21 @@ async function appendAuditLogTx(tx, branch, entry) {
     user: "학부모 페이지",
   }, entry || {}, {
     at: entry && entry.at || now,
-  }));
-  while (list.length > AUDIT_LOG_MAX) list.shift();
-  writeStoredValue(tx, branch, AUDIT_LOG_KEY, JSON.stringify(list), stored.item);
+  });
+  const entryKey = AUDIT_ENTRY_PREFIX + item.id;
+  item.entryKey = entryKey;
+  list = list.filter(row => row && row.id !== item.id);
+  list.push(item);
+  list.sort((a, b) => String(a && a.at || "").localeCompare(String(b && b.at || "")));
+  const removed = list.length > AUDIT_LOG_MAX ? list.slice(0, list.length - AUDIT_LOG_MAX) : [];
+  list = list.slice(Math.max(0, list.length - AUDIT_LOG_MAX));
+  writeStoredValue(tx, branch, AUDIT_INDEX_KEY, JSON.stringify(list), stored.item);
+  writeStoredValue(tx, branch, entryKey, JSON.stringify(item), null);
+  removed.forEach(row => {
+    if (row && String(row.entryKey || "").startsWith(AUDIT_ENTRY_PREFIX)) {
+      tx.delete(kvDoc(branch, row.entryKey));
+    }
+  });
 }
 
 function splitChunks(text) {

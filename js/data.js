@@ -254,6 +254,7 @@ function _studentKeysForAnnualAgeUpdate(){
 }
 
 function applyAnnualAgeIncrement(){
+  if(window.SC_READ_ONLY_PREVIEW) return Promise.resolve(false);
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.resolve(false);
   if(typeof _fakeDate!=='undefined' && _fakeDate) return Promise.resolve(false);
   if(window.SCAuth && typeof SCAuth.role==='function' && SCAuth.role()!=='superAdmin') return Promise.resolve(false);
@@ -291,6 +292,28 @@ function applyAnnualAgeIncrement(){
     return true;
   }).then(()=>changed);
 }
+async function ensureStudentIdsPersisted(){
+  if(window.SC_READ_ONLY_PREVIEW) return false;
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()) return false;
+  if(typeof _fakeDate!=='undefined'&&_fakeDate) return false;
+  if(window.SCAuth&&typeof SCAuth.can==='function'&&!SCAuth.can('editSchedule')) return false;
+  if(String(loadJSON(STORAGE_KEYS.STUDENT_ID_VERSION,'')||'')==='v1') return false;
+
+  const studentKeys=_studentKeysForAnnualAgeUpdate();
+  for(const key of studentKeys){
+    if(dbGet(key)===null||dbGet(key)===undefined) continue;
+    await updateScheduleTx([key],ctx=>{
+      const students=ctx.get(key,[]);
+      ctx.set(key,Array.isArray(students)?students:[]);
+      return true;
+    }, {skipAudit:true,skipUndo:true,label:'원생 고유 ID 초기화'});
+  }
+  await updateScheduleTx([STORAGE_KEYS.STUDENT_ID_VERSION],ctx=>{
+    ctx.set(STORAGE_KEYS.STUDENT_ID_VERSION,'v1');
+    return true;
+  }, {skipAudit:true,skipUndo:true,label:'원생 고유 ID 초기화'});
+  return true;
+}
 function saveStudents(){
   // [v98 SAFETY] 갑작스러운 학생 수 급감 차단 — 자동 데이터 손실 방지
   const tabKey = getTabConfig().stuKey;
@@ -312,9 +335,11 @@ function saveInst()    { saveJSON(getTabConfig().instKey, INST_MAP); }
  * ════════════════════════════════════════════════════════════════ */
 const _undoStack=[];
 const _UNDO_MAX=30;
+const SCHEDULE_UNDO_ENABLED=false;
 let _undoLock=false;
 let _lastUndoPush=0;
 function pushUndo(){
+  if(!SCHEDULE_UNDO_ENABLED) return;
   if(_undoLock) return;
   const now=Date.now();
   if(now-_lastUndoPush<200) return; // 같은 액션 중복 방지
@@ -354,6 +379,10 @@ function pushUndoForKeys(keys){
   if(list.some(_undoTracksStorageKey)) pushUndo();
 }
 function popUndo(){
+  if(!SCHEDULE_UNDO_ENABLED){
+    toast('동시 편집 보호를 위해 시간표 전체 되돌리기는 사용하지 않습니다','err');
+    return;
+  }
   if(!_undoStack.length){toast('되돌릴 내역 없음','err');return;}
   if(typeof isSnapshotTab==='function' && isSnapshotTab()){
     toast('스냅샷은 읽기 전용 — 되돌리기를 사용할 수 없습니다','err');
@@ -862,19 +891,26 @@ let ATTENDANCE   = loadJSON(_attendanceStorageKey('attendance'), {});
 // ATT_GUESTS[slotKey/date] = [{gid, n, a, p, s:'present'|'absent', at, by}]
 let ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
 // DAY_SNAPSHOT[date] = { date, students, inst } — 과거 날짜 동결용
-let DAY_SNAPSHOT = loadJSON(_attendanceStorageKey('daySnapshot'), {});
+// 날짜별 문서는 필요할 때만 불러오며, 이 맵에는 현재 세션에서 연 날짜만 둔다.
+let DAY_SNAPSHOT = {};
 // [v118] RETIRE_HISTORY = [{retiredAt, recordedAt, t, d, l, r, n, a, p, loc, memo, enrolledFrom}, ...] 퇴원 기록 (영구 보관)
 let RETIRE_HISTORY = loadJSON(STORAGE_KEYS.RETIRE_HISTORY, []);
 let DESK_NOTES = loadJSON(STORAGE_KEYS.DESK_NOTES, []);
 if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
 let AUDIT_LOG = [];
 let RESTORE_POINTS = [];
+let STUDENT_DELETE_LOG = [];
 const AUDIT_LOG_MAX=200;
 const RESTORE_POINT_MAX=12;
+const STUDENT_DELETE_LOG_MAX=500;
 const AUDIT_STORAGE_LIMIT=8*1024*1024;
 const RECORD_PAGE_SIZE=30;
 let _auditLock=false;
 let _recordPage=1;
+let _auditPersistQueue=Promise.resolve();
+let _studentDeletePersistQueue=Promise.resolve();
+const _restorePayloadCache=new Map();
+const RESTORE_PAYLOAD_CACHE_LIMIT=2;
 
 function _attendanceStorageKeys(tabId){
   if(typeof getAttendanceStorageKeys==='function') return getAttendanceStorageKeys(tabId);
@@ -889,7 +925,8 @@ function _currentAttendanceKeys(){
 }
 function _isAttendanceStorageKey(key){
   if(key===STORAGE_KEYS.ATTENDANCE||key===STORAGE_KEYS.ATT_GUESTS||key===STORAGE_KEYS.DAY_SNAPSHOT) return true;
-  return /^swim_bt_(attendance|att_guests|day_snapshot)_/.test(String(key||''));
+  return /^swim_bt_(attendance|att_guests|day_snapshot)_/.test(String(key||''))
+      || /^zz_swim_day_snapshot__/.test(String(key||''));
 }
 let _auditStorageLoaded=false;
 let _auditStorageLoading=null;
@@ -916,7 +953,7 @@ function describeStorageChange(key){
   if(key===STORAGE_KEYS.REQUESTS) return '학부모 요청 편집';
   if(key===STORAGE_KEYS.ATTENDANCE||/^swim_bt_attendance_/.test(key)) return '출석부 편집';
   if(key===STORAGE_KEYS.ATT_GUESTS||/^swim_bt_att_guests_/.test(key)) return '출석부 추가학생 편집';
-  if(key===STORAGE_KEYS.DAY_SNAPSHOT||/^swim_bt_day_snapshot_/.test(key)) return '날짜 스냅샷 편집';
+  if(key===STORAGE_KEYS.DAY_SNAPSHOT||/^swim_bt_day_snapshot_/.test(key)||/^zz_swim_day_snapshot__/.test(key)) return '날짜 스냅샷 편집';
   if(key===STORAGE_KEYS.CLOSED) return '휴관일 편집';
   if(key===STORAGE_KEYS.TEACHERS) return '선생님 관리 편집';
   if(key===STORAGE_KEYS.PERIODS) return '수업 기간 편집';
@@ -941,7 +978,7 @@ function _auditDataKeys(){
   const keys=new Set([
     STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,STORAGE_KEYS.DISABLED,
     STORAGE_KEYS.RESERVE,STORAGE_KEYS.休원,STORAGE_KEYS.MOVE,STORAGE_KEYS.REQUESTS,
-    STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,STORAGE_KEYS.DAY_SNAPSHOT,
+    STORAGE_KEYS.ATTENDANCE,STORAGE_KEYS.ATT_GUESTS,
     STORAGE_KEYS.CLOSED,STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.TAB_FOLDERS,
     STORAGE_KEYS.TEACHERS,STORAGE_KEYS.PERIODS,STORAGE_KEYS.RETIRE_HISTORY,
     STORAGE_KEYS.AGE_YEAR,
@@ -954,7 +991,6 @@ function _auditDataKeys(){
       const ak=_attendanceStorageKeys(tab.id);
       keys.add(ak.attendance);
       keys.add(ak.attGuests);
-      keys.add(ak.daySnapshot);
     }else{
       keys.add(tab.id==='regular'?'swim_students':'swim_stu_'+tab.id);
       keys.add(tab.id==='regular'?'swim_inst':'swim_inst_'+tab.id);
@@ -967,7 +1003,6 @@ function _auditDataKeys(){
     const ak=_currentAttendanceKeys();
     keys.add(ak.attendance);
     keys.add(ak.attGuests);
-    keys.add(ak.daySnapshot);
   }catch(e){}
   return [...keys].filter(Boolean);
 }
@@ -985,13 +1020,12 @@ function _auditEditKeys(){
     const ak=_currentAttendanceKeys();
     keys.add(ak.attendance);
     keys.add(ak.attGuests);
-    keys.add(ak.daySnapshot);
   }catch(e){}
   return [...keys].filter(Boolean);
 }
 function _captureRestoreState(extraKeys){
   const keys=[...new Set((extraKeys||[]).filter(Boolean))]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+    .filter(key=>!_isAuditStorageKey(key));
   const data={};
   keys.forEach(key=>{
     const raw=dbGet(key);
@@ -1004,7 +1038,7 @@ function createAuditPoint(keys,meta){
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return null;
   if(typeof _fakeDate !== 'undefined' && _fakeDate) return null;
   const cleanKeys=[...new Set((keys||[]).filter(Boolean))]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+    .filter(key=>!_isAuditStorageKey(key));
   if(!cleanKeys.length) return null;
   return {
     id:_auditId('rp'),
@@ -1058,7 +1092,50 @@ function _auditStudentName(stu){
 }
 function _auditStudentId(stu){
   if(!stu) return '';
+  if(stu.sid) return String(stu.sid);
   return [stu.n||'',stu.p||'',stu.a||'',stu.g||''].join('|');
+}
+function _studentOccurrenceKey(stu){
+  return _auditStudentId(stu)+'@'+_auditStudentSlot(stu);
+}
+function _studentSidCounts(list){
+  const counts=new Map();
+  (Array.isArray(list)?list:[]).forEach(stu=>{
+    const sid=_auditStudentId(stu);
+    if(sid) counts.set(sid,(counts.get(sid)||0)+1);
+  });
+  return counts;
+}
+function _studentDeletionEvents(storageKey,beforeValue,afterValue,meta){
+  if(!_auditIsStudentKey(String(storageKey||''))||meta?.skipDeleteSafety) return [];
+  const before=Array.isArray(beforeValue)?beforeValue:[];
+  const after=Array.isArray(afterValue)?afterValue:[];
+  const remaining=new Map();
+  after.forEach(stu=>{
+    const key=_studentOccurrenceKey(stu);
+    remaining.set(key,(remaining.get(key)||0)+1);
+  });
+  const beforeSidCounts=_studentSidCounts(before);
+  const afterSidCounts=_studentSidCounts(after);
+  const events=[];
+  before.forEach(stu=>{
+    const occurrenceKey=_studentOccurrenceKey(stu);
+    const count=remaining.get(occurrenceKey)||0;
+    if(count>0){
+      remaining.set(occurrenceKey,count-1);
+      return;
+    }
+    const sid=_auditStudentId(stu);
+    const isRelocated=meta?.type==='move'&&sid&&(afterSidCounts.get(sid)||0)>=(beforeSidCounts.get(sid)||0);
+    if(isRelocated) return;
+    events.push({
+      storageKey,
+      sid,
+      slotKey:_auditStudentSlot(stu),
+      student:_cloneJSON(stu),
+    });
+  });
+  return events;
 }
 function _auditFieldDiff(oldObj,newObj,fields){
   const labels={n:'이름',a:'나이',p:'전화',loc:'승하차',memo:'메모',v:'차량',g:'반',enrolled:'등록일'};
@@ -1240,23 +1317,66 @@ function _trimAuditStorage(){
   let changed=false;
   if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
   if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
+  if(!Array.isArray(STUDENT_DELETE_LOG)) STUDENT_DELETE_LOG=[];
   while(AUDIT_LOG.length>AUDIT_LOG_MAX){ AUDIT_LOG.shift(); changed=true; }
   while(RESTORE_POINTS.length>RESTORE_POINT_MAX){ RESTORE_POINTS.shift(); changed=true; }
-  while(RESTORE_POINTS.length>3&&_auditByteSize(RESTORE_POINTS)>AUDIT_STORAGE_LIMIT){
-    RESTORE_POINTS.shift();
-    changed=true;
-  }
-  let guard=0;
-  while(_auditByteSize(RESTORE_POINTS)>AUDIT_STORAGE_LIMIT&&guard<RESTORE_POINTS.length){
-    RESTORE_POINTS[guard]=_thinRestorePoint(RESTORE_POINTS[guard]);
-    changed=true;
-    guard++;
-  }
-  while(AUDIT_LOG.length>50&&_auditByteSize(AUDIT_LOG)>AUDIT_STORAGE_LIMIT){
-    AUDIT_LOG.shift();
-    changed=true;
-  }
+  while(STUDENT_DELETE_LOG.length>STUDENT_DELETE_LOG_MAX){ STUDENT_DELETE_LOG.shift(); changed=true; }
   return changed;
+}
+function _auditEntryStorageKey(id){
+  return 'zz_swim_audit_entry__'+String(id||'');
+}
+function _restoreEntryStorageKey(id){
+  return 'zz_swim_restore_point__'+String(id||'');
+}
+function _studentDeleteEntryStorageKey(id){
+  return 'zz_swim_student_delete__'+String(id||'');
+}
+function _auditSortValue(item){
+  return String(item?.at||item?.recordedAt||'');
+}
+function _recordMergeKey(item,index){
+  if(item?.id) return String(item.id);
+  return ['legacy',_auditSortValue(item),item?.label||'',item?.target||'',item?.detail||'',index].join('|');
+}
+function _mergeRecordStorageLists(legacy,indexed,max){
+  const merged=new Map();
+  [...(Array.isArray(legacy)?legacy:[]),...(Array.isArray(indexed)?indexed:[])].forEach((item,idx)=>{
+    if(!item||typeof item!=='object') return;
+    const key=_recordMergeKey(item,idx);
+    const previous=merged.get(key)||{};
+    const next={...previous,...item};
+    if(previous.before&&!item.before) next.before=previous.before;
+    merged.set(key,next);
+  });
+  const list=[...merged.values()].sort((a,b)=>_auditSortValue(a).localeCompare(_auditSortValue(b)));
+  return list.slice(Math.max(0,list.length-max));
+}
+function _prepareRestorePointForStorage(point){
+  if(!point) return point;
+  return _auditByteSize(point)>AUDIT_STORAGE_LIMIT ? _thinRestorePoint(point) : point;
+}
+function _auditIndexEntry(entry,entryKey){
+  return {...entry,entryKey};
+}
+function _restoreIndexEntry(point,entryKey){
+  const out={...point,entryKey,hasPayload:!point?.before?.skipped};
+  delete out.before;
+  return out;
+}
+function _studentDeleteIndexEntry(entry,entryKey){
+  const out={...entry,entryKey};
+  delete out.student;
+  return out;
+}
+function _appendStorageIndex(raw,item,max){
+  const parsed=_auditParseStored(raw,[]);
+  let list=Array.isArray(parsed)?parsed.filter(row=>row&&row.id!==item.id):[];
+  list.push(item);
+  list.sort((a,b)=>_auditSortValue(a).localeCompare(_auditSortValue(b)));
+  const removed=list.length>max?list.slice(0,list.length-max):[];
+  list=list.slice(Math.max(0,list.length-max));
+  return {list,removed};
 }
 function _cacheAuditRaw(key,raw){
   if(raw===undefined||raw===null) return;
@@ -1276,47 +1396,207 @@ function _loadAuditStorage(force){
   _auditStorageLoading=Promise.all([
     _readAuditRaw(STORAGE_KEYS.AUDIT_LOG),
     _readAuditRaw(STORAGE_KEYS.RESTORE_POINTS),
-  ]).then(([logRaw,restoreRaw])=>{
+    _readAuditRaw(STORAGE_KEYS.AUDIT_INDEX),
+    _readAuditRaw(STORAGE_KEYS.RESTORE_INDEX),
+    _readAuditRaw(STORAGE_KEYS.STUDENT_DELETE_INDEX),
+  ]).then(([logRaw,restoreRaw,auditIndexRaw,restoreIndexRaw,studentDeleteIndexRaw])=>{
     if(logRaw===undefined||logRaw===null) logRaw=dbGet(STORAGE_KEYS.AUDIT_LOG);
     if(restoreRaw===undefined||restoreRaw===null) restoreRaw=dbGet(STORAGE_KEYS.RESTORE_POINTS);
+    if(auditIndexRaw===undefined||auditIndexRaw===null) auditIndexRaw=dbGet(STORAGE_KEYS.AUDIT_INDEX);
+    if(restoreIndexRaw===undefined||restoreIndexRaw===null) restoreIndexRaw=dbGet(STORAGE_KEYS.RESTORE_INDEX);
+    if(studentDeleteIndexRaw===undefined||studentDeleteIndexRaw===null) studentDeleteIndexRaw=dbGet(STORAGE_KEYS.STUDENT_DELETE_INDEX);
     _cacheAuditRaw(STORAGE_KEYS.AUDIT_LOG,logRaw);
     _cacheAuditRaw(STORAGE_KEYS.RESTORE_POINTS,restoreRaw);
-    AUDIT_LOG=_auditParseStored(logRaw,[]);
-    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
-    RESTORE_POINTS=_auditParseStored(restoreRaw,[]);
-    if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
-    const trimmed=_trimAuditStorage();
+    _cacheAuditRaw(STORAGE_KEYS.AUDIT_INDEX,auditIndexRaw);
+    _cacheAuditRaw(STORAGE_KEYS.RESTORE_INDEX,restoreIndexRaw);
+    _cacheAuditRaw(STORAGE_KEYS.STUDENT_DELETE_INDEX,studentDeleteIndexRaw);
+    AUDIT_LOG=_mergeRecordStorageLists(
+      _auditParseStored(logRaw,[]),
+      _auditParseStored(auditIndexRaw,[]),
+      AUDIT_LOG_MAX
+    );
+    RESTORE_POINTS=_mergeRecordStorageLists(
+      _auditParseStored(restoreRaw,[]),
+      _auditParseStored(restoreIndexRaw,[]),
+      RESTORE_POINT_MAX
+    );
+    STUDENT_DELETE_LOG=_mergeRecordStorageLists(
+      STUDENT_DELETE_LOG,
+      _auditParseStored(studentDeleteIndexRaw,[]),
+      STUDENT_DELETE_LOG_MAX
+    );
+    _trimAuditStorage();
     _auditStorageLoaded=true;
-    if(trimmed&&_fbReady) _saveAuditRaw();
   }).finally(()=>{
     _auditStorageLoading=null;
   });
   return _auditStorageLoading;
 }
-function _saveAuditRaw(){
-  _auditLock=true;
-  try{
-    _trimAuditStorage();
-    dbSet(STORAGE_KEYS.AUDIT_LOG, JSON.stringify(AUDIT_LOG));
-    dbSet(STORAGE_KEYS.RESTORE_POINTS, JSON.stringify(RESTORE_POINTS));
-  }finally{
-    _auditLock=false;
-  }
+function _cleanupIncrementalRecordKeys(keys){
+  if(!_fbReady||!_fb) return Promise.resolve();
+  const unique=[...new Set((keys||[]).filter(key=>/^zz_swim_(audit_entry|restore_point|student_delete)__/.test(String(key||''))))];
+  return Promise.all(unique.map(key=>_fb.child(key).remove().catch(err=>{
+    console.warn('이전 개별 기록 정리 실패:',key,err);
+  })));
+}
+function _cacheCommittedRecordIndexes(root){
+  if(!root) return;
+  if(root[STORAGE_KEYS.AUDIT_INDEX]!==undefined) _cacheAuditRaw(STORAGE_KEYS.AUDIT_INDEX,root[STORAGE_KEYS.AUDIT_INDEX]);
+  if(root[STORAGE_KEYS.RESTORE_INDEX]!==undefined) _cacheAuditRaw(STORAGE_KEYS.RESTORE_INDEX,root[STORAGE_KEYS.RESTORE_INDEX]);
+  if(root[STORAGE_KEYS.STUDENT_DELETE_INDEX]!==undefined) _cacheAuditRaw(STORAGE_KEYS.STUDENT_DELETE_INDEX,root[STORAGE_KEYS.STUDENT_DELETE_INDEX]);
+}
+function _persistIncrementalRecord(entry,restorePoint){
+  if(!_fbReady||!_fb) return Promise.reject(new Error('기록 저장 서버가 연결되지 않았습니다'));
+  const auditEntryKey=_auditEntryStorageKey(entry.id);
+  const restoreEntryKey=restorePoint?_restoreEntryStorageKey(restorePoint.id):'';
+  const auditSummary=_auditIndexEntry(entry,auditEntryKey);
+  const restoreSummary=restorePoint?_restoreIndexEntry(restorePoint,restoreEntryKey):null;
+  const txKeys=[STORAGE_KEYS.AUDIT_INDEX,auditEntryKey];
+  if(restorePoint) txKeys.push(STORAGE_KEYS.RESTORE_INDEX,restoreEntryKey);
+
+  const persist=()=>{
+    let cleanupKeys=[];
+    if(typeof _fb.transactionKeys==='function'&&!_fb.disabled){
+      return _fb.transactionKeys(txKeys,root=>{
+        root=root||{};
+        cleanupKeys=[];
+        const auditNext=_appendStorageIndex(root[STORAGE_KEYS.AUDIT_INDEX],auditSummary,AUDIT_LOG_MAX);
+        root[STORAGE_KEYS.AUDIT_INDEX]=JSON.stringify(auditNext.list);
+        root[auditEntryKey]=JSON.stringify(auditSummary);
+        cleanupKeys.push(...auditNext.removed.map(row=>row.entryKey));
+        if(restorePoint){
+          const restoreNext=_appendStorageIndex(root[STORAGE_KEYS.RESTORE_INDEX],restoreSummary,RESTORE_POINT_MAX);
+          root[STORAGE_KEYS.RESTORE_INDEX]=JSON.stringify(restoreNext.list);
+          root[restoreEntryKey]=JSON.stringify(restorePoint);
+          cleanupKeys.push(...restoreNext.removed.map(row=>row.entryKey));
+        }
+        return root;
+      }).then(res=>{
+        _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
+        return _cleanupIncrementalRecordKeys(cleanupKeys);
+      });
+    }
+
+    const writes=[_fb.child(auditEntryKey).set(JSON.stringify(auditSummary))];
+    if(restorePoint) writes.push(_fb.child(restoreEntryKey).set(JSON.stringify(restorePoint)));
+    return Promise.all(writes).then(()=>{
+      const indexJobs=[];
+      indexJobs.push(_fb.child(STORAGE_KEYS.AUDIT_INDEX).transaction(raw=>{
+        const next=_appendStorageIndex(raw,auditSummary,AUDIT_LOG_MAX);
+        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
+        return JSON.stringify(next.list);
+      }).then(res=>_cacheAuditRaw(STORAGE_KEYS.AUDIT_INDEX,res.snapshot.val())));
+      if(restorePoint){
+        indexJobs.push(_fb.child(STORAGE_KEYS.RESTORE_INDEX).transaction(raw=>{
+          const next=_appendStorageIndex(raw,restoreSummary,RESTORE_POINT_MAX);
+          cleanupKeys.push(...next.removed.map(row=>row.entryKey));
+          return JSON.stringify(next.list);
+        }).then(res=>_cacheAuditRaw(STORAGE_KEYS.RESTORE_INDEX,res.snapshot.val())));
+      }
+      return Promise.all(indexJobs);
+    }).then(()=>_cleanupIncrementalRecordKeys(cleanupKeys));
+  };
+
+  const run=_auditPersistQueue.then(persist,persist);
+  _auditPersistQueue=run.catch(()=>{});
+  return run;
+}
+function _persistStudentDeleteEntry(entry){
+  if(!_fbReady||!_fb) return Promise.reject(new Error('삭제 안전기록 서버가 연결되지 않았습니다'));
+  const entryKey=_studentDeleteEntryStorageKey(entry.id);
+  const summary=_studentDeleteIndexEntry(entry,entryKey);
+  const persist=()=>{
+    let cleanupKeys=[];
+    if(typeof _fb.transactionKeys==='function'&&!_fb.disabled){
+      return _fb.transactionKeys([STORAGE_KEYS.STUDENT_DELETE_INDEX,entryKey],root=>{
+        root=root||{};
+        cleanupKeys=[];
+        const next=_appendStorageIndex(root[STORAGE_KEYS.STUDENT_DELETE_INDEX],summary,STUDENT_DELETE_LOG_MAX);
+        root[STORAGE_KEYS.STUDENT_DELETE_INDEX]=JSON.stringify(next.list);
+        root[entryKey]=JSON.stringify(entry);
+        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
+        return root;
+      }).then(res=>{
+        _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
+        return _cleanupIncrementalRecordKeys(cleanupKeys);
+      });
+    }
+    return _fb.child(entryKey).set(JSON.stringify(entry)).then(()=>{
+      return _fb.child(STORAGE_KEYS.STUDENT_DELETE_INDEX).transaction(raw=>{
+        const next=_appendStorageIndex(raw,summary,STUDENT_DELETE_LOG_MAX);
+        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
+        return JSON.stringify(next.list);
+      });
+    }).then(res=>{
+      _cacheAuditRaw(STORAGE_KEYS.STUDENT_DELETE_INDEX,res.snapshot.val());
+      return _cleanupIncrementalRecordKeys(cleanupKeys);
+    });
+  };
+  const run=_studentDeletePersistQueue.then(persist,persist);
+  _studentDeletePersistQueue=run.catch(()=>{});
+  return run;
+}
+function _studentDeleteReasonText(reason){
+  const labels={
+    'manual-delete':'사용자 직접 삭제',
+    'auto-retire':'제외일 경과 자동 처리',
+    'convert-to-enroll':'기존 원생을 등록 예약으로 전환',
+    'enroll-cancel':'등록 예약 취소 중 원생 제거',
+    'student-replace':'다른 원생으로 교체',
+    'schedule-edit':'시간표 편집 중 원생 제거',
+  };
+  return labels[String(reason||'')]||String(reason||'시간표 편집 중 원생 제거');
+}
+function recordStudentDeletionSafety(events,meta){
+  const list=Array.isArray(events)?events.filter(Boolean):[];
+  if(!list.length) return Promise.resolve();
+  const at=_auditNow();
+  const user=_auditUser();
+  const tabId=_activeTab;
+  const tabName=_auditTabName();
+  const reason=meta?.deleteReason||'schedule-edit';
+  const entries=list.map(event=>{
+    const stu=event.student||{};
+    const target=_auditStudentName(stu);
+    return {
+      id:_auditId('student_delete'),
+      at,
+      type:'delete',
+      label:meta?.label||'원생 삭제',
+      target,
+      detail:`${_auditSlotText(event.slotKey)} · ${_studentDeleteReasonText(reason)}`,
+      reason,
+      sid:event.sid||stu.sid||'',
+      slotKey:event.slotKey||'',
+      storageKey:event.storageKey||'',
+      student:_cloneJSON(stu),
+      tabId,
+      tabName,
+      user,
+    };
+  });
+  const summaries=entries.map(entry=>_studentDeleteIndexEntry(entry,_studentDeleteEntryStorageKey(entry.id)));
+  STUDENT_DELETE_LOG=_mergeRecordStorageLists(STUDENT_DELETE_LOG,summaries,STUDENT_DELETE_LOG_MAX);
+  _trimAuditStorage();
+  if(document.getElementById('record-manager-modal')?.style.display==='flex') renderRecordManager();
+  return Promise.all(entries.map(entry=>_persistStudentDeleteEntry(entry).catch(err=>{
+    console.error('원생 삭제 안전기록 저장 실패:',err);
+    if(typeof _showOfflineWarning==='function') _showOfflineWarning();
+  })));
 }
 function recordAuditPoint(point,touchedKeys,metaOverride){
   if(!point||_auditLock) return;
   if(!_auditStorageLoaded){
-    _loadAuditStorage().then(()=>{
-      recordAuditPoint(point,touchedKeys,metaOverride);
+    return _loadAuditStorage().then(()=>{
+      return recordAuditPoint(point,touchedKeys,metaOverride);
     }).catch(err=>{
       console.warn('기록 저장 전 기존 기록 로드 실패:',err);
       _auditStorageLoaded=true;
-      recordAuditPoint(point,touchedKeys,metaOverride);
+      return recordAuditPoint(point,touchedKeys,metaOverride);
     });
-    return;
   }
   const keys=[...new Set((touchedKeys&&touchedKeys.length?touchedKeys:point.keys||[]).filter(Boolean))]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+    .filter(key=>!_isAuditStorageKey(key));
   if(!keys.length) return;
   const meta={...(point.meta||{}),...(metaOverride||{})};
   const summary=_buildAuditSummary(point,keys,meta);
@@ -1333,7 +1613,7 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     tabName:point.tabName,
     user:point.user,
   };
-  RESTORE_POINTS.push({
+  let restorePoint={
     id:point.id,
     at:entry.at,
     label:entry.label,
@@ -1345,14 +1625,26 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     tabId:point.tabId,
     tabName:point.tabName,
     user:point.user,
-  });
-  AUDIT_LOG.push(entry);
+  };
+  restorePoint=_prepareRestorePointForStorage(restorePoint);
+  const restoreEntryKey=_restoreEntryStorageKey(restorePoint.id);
+  const auditEntryKey=_auditEntryStorageKey(entry.id);
+  entry.entryKey=auditEntryKey;
+  entry.restoreAvailable=!restorePoint.before?.skipped;
+  const restoreSummary=_restoreIndexEntry(restorePoint,restoreEntryKey);
+  _cacheRestorePayload(restoreEntryKey,restorePoint);
+  AUDIT_LOG=_mergeRecordStorageLists(AUDIT_LOG,[entry],AUDIT_LOG_MAX);
+  RESTORE_POINTS=_mergeRecordStorageLists(RESTORE_POINTS,[restoreSummary],RESTORE_POINT_MAX);
   _trimAuditStorage();
-  _saveAuditRaw();
+  const saved=_persistIncrementalRecord(entry,restorePoint).catch(err=>{
+    console.error('개별 기록 저장 실패:',err);
+    if(typeof _showOfflineWarning==='function') _showOfflineWarning();
+  });
   if(document.getElementById('record-manager-modal')?.style.display==='flex'){
     renderRecordManager();
   }
   if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
+  return saved;
 }
 function _fmtAuditDate(iso){
   if(!iso) return '-';
@@ -1362,7 +1654,7 @@ function _fmtAuditDate(iso){
   }catch(e){return '-';}
 }
 function _recordTypeLabel(type){
-  return type==='move'?'이동':type==='retire'?'퇴원':type==='restore'?'복구':'편집';
+  return type==='move'?'이동':type==='retire'?'퇴원':type==='delete'?'삭제':type==='restore'?'복구':'편집';
 }
 function _recordLocalDateKey(iso){
   if(!iso) return '';
@@ -1412,7 +1704,8 @@ function openRecordManagerModal(){
 function closeRecordManagerModal(){
   document.getElementById('record-manager-modal').style.display='none';
 }
-function _recordItems(){
+function _recordItems(includeSafety){
+  const withSafety=includeSafety!==false;
   const audit=(Array.isArray(AUDIT_LOG)?AUDIT_LOG:[]).map(r=>({...r,_source:'audit'}));
   const retire=(Array.isArray(RETIRE_HISTORY)?RETIRE_HISTORY:[]).map((r,idx)=>({
     id:'retire_'+idx,
@@ -1426,16 +1719,27 @@ function _recordItems(){
     tabName:'',
     _source:'retire',
   }));
-  return audit.concat(retire);
+  const safety=withSafety
+    ? (Array.isArray(STUDENT_DELETE_LOG)?STUDENT_DELETE_LOG:[]).map(r=>({...r,type:'delete',_source:'student-delete'}))
+    : [];
+  return audit.concat(retire,safety);
 }
 function _loadScheduleAuditLog(){
   if(_auditStorageLoaded||_scheduleAuditLoaded) return Promise.resolve();
   if(_scheduleAuditLoading) return _scheduleAuditLoading;
-  _scheduleAuditLoading=_readAuditRaw(STORAGE_KEYS.AUDIT_LOG).then(raw=>{
-    if(raw===undefined||raw===null) raw=dbGet(STORAGE_KEYS.AUDIT_LOG);
-    _cacheAuditRaw(STORAGE_KEYS.AUDIT_LOG,raw);
-    AUDIT_LOG=_auditParseStored(raw,[]);
-    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
+  _scheduleAuditLoading=Promise.all([
+    _readAuditRaw(STORAGE_KEYS.AUDIT_LOG),
+    _readAuditRaw(STORAGE_KEYS.AUDIT_INDEX),
+  ]).then(([legacyRaw,indexRaw])=>{
+    if(legacyRaw===undefined||legacyRaw===null) legacyRaw=dbGet(STORAGE_KEYS.AUDIT_LOG);
+    if(indexRaw===undefined||indexRaw===null) indexRaw=dbGet(STORAGE_KEYS.AUDIT_INDEX);
+    _cacheAuditRaw(STORAGE_KEYS.AUDIT_LOG,legacyRaw);
+    _cacheAuditRaw(STORAGE_KEYS.AUDIT_INDEX,indexRaw);
+    AUDIT_LOG=_mergeRecordStorageLists(
+      _auditParseStored(legacyRaw,[]),
+      _auditParseStored(indexRaw,[]),
+      AUDIT_LOG_MAX
+    );
     _trimAuditStorage();
     _scheduleAuditLoaded=true;
   }).finally(()=>{
@@ -1443,12 +1747,37 @@ function _loadScheduleAuditLog(){
   });
   return _scheduleAuditLoading;
 }
+function _scheduleAuditMonthFromTabName(tab,fallbackMonth){
+  const text=String(tab?.name||'').trim();
+  const match=text.match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
+  if(!match) return '';
+  const fallback=_scheduleAuditNormalizeMonthKey(fallbackMonth);
+  let year=match[1]||String(fallback||'').slice(0,4);
+  if(!/^20\d{2}$/.test(year)){
+    try{ year=String(getToday().getFullYear()); }
+    catch(e){ year=String(new Date().getFullYear()); }
+  }
+  const month=parseInt(match[2],10);
+  if(!month||month<1||month>12) return '';
+  return year+'-'+String(month).padStart(2,'0');
+}
 function _scheduleAuditMonthKey(){
   let month='';
   try{
     const tab=typeof _tabById==='function'?_tabById(_activeTab):null;
     if(tab?.type==='bangteuk'&&tab.seasonStart) month=String(tab.seasonStart).slice(0,7);
-    else if(typeof _tabPeriodMonth==='function') month=_tabPeriodMonth(tab);
+    else if(tab){
+      const stored=typeof _tabPeriodMonth==='function'?_tabPeriodMonth(tab):tab.periodMonth;
+      let liveMonth='';
+      try{
+        const main=typeof _mainTabSetting==='function'?_mainTabSetting():{};
+        const isMainRegular=(!tab.type||tab.type==='regular')&&(main.tabId===tab.id||(!main.tabId&&tab.id==='regular'));
+        if(isMainRegular&&typeof _defaultPeriodMonth==='function') liveMonth=_defaultPeriodMonth();
+      }catch(e){}
+      // 사용자가 보고 있는 탭 이름과 숨은 periodMonth가 다르면 탭 이름을 따른다.
+      // 과거 이월/스냅샷에서 periodMonth가 복제된 경우에도 월별 기록이 섞이지 않는다.
+      month=_scheduleAuditMonthFromTabName(tab,liveMonth||stored)||liveMonth||stored;
+    }
   }catch(e){}
   try{ if(!month&&typeof _defaultPeriodMonth==='function') month=_defaultPeriodMonth(); }catch(e){}
   try{ if(!month) month=toDateStr(getToday()).slice(0,7); }catch(e){}
@@ -1692,8 +2021,8 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
     const ds=_scheduleAuditEntryDate(entry);
     if(!ds) return;
-    // 하단 기록은 오늘 기준이 아니라 현재 보고 있는 운영월 기준으로 남긴다.
-    if(monthKey&&String(ds).slice(0,7)!==String(monthKey)) return;
+    // 하단 기록의 월 구분은 수업 운영기간이 아니라 날짜의 달력 월을 따른다.
+    if(monthKey&&_deskNoteMonthFromDateKey(ds)!==String(monthKey)) return;
     const fromSlot=_scheduleAuditSlotFromKey(slotKey);
     if(!fromSlot) return;
     const fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey);
@@ -1778,14 +2107,11 @@ function _scheduleAuditScopeFromItem(item){
   };
 }
 function _scheduleAuditMatchesActiveScope(item){
-  const scope=_scheduleAuditScopeFromItem(item);
-  const active=scope.active||_scheduleAuditActiveScope();
-  if(scope.tabId) return scope.tabId===active.tabId || (!!active.snapshotId&&scope.tabId===active.snapshotId);
-  // 오래된 기록에는 탭 정보가 없어서 정규 탭에서만 보여준다. 방특에 섞이지 않게 막는 용도.
-  return active.tabType==='regular';
+  return true;
 }
 function _scheduleAuditRowDateOrder(row){
-  const key=String(row?.dateKey||row?.effectiveDateKey||row?.original?.dateKey||'');
+  // 표에 보이는 수정날짜와 정렬 기준을 반드시 같게 유지한다.
+  const key=_deskNoteRecordDateKey(row,_scheduleAuditMonthKey());
   if(key) return key;
   return _recordLocalDateKey(row?.createdAt||row?.at||row?.updatedAt)||'9999-12-31';
 }
@@ -1855,6 +2181,32 @@ function _scheduleAuditParseDateText(text,monthKey){
   }
   return {key:'',label:raw};
 }
+function _deskNoteDisplayDateText(note){
+  if(!note||typeof note!=='object') return '';
+  if(Object.prototype.hasOwnProperty.call(note,'date')){
+    const current=String(note.date||'').trim();
+    return current&&current!=='-'?current:'';
+  }
+  const original=String(note.original?.date||'').trim();
+  return original&&original!=='-'?original:'';
+}
+function _deskNoteRecordDateKey(note,targetMonth){
+  // 수정날짜 칸의 값이 월 필터의 단일 기준이다. dateKey는 표시값이 없는
+  // 오래된 기록만 호환하기 위한 보조값으로 사용한다.
+  const visibleDate=_deskNoteDisplayDateText(note);
+  if(visibleDate){
+    const parsed=_scheduleAuditParseDateText(visibleDate,targetMonth);
+    if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsed.key||''))) return parsed.key;
+    return '';
+  }
+  const direct=String(note?.dateKey||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(direct)) return direct;
+  return '';
+}
+function _deskNoteRecordPeriodMonth(note,targetMonth){
+  const key=_deskNoteRecordDateKey(note,targetMonth);
+  return key?_deskNoteMonthFromDateKey(key):'';
+}
 function _deskNoteCanSave(silent){
   if(window.SCAuth && typeof SCAuth.canWriteKey==='function' && !SCAuth.canWriteKey(STORAGE_KEYS.DESK_NOTES)){
     if(!silent && typeof toast==='function') toast('기록 수정 권한이 없습니다','err');
@@ -1890,11 +2242,10 @@ function _deskNoteFromScheduleRow(row){
   const now=new Date().toISOString();
   const sourceKey=_deskNoteSourceKeyForRow(row);
   const scope=_scheduleAuditScopeFromItem(row);
-  const active=scope.active||_scheduleAuditActiveScope();
-  const tabId=scope.tabId||active.tabId;
-  const tabName=scope.tabName||active.tabName;
-  const tabType=scope.tabType||active.tabType;
-  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? String(written.key).slice(0,7) : '';
+  const tabId=scope.tabId||row.tabId||'global';
+  const tabName=scope.tabName||row.tabName||'전체 기록';
+  const tabType=scope.tabType||row.tabType||'regular';
+  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _deskNoteMonthFromDateKey(written.key) : '';
   return {
     id:_deskNoteId(),
     sourceKey,
@@ -2024,8 +2375,22 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
     return true;
   });
 }
+function _normalizeDeskNoteForDisplay(note){
+  if(!note||typeof note!=='object') return null;
+  const original=note.original||{};
+  const next={...note};
+  next.teacher=String(next.teacher||original.teacher||'-').trim()||'-';
+  next.student=String(next.student||next.target||original.student||'-').trim()||'-';
+  next.change=String(next.change||next.reason||original.change||'메모').trim()||'메모';
+  const ownDate=Object.prototype.hasOwnProperty.call(next,'date');
+  const dateText=ownDate?String(next.date||'').trim():String(original.date||'').trim();
+  next.date=dateText||'-';
+  next.time=String(next.time||original.time||'-').trim()||'-';
+  next.day=String(next.day||original.day||'기타').trim()||'기타';
+  return next;
+}
 function _normalizeDeskNotesList(list){
-  return Array.isArray(list)?list.filter(Boolean):[];
+  return Array.isArray(list)?list.map(_normalizeDeskNoteForDisplay).filter(Boolean):[];
 }
 function _deskNoteFindIndex(list,note){
   const id=String(note?.id||'');
@@ -2148,9 +2513,8 @@ function _syncDeskNotesFromRows(rows){
 function _deskNoteSourceKeyForRow(row){
   if(!row) return '';
   const scope=_scheduleAuditScopeFromItem(row);
-  const active=scope.active||_scheduleAuditActiveScope();
-  const tabId=scope.tabId||active.tabId||'regular';
-  const monthKey=row.monthKey||_scheduleAuditMonthKey();
+  const tabId=scope.tabId||row.tabId||'global';
+  const monthKey=_deskNoteMonthFromDateKey(row.dateKey)||_deskNoteMonthFromDateKey(_recordLocalDateKey(row.at))||row.recordMonthKey||row.monthKey||'all';
   const rowKey=_scheduleAuditRowKey(row);
   return [tabId,monthKey,rowKey].map(v=>String(v||'').trim()).join('|');
 }
@@ -2158,21 +2522,10 @@ function _deskNoteVisible(note,monthKey,visibleDays){
   if(!note||note.deleted) return false;
   if(String(note.change||'').trim()==='휴원') return false;
   if(/휴원/.test(String(note.detail||'')+' '+String(note.original?.detail||''))) return false;
-  if(!_scheduleAuditMatchesActiveScope(note)) return false;
-  const day=note.day||'기타';
-  if(day!=='기타'&&!visibleDays.includes(day)) return false;
   const targetMonth=String(monthKey||'');
-  const noteMonth=_scheduleAuditNormalizeMonthKey(note.monthKey);
-  if(noteMonth) return noteMonth===targetMonth;
-  const keyMonth=_deskNoteMonthFromDateKey(note.effectiveDateKey||note.original?.dateKey||note.dateKey);
-  if(keyMonth) return keyMonth===targetMonth;
-  const recordMonth=_scheduleAuditNormalizeMonthKey(note.recordMonthKey);
-  if(recordMonth) return recordMonth===targetMonth;
-  const textMonth=_deskNoteMonthFromDateText(note.date||note.original?.date,targetMonth);
-  if(textMonth) return textMonth===targetMonth;
-  const createdMonth=_deskNoteMonthFromDateKey(_recordLocalDateKey(note.createdAt||note.at||note.updatedAt));
-  if(createdMonth) return createdMonth===targetMonth;
-  return false;
+  if(!targetMonth) return true;
+  const recordMonth=_deskNoteRecordPeriodMonth(note,targetMonth);
+  return recordMonth===targetMonth;
 }
 function _findDeskNote(id){
   DESK_NOTES=Array.isArray(DESK_NOTES)?DESK_NOTES:[];
@@ -2431,7 +2784,7 @@ function saveDeskNoteModal(){
   note.tabType=note.tabType||scope.tabType;
   note.dateKey=parsedDate.key;
   note.date=parsedDate.label||'-';
-  if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsedDate.key||''))) note.recordMonthKey=String(parsedDate.key).slice(0,7);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsedDate.key||''))) note.recordMonthKey=_deskNoteMonthFromDateKey(parsedDate.key);
   else delete note.recordMonthKey;
   note.time=(document.getElementById('desk-note-time')?.value||'').trim()||'-';
   note.updatedAt=now;
@@ -2464,9 +2817,7 @@ function deleteDeskNoteModal(){
   });
 }
 function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
-  if(!_scheduleAuditMatchesActiveScope(item)) return [];
   const scope=_scheduleAuditScopeFromItem(item);
-  const active=scope.active||_scheduleAuditActiveScope();
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
   const segments=parts.length?parts:[_scheduleAuditText(item)];
@@ -2483,8 +2834,8 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     if(!fromSlot) return;
     const toSlot=_scheduleAuditSlotFromText(toText);
     const date=_scheduleAuditRecordedDateInfo(item);
-    if(!date.key||date.key.slice(0,7)!==monthKey) return;
-    const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
+    if(monthKey&&_deskNoteMonthFromDateKey(date.key)!==String(monthKey)) return;
+    const days=_scheduleAuditExpandDay(fromSlot.dayToken,['월','화','수','목','금','토','일']);
     days.forEach(day=>{
       if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
@@ -2500,9 +2851,9 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
         detail:String(segment||item?.detail||item?.label||''),
         at:item?.at||'',
         source:item?._source||'audit',
-        tabId:scope.tabId||active.tabId,
-        tabName:scope.tabName||active.tabName,
-        tabType:scope.tabType||active.tabType,
+        tabId:scope.tabId||'global',
+        tabName:scope.tabName||'전체 기록',
+        tabType:scope.tabType||'regular',
       });
     });
   });
@@ -2585,18 +2936,29 @@ function renderScheduleAuditSummary(){
     sourceRows.push(row);
   };
   _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays).forEach(addSourceRow);
-  const items=_recordItems().sort((a,b)=>(b.at||'').localeCompare(a.at||''));
+  const items=_recordItems(false).sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   items.forEach(item=>{
     _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(addSourceRow);
   });
   const notes=_syncDeskNotesFromRows(sourceRows);
+  const visibleNoteKeys=new Set();
   notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays)).forEach(note=>{
+    const noteKey=[note.day,note.teacher,note.student,note.change,note.date,note.time].map(v=>String(v||'').trim()).join('|');
+    if(visibleNoteKeys.has(noteKey)) return;
+    visibleNoteKeys.add(noteKey);
     const day=note.day||'기타';
     if(!perDay[day]) perDay[day]=[];
     perDay[day].push(note);
   });
+  const dayOrder=['월','화','수','목','금','토','일','기타'];
   const days=[...visibleDays];
-  if(perDay['기타']?.length) days.push('기타');
+  Object.keys(perDay).forEach(day=>{
+    if((perDay[day]||[]).length&&!days.includes(day)) days.push(day);
+  });
+  days.sort((a,b)=>{
+    const ai=dayOrder.indexOf(a), bi=dayOrder.indexOf(b);
+    return (ai<0?99:ai)-(bi<0?99:bi);
+  });
   const hasRows=days.some(day=>(perDay[day]||[]).length);
   const editable=_deskNoteCanSave(true);
   if(!hasRows&&!editable){
@@ -2650,6 +3012,8 @@ function _filteredRecordItems(){
 function renderRecordManager(){
   const list=_filteredRecordItems();
   const total=_recordItems().length;
+  const restoreById=new Map((Array.isArray(RESTORE_POINTS)?RESTORE_POINTS:[]).map(point=>[point.id,point]));
+  const restoreCount=[...restoreById.values()].filter(point=>point&&point.hasPayload!==false&&!point.skipped&&!point.before?.skipped).length;
   const summary=document.getElementById('record-summary');
   const period=_recordActivePeriodLabel();
   const pages=Math.max(1, Math.ceil(list.length/RECORD_PAGE_SIZE));
@@ -2657,7 +3021,7 @@ function renderRecordManager(){
   const start=(list.length?(_recordPage-1)*RECORD_PAGE_SIZE:0);
   const pageItems=list.slice(start,start+RECORD_PAGE_SIZE);
   const rangeText=list.length?`${start+1}-${Math.min(start+RECORD_PAGE_SIZE,list.length)}건 표시`:'0건';
-  if(summary) summary.textContent=`전체 ${total}건${list.length!==total?` · 필터 결과 ${list.length}건`:''}${period?` · 기간 ${period}`:''} · ${rangeText} · 최근 ${RESTORE_POINT_MAX}개 작업은 해당 작업 직전으로 복구할 수 있습니다`;
+  if(summary) summary.textContent=`전체 ${total}건${list.length!==total?` · 필터 결과 ${list.length}건`:''}${period?` · 기간 ${period}`:''} · ${rangeText}${restoreCount?` · 최근 ${restoreCount}개 작업은 해당 작업 직전으로 복구할 수 있습니다`:''}`;
   const wrap=document.getElementById('record-list');
   if(!wrap) return;
   if(!list.length){
@@ -2666,7 +3030,10 @@ function renderRecordManager(){
   }
   const rows=pageItems.map(item=>{
     const type=item.type||'edit';
-    const restore=item.restoreId?`<button class="btn btn-o" onclick="restoreRecordPoint('${esc(item.restoreId)}')">이 시점으로</button>`:'';
+    const restorePoint=item.restoreId?restoreById.get(item.restoreId):null;
+    const restore=restorePoint&&restorePoint.hasPayload!==false&&!restorePoint.skipped&&!restorePoint.before?.skipped
+      ? `<button class="btn btn-o" onclick="restoreRecordPoint('${esc(item.restoreId)}')">이 시점으로</button>`
+      : '';
     return `<tr>
       <td class="record-time">${esc(_fmtAuditDate(item.at))}</td>
       <td><span class="record-kind ${esc(type)}">${_recordTypeLabel(type)}</span></td>
@@ -2708,14 +3075,54 @@ function renderRecordPager(pages){
     ${btn(pages,'끝',_recordPage===pages)}
   </div>`;
 }
-function restoreRecordPoint(restoreId){
+function _cacheRestorePayload(key,point){
+  if(!key||!point) return point;
+  _restorePayloadCache.delete(key);
+  _restorePayloadCache.set(key,point);
+  while(_restorePayloadCache.size>RESTORE_PAYLOAD_CACHE_LIMIT){
+    const oldest=_restorePayloadCache.keys().next().value;
+    _restorePayloadCache.delete(oldest);
+    if(typeof releaseDeferredJSONMemory==='function') releaseDeferredJSONMemory(oldest);
+  }
+  return point;
+}
+async function _loadRestorePayload(summary){
+  if(summary?.before) return summary;
+  if(summary?.hasPayload===false||summary?.skipped){
+    return {...summary,before:{keys:summary.keys||[],data:{},skipped:true,reason:'too-large'}};
+  }
+  const keys=[summary?.entryKey,_restoreEntryStorageKey(summary?.id),'swim_restore_point_'+String(summary?.id||'')]
+    .filter((key,idx,list)=>key&&list.indexOf(key)===idx);
+  for(const key of keys){
+    if(_restorePayloadCache.has(key)){
+      const cached=_restorePayloadCache.get(key);
+      _restorePayloadCache.delete(key);
+      _restorePayloadCache.set(key,cached);
+      return cached;
+    }
+    const raw=await _readAuditRaw(key);
+    const point=_auditParseStored(raw,null);
+    if(point&&typeof point==='object'&&point.before) return _cacheRestorePayload(key,point);
+  }
+  return null;
+}
+async function restoreRecordPoint(restoreId){
   if(window.SCAuth && !SCAuth.requirePermission('manageRecords','기록 되돌리기')) return;
-  const point=(Array.isArray(RESTORE_POINTS)?RESTORE_POINTS:[]).find(p=>p.id===restoreId);
+  const summary=(Array.isArray(RESTORE_POINTS)?RESTORE_POINTS:[]).find(p=>p.id===restoreId);
+  if(!summary){toast('복구 지점을 찾을 수 없습니다','err');return;}
+  let point=null;
+  try{
+    point=await _loadRestorePayload(summary);
+  }catch(err){
+    console.error('복구 데이터 로드 실패:',err);
+    toast('복구 데이터를 불러오지 못했습니다','err');
+    return;
+  }
   if(!point||!point.before){toast('복구 지점을 찾을 수 없습니다','err');return;}
   if(point.before.skipped){toast('이 기록은 용량 제한으로 되돌리기 데이터가 없습니다','err');return;}
   if(!confirm(`"${point.label||'선택한 기록'}" 작업 직전 상태로 되돌릴까요?\n\n현재 상태는 복구 로그로 남겨둡니다.`)) return;
   const restoreKeys=[...new Set(point.before.keys||point.keys||[])]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+    .filter(key=>!_isAuditStorageKey(key));
   const beforeRestore=createAuditPoint(restoreKeys, {
     type:'restore',
     label:'기록관리 되돌리기',
@@ -2780,6 +3187,7 @@ function addRetireHistory(stu, retiredAt){
   const rec = {
     retiredAt: retiredAt,
     recordedAt: new Date().toISOString(),
+    sid: stu.sid||null,
     t: stu.t, d: stu.d, l: stu.l, r: stu.r,
     n: stu.n, a: stu.a||null,
     p: stu.p||null, loc: stu.loc||null, memo: stu.memo||null,
@@ -2796,9 +3204,11 @@ function retireHistoryEntryForSlot(slotKey,fallback){
   const [t,d,l,r]=parts.map(v=>String(v||''));
   const fallbackName=String(fallback?.n||fallback?.name||'').trim();
   const fallbackPhone=String(fallback?.p||fallback?.phone||'').replace(/\D/g,'');
+  const fallbackSid=String(fallback?.sid||'').trim();
   const rows=RETIRE_HISTORY.filter(row=>{
     if(!row) return false;
     if(String(row.t||'')!==t||String(row.d||'')!==d||String(row.l||'')!==l||String(row.r||'')!==r) return false;
+    if(fallbackSid&&row.sid&&String(row.sid)!==fallbackSid) return false;
     if(fallbackName&&String(row.n||'').trim()&&String(row.n||'').trim()!==fallbackName) return false;
     const rowPhone=String(row.p||'').replace(/\D/g,'');
     if(fallbackPhone&&rowPhone&&fallbackPhone!==rowPhone) return false;
@@ -2808,6 +3218,7 @@ function retireHistoryEntryForSlot(slotKey,fallback){
   if(!hit) return null;
   return {
     ds:hit.retiredAt,
+    sid:hit.sid||'',
     name:hit.n||'',
     age:hit.a||null,
     p:hit.p||'',
@@ -2918,7 +3329,20 @@ function saveMove()     { saveJSON(STORAGE_KEYS.MOVE,     MOVE_MAP); }
 function saveRequests() { saveJSON(STORAGE_KEYS.REQUESTS, REQUESTS); }
 function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDANCE); }
 function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
-function saveDaySnapshot(){ saveJSON(_attendanceStorageKey('daySnapshot'), DAY_SNAPSHOT); }
+function saveDaySnapshot(ds,tabId,snapshotValue){
+  const date=String(ds||'');
+  const snapshot=snapshotValue||DAY_SNAPSHOT[date];
+  if(!date||!snapshot) return false;
+  const basisTab=tabId
+    ? (typeof _tabById==='function'?_tabById(tabId):null)
+    : (typeof getAttendanceBasisTabForDate==='function'?getAttendanceBasisTabForDate(date):null);
+  const targetTabId=basisTab?.id||tabId||_activeTab;
+  if(typeof cacheAttendanceDaySnapshot==='function') cacheAttendanceDaySnapshot(targetTabId,date,snapshot);
+  const key=typeof getAttendanceDaySnapshotStorageKey==='function'
+    ? getAttendanceDaySnapshotStorageKey(targetTabId,date)
+    : _attendanceStorageKey('daySnapshot',targetTabId);
+  return saveJSON(key,snapshot);
+}
 
 function _cacheJSONOnly(key,val){
   val=normalizeStoredScheduleValue(key,val);
@@ -2946,7 +3370,8 @@ function _parseJSONValue(raw,fallback,storageKey){
     return storageKey?normalizeStoredScheduleValue(storageKey,parsed):parsed;
   }
 }
-function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
+function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback,meta){
+  meta=meta||{};
   if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(storageKey,'트랜잭션 저장')){
     return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
   }
@@ -2961,37 +3386,45 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback){
   }
   let abortReason='';
   const runMutator=value=>mutator(normalizeStoredScheduleValue(storageKey,value), reason=>{abortReason=reason||'';});
-  const auditPoint=(typeof createAuditPoint==='function')
+  const auditPoint=!meta.skipAudit&&(typeof createAuditPoint==='function')
     ? createAuditPoint([storageKey], {type:describeStorageChangeType(storageKey), label:describeStorageChange(storageKey)})
     : null;
-  if(typeof pushUndoForKeys==='function') pushUndoForKeys(storageKey);
+  if(!meta.skipUndo&&typeof pushUndoForKeys==='function') pushUndoForKeys(storageKey);
   if(!_fbReady){
-    const next=runMutator(_cloneJSON(currentValue!==undefined?currentValue:fallback));
+    const value=normalizeStoredScheduleValue(storageKey,_cloneJSON(currentValue!==undefined?currentValue:fallback));
+    const before=_cloneJSON(value);
+    const next=runMutator(value);
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
+    let deletionEvents=[];
     if(next!==undefined){
       const normalizedNext=normalizeStoredScheduleValue(storageKey,next);
+      deletionEvents=_studentDeletionEvents(storageKey,before,normalizedNext,meta);
       applyResult(normalizedNext);
       saveJSON(storageKey,normalizedNext);
     }
-    return Promise.resolve(next);
+    return recordStudentDeletionSafety(deletionEvents,meta).then(()=>next);
   }
   const sk=storageKey.replace(/[.#$/\[\]]/g,'_');
+  let deletionEvents=[];
   return _fb.child(sk).transaction(raw=>{
     const value=_parseJSONValue(raw,fallback,storageKey);
+    const before=_cloneJSON(value);
     const next=runMutator(value);
     if(next===undefined) return;
-    return JSON.stringify(normalizeStoredScheduleValue(storageKey,next));
+    const normalizedNext=normalizeStoredScheduleValue(storageKey,next);
+    deletionEvents=_studentDeletionEvents(storageKey,before,normalizedNext,meta);
+    return JSON.stringify(normalizedNext);
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
     const next=_parseJSONValue(res.snapshot.val(),fallback,storageKey);
     applyResult(next);
     _cacheJSONOnly(storageKey,next);
-    if(auditPoint) recordAuditPoint(auditPoint,[storageKey]);
-    return next;
+    if(auditPoint) recordAuditPoint(auditPoint,[storageKey],meta);
+    return recordStudentDeletionSafety(deletionEvents,meta).then(()=>next);
   });
 }
-function _txJSONMap(storageKey,currentMap,applyResult,mutator){
-  return _txJSONValue(storageKey,currentMap,applyResult,mutator,{});
+function _txJSONMap(storageKey,currentMap,applyResult,mutator,meta){
+  return _txJSONValue(storageKey,currentMap,applyResult,mutator,{},meta);
 }
 function _storageSafeKey(key){ return key.replace(/[.#$/\[\]]/g,'_'); }
 function _applyStoredValue(key,val){
@@ -3025,11 +3458,12 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
   const hasExplicitKeys=Array.isArray(keysOrMutator);
   const txKeysRaw=hasExplicitKeys ? keysOrMutator : _auditEditKeys();
   const mutator=hasExplicitKeys ? mutatorOrMeta : keysOrMutator;
-  const meta=hasExplicitKeys ? metaArg : mutatorOrMeta;
+  const meta=(hasExplicitKeys ? metaArg : mutatorOrMeta)||{};
   const txKeys=[...new Set((txKeysRaw||[]).filter(Boolean))]
-    .filter(key=>key!==STORAGE_KEYS.AUDIT_LOG&&key!==STORAGE_KEYS.RESTORE_POINTS);
+    .filter(key=>!_isAuditStorageKey(key));
   const txSafeKeys=[...new Set(txKeys.map(_storageSafeKey))];
   const txKeySet=new Set(txSafeKeys);
+  const studentKeys=txKeys.filter(_auditIsStudentKey);
   if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(txKeys[0]||'schedule','시간표 저장')){
     return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
   }
@@ -3040,8 +3474,25 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
   if(!txKeys.length) return Promise.reject(new Error('transaction keys are required'));
   const touched=new Set();
   let abortReason='';
-  const auditPoint=(typeof createAuditPoint==='function')?createAuditPoint(txKeys, meta||{type:'edit', label:'시간표 편집'}):null;
-  if(typeof pushUndoForKeys==='function') pushUndoForKeys(txKeys);
+  const auditPoint=!meta.skipAudit&&(typeof createAuditPoint==='function')?createAuditPoint(txKeys, meta||{type:'edit', label:'시간표 편집'}):null;
+  if(!meta.skipUndo&&typeof pushUndoForKeys==='function') pushUndoForKeys(txKeys);
+  let deletionEvents=[];
+  const captureStudents=root=>{
+    const before={};
+    studentKeys.forEach(key=>{
+      before[key]=_cloneJSON(_parseJSONValue(root[_storageSafeKey(key)],[],key));
+    });
+    return before;
+  };
+  const collectStudentDeletions=(before,root)=>{
+    const events=[];
+    studentKeys.forEach(key=>{
+      if(!touched.has(key)) return;
+      const after=_parseJSONValue(root[_storageSafeKey(key)],[],key);
+      events.push(..._studentDeletionEvents(key,before[key],after,meta));
+    });
+    return events;
+  };
   const makeCtx=root=>({
     get(key,fallback){
       const safeKey=_storageSafeKey(key);
@@ -3059,14 +3510,16 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
   if(!_fbReady){
     const localRoot={};
     txKeys.forEach(key=>{localRoot[_storageSafeKey(key)]=dbGet(key);});
+    const beforeStudents=captureStudents(localRoot);
     const next=mutator(makeCtx(localRoot));
     if(next===undefined) return Promise.reject(new Error(abortReason||'transaction aborted'));
+    deletionEvents=collectStudentDeletions(beforeStudents,localRoot);
     touched.forEach(key=>{
       const val=_parseJSONValue(localRoot[_storageSafeKey(key)],{},key);
       _applyStoredValue(key,val);
       saveJSON(key,val);
     });
-    return Promise.resolve();
+    return recordStudentDeletionSafety(deletionEvents,meta);
   }
   const runTx=typeof _fb.transactionKeys==='function'
     ? updateFn=>_fb.transactionKeys(txSafeKeys, updateFn)
@@ -3075,8 +3528,10 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     root=root||{};
     touched.clear();
     abortReason='';
+    const beforeStudents=captureStudents(root);
     const result=mutator(makeCtx(root));
     if(result===undefined) return;
+    deletionEvents=collectStudentDeletions(beforeStudents,root);
     return root;
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
@@ -3087,9 +3542,10 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
       _cacheJSONOnly(key,val);
     });
     if(auditPoint&&touched.size) recordAuditPoint(auditPoint,Array.from(touched),meta);
+    return recordStudentDeletionSafety(deletionEvents,meta);
   });
 }
-function updateStudentsTx(mutator){
+function updateStudentsTx(mutator,meta){
   const tabKey=getTabConfig().stuKey;
   return _txJSONValue(tabKey,STUDENTS,next=>{
     STUDENTS=Array.isArray(next)?next:[];
@@ -3104,7 +3560,7 @@ function updateStudentsTx(mutator){
       return;
     }
     return next;
-  },[]);
+  },[],meta);
 }
 function updateInstMapTx(mutator){
   return _txJSONMap(getTabConfig().instKey,INST_MAP,next=>{INST_MAP=next;},mutator);
@@ -3175,7 +3631,6 @@ function reloadBadgeMaps(){
       _origGlobalMaps.move       = loadJSON(STORAGE_KEYS.MOVE,     {});
       _origGlobalMaps.attendance = loadJSON(_attendanceStorageKey('attendance'), {});
       _origGlobalMaps.attGuests  = loadJSON(_attendanceStorageKey('attGuests'), {});
-      _origGlobalMaps.daySnapshot= loadJSON(_attendanceStorageKey('daySnapshot'), {});
     }
     // REQUESTS는 글로벌이라 갱신 (스냅샷에 포함 안 됨 — 학부모 요청은 항상 라이브)
     REQUESTS = loadJSON(STORAGE_KEYS.REQUESTS, {});
@@ -3191,7 +3646,9 @@ function reloadBadgeMaps(){
   REQUESTS     = loadJSON(STORAGE_KEYS.REQUESTS, {});
   ATTENDANCE   = loadJSON(_attendanceStorageKey('attendance'), {});
   ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
-  DAY_SNAPSHOT = loadJSON(_attendanceStorageKey('daySnapshot'), {});
+  DAY_SNAPSHOT = typeof getLoadedAttendanceDaySnapshotMap==='function'
+    ? getLoadedAttendanceDaySnapshotMap(_activeTab)
+    : {};
 }
 
 // [FIX] Firebase child_changed 시 글로벌 데이터도 메모리에 갱신
@@ -3212,12 +3669,8 @@ function reloadGlobalData(){
     const tf=loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
     _tabFolderList=Array.isArray(tf)?tf:[];
   }
-  if(_auditStorageLoaded){
-    AUDIT_LOG=loadJSON(STORAGE_KEYS.AUDIT_LOG, []);
-    if(!Array.isArray(AUDIT_LOG)) AUDIT_LOG=[];
-    RESTORE_POINTS=loadJSON(STORAGE_KEYS.RESTORE_POINTS, []);
-    if(!Array.isArray(RESTORE_POINTS)) RESTORE_POINTS=[];
-  }
+  // 기록 데이터는 지연 로드되고 실시간 루트에도 포함되지 않는다.
+  // reloadGlobalData 중 구형 배열만 다시 읽으면 새 증분 기록이 사라지므로 현재 병합본을 유지한다.
   DESK_NOTES=loadJSON(STORAGE_KEYS.DESK_NOTES, []);
   if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
   // 현재 활성 탭이 삭제됐으면 첫 탭으로

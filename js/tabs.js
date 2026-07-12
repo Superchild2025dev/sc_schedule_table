@@ -294,10 +294,9 @@ function _attendanceStudentsForDate(students,ds,hasSnapshot){
 function getAttendanceBasisDataForDate(ds){
   const tab=getAttendanceBasisTabForDate(ds);
   const cfg=_tabConfigFor(tab);
-  const snapKey=getAttendanceStorageKeys(tab?.id).daySnapshot;
-  const snapMap=loadJSON(snapKey,{});
   const todayStr=toDateStr(getToday());
-  const snap=(ds<todayStr&&snapMap&&snapMap[ds]&&Array.isArray(snapMap[ds].students))?snapMap[ds]:null;
+  const loadedSnap=getLoadedAttendanceDaySnapshot(tab?.id,ds);
+  const snap=(ds<todayStr&&loadedSnap&&Array.isArray(loadedSnap.students))?loadedSnap:null;
   const fallbackStu=(tab&&tab.id==='regular'&&typeof _DEFAULT_STU!=='undefined')?_DEFAULT_STU:[];
   const students=_attendanceStudentsForDate(snap?snap.students:loadJSON(cfg.stuKey,fallbackStu),ds,!!snap);
   const instMap=snap?(snap.inst||{}):loadJSON(cfg.instKey,{});
@@ -322,6 +321,150 @@ function getAttendanceStorageKeys(tabId){
     attGuests:STORAGE_KEYS.ATT_GUESTS,
     daySnapshot:STORAGE_KEYS.DAY_SNAPSHOT,
   };
+}
+const ATTENDANCE_DAY_SNAPSHOT_PREFIX='zz_swim_day_snapshot__';
+const ATTENDANCE_DAY_SNAPSHOT_CACHE_LIMIT=18;
+const _attendanceDaySnapshotCache=new Map();
+const _attendanceDaySnapshotLoads=new Map();
+const _attendanceLegacySnapshotCache=new Map();
+const _attendanceLegacySnapshotLoads=new Map();
+
+function _attendanceSnapshotSourceTab(tabId){
+  let tab=(tabId&&typeof tabId==='object')?tabId:_tabById(tabId||_activeTab);
+  if(tab?.type==='snapshot'&&tab.sourceTabId){
+    const source=_tabById(tab.sourceTabId);
+    if(source) tab=source;
+    else if(tab.sourceTabType==='bangteuk') tab={id:tab.sourceTabId,type:'bangteuk'};
+  }
+  return tab;
+}
+function _attendanceDaySnapshotScope(tabId){
+  const tab=_attendanceSnapshotSourceTab(tabId);
+  if(tab?.type==='bangteuk'){
+    return 'bt_'+String(tab.id||'bangteuk').replace(/[^\w-]/g,'_');
+  }
+  return 'regular';
+}
+function getAttendanceDaySnapshotStorageKey(tabId,ds){
+  return ATTENDANCE_DAY_SNAPSHOT_PREFIX+_attendanceDaySnapshotScope(tabId)+'__'+String(ds||'');
+}
+function _attendanceLegacySnapshotKey(tabId){
+  const tab=_attendanceSnapshotSourceTab(tabId);
+  return tab?.type==='bangteuk'?'swim_bt_day_snapshot_'+tab.id:STORAGE_KEYS.DAY_SNAPSHOT;
+}
+function _isAttendanceDaySnapshot(value){
+  return !!(value&&typeof value==='object'&&!Array.isArray(value)&&Array.isArray(value.students));
+}
+function _syncAttendanceDaySnapshot(tabId,ds,snapshot){
+  if(typeof DAY_SNAPSHOT==='undefined') return;
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()) return;
+  if(_attendanceDaySnapshotScope(_activeTab)!==_attendanceDaySnapshotScope(tabId)) return;
+  if(snapshot) DAY_SNAPSHOT[ds]=snapshot;
+  else delete DAY_SNAPSHOT[ds];
+}
+function cacheAttendanceDaySnapshot(tabId,ds,snapshot){
+  const key=getAttendanceDaySnapshotStorageKey(tabId,ds);
+  _attendanceDaySnapshotCache.delete(key);
+  _attendanceDaySnapshotCache.set(key,snapshot||null);
+  while(_attendanceDaySnapshotCache.size>ATTENDANCE_DAY_SNAPSHOT_CACHE_LIMIT){
+    const oldest=_attendanceDaySnapshotCache.keys().next().value;
+    const oldValue=_attendanceDaySnapshotCache.get(oldest);
+    _attendanceDaySnapshotCache.delete(oldest);
+    if(typeof releaseDeferredJSONMemory==='function') releaseDeferredJSONMemory(oldest);
+    const split=String(oldest).lastIndexOf('__');
+    const oldDs=split>=0?String(oldest).slice(split+2):'';
+    if(oldDs&&typeof DAY_SNAPSHOT!=='undefined'&&DAY_SNAPSHOT[oldDs]===oldValue) delete DAY_SNAPSHOT[oldDs];
+  }
+  _syncAttendanceDaySnapshot(tabId,ds,snapshot||null);
+  return snapshot||null;
+}
+function getLoadedAttendanceDaySnapshot(tabId,ds){
+  const key=getAttendanceDaySnapshotStorageKey(tabId,ds);
+  if(!_attendanceDaySnapshotCache.has(key)) return null;
+  const value=_attendanceDaySnapshotCache.get(key);
+  _attendanceDaySnapshotCache.delete(key);
+  _attendanceDaySnapshotCache.set(key,value);
+  return value||null;
+}
+function getLoadedAttendanceDaySnapshotMap(tabId){
+  const prefix=ATTENDANCE_DAY_SNAPSHOT_PREFIX+_attendanceDaySnapshotScope(tabId)+'__';
+  const out={};
+  _attendanceDaySnapshotCache.forEach((snapshot,key)=>{
+    if(snapshot&&key.startsWith(prefix)) out[key.slice(prefix.length)]=snapshot;
+  });
+  return out;
+}
+async function _loadLegacyAttendanceDaySnapshotMap(tabId){
+  const legacyKey=_attendanceLegacySnapshotKey(tabId);
+  if(_attendanceLegacySnapshotCache.has(legacyKey)) return _attendanceLegacySnapshotCache.get(legacyKey);
+  if(_attendanceLegacySnapshotLoads.has(legacyKey)) return _attendanceLegacySnapshotLoads.get(legacyKey);
+  const pending=loadDeferredJSON(legacyKey,{}).then(map=>{
+    const value=(map&&typeof map==='object'&&!Array.isArray(map))?map:{};
+    _attendanceLegacySnapshotCache.set(legacyKey,value);
+    return value;
+  }).catch(error=>{
+    console.warn('legacy day snapshot load failed',legacyKey,error);
+    _attendanceLegacySnapshotCache.set(legacyKey,{});
+    return {};
+  }).finally(()=>_attendanceLegacySnapshotLoads.delete(legacyKey));
+  _attendanceLegacySnapshotLoads.set(legacyKey,pending);
+  return pending;
+}
+async function ensureAttendanceDaySnapshotLoaded(ds,tabId,force){
+  if(!ds) return null;
+  const basisTab=tabId?_attendanceSnapshotSourceTab(tabId):getAttendanceBasisTabForDate(ds);
+  const targetTabId=basisTab?.id||tabId||_activeTab;
+  const key=getAttendanceDaySnapshotStorageKey(targetTabId,ds);
+  if(force){
+    if(_attendanceDaySnapshotLoads.has(key)) await _attendanceDaySnapshotLoads.get(key);
+    _attendanceDaySnapshotCache.delete(key);
+    if(typeof releaseDeferredJSONMemory==='function') releaseDeferredJSONMemory(key);
+  }
+  if(_attendanceDaySnapshotCache.has(key)) return getLoadedAttendanceDaySnapshot(targetTabId,ds);
+  if(_attendanceDaySnapshotLoads.has(key)) return _attendanceDaySnapshotLoads.get(key);
+
+  const pending=(async()=>{
+    let snapshot=await loadDeferredJSON(key,null);
+    if(!_isAttendanceDaySnapshot(snapshot)){
+      const legacy=await _loadLegacyAttendanceDaySnapshotMap(targetTabId);
+      const old=legacy&&legacy[ds];
+      snapshot=_isAttendanceDaySnapshot(old)?_tabCloneSafe(old,null):null;
+    }
+    if(key!==getAttendanceDaySnapshotStorageKey(targetTabId,ds)) return snapshot||null;
+    return cacheAttendanceDaySnapshot(targetTabId,ds,snapshot);
+  })().catch(error=>{
+    console.warn('day snapshot load failed',key,error);
+    if(key!==getAttendanceDaySnapshotStorageKey(targetTabId,ds)) return null;
+    return cacheAttendanceDaySnapshot(targetTabId,ds,null);
+  }).finally(()=>_attendanceDaySnapshotLoads.delete(key));
+  _attendanceDaySnapshotLoads.set(key,pending);
+  return pending;
+}
+function ensureAttendanceDaySnapshotsLoaded(dates){
+  return Promise.all([...new Set((dates||[]).filter(Boolean))].map(ds=>ensureAttendanceDaySnapshotLoaded(ds)));
+}
+function removeAttendanceDaySnapshotsForTab(tab){
+  if(!tab||tab.type!=='bangteuk') return;
+  const dates=new Set();
+  const scope=_attendanceDaySnapshotScope(tab);
+  const prefix=ATTENDANCE_DAY_SNAPSHOT_PREFIX+scope+'__';
+  _attendanceDaySnapshotCache.forEach((value,key)=>{
+    if(key.startsWith(prefix)) dates.add(key.slice(prefix.length));
+  });
+  if(tab.seasonStart&&tab.seasonEnd){
+    const cur=new Date(tab.seasonStart+'T12:00:00');
+    const end=new Date(tab.seasonEnd+'T12:00:00');
+    for(let guard=0;cur<=end&&guard<370;guard++){
+      dates.add(toDateStr(cur));
+      cur.setDate(cur.getDate()+1);
+    }
+  }
+  dates.forEach(ds=>{
+    const key=ATTENDANCE_DAY_SNAPSHOT_PREFIX+scope+'__'+ds;
+    _attendanceDaySnapshotCache.delete(key);
+    dbRemove(key);
+  });
+  _attendanceLegacySnapshotCache.delete('swim_bt_day_snapshot_'+tab.id);
 }
 function _tabBasisBadge(tab){
   if(!tab||tab.type==='snapshot') return '';
@@ -976,6 +1119,7 @@ async function deleteTab(tabId){
       dbRemove('swim_bt_attendance_'+id);
       dbRemove('swim_bt_att_guests_'+id);
       dbRemove('swim_bt_day_snapshot_'+id);
+      removeAttendanceDaySnapshotsForTab(tab);
     } else {
       dbRemove('swim_stu_'+id);
       dbRemove('swim_inst_'+id);
@@ -1014,9 +1158,10 @@ function _handleFolderMenuAction(action,folder){
   else if(action==='delete') deleteTabFolder(folder);
 }
 
-/* ──── 스냅샷: 전체 상태 동결 ────
-   클릭 시 현재 탭의 모든 데이터(학생/담임/출석/결석/등원/퇴원/휴원/이동/예약/스냅샷맵)를
+/* ──── 스냅샷: 운영 시간표 상태 동결 ────
+   클릭 시 현재 탭의 데이터(학생/담임/출석/결석/등원/퇴원/휴원/이동/예약)를
    캡처해 새 탭으로 만든다. 스냅샷 탭 활성화 시 전역 맵을 백업 후 스냅샷 데이터로 교체.
+   날짜별 출석 명단 스냅샷은 별도 문서이므로 월 스냅샷에 중복 저장하지 않는다.
    모든 변경(저장)은 saveJSON 가드로 차단된다. */
 let _origGlobalMaps=null; // 스냅샷 진입 시 백업, 떠날 때 복원
 const SNAP_KEY_PREFIX='swim_snap_';
@@ -1037,7 +1182,6 @@ function _snapshotDataForTab(srcTab,capturedAt){
     move:_tabCloneSafe(typeof MOVE_MAP!=='undefined'?MOVE_MAP:loadJSON(STORAGE_KEYS.MOVE, {}), {}),
     attendance:_tabCloneSafe(active&&typeof ATTENDANCE!=='undefined'?ATTENDANCE:loadJSON(attKeys.attendance, {}), {}),
     attGuests:_tabCloneSafe(active&&typeof ATT_GUESTS!=='undefined'?ATT_GUESTS:loadJSON(attKeys.attGuests, {}), {}),
-    daySnapshot:_tabCloneSafe(active&&typeof DAY_SNAPSHOT!=='undefined'?DAY_SNAPSHOT:loadJSON(attKeys.daySnapshot, {}), {}),
     capturedAt,
     sourceTabId:srcTab.id,
     sourceTabType:srcTab.type,
@@ -1145,8 +1289,8 @@ async function autoRolloverRegularScheduleIfNeeded(){
   let wroteSnapshot=false;
   if(needsSnapshot){
     const snapKey=SNAP_KEY_PREFIX+snapId;
-    const hasSnapData=!!loadJSON(snapKey, null);
-    if(!hasSnapData){
+    const hasSnapshotTab=_tabList.some(t=>t&&t.id===snapId&&t.type==='snapshot');
+    if(!hasSnapshotTab){
       dbSet(snapKey, JSON.stringify(_snapshotDataForTab(srcTab,today)));
       wroteSnapshot=true;
     }
@@ -1471,7 +1615,32 @@ document.getElementById('tab-modal').addEventListener('keydown',function(e){
   }
 });
 
-function switchTabView(){
+let _snapshotSwitchSeq=0;
+function _showSnapshotLoading(tab){
+  const wrap=document.getElementById('tbl');
+  if(wrap){
+    const loading=document.createElement('div');
+    loading.className='snapshot-loading';
+    loading.textContent=(tab?.name||'스냅샷')+' 불러오는 중...';
+    wrap.replaceChildren(loading);
+  }
+  renderTabBar();
+}
+function _snapshotFallbackTabId(){
+  const mainId=typeof _mainTabId==='function' ? _mainTabId(_tabList) : '';
+  if(mainId&&_tabList.some(t=>t&&t.id===mainId&&t.type!=='snapshot')) return mainId;
+  return _tabList.find(t=>t&&t.type!=='snapshot')?.id||'regular';
+}
+function _cloneSnapshotView(data){
+  const source=Object.assign({},data||{});
+  delete source.daySnapshot;
+  if(typeof structuredClone==='function'){
+    try{return structuredClone(source);}catch(e){}
+  }
+  return JSON.parse(JSON.stringify(source));
+}
+async function switchTabView(){
+  const switchSeq=++_snapshotSwitchSeq;
   // 이전 탭이 스냅샷이었다면 전역 맵을 백업본으로 복원
   if(_origGlobalMaps){
     RETIRE_MAP=_origGlobalMaps.retire;
@@ -1499,13 +1668,26 @@ function switchTabView(){
   }
 
   if(tab.type==='snapshot'){
-    const snapData=loadJSON(SNAP_KEY_PREFIX+tab.id, null);
+    const snapKey=SNAP_KEY_PREFIX+tab.id;
+    let snapData=loadJSON(snapKey, null);
     if(!snapData){
-      toast('스냅샷 데이터 없음 — 정규 탭으로 복귀','err');
-      _activeTab='regular';
+      _showSnapshotLoading(tab);
+      try{
+        snapData=await loadDeferredJSON(snapKey, null);
+      }catch(e){
+        console.error('snapshot lazy load failed',tab.id,e);
+      }
+      // A를 불러오는 동안 B 탭을 눌렀다면 늦게 도착한 A는 버린다.
+      if(switchSeq!==_snapshotSwitchSeq||_activeTab!==tab.id) return;
+    }
+    if(!snapData){
+      toast('스냅샷을 불러오지 못했습니다 — 운영 시간표로 복귀','err');
+      _activeTab=_snapshotFallbackTabId();
       switchTabView();
       return;
     }
+    // 구버전 월 스냅샷에 들어 있던 중복 날짜 명단은 메모리에서도 즉시 제외한다.
+    if(Object.prototype.hasOwnProperty.call(snapData,'daySnapshot')) delete snapData.daySnapshot;
     // 백업
     _origGlobalMaps={
       retire:RETIRE_MAP, enroll:ENROLL_MAP, mark:MARK_MAP,
@@ -1513,19 +1695,20 @@ function switchTabView(){
       move:MOVE_MAP, attendance:ATTENDANCE, attGuests:ATT_GUESTS,
       daySnapshot:DAY_SNAPSHOT,
     };
-    // 스냅샷 데이터 주입 (deep clone — 메모리 변경이 원본에 새지 않게)
-    STUDENTS=JSON.parse(JSON.stringify(snapData.students||[]));
-    INST_MAP=JSON.parse(JSON.stringify(snapData.inst||{}));
-    RETIRE_MAP=JSON.parse(JSON.stringify(snapData.retire||{}));
-    ENROLL_MAP=JSON.parse(JSON.stringify(snapData.enroll||{}));
-    MARK_MAP=JSON.parse(JSON.stringify(snapData.mark||{}));
-    DISABLED_MAP=JSON.parse(JSON.stringify(snapData.disabled||{}));
-    RESERVE_MAP=JSON.parse(JSON.stringify(snapData.reserve||{}));
-    HYUWON_MAP=JSON.parse(JSON.stringify(snapData.hyuwon||{}));
-    MOVE_MAP=JSON.parse(JSON.stringify(snapData.move||{}));
-    ATTENDANCE=JSON.parse(JSON.stringify(snapData.attendance||{}));
-    ATT_GUESTS=JSON.parse(JSON.stringify(snapData.attGuests||{}));
-    DAY_SNAPSHOT=JSON.parse(JSON.stringify(snapData.daySnapshot||{}));
+    // 캐시 원본을 보호하면서 화면용 상태는 한 번만 복제한다.
+    const view=_cloneSnapshotView(snapData);
+    STUDENTS=Array.isArray(view.students)?view.students:[];
+    INST_MAP=view.inst||{};
+    RETIRE_MAP=view.retire||{};
+    ENROLL_MAP=view.enroll||{};
+    MARK_MAP=view.mark||{};
+    DISABLED_MAP=view.disabled||{};
+    RESERVE_MAP=view.reserve||{};
+    HYUWON_MAP=view.hyuwon||{};
+    MOVE_MAP=view.move||{};
+    ATTENDANCE=view.attendance||{};
+    ATT_GUESTS=view.attGuests||{};
+    DAY_SNAPSHOT={};
     rebuildStuIdx();
     buildTable();
     renderTabBar();
@@ -1536,6 +1719,9 @@ function switchTabView(){
   if(typeof reloadBadgeMaps==='function') reloadBadgeMaps();
   buildTable();
   renderTabBar();
+  if(typeof _attendanceMode!=='undefined'&&_attendanceMode&&typeof _queueAttendanceSnapshotRefresh==='function'){
+    _queueAttendanceSnapshotRefresh();
+  }
 }
 /* ──── [v118] 시간표 자체 줌 (CSS 변수 기반) ──── */
 const TBL_ZOOM_KEY='tbl_zoom';

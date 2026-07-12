@@ -22,10 +22,21 @@
   const DEFERRED_ROOT_KEYS = {
     swim_audit_log: true,
     swim_restore_points: true,
+    swim_day_snapshot: true,
+    zz_swim_audit_index: true,
+    zz_swim_restore_index: true,
+    zz_swim_student_delete_index: true,
   };
   const DEFERRED_ROOT_PREFIXES = [
     'swim_restore_point_',
+    'swim_snap_',
+    'swim_bt_day_snapshot_',
+    'zz_swim_day_snapshot__',
+    'zz_swim_audit_entry__',
+    'zz_swim_restore_point__',
+    'zz_swim_student_delete__',
   ];
+  const LAZY_DOC_ID_PREFIX = 'zz_';
 
   function backend(){
     return String(window.SC_DATA_BACKEND || DEFAULT_BACKEND).toLowerCase();
@@ -66,6 +77,17 @@
     });
     return out;
   }
+  function liveCollectionQuery(col){
+    try{
+      const fieldPath=firebase.firestore.FieldPath&&firebase.firestore.FieldPath.documentId();
+      if(fieldPath&&col&&typeof col.where==='function'){
+        return col.where(fieldPath, '<', LAZY_DOC_ID_PREFIX);
+      }
+    }catch(e){
+      console.warn('[SCFirebaseStore] Lazy-key query unavailable; using full collection.', e);
+    }
+    return col;
+  }
   function chunkId(i){
     return String(i).padStart(4, '0');
   }
@@ -98,12 +120,19 @@
     this.branchId = branchId(branch);
     this.db = firebase.firestore();
     this.col = this.db.collection('scheduleStores').doc(this.branchId).collection('kv');
+    this.liveCol = liveCollectionQuery(this.col);
     this.fallback = firebase.database().ref(branch.fbPath);
     this.fallbackEnabled = boolFlag('SC_FIRESTORE_RTDDB_FALLBACK', true);
     this.mirrorRTDB = boolFlag('SC_FIRESTORE_MIRROR_RTDB', true);
     this.syncRTDBOnLoad = boolFlag('SC_FIRESTORE_SYNC_RTDB_ON_LOAD', true);
     this.disabled = false;
     this.muteRTDB = {};
+    this.firestoreCallbacks = {
+      child_changed: new Set(),
+      child_removed: new Set(),
+    };
+    this.firestoreUnsubscribe = null;
+    this.firestoreInitialized = false;
   }
 
   FirestoreKVRoot.prototype._doc = function(key){
@@ -135,7 +164,8 @@
   };
   FirestoreKVRoot.prototype._list = function(opts){
     opts = opts || {};
-    return this.col.get().then(qs=>{
+    const source=opts.includeDeferred?this.col:this.liveCol;
+    return source.get().then(qs=>{
       const reads = [];
       qs.forEach(doc=>{
         const item = doc.data() || {};
@@ -152,7 +182,8 @@
   };
   FirestoreKVRoot.prototype._listKeys = function(opts){
     opts = opts || {};
-    return this.col.get().then(qs=>{
+    const source=opts.includeDeferred?this.col:this.liveCol;
+    return source.get().then(qs=>{
       const keys = [];
       qs.forEach(doc=>{
         const item = doc.data() || {};
@@ -536,32 +567,65 @@
       throw error;
     });
   };
-  FirestoreKVRoot.prototype._listenFirestore = function(event, cb){
-    let initialized = false;
-    return this.col.onSnapshot(qs=>{
+  FirestoreKVRoot.prototype._emitFirestore = function(event, snapshot){
+    const callbacks = this.firestoreCallbacks[event];
+    if(!callbacks || !callbacks.size) return;
+    [...callbacks].forEach(cb=>{
+      try{ cb(snapshot); }
+      catch(error){ console.error('[SCFirebaseStore] Firestore listener callback failed:', event, error); }
+    });
+  };
+  FirestoreKVRoot.prototype._stopFirestoreListenerIfIdle = function(){
+    const active = Object.values(this.firestoreCallbacks).some(callbacks=>callbacks.size);
+    if(active || !this.firestoreUnsubscribe) return;
+    this.firestoreUnsubscribe();
+    this.firestoreUnsubscribe = null;
+    this.firestoreInitialized = false;
+  };
+  FirestoreKVRoot.prototype._ensureFirestoreListener = function(){
+    if(this.firestoreUnsubscribe) return;
+    this.firestoreInitialized = false;
+    this.firestoreUnsubscribe = this.liveCol.onSnapshot(qs=>{
+      if(!this.firestoreInitialized){
+        this.firestoreInitialized = true;
+        return;
+      }
       qs.docChanges().forEach(change=>{
         const item = change.doc.data() || {};
         const key = item.key || decodeKey(change.doc.id);
         if(deferredRootKey(key)) return;
-        if(!initialized) return;
-        if(event === 'child_removed' && change.type === 'removed'){
-          cb(new StoreSnapshot(key, null));
-        } else if(event === 'child_changed' && change.type !== 'removed'){
-          this._readStoredValue(key, item).then(value=>{
-            cb(new StoreSnapshot(key, value));
-          }).catch(error=>{
-            console.warn('[SCFirebaseStore] Firestore listener value read failed:', key, error);
-          });
+        if(change.type === 'removed'){
+          this._emitFirestore('child_removed', new StoreSnapshot(key, null));
+          return;
         }
+        this._readStoredValue(key, item).then(value=>{
+          this._emitFirestore('child_changed', new StoreSnapshot(key, value));
+        }).catch(error=>{
+          console.warn('[SCFirebaseStore] Firestore listener value read failed:', key, error);
+        });
       });
-      initialized = true;
     }, error=>{
+      this.firestoreUnsubscribe = null;
+      this.firestoreInitialized = false;
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
       } else {
         console.error('[SCFirebaseStore] Firestore listener failed:', error);
       }
     });
+  };
+  FirestoreKVRoot.prototype._listenFirestore = function(event, cb){
+    const callbacks = this.firestoreCallbacks[event];
+    if(!callbacks || typeof cb !== 'function') return function(){};
+    callbacks.add(cb);
+    this._ensureFirestoreListener();
+    let active = true;
+    return ()=>{
+      if(!active) return;
+      active = false;
+      callbacks.delete(cb);
+      this._stopFirestoreListenerIfIdle();
+    };
   };
   FirestoreKVRoot.prototype._listenFallbackMirror = function(event, cb){
     if(!this.fallbackEnabled || !this.mirrorRTDB) return null;
