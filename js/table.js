@@ -3282,7 +3282,9 @@ function _excelArgb(hex){
 function _excelStyleFromCell(cell){
   const cs=window.getComputedStyle?getComputedStyle(cell):null;
   const bg=_excelRgbFromCss(cs?.backgroundColor);
-  const color=_excelRgbFromCss(cs?.color)||'111111';
+  const btName=cell.querySelector?.('.stu-bt-new-text');
+  const textCs=btName&&window.getComputedStyle?getComputedStyle(btName):cs;
+  const color=_excelRgbFromCss(textCs?.color)||_excelRgbFromCss(cs?.color)||'111111';
   const bold=parseInt(cs?.fontWeight||'400',10)>=700 || cell.tagName==='TH';
   const style={
     alignment:{horizontal:'center',vertical:'center',wrapText:true},
