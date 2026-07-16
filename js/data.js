@@ -191,7 +191,25 @@ let STUDENTS,INST_MAP;
 
 // 조회 헬퍼
 const _stuIdx={};
-function rebuildStuIdx(){for(const k in _stuIdx)delete _stuIdx[k];STUDENTS.forEach(s=>{_stuIdx[s.t+'/'+s.d+'/'+s.l+'/'+s.r]=s;});}
+let _studentSlotConflictSignature='';
+function rebuildStuIdx(){
+  for(const k in _stuIdx) delete _stuIdx[k];
+  const counts=new Map();
+  (Array.isArray(STUDENTS)?STUDENTS:[]).forEach(s=>{
+    const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
+    counts.set(slotKey,(counts.get(slotKey)||0)+1);
+    _stuIdx[slotKey]=s;
+  });
+  const conflicts=[...counts.entries()]
+    .filter(([,count])=>count>1)
+    .map(([slotKey,count])=>({slotKey,count}));
+  window.SC_STUDENT_SLOT_CONFLICTS=conflicts;
+  const signature=conflicts.map(item=>item.slotKey+':'+item.count).join('|');
+  if(signature&&signature!==_studentSlotConflictSignature){
+    console.error('[DATA SAFETY] 같은 자리에 원생이 중복 저장되어 일부가 가려질 수 있습니다:',conflicts);
+  }
+  _studentSlotConflictSignature=signature;
+}
 function _lookupDayKeys(day){
   const keys=[String(day||'')].filter(Boolean);
   try{
@@ -253,6 +271,79 @@ function _studentKeysForAnnualAgeUpdate(){
   return [...keys];
 }
 
+function _liveStudentTabSources(){
+  const sources=[];
+  const seen=new Set();
+  const tabs=Array.isArray(_tabList)?_tabList:[];
+  const liveTabs=tabs.filter(tab=>tab&&tab.type!=='snapshot');
+  if(!liveTabs.some(tab=>tab.id==='regular')){
+    liveTabs.unshift({id:'regular',name:'정규시간표',type:'regular'});
+  }
+  liveTabs.forEach(tab=>{
+    const cfg=typeof _tabConfigFor==='function'?_tabConfigFor(tab):null;
+    if(!cfg?.stuKey||seen.has(cfg.stuKey)) return;
+    seen.add(cfg.stuKey);
+    sources.push({
+      tabId:String(tab.id||'regular'),
+      tabName:String(tab.name||(tab.type==='bangteuk'?'방학특강':'정규시간표')),
+      tabType:tab.type==='bangteuk'?'bangteuk':'regular',
+      stuKey:cfg.stuKey,
+      instKey:cfg.instKey,
+    });
+  });
+  return sources;
+}
+
+function getLiveStudentIdentityRows(options){
+  const opts=options||{};
+  const activeTabId=String(opts.activeTabId||_activeTab||'regular');
+  const rows=[];
+  _liveStudentTabSources().forEach(source=>{
+    const students=source.tabId===activeTabId&&Array.isArray(opts.activeStudents)
+      ? opts.activeStudents
+      : loadJSON(source.stuKey,[]);
+    const instMap=source.tabId===activeTabId&&opts.activeInstMap
+      ? opts.activeInstMap
+      : loadJSON(source.instKey,{});
+    (Array.isArray(students)?students:[]).forEach(stu=>{
+      if(!stu) return;
+      const inst=instMap&&instMap[[stu.t,stu.d,stu.l].join('/')];
+      let teacher='';
+      if(inst){
+        teacher=typeof instDisplay==='function'?instDisplay(inst):String(inst.name||inst.n||inst||'');
+      }
+      rows.push(Object.assign({},stu,{
+        __tabId:source.tabId,
+        __tabName:source.tabName,
+        __tabType:source.tabType,
+        __teacher:teacher,
+        __identitySlotKey:source.tabId+'::'+[stu.t,stu.d,stu.l,stu.r].join('/'),
+      }));
+    });
+  });
+  return rows;
+}
+
+function findSharedStudentIdentity(name,phone,options){
+  const normalizedPhone=window.SCScheduleTime?.normalizeIdentityPhone
+    ? window.SCScheduleTime.normalizeIdentityPhone(phone)
+    : String(phone||'').replace(/\D/g,'');
+  const normalizedName=window.SCScheduleTime?.normalizeIdentityName
+    ? window.SCScheduleTime.normalizeIdentityName(name)
+    : String(name||'').trim().replace(/\s+/g,' ').toLowerCase();
+  if(!normalizedName||!normalizedPhone) return {sid:'',groups:[],selected:null};
+  const rows=getLiveStudentIdentityRows(options);
+  const groups=window.SCScheduleTime?.findStudentIdentityGroups
+    ? window.SCScheduleTime.findStudentIdentityGroups(rows,{n:name,p:phone})
+    : [];
+  const ranked=groups.slice().sort((a,b)=>{
+    const aRegular=(a.entries||[]).filter(row=>row.__tabType==='regular').length;
+    const bRegular=(b.entries||[]).filter(row=>row.__tabType==='regular').length;
+    return bRegular-aRegular||(b.entries?.length||0)-(a.entries?.length||0)||String(a.sid).localeCompare(String(b.sid));
+  });
+  return {sid:ranked[0]?.sid||'',groups,selected:ranked[0]||null};
+}
+
 function applyAnnualAgeIncrement(){
   if(window.SC_READ_ONLY_PREVIEW) return Promise.resolve(false);
   if(typeof isSnapshotTab==='function' && isSnapshotTab()) return Promise.resolve(false);
@@ -297,21 +388,109 @@ async function ensureStudentIdsPersisted(){
   if(typeof isSnapshotTab==='function'&&isSnapshotTab()) return false;
   if(typeof _fakeDate!=='undefined'&&_fakeDate) return false;
   if(window.SCAuth&&typeof SCAuth.can==='function'&&!SCAuth.can('editSchedule')) return false;
-  if(String(loadJSON(STORAGE_KEYS.STUDENT_ID_VERSION,'')||'')==='v1') return false;
+  const targetVersion='v2-shared-course';
+  if(String(loadJSON(STORAGE_KEYS.STUDENT_ID_VERSION,'')||'')===targetVersion) return false;
 
-  const studentKeys=_studentKeysForAnnualAgeUpdate();
-  for(const key of studentKeys){
-    if(dbGet(key)===null||dbGet(key)===undefined) continue;
-    await updateScheduleTx([key],ctx=>{
+  const sources=_liveStudentTabSources();
+  const studentKeys=[...new Set(sources.map(source=>source.stuKey))];
+  const txKeys=[
+    ...studentKeys,
+    STORAGE_KEYS.ENROLL,
+    STORAGE_KEYS.RETIRE,
+    STORAGE_KEYS.RETIRE_HISTORY,
+    STORAGE_KEYS.STUDENT_ID_VERSION,
+  ];
+  await updateScheduleTx(txKeys,ctx=>{
+    const docs=new Map();
+    const identityGroups=new Map();
+    const identityKeyFor=value=>{
+      const name=window.SCScheduleTime?.normalizeIdentityName
+        ? window.SCScheduleTime.normalizeIdentityName(value?.n||value?.name)
+        : String(value?.n||value?.name||'').trim().replace(/\s+/g,' ').toLowerCase();
+      const phone=window.SCScheduleTime?.normalizeIdentityPhone
+        ? window.SCScheduleTime.normalizeIdentityPhone(value?.p||value?.phone)
+        : String(value?.p||value?.phone||'').replace(/\D/g,'');
+      return name&&phone?name+'|'+phone:'';
+    };
+    const sourceByKey=new Map(sources.map(source=>[source.stuKey,source]));
+
+    studentKeys.forEach(key=>{
       const students=ctx.get(key,[]);
-      ctx.set(key,Array.isArray(students)?students:[]);
-      return true;
-    }, {skipAudit:true,skipUndo:true,label:'원생 고유 ID 초기화'});
-  }
-  await updateScheduleTx([STORAGE_KEYS.STUDENT_ID_VERSION],ctx=>{
-    ctx.set(STORAGE_KEYS.STUDENT_ID_VERSION,'v1');
+      const list=Array.isArray(students)?students:[];
+      docs.set(key,list);
+      list.forEach(stu=>{
+        if(window.SCScheduleTime?.ensureStudentId) window.SCScheduleTime.ensureStudentId(stu);
+        const identityKey=identityKeyFor(stu);
+        if(!identityKey) return;
+        if(!identityGroups.has(identityKey)) identityGroups.set(identityKey,[]);
+        identityGroups.get(identityKey).push({stu,source:sourceByKey.get(key)});
+      });
+    });
+
+    const canonicalByIdentity=new Map();
+    const canonicalBySid=new Map();
+    const ambiguousOldSids=new Set();
+    identityGroups.forEach((items,identityKey)=>{
+      const counts=new Map();
+      items.forEach(item=>{
+        const sid=String(item.stu.sid||'');
+        if(!sid) return;
+        const score=counts.get(sid)||{regular:0,total:0};
+        score.total++;
+        if(item.source?.tabType==='regular') score.regular++;
+        counts.set(sid,score);
+      });
+      const canonical=[...counts.entries()].sort((a,b)=>
+        b[1].regular-a[1].regular||b[1].total-a[1].total||a[0].localeCompare(b[0])
+      )[0]?.[0]||'';
+      if(!canonical) return;
+      canonicalByIdentity.set(identityKey,canonical);
+      items.forEach(item=>{
+        const oldSid=String(item.stu.sid||'');
+        if(oldSid&&oldSid!==canonical){
+          if(canonicalBySid.has(oldSid)&&canonicalBySid.get(oldSid)!==canonical){
+            canonicalBySid.delete(oldSid);
+            ambiguousOldSids.add(oldSid);
+          }else if(!ambiguousOldSids.has(oldSid)){
+            canonicalBySid.set(oldSid,canonical);
+          }
+        }
+        item.stu.sid=canonical;
+      });
+    });
+
+    const alignedSidFor=entry=>{
+      const identityKey=identityKeyFor(entry);
+      const byIdentity=canonicalByIdentity.get(identityKey);
+      if(byIdentity) return byIdentity;
+      const oldSid=String(entry?.sid||'');
+      return canonicalBySid.get(oldSid)||oldSid;
+    };
+    const alignReservationIds=map=>{
+      Object.values(map||{}).forEach(entry=>{
+        if(!entry||typeof entry!=='object') return;
+        const canonical=alignedSidFor(entry);
+        if(canonical) entry.sid=canonical;
+        else if(!entry.sid&&window.SCScheduleTime?.studentIdFor){
+          const sid=window.SCScheduleTime.studentIdFor({n:entry.name,a:entry.age,p:entry.p,g:entry.g});
+          if(sid) entry.sid=sid;
+        }
+      });
+      return map;
+    };
+
+    studentKeys.forEach(key=>ctx.set(key,docs.get(key)||[]));
+    ctx.set(STORAGE_KEYS.ENROLL,alignReservationIds(ctx.get(STORAGE_KEYS.ENROLL,{})));
+    ctx.set(STORAGE_KEYS.RETIRE,alignReservationIds(ctx.get(STORAGE_KEYS.RETIRE,{})));
+    const retireHistory=ctx.get(STORAGE_KEYS.RETIRE_HISTORY,[]);
+    (Array.isArray(retireHistory)?retireHistory:[]).forEach(entry=>{
+      const canonical=alignedSidFor(entry);
+      if(canonical) entry.sid=canonical;
+    });
+    ctx.set(STORAGE_KEYS.RETIRE_HISTORY,Array.isArray(retireHistory)?retireHistory:[]);
+    ctx.set(STORAGE_KEYS.STUDENT_ID_VERSION,targetVersion);
     return true;
-  }, {skipAudit:true,skipUndo:true,label:'원생 고유 ID 초기화'});
+  }, {skipAudit:true,skipUndo:true,skipDeleteSafety:true,label:'정규·방특 원생 ID 연결'});
   return true;
 }
 function saveStudents(){
@@ -3443,6 +3622,7 @@ function _applyStoredValue(key,val){
   else if(key===STORAGE_KEYS.RESERVE) RESERVE_MAP=val||{};
   else if(key===STORAGE_KEYS.休원) HYUWON_MAP=val||{};
   else if(key===STORAGE_KEYS.REQUESTS) REQUESTS=val||{};
+  else if(key===STORAGE_KEYS.RETIRE_HISTORY) RETIRE_HISTORY=Array.isArray(val)?val:[];
   else if(key===STORAGE_KEYS.TEACHERS && typeof TEACHERS!=='undefined'){
     TEACHERS=Array.isArray(val)?val:[];
     if(typeof updateTeacherStyles==='function') updateTeacherStyles();
@@ -3673,6 +3853,8 @@ function reloadGlobalData(){
   // reloadGlobalData 중 구형 배열만 다시 읽으면 새 증분 기록이 사라지므로 현재 병합본을 유지한다.
   DESK_NOTES=loadJSON(STORAGE_KEYS.DESK_NOTES, []);
   if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
+  RETIRE_HISTORY=loadJSON(STORAGE_KEYS.RETIRE_HISTORY, []);
+  if(!Array.isArray(RETIRE_HISTORY)) RETIRE_HISTORY=[];
   // 현재 활성 탭이 삭제됐으면 첫 탭으로
   if(!_tabList.find(t=>t.id===_activeTab)){
     _activeTab=typeof _mainTabId==='function'?_mainTabId(_tabList):_tabList[0].id;

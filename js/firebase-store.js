@@ -108,6 +108,25 @@
     if(isString) return text;
     try{return JSON.parse(text);}catch(e){return null;}
   }
+  function timestampVersion(value){
+    if(!value) return '';
+    const seconds = value.seconds !== undefined ? value.seconds : value._seconds;
+    const nanoseconds = value.nanoseconds !== undefined ? value.nanoseconds : value._nanoseconds;
+    if(seconds !== undefined){
+      return String(seconds) + ':' + String(nanoseconds || 0);
+    }
+    if(typeof value.toMillis === 'function'){
+      try{return 'ms:' + String(value.toMillis());}catch(e){}
+    }
+    return '';
+  }
+  function storedItemVersion(item){
+    if(!item) return '';
+    const updatedAt = timestampVersion(item.updatedAt);
+    if(updatedAt) return 'ts:' + updatedAt;
+    if(item.chunked) return '';
+    try{return 'legacy:' + JSON.stringify(item.value);}catch(e){return '';}
+  }
 
   function StoreSnapshot(key, value){
     this.key = key || null;
@@ -133,6 +152,8 @@
     };
     this.firestoreUnsubscribe = null;
     this.firestoreInitialized = false;
+    this.firestoreVersions = new Map();
+    this.firestoreListenerQueue = Promise.resolve();
   }
 
   FirestoreKVRoot.prototype._doc = function(key){
@@ -167,15 +188,18 @@
     const source=opts.includeDeferred?this.col:this.liveCol;
     return source.get().then(qs=>{
       const reads = [];
+      const versions = new Map();
       qs.forEach(doc=>{
         const item = doc.data() || {};
         const key = item.key || decodeKey(doc.id);
         if(!opts.includeDeferred && deferredRootKey(key)) return;
+        versions.set(key, storedItemVersion(item));
         reads.push(this._readStoredValue(key, item).then(value=>({key,value})));
       });
       return Promise.all(reads).then(items=>{
         const data = {};
         items.forEach(item=>{ data[item.key] = item.value; });
+        if(!opts.includeDeferred) this.firestoreVersions = versions;
         return data;
       });
     });
@@ -585,24 +609,61 @@
   FirestoreKVRoot.prototype._ensureFirestoreListener = function(){
     if(this.firestoreUnsubscribe) return;
     this.firestoreInitialized = false;
+    this.firestoreListenerQueue = Promise.resolve();
     this.firestoreUnsubscribe = this.liveCol.onSnapshot(qs=>{
-      if(!this.firestoreInitialized){
-        this.firestoreInitialized = true;
-        return;
-      }
-      qs.docChanges().forEach(change=>{
-        const item = change.doc.data() || {};
-        const key = item.key || decodeKey(change.doc.id);
-        if(deferredRootKey(key)) return;
-        if(change.type === 'removed'){
-          this._emitFirestore('child_removed', new StoreSnapshot(key, null));
-          return;
+      const initialSnapshot = !this.firestoreInitialized;
+      this.firestoreInitialized = true;
+      this.firestoreListenerQueue = this.firestoreListenerQueue.then(()=>{
+        const knownBefore = initialSnapshot ? new Map(this.firestoreVersions) : null;
+        const currentKeys = new Set();
+        if(initialSnapshot){
+          qs.forEach(doc=>{
+            const item = doc.data() || {};
+            const key = item.key || decodeKey(doc.id);
+            if(!deferredRootKey(key)) currentKeys.add(key);
+          });
         }
-        this._readStoredValue(key, item).then(value=>{
-          this._emitFirestore('child_changed', new StoreSnapshot(key, value));
-        }).catch(error=>{
-          console.warn('[SCFirebaseStore] Firestore listener value read failed:', key, error);
+        const reads=qs.docChanges().map(change=>{
+          const item = change.doc.data() || {};
+          const key = item.key || decodeKey(change.doc.id);
+          if(deferredRootKey(key)) return Promise.resolve(null);
+          if(change.type === 'removed'){
+            this.firestoreVersions.delete(key);
+            return Promise.resolve({event:'child_removed',snapshot:new StoreSnapshot(key,null)});
+          }
+          const version = storedItemVersion(item);
+          const previousVersion = knownBefore && knownBefore.get(key);
+          if(initialSnapshot && previousVersion && version && previousVersion === version){
+            this.firestoreVersions.set(key, version);
+            return Promise.resolve(null);
+          }
+          return this._readStoredValue(key,item).then(value=>{
+            this.firestoreVersions.set(key, version);
+            return {event:'child_changed',snapshot:new StoreSnapshot(key,value)};
+          }).catch(error=>{
+            console.warn('[SCFirebaseStore] Firestore listener value read failed:',key,error);
+            return null;
+          });
         });
+        if(initialSnapshot){
+          knownBefore.forEach((version,key)=>{
+            if(currentKeys.has(key)) return;
+            this.firestoreVersions.delete(key);
+            reads.push(Promise.resolve({
+              event:'child_removed',
+              snapshot:new StoreSnapshot(key,null),
+            }));
+          });
+        }
+        // 한 Firestore 커밋에서 바뀐 문서를 모두 읽은 뒤 함께 전달한다.
+        // 학생 문서와 등록/제외 문서가 서로 다른 시점의 화면으로 섞이는 것을 막는다.
+        return Promise.all(reads).then(events=>{
+          events.filter(Boolean).forEach(event=>{
+            this._emitFirestore(event.event,event.snapshot);
+          });
+        });
+      }).catch(error=>{
+        console.warn('[SCFirebaseStore] Firestore listener batch failed:',error);
       });
     }, error=>{
       this.firestoreUnsubscribe = null;

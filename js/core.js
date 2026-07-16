@@ -319,7 +319,7 @@ const STORAGE_KEYS = {
   RESTORE_INDEX: 'zz_swim_restore_index', // 증분 복원점 인덱스 (본문은 개별 키에 저장)
   STUDENT_DELETE_INDEX: 'zz_swim_student_delete_index', // 원생 삭제 안전기록 인덱스
   AGE_YEAR: 'swim_age_year',     // 학생 나이 자동 증가 마지막 반영 연도
-  STUDENT_ID_VERSION: 'swim_student_id_version', // 원생 고유 ID 마이그레이션 버전
+  STUDENT_ID_VERSION: 'swim_student_id_version', // 정규·방특 공통 원생 ID 마이그레이션 버전
   VERSION:  'swim_ver',
 };
 
@@ -439,6 +439,104 @@ function saveJSON(key, val, skipUndo){
   }
 }
 
+const DATA_SYNC_DIAGNOSTIC_KEY='sc_data_sync_diagnostics';
+const _dataSyncDiagnostics=(()=>{
+  try{
+    const saved=JSON.parse(sessionStorage.getItem(DATA_SYNC_DIAGNOSTIC_KEY)||'[]');
+    return Array.isArray(saved)?saved.slice(-80):[];
+  }catch(e){return [];}
+})();
+const _remoteSyncKeys=new Set();
+let _remoteSyncTimer=null;
+let _remoteSyncBeforeCount=0;
+let _firebaseDataListenersAttached=false;
+
+function _activeStudentCount(){
+  return Array.isArray(STUDENTS)?STUDENTS.length:0;
+}
+function _recordDataSyncDiagnostic(kind,keys,beforeCount,afterCount){
+  const cfg=typeof getTabConfig==='function'?getTabConfig():null;
+  _dataSyncDiagnostics.push({
+    at:new Date().toISOString(),
+    kind:String(kind||'sync'),
+    branch:typeof getBranchInfo==='function'?(getBranchInfo()?.id||''):'',
+    tab:typeof _activeTab!=='undefined'?String(_activeTab||''):'',
+    studentKey:cfg?.stuKey||'',
+    keys:(keys||[]).slice(0,30),
+    before:Number(beforeCount||0),
+    after:Number(afterCount||0),
+    slotConflicts:Array.isArray(window.SC_STUDENT_SLOT_CONFLICTS)?window.SC_STUDENT_SLOT_CONFLICTS.length:0,
+  });
+  while(_dataSyncDiagnostics.length>80) _dataSyncDiagnostics.shift();
+  try{sessionStorage.setItem(DATA_SYNC_DIAGNOSTIC_KEY,JSON.stringify(_dataSyncDiagnostics));}catch(e){}
+}
+window.SCDataDiagnostics={
+  recent(limit){
+    const size=Math.max(1,Math.min(80,Number(limit||20)||20));
+    return _dataSyncDiagnostics.slice(-size);
+  },
+  clear(){
+    _dataSyncDiagnostics.length=0;
+    try{sessionStorage.removeItem(DATA_SYNC_DIAGNOSTIC_KEY);}catch(e){}
+  },
+};
+
+function _flushRemoteScheduleRefresh(){
+  _remoteSyncTimer=null;
+  const keys=[..._remoteSyncKeys];
+  _remoteSyncKeys.clear();
+  const beforeCount=_remoteSyncBeforeCount;
+  if(!keys.length) return;
+  if(typeof _popupOpen==='function'&&_popupOpen()){
+    _pendingSync=true;
+    _recordDataSyncDiagnostic('deferred-popup',keys,beforeCount,_activeStudentCount());
+    return;
+  }
+  if(typeof isSnapshotTab==='function'&&isSnapshotTab()){
+    const snapshotKey='swim_snap_'+String(_activeTab||'');
+    if(keys.includes(snapshotKey)&&typeof switchTabView==='function') switchTabView();
+    _recordDataSyncDiagnostic('snapshot',keys,beforeCount,_activeStudentCount());
+    return;
+  }
+  reloadGlobalData();
+  loadTabData();
+  reloadBadgeMaps();
+  buildTable();
+  _recordDataSyncDiagnostic('remote-batch',keys,beforeCount,_activeStudentCount());
+}
+function _queueRemoteScheduleRefresh(key){
+  if(!_remoteSyncKeys.size) _remoteSyncBeforeCount=_activeStudentCount();
+  _remoteSyncKeys.add(String(key||''));
+  if(_remoteSyncTimer) clearTimeout(_remoteSyncTimer);
+  _remoteSyncTimer=setTimeout(_flushRemoteScheduleRefresh,60);
+}
+function _attachFirebaseDataListeners(){
+  if(_firebaseDataListenersAttached||!_fbReady||!_fb) return;
+  _firebaseDataListenersAttached=true;
+  _fb.on('child_changed',(snap)=>{
+    if(_isDeferredStorageKey(snap.key)) return;
+    const newVal=snap.val();
+    const asStr=typeof newVal==='string'?newVal:JSON.stringify(newVal);
+    const q=_localWriteQueue[snap.key];
+    if(q&&q.length&&q[0]===asStr){
+      q.shift();
+      if(!q.length) delete _localWriteQueue[snap.key];
+      return;
+    }
+    if(_dbCache[snap.key]===asStr) return;
+    _dbCache[snap.key]=asStr;
+    try{localStorage.setItem(_lsKey(snap.key),asStr);}catch(e){}
+    _queueRemoteScheduleRefresh(snap.key);
+  });
+  _fb.on('child_removed',(snap)=>{
+    if(_isDeferredStorageKey(snap.key)) return;
+    const existed=Object.prototype.hasOwnProperty.call(_dbCache,snap.key)||dbGet(snap.key)!==null;
+    delete _dbCache[snap.key];
+    try{localStorage.removeItem(_lsKey(snap.key));}catch(e){}
+    if(existed) _queueRemoteScheduleRefresh(snap.key);
+  });
+}
+
 function loadFromFirebase(callback){
   if(_selectedBranch && !_fbReady) initFirebaseStore();
   // 콜백 래퍼: 서버 로드 성공 여부와 별도로 렌더는 진행하되, 실패 시 저장은 읽기 전용으로 막는다.
@@ -476,41 +574,7 @@ function loadFromFirebase(callback){
     _firebaseUsingLocalFallback=true;
     toast('Firebase 데이터 로드 실패 — 로컬 데이터는 읽기 전용입니다','err');
     wrappedCallback();
-  });
-  _fb.on('child_changed',(snap)=>{
-    if(_isDeferredStorageKey(snap.key)) return;
-    const newVal=snap.val();
-    // [FIX] setItem은 비-문자열을 강제 변환하므로 방어적 직렬화
-    const asStr=typeof newVal==='string'?newVal:JSON.stringify(newVal);
-    _dbCache[snap.key]=asStr;
-    try{localStorage.setItem(_lsKey(snap.key),asStr);}catch(e){}
-    // [FIX] 자기 echo면 캐시만 갱신하고 재렌더 스킵 (불필요한 buildTable + 진행중 변경 덮어쓰기 방지)
-    const q=_localWriteQueue[snap.key];
-    if(q&&q.length&&q[0]===asStr){
-      q.shift();
-      if(!q.length) delete _localWriteQueue[snap.key];
-      return;
-    }
-    // [스냅샷] 활성 스냅샷이 외부에서 변경됐으면 다시 swap (예: 같은 스냅샷을 다른 디바이스에서 갱신)
-    if(typeof isSnapshotTab==='function' && isSnapshotTab()
-       && snap.key === 'swim_snap_'+_activeTab){
-      if(_popupOpen()){ _pendingSync=true; return; }
-      switchTabView();
-      return;
-    }
-    // 팝업 열려있으면 보류
-    if(_popupOpen()){ _pendingSync=true; return; }
-    reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();
-  });
-  _fb.on('child_removed',(snap)=>{
-    if(_isDeferredStorageKey(snap.key)) return;
-    delete _dbCache[snap.key];
-    // [FIX] localStorage도 같이 정리 (이전엔 새로고침 시 좀비 데이터 부활)
-    try{localStorage.removeItem(_lsKey(snap.key));}catch(e){}
-    // [FIX] 다른 디바이스의 삭제도 화면에 반영 (이전엔 stale UI)
-    if(_popupOpen()){ _pendingSync=true; return; }
-    reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();
-  });
+  }).finally(_attachFirebaseDataListeners);
 }
 
 /* ════════════════════════════════════════════════════════════════

@@ -133,6 +133,7 @@
   }
   function studentSlotKey(stu){
     if(!stu||typeof stu!=='object') return '';
+    if(stu.__identitySlotKey) return String(stu.__identitySlotKey);
     return [stu.t||'',normalizeDayText(stu.d),stu.l||'',stu.r||''].join('/');
   }
   function findStudentIdentityGroups(list,target,opts){

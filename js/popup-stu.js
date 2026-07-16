@@ -1051,7 +1051,13 @@ function _replacementIdentitySignature(name,phone){
   return normalName+'|'+normPhone(phone||'');
 }
 function _replacementIdentityRows(students,enrollMap){
-  const rows=Array.isArray(students)?students.slice():[];
+  const activeTabId=String(_activeTab||'regular');
+  const rows=typeof getLiveStudentIdentityRows==='function'
+    ? getLiveStudentIdentityRows({activeTabId,activeStudents:Array.isArray(students)?students:[]})
+    : (Array.isArray(students)?students:[]).map(stu=>Object.assign({},stu,{
+      __tabId:activeTabId,
+      __identitySlotKey:activeTabId+'::'+[stu.t,stu.d,stu.l,stu.r].join('/'),
+    }));
   Object.entries(enrollMap&&typeof enrollMap==='object'?enrollMap:{}).forEach(([slotKey,entry])=>{
     if(!entry||!entry.name) return;
     const parts=String(slotKey||'').split('/');
@@ -1059,7 +1065,10 @@ function _replacementIdentityRows(students,enrollMap){
     rows.push({
       sid:entry.sid||'',n:entry.name,a:entry.age||null,p:entry.p||'',
       t:parts[0],d:parts[1],l:parseInt(parts[2],10),r:parseInt(parts[3],10),
-      __pendingEnroll:true,
+      __pendingEnroll:true,__tabId:activeTabId,
+      __tabName:(typeof _tabById==='function'&&_tabById(activeTabId)?.name)||'',
+      __tabType:(typeof _tabById==='function'&&_tabById(activeTabId)?.type)||'regular',
+      __identitySlotKey:activeTabId+'::'+slotKey,
     });
   });
   return rows;
@@ -1068,7 +1077,7 @@ function _replacementIdentityAnalysis(name,phone,oldStu,groupSlots,students,sele
   if(window.SCScheduleTime&&typeof window.SCScheduleTime.analyzeStudentIdentity==='function'){
     return window.SCScheduleTime.analyzeStudentIdentity(_replacementIdentityRows(students,enrollMap),{n:name,p:phone},{
       oldStudent:oldStu,
-      excludeSlotKeys:(groupSlots||[]).map(slot=>slot.slotKey),
+      excludeSlotKeys:(groupSlots||[]).map(slot=>String(_activeTab||'regular')+'::'+slot.slotKey),
       selectedSid:selectedSid||'',
     });
   }
@@ -1083,8 +1092,9 @@ function _replacementPositionLabel(stu){
   if(!stu) return '';
   const time=_moveDisplayTime(stu.d,stu.t);
   const inst=typeof getInst==='function'?getInst(stu.t,stu.d,stu.l):null;
-  const teacher=inst&&typeof instDisplay==='function'?instDisplay(inst):'';
-  return `${stu.d||''} ${time||''}${teacher?' · '+teacher:''}${stu.__pendingEnroll?' · 등록 예정':''}`.trim();
+  const teacher=stu.__teacher||(inst&&typeof instDisplay==='function'?instDisplay(inst):'');
+  const tabName=stu.__tabName||'';
+  return `${tabName?tabName+' · ':''}${stu.d||''} ${time||''}${teacher?' · '+teacher:''}${stu.__pendingEnroll?' · 등록 예정':''}`.trim();
 }
 function _replacementGroupPositionText(group){
   const labels=[];
@@ -1491,6 +1501,13 @@ async function handleSave(e, ctx){
     : '';
   let resolvedReplacementSid=requestedLinkedSid||freshReplacementSid;
   let replacementWasLinked=!!requestedLinkedSid;
+  let sharedNewStudentSid='';
+  if(!replaceMode&&!oldStu&&typeof findSharedStudentIdentity==='function'){
+    sharedNewStudentSid=findSharedStudentIdentity(name,phone,{
+      activeTabId:_activeTab,
+      activeStudents:STUDENTS,
+    }).sid||'';
+  }
   const mutateStudents=(students,abort)=>{
     const intended={n:name,a:age,p:phone};
     const removeIndexes=[];
@@ -1527,7 +1544,7 @@ async function handleSave(e, ctx){
         name,
         age,
         phone,
-        sid:replaceMode?(resolvedReplacementSid||null):(oldStu?.sid||null),
+        sid:replaceMode?(resolvedReplacementSid||null):(oldStu?.sid||sharedNewStudentSid||null),
         vehicle,
         gender,
         paid,
@@ -2206,6 +2223,10 @@ async function _commitEnroll(slotKey, form){
     p:form.phone,
   }));
   if(convertedFromStudent&&currentStu?.sid) form.sid=currentStu.sid;
+  if(!form.sid&&typeof findSharedStudentIdentity==='function'){
+    const shared=findSharedStudentIdentity(form.name,form.phone,{activeTabId:_activeTab,activeStudents:STUDENTS});
+    if(shared.sid) form.sid=shared.sid;
+  }
   if(!form.sid&&window.SCScheduleTime&&typeof window.SCScheduleTime.studentIdFor==='function'){
     form.sid=window.SCScheduleTime.studentIdFor({n:form.name,a:form.age,p:form.phone,g:form.gender});
   }
