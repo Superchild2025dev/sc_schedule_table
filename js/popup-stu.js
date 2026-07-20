@@ -1190,6 +1190,7 @@ function _studentFromFormForSlot(form,t,day,lane,row,ds){
   if(form.loc) obj.loc=form.loc;
   if(form.memo) obj.memo=form.memo;
   if(form.btNew) obj.btNew=true;
+  if(form.layoutAdded) obj.layoutAdded=form.layoutAdded;
   if(form.isNew) obj.isNew=form.isNew;
   if(form.reenroll) obj.reenroll=form.reenroll;
   if(ds) obj.enrolled=ds;
@@ -1551,6 +1552,7 @@ async function handleSave(e, ctx){
         loc,
         memo,
         btNew:isBt&&isNewCheck?true:null,
+        layoutAdded:!replaceMode&&oldStu?.layoutAdded?oldStu.layoutAdded:null,
         isNew:!isBt&&isNewCheck?(oldStu&&oldStu.isNew?oldStu.isNew:SCHEDULE_PERIODS[getCurrentPeriod()].month):null,
       };
       groupSlots.forEach(slot=>{

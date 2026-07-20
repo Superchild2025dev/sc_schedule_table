@@ -17,6 +17,11 @@ function _tableLocUsesVehicle(loc){
     return !!val && !/^(자가|도보)/.test(val);
   });
 }
+function _layoutStudentName(stu){
+  if(!stu) return '';
+  const marker=stu.layoutAdded?'(추가) ':'';
+  return marker+String(stu.n||stu.name||'');
+}
 let _attendanceMode=false;
 let _attendanceDate=null;  // YYYY-MM-DD
 let _attEditMode=false;     // true면 셀 클릭 시 출석체크 대신 편집
@@ -315,7 +320,7 @@ function _bangteukClassActive(slotKey,basisDs){
 }
 function _attDisplayName(item,slotKey,ds){
   if(!item) return '';
-  const name=String(item.n||item.name||'');
+  const name=_layoutStudentName(item);
   const age=item.a||item.age||'';
   const isBt=_isBangteukSlotKey(slotKey);
   if(item.type&&item.type!=='regular') return name+age;
@@ -2032,7 +2037,7 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       } else if(stu){
         const prefix=namePrefix[slotKey]||'';
         const hideAgeForReservation=retireInline||enrollInline;
-        let display=(prefix?prefix+'.':'')+stu.n+(hideAgeForReservation?'':(stu.a||''));
+        let display=(prefix?prefix+'.':'')+_layoutStudentName(stu)+(hideAgeForReservation?'':(stu.a||''));
         if(retireInline) display+=' ~'+_dl(retDs)+_retireReservationSuffix(retEntry,slotKey,stu);
         let html=`<span class="stu-name-text${btInfoVisible&&(stu.btNew||stu.isNew)?' stu-bt-new-text':''}">${esc(display)}</span>`;
         if(enrollInline) html+=` <span class="stu-enroll-inline${enrEntry.isNew?' stu-enroll-inline-new':''}">${esc(_dl(enrEntry.ds)+'부터~')}</span>`;
@@ -2404,7 +2409,7 @@ function _mobileBadgeLabel(badges){
 }
 function _mobileStudentText(stu){
   if(!stu) return '';
-  return `${stu.n||''}${stu.a||''}`.trim();
+  return `${_layoutStudentName(stu)}${stu.a||''}`.trim();
 }
 function _mobileStudentType(stu,enroll,badges,todayStr){
     if(stu){
@@ -3308,7 +3313,7 @@ function _excelStudentDisplayForSlot(slotKey){
   if(p.length<4) return '';
   const [t,day,l,r]=p;
   const stu=(typeof getStu==='function')?getStu(t,day,l,r):null;
-  if(stu) return String(stu.n||'')+String(stu.a||'');
+  if(stu) return _layoutStudentName(stu)+String(stu.a||'');
   const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
   if(enr) return String(enr.name||enr.n||'')+String(enr.age||enr.a||'');
   return '';

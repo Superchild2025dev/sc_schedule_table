@@ -9,6 +9,10 @@
   const ENROLL_KEY='swim_enroll';
   const RETIRE_KEY='swim_retire';
   const DISABLED_KEY='swim_disabled';
+  const MARK_KEY='swim_mark';
+  const HYUWON_KEY='swim_hyuwon';
+  const MOVE_KEY='swim_move';
+  const REQUESTS_KEY='swim_requests';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
   const REG_BASE={
     days:['월','화','수','목','금','토'],
@@ -71,6 +75,7 @@
   let settingsLoadFailedByBranch={};
   let studentDirectoryByBranch={};
   let studentDirectoryLoadingByBranch={};
+  let summerLayoutState=null;
 
   function $(id){return document.getElementById(id);}
   function clone(obj){return JSON.parse(JSON.stringify(obj));}
@@ -955,6 +960,326 @@
     setTimeout(()=>URL.revokeObjectURL(url),1000);
     return blob.size;
   }
+  function summerLayoutStatus(message,type){
+    const el=$('summer-layout-status');
+    if(!el) return;
+    el.hidden=activeBranch!=='yongam';
+    el.textContent=message;
+    el.className='backup-status '+(type||'');
+  }
+  function updateSummerLayoutPanel(){
+    const visible=activeBranch==='yongam'&&!!window.SCSummerLayout2026;
+    const card=$('summer-layout-import');
+    const status=$('summer-layout-status');
+    if(card) card.hidden=!visible;
+    if(status) status.hidden=!visible;
+    const apply=$('summer-layout-apply');
+    if(apply) apply.disabled=!visible||!summerLayoutState||!['source','marker'].includes(summerLayoutState.mode);
+  }
+  function summerCellToSlot(cell){
+    const match=String(cell||'').match(/^([C-GJ-N])(\d{1,2})$/);
+    if(!match) return null;
+    const col=match[1].charCodeAt(0);
+    const row=parseInt(match[2],10);
+    const left=col>=67&&col<=71;
+    const right=col>=74&&col<=78;
+    if(!left&&!right) return null;
+    let t='',r=0;
+    if(row>=4&&row<=9){t='9시';r=row-3;}
+    else if(row>=11&&row<=16){t='10시';r=row-10;}
+    else if(row>=18&&row<=23){t='11시';r=row-17;}
+    else return null;
+    const d=left?'월수금':'화목';
+    const l=left?col-66:col-73;
+    return {t,d,l,r,slotKey:[t,d,l,r].join('/')};
+  }
+  function summerStudentCell(stu){
+    if(!stu) return '';
+    const day=String(stu.d||'');
+    const lane=parseInt(stu.l,10);
+    const row=parseInt(stu.r,10);
+    if(!['월수금','화목'].includes(day)||lane<1||lane>5||row<1||row>6) return '';
+    const bases={'9시':3,'10시':10,'11시':17};
+    const base=bases[String(stu.t||'')];
+    if(!base) return '';
+    const col=String.fromCharCode((day==='월수금'?66:73)+lane);
+    return col+String(base+row);
+  }
+  function summerStudentToken(stu){
+    if(!stu) return '';
+    return String(stu.n||'').trim()+String(stu.a||'').trim();
+  }
+  function summerLayoutIndex(students){
+    const byCell=new Map();
+    const invalid=[];
+    const duplicate=[];
+    (Array.isArray(students)?students:[]).forEach(stu=>{
+      const cell=summerStudentCell(stu);
+      if(!cell){invalid.push(stu);return;}
+      if(byCell.has(cell)){duplicate.push(cell);return;}
+      byCell.set(cell,stu);
+    });
+    return {byCell,invalid,duplicate};
+  }
+  function summerLayoutCanonical(index,useTargets){
+    const manifest=window.SCSummerLayout2026;
+    return manifest.moves.map(pair=>{
+      const cell=useTargets?pair[1]:pair[0];
+      return cell+'='+summerStudentToken(index.byCell.get(cell));
+    }).join('|');
+  }
+  async function sha256Text(text){
+    if(!window.crypto?.subtle) throw new Error('배치 검증을 지원하지 않는 브라우저입니다');
+    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+    return [...new Uint8Array(bytes)].map(v=>v.toString(16).padStart(2,'0')).join('');
+  }
+  function summerMoveMap(){
+    return new Map((window.SCSummerLayout2026?.moves||[]).map(([from,to])=>[
+      summerCellToSlot(from)?.slotKey,
+      summerCellToSlot(to)?.slotKey,
+    ]).filter(pair=>pair[0]&&pair[1]));
+  }
+  function remapSummerString(value,moves){
+    if(typeof value!=='string') return value;
+    const parts=value.split('/');
+    if(parts.length<4) return value;
+    const source=parts.slice(0,4).join('/');
+    const target=moves.get(source);
+    if(!target) return value;
+    return target+(parts.length>4?'/'+parts.slice(4).join('/'):'');
+  }
+  function remapSummerValue(value,moves){
+    if(typeof value==='string') return remapSummerString(value,moves);
+    if(Array.isArray(value)) return value.map(item=>remapSummerValue(item,moves));
+    if(!value||typeof value!=='object') return value;
+    const out={};
+    Object.entries(value).forEach(([key,item])=>{
+      out[remapSummerString(key,moves)]=remapSummerValue(item,moves);
+    });
+    const t=out.t||out.time;
+    const d=out.d||out.day;
+    const l=out.l||out.lane;
+    const r=out.r||out.row;
+    const target=moves.get([t,d,l,r].join('/'));
+    if(target){
+      const parts=target.split('/');
+      if(Object.prototype.hasOwnProperty.call(out,'t')) out.t=parts[0];
+      if(Object.prototype.hasOwnProperty.call(out,'time')) out.time=parts[0];
+      if(Object.prototype.hasOwnProperty.call(out,'d')) out.d=parts[1];
+      if(Object.prototype.hasOwnProperty.call(out,'day')) out.day=parts[1];
+      if(Object.prototype.hasOwnProperty.call(out,'l')) out.l=parseInt(parts[2],10);
+      if(Object.prototype.hasOwnProperty.call(out,'lane')) out.lane=parseInt(parts[2],10);
+      if(Object.prototype.hasOwnProperty.call(out,'r')) out.r=parseInt(parts[3],10);
+      if(Object.prototype.hasOwnProperty.call(out,'row')) out.row=parseInt(parts[3],10);
+    }
+    return out;
+  }
+  function summerReferenceCount(value,moves){
+    let count=0;
+    const scan=item=>{
+      if(typeof item==='string'){
+        if(remapSummerString(item,moves)!==item) count++;
+        return;
+      }
+      if(Array.isArray(item)){item.forEach(scan);return;}
+      if(!item||typeof item!=='object') return;
+      const coord=[item.t||item.time,item.d||item.day,item.l||item.lane,item.r||item.row].join('/');
+      if(moves.has(coord)) count++;
+      Object.entries(item).forEach(([key,child])=>{
+        if(remapSummerString(key,moves)!==key) count++;
+        scan(child);
+      });
+    };
+    scan(value);
+    return count;
+  }
+  function summerLinkedKeys(tabId){
+    return [
+      MARK_KEY,RETIRE_KEY,ENROLL_KEY,HYUWON_KEY,DISABLED_KEY,MOVE_KEY,REQUESTS_KEY,
+      'swim_bt_attendance_'+tabId,
+    ];
+  }
+  async function readSummerLayoutBundle(){
+    if(activeBranch!=='yongam') throw new Error('용암점에서만 실행할 수 있습니다');
+    const root=branchRoot('yongam');
+    const tabSnap=await root.child(TAB_LIST_KEY).once('value');
+    const tabs=parseStored(tabSnap.val())||[];
+    const wanted=String(window.SCSummerLayout2026.tabName||'').replace(/\s/g,'');
+    const tab=(Array.isArray(tabs)?tabs:[]).find(item=>
+      item&&item.type==='bangteuk'&&String(item.name||'').replace(/\s/g,'')===wanted
+    );
+    if(!tab) throw new Error('용암점 2026여름방특 탭을 찾지 못했습니다');
+    const stuKey='swim_bt_'+tab.id+'_stu';
+    const keys=[stuKey,...summerLinkedKeys(tab.id)];
+    const snaps=await Promise.all(keys.map(key=>root.child(key).once('value')));
+    const raw={};
+    keys.forEach((key,index)=>{ raw[key]=snaps[index].val(); });
+    const students=parseStored(raw[stuKey])||[];
+    return {root,tab,stuKey,keys,raw,students};
+  }
+  async function analyzeSummerLayout(bundle){
+    const manifest=window.SCSummerLayout2026;
+    const index=summerLayoutIndex(bundle.students);
+    const sourceCanonical=summerLayoutCanonical(index,false);
+    const targetCanonical=summerLayoutCanonical(index,true);
+    const [sourceHash,targetHash]=await Promise.all([
+      sha256Text(sourceCanonical),sha256Text(targetCanonical),
+    ]);
+    let mode='mismatch';
+    if(sourceHash===manifest.sourceHash) mode='source';
+    else if(targetHash===manifest.targetHash) mode='applied';
+    const addedTargets=new Set(manifest.moves
+      .filter(pair=>manifest.addedSources.includes(pair[0]))
+      .map(pair=>pair[1]));
+    const markerCount=[...addedTargets].filter(cell=>
+      index.byCell.get(cell)?.layoutAdded===manifest.marker
+    ).length;
+    if(mode==='applied'&&markerCount<manifest.addedSources.length) mode='marker';
+    const moves=summerMoveMap();
+    const linkedCount=bundle.keys.slice(1).reduce((sum,key)=>
+      sum+summerReferenceCount(parseStored(bundle.raw[key]),moves),0
+    );
+    return Object.assign(bundle,{
+      index,mode,sourceCanonical,targetCanonical,sourceHash,targetHash,
+      markerCount,linkedCount,
+    });
+  }
+  function summerLayoutStatusText(state){
+    const manifest=window.SCSummerLayout2026;
+    const problem=state.index.invalid.length||state.index.duplicate.length||state.students.length!==manifest.expectedStudents;
+    if(problem){
+      return `적용 중단\n원생 ${state.students.length}명 · 배치 밖 ${state.index.invalid.length}명 · 중복 자리 ${state.index.duplicate.length}칸\n현재 시간표가 엑셀 원본과 달라 확인이 필요합니다.`;
+    }
+    if(state.mode==='source'){
+      return `적용 준비 완료\n원생 ${state.students.length}명 · 추가 표시 7명 · 연결 기록 ${state.linkedCount}건\n백업 후 좌표만 변경할 수 있습니다.`;
+    }
+    if(state.mode==='marker'){
+      return `좌표 배치는 이미 반영되어 있습니다.\n(추가) 표시 ${state.markerCount}/7명 · 누락 표시만 보완할 수 있습니다.`;
+    }
+    if(state.mode==='applied'){
+      return `적용 완료 상태입니다.\n원생 ${state.students.length}명 · (추가) 표시 ${state.markerCount}/7명`;
+    }
+    return `적용 중단\n원생 수는 ${state.students.length}명이지만 현재 자리 구성이 7/20 원본 또는 적용 완료 배치와 일치하지 않습니다.\n다른 수정사항을 덮어쓰지 않도록 자동 적용하지 않습니다.`;
+  }
+  async function checkSummerLayout(button){
+    if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','방특 배치 점검')) return;
+    const label=button?.textContent||'';
+    if(button){button.disabled=true;button.textContent='점검 중...';}
+    const apply=$('summer-layout-apply');
+    if(apply) apply.disabled=true;
+    summerLayoutState=null;
+    summerLayoutStatus('현재 용암점 방특 데이터를 확인하는 중입니다...');
+    try{
+      summerLayoutState=await analyzeSummerLayout(await readSummerLayoutBundle());
+      const ok=['source','marker','applied'].includes(summerLayoutState.mode);
+      summerLayoutStatus(summerLayoutStatusText(summerLayoutState),ok?'ok':'err');
+    }catch(e){
+      console.error(e);
+      summerLayoutStatus('점검 실패\n'+(e.message||String(e)),'err');
+      toast('방특 배치 점검 실패','err');
+    }finally{
+      if(button){button.disabled=false;button.textContent=label;}
+      updateSummerLayoutPanel();
+    }
+  }
+  function summerStudentDetails(stu){
+    const copy=clone(stu||{});
+    delete copy.t;delete copy.d;delete copy.l;delete copy.r;delete copy.layoutAdded;
+    return JSON.stringify(copy);
+  }
+  function moveSummerStudents(students,mode){
+    const manifest=window.SCSummerLayout2026;
+    const moveByCell=new Map(manifest.moves);
+    const addedSources=new Set(manifest.addedSources);
+    const addedTargets=new Set(manifest.moves.filter(pair=>addedSources.has(pair[0])).map(pair=>pair[1]));
+    const targets=new Set();
+    const next=(Array.isArray(students)?students:[]).map(stu=>{
+      const sourceCell=summerStudentCell(stu);
+      const targetCell=mode==='source'?moveByCell.get(sourceCell):sourceCell;
+      const target=summerCellToSlot(targetCell);
+      if(!target) throw new Error('변경할 수 없는 방특 자리가 있습니다');
+      if(targets.has(targetCell)) throw new Error('변경 후 자리가 중복됩니다: '+targetCell);
+      targets.add(targetCell);
+      const moved=Object.assign({},stu,{t:target.t,d:target.d,l:target.l,r:target.r});
+      if((mode==='source'&&addedSources.has(sourceCell))||(mode!=='source'&&addedTargets.has(targetCell))){
+        moved.layoutAdded=manifest.marker;
+      }else if(moved.layoutAdded===manifest.marker){
+        delete moved.layoutAdded;
+      }
+      return moved;
+    });
+    if(next.length!==students.length) throw new Error('원생 수가 변경되었습니다');
+    for(let i=0;i<next.length;i++){
+      if(summerStudentDetails(next[i])!==summerStudentDetails(students[i])){
+        throw new Error('좌표 외 원생 상세정보 변경이 감지되었습니다');
+      }
+    }
+    return next;
+  }
+  async function applySummerLayout(button){
+    if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','방특 배치 적용')) return;
+    let state=summerLayoutState;
+    if(!state||!['source','marker'].includes(state.mode)){
+      toast('먼저 상태 점검을 실행해주세요','err');
+      return;
+    }
+    const action=state.mode==='source'?'7/17 배치로 자리를 변경':'(추가) 표시를 보완';
+    if(!confirm(`용암점 2026여름방특을 ${action}할까요?\n적용 직전 데이터는 JSON으로 자동 다운로드됩니다.`)) return;
+    const label=button?.textContent||'';
+    if(button){button.disabled=true;button.textContent='적용 중...';}
+    summerLayoutStatus('적용 직전 백업을 만들고 있습니다...');
+    try{
+      const fresh=await analyzeSummerLayout(await readSummerLayoutBundle());
+      if(fresh.mode!==state.mode){
+        summerLayoutState=fresh;
+        throw new Error(fresh.mode==='applied'?'다른 기기에서 이미 적용되었습니다':'점검 후 시간표가 변경되어 다시 점검이 필요합니다');
+      }
+      state=fresh;
+      summerLayoutState=fresh;
+      const backup={
+        kind:'sc-schedule-layout-backup',version:1,
+        branchId:'yongam',tabId:state.tab.id,tabName:state.tab.name,
+        createdAt:new Date().toISOString(),studentKey:state.stuKey,
+        keys:state.keys,data:state.raw,
+      };
+      downloadJsonFile('yongam-2026-summer-before-layout-'+backupFileStamp()+'.json',backup);
+      const moves=summerMoveMap();
+      let abortReason='';
+      const res=await state.root.transactionKeys(state.keys,root=>{
+        const students=parseStored(root[state.stuKey])||[];
+        const index=summerLayoutIndex(students);
+        const canonical=summerLayoutCanonical(index,state.mode!=='source');
+        const expected=state.mode==='source'?state.sourceCanonical:state.targetCanonical;
+        if(canonical!==expected){
+          abortReason='점검 후 다른 수정이 발생하여 적용을 중단했습니다';
+          return;
+        }
+        const nextStudents=moveSummerStudents(students,state.mode);
+        root[state.stuKey]=JSON.stringify(nextStudents);
+        if(state.mode==='source'){
+          state.keys.slice(1).forEach(key=>{
+            if(root[key]===undefined||root[key]===null) return;
+            const value=parseStored(root[key]);
+            root[key]=JSON.stringify(remapSummerValue(value,moves));
+          });
+        }
+        return root;
+      });
+      if(!res.committed) throw new Error(abortReason||'배치 적용이 취소되었습니다');
+      summerLayoutState=await analyzeSummerLayout(await readSummerLayoutBundle());
+      if(summerLayoutState.mode!=='applied') throw new Error('저장 후 검증이 완료되지 않았습니다');
+      summerLayoutStatus(summerLayoutStatusText(summerLayoutState),'ok');
+      toast('2026 여름방특 배치 적용 완료','ok');
+      studentDirectoryByBranch.yongam=null;
+    }catch(e){
+      console.error(e);
+      summerLayoutStatus('적용 실패\n'+(e.message||String(e)),'err');
+      toast('방특 배치 적용 실패','err');
+    }finally{
+      if(button){button.disabled=false;button.textContent=label;}
+      updateSummerLayoutPanel();
+    }
+  }
   async function runBackup(scope,button){
     if(window.SCAuth && !SCAuth.requirePermission('manageSettings','백업 다운로드')) return;
     const includeHistory=!!$('backup-include-history')?.checked;
@@ -1108,6 +1433,7 @@
       panelEl.classList.toggle('active',panelEl.id==='panel-'+activePanel);
     });
     if(activePanel==='students') loadStudentDirectory(false);
+    if(activePanel==='backup') updateSummerLayoutPanel();
   }
   function setBranch(branchId){
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
@@ -1118,6 +1444,8 @@
       btn.disabled=!canAccessBranch(btn.dataset.branch);
     });
     $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
+    summerLayoutState=null;
+    updateSummerLayoutPanel();
     if(settingsByBranch[activeBranch]&&teacherNamesByBranch[activeBranch]) renderAll();
     else loadBranchBundle(activeBranch);
     if(activePanel==='students') loadStudentDirectory(false);
@@ -1135,6 +1463,7 @@
     renderStudentDirectory();
     renderVariableGuide();
     updateFeedbackBadges();
+    updateSummerLayoutPanel();
     setPermissionStates();
   }
   function setValue(id,value){
@@ -2164,6 +2493,8 @@ th{background:#D9EAD3;font-weight:700}
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
+    $('summer-layout-check')?.addEventListener('click',e=>checkSummerLayout(e.currentTarget));
+    $('summer-layout-apply')?.addEventListener('click',e=>applySummerLayout(e.currentTarget));
     $('students-refresh')?.addEventListener('click',()=>loadStudentDirectory(true));
     $('students-excel')?.addEventListener('click',downloadStudentDirectoryExcel);
     $('students-search')?.addEventListener('input',renderStudentDirectory);

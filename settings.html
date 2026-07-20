@@ -22,8 +22,10 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/summer-layout-2026.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script>scCss('auth.css')</script>
 <script>scCss('settings.css')</script>
@@ -217,6 +219,21 @@
           <input type="checkbox" id="backup-include-history" checked>
           <span>기록관리/복원점 포함</span>
         </label>
+      </div>
+
+      <div class="backup-card layout-import-card" id="summer-layout-import" hidden>
+        <div>
+          <h2>2026 여름방특 배치 반영</h2>
+          <p>7/17 배치로 자리만 변경합니다. 원생 ID, 전화번호, 차량, 메모, 결제 정보는 유지되고 7/20 추가 원생 7명은 화면에 (추가)로 표시됩니다.</p>
+        </div>
+        <div class="layout-import-actions">
+          <button type="button" class="ghost-btn" id="summer-layout-check">상태 점검</button>
+          <button type="button" class="primary-btn" id="summer-layout-apply" disabled>백업 후 적용</button>
+        </div>
+      </div>
+
+      <div class="backup-status" id="summer-layout-status" hidden>
+        먼저 상태 점검을 실행해주세요.
       </div>
 
       <div class="backup-status" id="backup-status">
