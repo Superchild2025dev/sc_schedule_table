@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+staged_hash="$(git diff --cached --binary | git hash-object --stdin | cut -c1-8)"
+version="$(date -u +%Y%m%dT%H%M%SZ)-${staged_hash}"
+
+if [ "${SC_VERSION_HOOK_DRY_RUN:-}" = "1" ]; then
+  printf 'version hook ready: %s\n' "$version"
+  exit 0
+fi
+
+printf '{"version":"%s"}\n' "$version" > version.json
+printf "(function(){\n  'use strict';\n  window.SC_BUILD_VERSION='%s';\n})();\n" "$version" > js/version.js
+
+git add version.json js/version.js
