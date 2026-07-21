@@ -481,6 +481,20 @@ body.is-snapshot .snap-banner{display:block}
 .sp-replace-candidate em{flex:none;color:#92400E;font-size:8px;font-style:normal;font-weight:900;white-space:nowrap}
 .sp-replace-candidate.selected{border-color:#10B981;background:#ECFDF5;color:#065F46}
 .sp-replace-candidate.selected em{color:#047857}
+.sp-bogang-type-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:0 0 5px}
+.sp-bogang-type{display:flex;align-items:center;justify-content:center;gap:4px;min-height:30px;padding:4px 6px;border:1.5px solid #D1D5DB;border-radius:6px;background:#fff;font-size:10px;font-weight:800;cursor:pointer}
+.sp-bogang-type input{width:15px;height:15px;margin:0;accent-color:#2563EB}
+.sp-bogang-type.regular{color:#1D4ED8;background:#EFF6FF;border-color:#93C5FD}
+.sp-bogang-type.bangteuk{color:#047857;background:#ECFDF5;border-color:#6EE7B7}
+.sp-bogang-type.bangteuk input{accent-color:#059669}
+.sp-bogang-candidate{width:100%;display:flex;justify-content:space-between;gap:6px;align-items:center;padding:6px;border:0;border-bottom:1px solid #E5E7EB;cursor:pointer;text-align:left;font-family:inherit}
+.sp-bogang-candidate.source-regular{background:#EFF6FF;color:#1E3A8A}
+.sp-bogang-candidate.source-bangteuk{background:#ECFDF5;color:#065F46}
+.sp-bogang-candidate:hover{filter:brightness(.97)}
+.sp-bogang-candidate-name{display:flex;align-items:center;min-width:0;font-size:11px;font-weight:800;color:#111}
+.sp-bogang-candidate-name b{flex:none;margin-right:4px;padding:1px 4px;border-radius:3px;background:#2563EB;color:#fff;font-size:9px}
+.sp-bogang-candidate.source-bangteuk .sp-bogang-candidate-name b{background:#059669}
+.sp-bogang-candidate-slot{overflow:hidden;color:#4B5563;font-size:10px;white-space:nowrap;text-overflow:ellipsis}
 .sp-identity-warning{margin-top:6px;padding:8px;border:1.5px solid #F59E0B;border-radius:7px;background:#FFFBEB;display:flex;flex-direction:column;gap:4px}
 .sp-identity-warning>b{font-size:11px;font-weight:900;color:#92400E}
 .sp-identity-warning>span{font-size:9px;font-weight:700;line-height:1.4;color:#78350F}

@@ -320,7 +320,9 @@ function _bangteukClassActive(slotKey,basisDs){
 }
 function _attDisplayName(item,slotKey,ds){
   if(!item) return '';
-  const name=_layoutStudentName(item);
+  const name=item.type==='bogang'&&typeof bogangDisplayName==='function'
+    ? bogangDisplayName(item)
+    : _layoutStudentName(item);
   const age=item.a||item.age||'';
   const isBt=_isBangteukSlotKey(slotKey);
   if(item.type&&item.type!=='regular') return name+age;
@@ -1763,15 +1765,15 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
           if(_mark.type==='absent'){
             if(_attPrimary) _attPrimary.absent=true;
             if(_mark.sub){
-              _attSub={type:_mark.sub.type, n:_mark.sub.n, a:_mark.sub.a};
+              _attSub={type:_mark.sub.type, n:_mark.sub.n, a:_mark.sub.a,studentScheduleType:_mark.sub.studentScheduleType};
             }
           } else if(_mark.type==='bogang'||_mark.type==='sample'){
             if(_attPrimary){
               // 원생이 있으면 보강/샘플은 sub로 추가 표시
-              _attSub={type:_mark.type, n:_mark.n, a:_mark.a};
+              _attSub={type:_mark.type, n:_mark.n, a:_mark.a,studentScheduleType:_mark.studentScheduleType};
             } else {
               // 원생 없으면 보강/샘플을 primary로
-              _attPrimary={type:_mark.type, n:_mark.n, a:_mark.a};
+              _attPrimary={type:_mark.type, n:_mark.n, a:_mark.a,studentScheduleType:_mark.studentScheduleType};
             }
           }
         }
@@ -1921,14 +1923,14 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
           const text=typeof absentMarkBadgeText==='function'?absentMarkBadgeText(mark,dl):dl;
           badges.push({type:isAbsentRequest?'pending-absent':'absent', ds:d.ds, text, tip:label+' '+dl});
           if(mark.sub){
-            const nm=mark.sub.n||'';
+            const nm=typeof bogangDisplayName==='function'&&mark.sub.type==='bogang'?bogangDisplayName(mark.sub):(mark.sub.n||'');
             let stip=(mark.sub.type==='bogang'?'보강 ':'샘플 ')+nm+(mark.sub.a?' '+mark.sub.a:'')+' '+dl;
             if(mark.sub.p) stip+='<br>'+esc(mark.sub.p);
             if(mark.sub.memo) stip+='<br>'+esc(mark.sub.memo);
             badges.push({type:mark.sub.type, ds:d.ds, text:nm+' '+dl, tip:stip});
           }
         } else if(mark.type==='bogang'||mark.type==='sample'){
-          const nm=mark.n||'';
+          const nm=typeof bogangDisplayName==='function'&&mark.type==='bogang'?bogangDisplayName(mark):(mark.n||'');
           let mtip=(mark.type==='bogang'?'보강 ':'샘플 ')+nm+(mark.a?' '+mark.a:'')+' '+dl;
           if(mark.p) mtip+='<br>'+esc(mark.p);
           if(mark.memo) mtip+='<br>'+esc(mark.memo);
@@ -2399,10 +2401,12 @@ function _mobileSlotBadges(slotKey,day){
       badges.push({type:isAbsentRequest?'pending-absent':'absent',text:`${isAbsentRequest?'⏳ ':''}${label} ${dl}`,name:mark.n||mark.name||''});
       if(mark.sub){
         const subType=mark.sub.type==='sample'?'sample':'bogang';
-        badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${mark.sub.n||''} ${dl}`.trim(),name:mark.sub.n||''});
+        const subName=subType==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark.sub):(mark.sub.n||'');
+        badges.push({type:subType,text:`${subType==='sample'?'샘':'보'} ${subName} ${dl}`.trim(),name:subName});
       }
     }else if(mark.type==='bogang'||mark.type==='sample'){
-      badges.push({type:mark.type,text:`${mark.type==='sample'?'샘':'보'} ${mark.n||''} ${dl}`.trim(),name:mark.n||mark.name||''});
+      const markName=mark.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark):(mark.n||mark.name||'');
+      badges.push({type:mark.type,text:`${mark.type==='sample'?'샘':'보'} ${markName} ${dl}`.trim(),name:markName});
     }
   });
   return badges.slice(0,4);
@@ -3358,10 +3362,10 @@ function _excelSlotBadgeEntries(slotKey,day,todayStr){
       if(date.closed||date.ds<todayStr) return;
       const mark=typeof getMark==='function'?getMark(slotKey,date.ds):(MARK_MAP&&MARK_MAP[slotKey+'/'+date.ds]);
       if(!mark) return;
-      if(mark.type==='bogang'||mark.type==='sample') add(mark.type,mark.n,date.ds);
+      if(mark.type==='bogang'||mark.type==='sample') add(mark.type,mark.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark):mark.n,date.ds);
       else if(mark.type==='absent'){
         add(typeof isParentAbsentRequestMark==='function'&&isParentAbsentRequestMark(mark)?'absent-request':'absent','',date.ds);
-        if(mark.sub?.type==='bogang'||mark.sub?.type==='sample') add(mark.sub.type,mark.sub.n,date.ds);
+        if(mark.sub?.type==='bogang'||mark.sub?.type==='sample') add(mark.sub.type,mark.sub.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark.sub):mark.sub.n,date.ds);
       }
     });
   }catch(e){}
@@ -3443,11 +3447,13 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
         _excelAddLine(lines,label+': '+dl);
         if(mark.sub){
           const type=mark.sub.type==='sample'?'샘플':'보강';
-          _excelAddLine(lines,type+': '+[mark.sub.n,String(mark.sub.a||''),dl,mark.sub.p,mark.sub.memo].filter(Boolean).join(' '));
+          const subName=mark.sub.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark.sub):mark.sub.n;
+          _excelAddLine(lines,type+': '+[subName,String(mark.sub.a||''),dl,mark.sub.p,mark.sub.memo].filter(Boolean).join(' '));
         }
       } else if(mark.type==='bogang'||mark.type==='sample'){
         const type=mark.type==='sample'?'샘플':'보강';
-        _excelAddLine(lines,type+': '+[mark.n,String(mark.a||''),dl,mark.p,mark.memo].filter(Boolean).join(' '));
+        const markName=mark.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark):mark.n;
+        _excelAddLine(lines,type+': '+[markName,String(mark.a||''),dl,mark.p,mark.memo].filter(Boolean).join(' '));
       }
     });
   }catch(e){}

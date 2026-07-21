@@ -326,9 +326,13 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
     if(isAbsent&&sub){
       const clsName=isAbsentRequest?'date-absent-request-label':'date-absent-label';
       const prefix=isAbsentRequest?'⏳ ':'';
-      markLabel=`<span class="${clsName}">${prefix}${esc(typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석')}/${esc((sub.n||'')+(sub.a||''))}</span>`;
+      const subName=typeof bogangDisplayName==='function'?bogangDisplayName(sub):(sub.n||'');
+      markLabel=`<span class="${clsName}">${prefix}${esc(typeof absentMarkLabel==='function'?absentMarkLabel(mark):'결석')}/${esc(subName+(sub.a||''))}</span>`;
     }
-    if(isBogangOnly) markLabel=`<span class="date-bogang-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
+    if(isBogangOnly){
+      const bogangName=typeof bogangDisplayName==='function'?bogangDisplayName(mark):(mark.n||'');
+      markLabel=`<span class="date-bogang-label">${esc(bogangName+(mark.a||''))}</span>`;
+    }
     if(isSampleOnly) markLabel=`<span class="date-sample-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
 
     return `<div class="stu-date-box ${cls}" data-ds="${d.ds}">${d.m}/${d.d}${retLabel}${enrLabel}${markLabel}</div>`;
@@ -362,13 +366,15 @@ function _bogangNormPhone(value){
 }
 function _bogangStudentCandidate(stu){
   const slotKey=_bogangStudentSlotKey(stu);
-  const inst=getInst(stu.t,stu.d,stu.l);
+  const inst=stu.__teacher||getInst(stu.t,stu.d,stu.l);
   const teacher=_bogangCleanTeacherName(inst);
+  const sourceType=stu.__tabType==='bangteuk'?'bangteuk':'regular';
+  const sourceLabel=sourceType==='bangteuk'?'방특반':'정규반';
   const day=String(stu.d||'');
   const time=_moveDisplayTime(day,String(stu.t||''));
   const slotLabel=[day+(time?time.replace('시',''):''),teacher?teacher+'쌤':''].filter(Boolean).join(' ');
   return {
-    key:slotKey+'|'+(stu.p||'')+'|'+(stu.n||'')+'|'+(stu.a||''),
+    key:sourceType+'|'+slotKey+'|'+(stu.p||'')+'|'+(stu.n||'')+'|'+(stu.a||''),
     slotKey,
     slotKeys:slotKey,
     n:stu.n||'',
@@ -377,12 +383,16 @@ function _bogangStudentCandidate(stu){
     teacher,
     day,
     time,
+    sourceType,
+    sourceLabel,
+    sourceTabId:stu.__tabId||'',
+    sourceTabName:stu.__tabName||sourceLabel,
     slotLabel,
     label:slotLabel||[day,time,teacher?teacher+'쌤':''].filter(Boolean).join(' · '),
   };
 }
 function _bogangSearchText(c){
-  return [c.n,c.n+c.a,c.p,c.p?String(c.p).slice(-4):'',c.teacher,c.day,c.time,c.label].join(' ').toLowerCase();
+  return [c.n,c.n+c.a,c.p,c.p?String(c.p).slice(-4):'',c.teacher,c.day,c.time,c.label,c.sourceLabel,c.sourceType==='bangteuk'?'방':'정'].join(' ').toLowerCase();
 }
 function _bogangGroupCandidates(list){
   const map=new Map();
@@ -391,15 +401,17 @@ function _bogangGroupCandidates(list){
     const name=String(c.n||'').trim();
     const phone=_bogangNormPhone(c.p);
     if(!name||!phone) return;
-    if(!phonesByName.has(name)) phonesByName.set(name,new Set());
-    phonesByName.get(name).add(phone);
+    const sourceName=(c.sourceType==='bangteuk'?'bangteuk':'regular')+'|'+name;
+    if(!phonesByName.has(sourceName)) phonesByName.set(sourceName,new Set());
+    phonesByName.get(sourceName).add(phone);
   });
   list.forEach(c=>{
     const name=String(c.n||'').trim();
     const phone=_bogangNormPhone(c.p);
-    const knownPhones=phonesByName.get(name);
+    const sourceType=c.sourceType==='bangteuk'?'bangteuk':'regular';
+    const knownPhones=phonesByName.get(sourceType+'|'+name);
     const fallbackPhone=knownPhones&&knownPhones.size===1?[...knownPhones][0]:'';
-    const key=phone ? `${name}|${phone}` : (fallbackPhone ? `${name}|${fallbackPhone}` : `${name}|${c.a}|${c.slotKey}`);
+    const key=phone ? `${sourceType}|${name}|${phone}` : (fallbackPhone ? `${sourceType}|${name}|${fallbackPhone}` : `${sourceType}|${name}|${c.a}|${c.slotKey}`);
     if(!map.has(key)){
       map.set(key,Object.assign({},c,{
         key,
@@ -434,7 +446,10 @@ function _bogangGroupCandidates(list){
 function _bogangStudentCandidates(query){
   const q=String(query||'').trim().toLowerCase().replace(/\s+/g,'');
   if(!q) return [];
-  const list=(Array.isArray(STUDENTS)?STUDENTS:[])
+  const sourceRows=typeof getLiveStudentIdentityRows==='function'
+    ? getLiveStudentIdentityRows({activeTabId:_activeTab,activeStudents:Array.isArray(STUDENTS)?STUDENTS:[],activeInstMap:INST_MAP})
+    : (Array.isArray(STUDENTS)?STUDENTS:[]);
+  const list=sourceRows
     .filter(stu=>stu&&stu.n)
     .map(_bogangStudentCandidate)
     .filter(c=>_bogangSearchText(c).replace(/\s+/g,'').includes(q));
@@ -443,13 +458,16 @@ function _bogangStudentCandidates(query){
     const bn=String(b.n||'').toLowerCase();
     const ae=an===q?0:an.startsWith(q)?1:2;
     const be=bn===q?0:bn.startsWith(q)?1:2;
-    return ae-be || an.localeCompare(bn,'ko') || String(a.label).localeCompare(String(b.label),'ko');
+    const at=a.sourceType==='regular'?0:1;
+    const bt=b.sourceType==='regular'?0:1;
+    return ae-be || an.localeCompare(bn,'ko') || at-bt || String(a.label).localeCompare(String(b.label),'ko');
   }).slice(0,8);
 }
 function _bogangSelectedSummary(data){
   if(!data||!data.slotKey) return '';
-  if(data.label) return data.label;
-  return [data.day,data.time,data.teacher?data.teacher+'쌤':''].filter(Boolean).join(' · ');
+  const source=data.sourceType==='bangteuk'?'방특반':data.sourceType==='regular'?'정규반':'';
+  if(data.label) return [source,data.label].filter(Boolean).join(' · ');
+  return [source,data.day,data.time,data.teacher?data.teacher+'쌤':''].filter(Boolean).join(' · ');
 }
 function _renderBogangCandidates(){
   const input=document.getElementById('sp-bogang-name');
@@ -464,12 +482,12 @@ function _renderBogangCandidates(){
     box.innerHTML='<div style="padding:5px 6px;color:#9CA3AF;font-size:10px">일치하는 원생이 없습니다. 직접 입력도 가능합니다.</div>';
     return;
   }
-  box.innerHTML=candidates.map(c=>`<button type="button" class="sp-bogang-candidate"
+  box.innerHTML=candidates.map(c=>`<button type="button" class="sp-bogang-candidate source-${c.sourceType}"
     data-key="${_spAttr(c.key)}" data-slot-key="${_spAttr(c.slotKey)}" data-name="${_spAttr(c.n)}" data-age="${_spAttr(c.a)}"
     data-slot-keys="${_spAttr(c.slotKeys)}" data-phone="${_spAttr(c.p)}" data-teacher="${_spAttr(c.teacher)}" data-day="${_spAttr(c.day)}" data-time="${_spAttr(c.time)}" data-label="${_spAttr(c.label)}"
-    style="width:100%;display:flex;justify-content:space-between;gap:6px;align-items:center;padding:5px 6px;border:0;border-bottom:1px solid #E5E7EB;background:#fff;cursor:pointer;text-align:left;font-family:inherit">
-      <span style="font-size:11px;font-weight:800;color:#111">${esc(c.n)}${c.a?esc(c.a):''}</span>
-      <span style="font-size:10px;color:#4B5563;white-space:nowrap">${esc(c.label||'-')}</span>
+    data-source-type="${c.sourceType}" data-source-tab="${_spAttr(c.sourceTabId)}" data-source-tab-name="${_spAttr(c.sourceTabName)}">
+      <span class="sp-bogang-candidate-name"><b>${c.sourceType==='bangteuk'?'방':'정'}</b>${esc(c.n)}${c.a?esc(c.a):''}</span>
+      <span class="sp-bogang-candidate-slot">${esc(c.label||'-')}</span>
     </button>`).join('');
 }
 function _setBogangSelected(data){
@@ -482,6 +500,9 @@ function _setBogangSelected(data){
     teacher:'sp-bogang-teacher',
     day:'sp-bogang-day',
     time:'sp-bogang-time',
+    sourceType:'sp-bogang-source-type',
+    sourceTabId:'sp-bogang-source-tab',
+    sourceTabName:'sp-bogang-source-tab-name',
   };
   Object.entries(fields).forEach(([k,id])=>{
     const el=document.getElementById(id);
@@ -504,7 +525,15 @@ function _readBogangSelected(){
     teacher:document.getElementById('sp-bogang-teacher')?.value||'',
     day:document.getElementById('sp-bogang-day')?.value||'',
     time:document.getElementById('sp-bogang-time')?.value||'',
+    sourceType:document.getElementById('sp-bogang-source-type')?.value||'',
+    sourceTabId:document.getElementById('sp-bogang-source-tab')?.value||'',
+    sourceTabName:document.getElementById('sp-bogang-source-tab-name')?.value||'',
   };
+}
+function _readBogangScheduleType(){
+  if(document.getElementById('sp-bogang-type-regular')?.checked) return 'regular';
+  if(document.getElementById('sp-bogang-type-bangteuk')?.checked) return 'bangteuk';
+  return '';
 }
 function buildBogangFormHtml(existBo){
   const boOn = !!existBo;
@@ -517,10 +546,14 @@ function buildBogangFormHtml(existBo){
     teacher:existBo?.studentTeacher||'',
     day:existBo?.studentDay||'',
     time:existBo?.studentTime||'',
+    sourceType:existBo?.studentSourceType||'',
+    sourceTabId:existBo?.studentSourceTabId||'',
+    sourceTabName:existBo?.studentSourceTabName||'',
   };
+  const scheduleType=existBo?.studentScheduleType||'';
   const selectedSummary=_bogangSelectedSummary(selected);
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
-    <input class="fi" id="sp-bogang-name" placeholder="이름" value="${existBo?esc(existBo.n||''):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
+    <input class="fi" id="sp-bogang-name" placeholder="이름" aria-label="보강 원생 이름" autocomplete="off" value="${existBo?esc(existBo.n||''):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
     <input type="hidden" id="sp-bogang-student-key" value="">
     <input type="hidden" id="sp-bogang-student-slot" value="${_spAttr(selected.slotKey)}">
     <input type="hidden" id="sp-bogang-student-slots" value="${_spAttr(selected.slotKeys)}">
@@ -529,7 +562,14 @@ function buildBogangFormHtml(existBo){
     <input type="hidden" id="sp-bogang-teacher" value="${_spAttr(selected.teacher)}">
     <input type="hidden" id="sp-bogang-day" value="${_spAttr(selected.day)}">
     <input type="hidden" id="sp-bogang-time" value="${_spAttr(selected.time)}">
-    <div id="sp-bogang-selected" style="font-size:10px;color:${selectedSummary?'#5B21B6':'#9CA3AF'};font-weight:700;margin:-1px 0 4px;min-height:14px">
+    <input type="hidden" id="sp-bogang-source-type" value="${_spAttr(selected.sourceType)}">
+    <input type="hidden" id="sp-bogang-source-tab" value="${_spAttr(selected.sourceTabId)}">
+    <input type="hidden" id="sp-bogang-source-tab-name" value="${_spAttr(selected.sourceTabName)}">
+    <div class="sp-bogang-type-row" role="group" aria-label="보강 원생 구분">
+      <label class="sp-bogang-type regular"><input type="checkbox" id="sp-bogang-type-regular" ${scheduleType==='regular'?'checked':''}> <b>(정)</b> 정규반</label>
+      <label class="sp-bogang-type bangteuk"><input type="checkbox" id="sp-bogang-type-bangteuk" ${scheduleType==='bangteuk'?'checked':''}> <b>(방)</b> 방특반</label>
+    </div>
+    <div id="sp-bogang-selected" aria-live="polite" style="font-size:10px;color:${selectedSummary?'#5B21B6':'#9CA3AF'};font-weight:700;margin:-1px 0 4px;min-height:14px">
       ${selectedSummary?'선택됨 · '+esc(selectedSummary):'원생을 선택하면 요일/담당쌤이 함께 저장됩니다.'}
     </div>
     <div id="sp-bogang-candidates" style="max-height:132px;overflow:auto;border:1px solid #E5E7EB;border-radius:7px;margin:0 0 4px;background:#fff">
@@ -1844,6 +1884,8 @@ function handleBogangSet(e, ctx){
   const cur=getMark(slotKey,ds);
   const selected=_readBogangSelected();
   const subObj={type:'bogang',n,a};
+  const scheduleType=_readBogangScheduleType();
+  if(scheduleType) subObj.studentScheduleType=scheduleType;
   if(selected){
     if(selected.p) subObj.p=selected.p;
     subObj.studentSlotKey=selected.slotKey;
@@ -1851,6 +1893,9 @@ function handleBogangSet(e, ctx){
     if(selected.teacher) subObj.studentTeacher=selected.teacher;
     if(selected.day) subObj.studentDay=selected.day;
     if(selected.time) subObj.studentTime=selected.time;
+    if(selected.sourceType) subObj.studentSourceType=selected.sourceType;
+    if(selected.sourceTabId) subObj.studentSourceTabId=selected.sourceTabId;
+    if(selected.sourceTabName) subObj.studentSourceTabName=selected.sourceTabName;
   }
   if(cur?.type==='absent') setMark(slotKey,ds,{type:'absent',sub:subObj});
   else setMark(slotKey,ds,subObj);
@@ -2502,6 +2547,9 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
       day:bogangCandidate.dataset.day||'',
       time:bogangCandidate.dataset.time||'',
       label:bogangCandidate.dataset.label||'',
+      sourceType:bogangCandidate.dataset.sourceType||'',
+      sourceTabId:bogangCandidate.dataset.sourceTab||'',
+      sourceTabName:bogangCandidate.dataset.sourceTabName||'',
     };
     const nameEl=document.getElementById('sp-bogang-name');
     const ageEl=document.getElementById('sp-bogang-age');
@@ -2587,6 +2635,14 @@ document.getElementById('stu-popup').addEventListener('input',function(e){
 // [v118] 승차/하차 각각 자가 체크 → 해당 input 비활성/활성
 document.getElementById('stu-popup').addEventListener('change',function(e){
   const id = e.target?.id;
+  if(id==='sp-bogang-type-regular'&&e.target.checked){
+    const other=document.getElementById('sp-bogang-type-bangteuk');
+    if(other) other.checked=false;
+  }
+  if(id==='sp-bogang-type-bangteuk'&&e.target.checked){
+    const other=document.getElementById('sp-bogang-type-regular');
+    if(other) other.checked=false;
+  }
   // 좌측 폼
   if(id==='sp-pick-self'){
     const inp=document.getElementById('sp-pickup');

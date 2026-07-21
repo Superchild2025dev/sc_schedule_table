@@ -1044,6 +1044,19 @@ function hasBangteukInTime(t){
   return false;
 }
 
+function bogangSchedulePrefix(mark){
+  const type=String(mark?.studentScheduleType||'');
+  if(type==='regular') return '(정)';
+  if(type==='bangteuk') return '(방)';
+  return '';
+}
+function bogangDisplayName(mark){
+  const raw=String(mark?.n||mark?.name||'').trim();
+  const prefix=bogangSchedulePrefix(mark);
+  if(!prefix) return raw;
+  return prefix+' '+raw.replace(/^\((?:정|방)\)\s*/,'');
+}
+
 /* ══════════════════════════════════════════
    전역 STATE
    ══════════════════════════════════════════
@@ -1052,7 +1065,7 @@ function hasBangteukInTime(t){
 
    RETIRE_MAP[slotKey]    = { ds:'YYYY-MM-DD', name, age?, p? }                       // 제외/퇴원 예약
    ENROLL_MAP[slotKey]    = { ds, name, age, p?, isNew?, enrolled? }                   // 등원 예약
-   MARK_MAP[slotKey/ds]   = { type:'absent'|'bogang'|'sample', n?, a?, p?, sub? }      // 결석/보강/샘플
+   MARK_MAP[slotKey/ds]   = { type:'absent'|'bogang'|'sample', n?, a?, p?, studentScheduleType?, sub? } // 결석/보강/샘플
    DISABLED_MAP[slotKey]  = true                                                       // 비활성화 셀
    RESERVE_MAP[instKey]   = [{ n, p?, m?, d? }, ...]                                   // 담임 예약 (instKey='time/day/lane')
    ══════════════════════════════════════════ */
