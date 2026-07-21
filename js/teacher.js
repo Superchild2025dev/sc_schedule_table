@@ -1801,7 +1801,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     if(!name){toast('선생님을 선택해주세요','err');return;}
     enterAsTeacher(name);
   });
-  document.getElementById('teacher-all').addEventListener('click',()=>{
+  const deskPageButton=document.getElementById('teacher-all');
+  if(deskPageButton) deskPageButton.addEventListener('click',()=>{
     openDeskPage();
   });
   document.getElementById('teacher-logout').addEventListener('click',()=>{
@@ -1811,13 +1812,22 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // 탭 전환
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
-      document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b=>{
+        const selected=b===btn;
+        b.classList.toggle('active',selected);
+        b.setAttribute('aria-selected',selected?'true':'false');
+        b.tabIndex=selected?0:-1;
+      });
       btn.classList.add('active');
       _activeTab=btn.dataset.tab;
-      document.getElementById('bogang-list').style.display=_activeTab==='bogang'?'flex':'none';
+      const bogangList=document.getElementById('bogang-list');
+      bogangList.style.display=_activeTab==='bogang'?'flex':'none';
+      bogangList.setAttribute('aria-hidden',_activeTab==='bogang'?'false':'true');
       const history=document.getElementById('bogang-history');
       if(history) history.style.display=_activeTab==='bogang'?'block':'none';
-      document.getElementById('cancel-list').style.display=_activeTab==='cancel'?'flex':'none';
+      const cancelList=document.getElementById('cancel-list');
+      cancelList.style.display=_activeTab==='cancel'?'flex':'none';
+      cancelList.setAttribute('aria-hidden',_activeTab==='cancel'?'false':'true');
       const attendance=document.getElementById('attendance-panel');
       if(attendance) attendance.style.display=_activeTab==='attendance'?'block':'none';
       if(_activeTab==='attendance'){
@@ -1825,6 +1835,15 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         ensureTodaySnapshot();
         renderAttendanceTimetable();
       }
+    });
+    btn.addEventListener('keydown',event=>{
+      if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight') return;
+      const tabs=[...document.querySelectorAll('.tab-btn')];
+      const offset=event.key==='ArrowRight'?1:-1;
+      const next=tabs[(tabs.indexOf(btn)+offset+tabs.length)%tabs.length];
+      event.preventDefault();
+      next.focus();
+      next.click();
     });
   });
 

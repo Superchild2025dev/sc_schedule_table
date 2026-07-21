@@ -65,6 +65,16 @@
     {name:'#{차량명}',label:'차량명',sample:'1호차'},
     {name:'#{차량시간}',label:'차량 시간',sample:'7시'},
   ];
+  const PANEL_META={
+    menu:{title:'운영 도구',section:'운영'},
+    feedback:{title:'의견접수',section:'운영'},
+    students:{title:'원생목록',section:'원생'},
+    recipients:{title:'수신번호',section:'메시지'},
+    templates:{title:'알림톡 템플릿',section:'메시지'},
+    aligo:{title:'알림톡 연결',section:'메시지'},
+    sms:{title:'문자 연결',section:'메시지'},
+    backup:{title:'백업 관리',section:'시스템'},
+  };
 
   let activeBranch='gagyeong';
   let activePanel='menu';
@@ -1425,13 +1435,28 @@
     return teacherNamesByBranch[activeBranch]||clone(DEFAULT_TEACHERS[activeBranch]||[]);
   }
   function setPanel(panel){
-    activePanel=panel||'menu';
+    activePanel=PANEL_META[panel]?panel:'menu';
     document.querySelectorAll('.nav-btn').forEach(btn=>{
-      btn.classList.toggle('active',btn.dataset.panel===activePanel);
+      const active=btn.dataset.panel===activePanel;
+      btn.classList.toggle('active',active);
+      if(active) btn.setAttribute('aria-current','page');
+      else btn.removeAttribute('aria-current');
+      btn.setAttribute('aria-controls','panel-'+btn.dataset.panel);
     });
     document.querySelectorAll('.settings-panel').forEach(panelEl=>{
-      panelEl.classList.toggle('active',panelEl.id==='panel-'+activePanel);
+      const active=panelEl.id==='panel-'+activePanel;
+      panelEl.classList.toggle('active',active);
+      panelEl.setAttribute('aria-hidden',active?'false':'true');
     });
+    const meta=PANEL_META[activePanel];
+    const panelTitle=$('settings-panel-title');
+    if(panelTitle) panelTitle.textContent=meta.title;
+    document.title=`${meta.title} - 슈퍼차일드 수영장`;
+    try{
+      const url=new URL(location.href);
+      url.searchParams.set('panel',activePanel);
+      history.replaceState(null,'',url.pathname+url.search+url.hash);
+    }catch(e){}
     if(activePanel==='students') loadStudentDirectory(false);
     if(activePanel==='backup') updateSummerLayoutPanel();
   }
@@ -1439,9 +1464,8 @@
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
     activeBranch=branchId;
     try{localStorage.setItem('selected_branch',branchId);}catch(e){}
-    document.querySelectorAll('.branch-tab').forEach(btn=>{
-      btn.classList.toggle('active',btn.dataset.branch===activeBranch);
-      btn.disabled=!canAccessBranch(btn.dataset.branch);
+    document.querySelectorAll('[data-sc-branch-select]').forEach(select=>{
+      select.value=activeBranch;
     });
     $('settings-branch-title').textContent=BRANCHES[activeBranch].name;
     summerLayoutState=null;
@@ -1966,7 +1990,8 @@
     if(action==='schedule') return `index.html?branch=${activeBranch}`;
     if(action==='teacherPage') return `teacher.html?branch=${activeBranch}`;
     if(action==='parentPage') return `parent.html?branch=${activeBranch}`;
-    return `index.html?branch=${activeBranch}&settings=${action}`;
+    const returnsToSettings=['records','teachers','periods','closed'].includes(action);
+    return `index.html?branch=${activeBranch}&settings=${action}${returnsToSettings?'&from=settings':''}`;
   }
   function openAction(action){
     if(!action) return;
@@ -2466,9 +2491,6 @@ th{background:#D9EAD3;font-weight:700}
     document.querySelectorAll('[data-panel-jump]').forEach(btn=>{
       btn.addEventListener('click',()=>setPanel(btn.dataset.panelJump));
     });
-    document.querySelectorAll('.branch-tab').forEach(btn=>{
-      btn.addEventListener('click',()=>setBranch(btn.dataset.branch));
-    });
     document.querySelectorAll('[data-open-action]').forEach(btn=>{
       btn.addEventListener('click',()=>openAction(btn.dataset.openAction));
     });
@@ -2534,10 +2556,10 @@ th{background:#D9EAD3;font-weight:700}
   function initialPanel(){
     try{
       const p=new URLSearchParams(location.search).get('panel');
-      if(p==='backup'||p==='feedback'||p==='students'||p==='recipients'||p==='templates'||p==='aligo'||p==='sms'||p==='menu') return p;
+      if(PANEL_META[p]) return p;
     }catch(e){}
     const hash=String(location.hash||'').replace('#','');
-    return hash==='backup'||hash==='feedback'||hash==='students'||hash==='recipients'||hash==='templates'||hash==='aligo'||hash==='sms'?hash:'menu';
+    return PANEL_META[hash]?hash:'menu';
   }
   document.addEventListener('DOMContentLoaded',()=>{
     const authReady=window.SCAuth&&typeof SCAuth.requireAuth==='function'
@@ -2548,9 +2570,6 @@ th{background:#D9EAD3;font-weight:700}
       activePanel=initialPanel();
       setPanel(activePanel);
       activeBranch=initialBranch();
-      document.querySelectorAll('.branch-tab').forEach(btn=>{
-        btn.disabled=!canAccessBranch(btn.dataset.branch);
-      });
       setBranch(activeBranch);
       setInterval(()=>reloadFeedback(true),60000);
       if(window.SCAuth&&typeof SCAuth.applyPagePermissions==='function'){

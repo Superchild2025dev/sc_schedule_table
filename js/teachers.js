@@ -12,6 +12,17 @@ const _DEFAULT_TEACHERS=[
   {n:'김형수',color:'#6EE7B7'},
 ];
 let TEACHERS = [];
+const _teacherOperations=new Set();
+
+function trackTeacherOperation(operation){
+  const pending=Promise.resolve(operation);
+  _teacherOperations.add(pending);
+  pending.then(
+    ()=>_teacherOperations.delete(pending),
+    ()=>_teacherOperations.delete(pending)
+  );
+  return pending;
+}
 
 function loadTeachers(){
   const saved=loadJSON(STORAGE_KEYS.TEACHERS, null);
@@ -64,8 +75,12 @@ function openTeacherModal(){
   document.getElementById('teacher-modal').style.display='flex';
   renderTeacherList();
 }
-function closeTeacherModal(){
+async function closeTeacherModal(){
   document.getElementById('teacher-modal').style.display='none';
+  if(window.SC_SETTINGS_RETURN_URL && _teacherOperations.size){
+    await Promise.allSettled([..._teacherOperations]);
+  }
+  if(typeof returnToSettingsAfterToolClose==='function') returnToSettingsAfterToolClose();
 }
 function renderTeacherList(){
   const list=document.getElementById('tm-list');
@@ -86,7 +101,7 @@ function renderTeacherList(){
   list.querySelectorAll('.tm-color').forEach(el=>{
     el.addEventListener('change',e=>{
       const idx=parseInt(e.target.dataset.idx);
-      handleTeacherColorChange(idx, e.target.value);
+      trackTeacherOperation(handleTeacherColorChange(idx, e.target.value));
     });
   });
   list.querySelectorAll('.tm-name').forEach(el=>{
@@ -95,7 +110,7 @@ function renderTeacherList(){
       const orig=el.dataset.orig;
       const nv=el.value.trim();
       if(!nv || nv===orig){ el.value=orig; return; }
-      handleTeacherNameEdit(idx, orig, nv);
+      trackTeacherOperation(handleTeacherNameEdit(idx, orig, nv));
     };
     el.addEventListener('blur',commit);
     el.addEventListener('keydown',e=>{
@@ -106,7 +121,7 @@ function renderTeacherList(){
   list.querySelectorAll('.tm-del').forEach(el=>{
     el.addEventListener('click',e=>{
       const idx=parseInt(e.target.dataset.idx);
-      handleTeacherDelete(idx);
+      trackTeacherOperation(handleTeacherDelete(idx));
     });
   });
 }

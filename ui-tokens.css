@@ -1,0 +1,148 @@
+:root{
+  color-scheme:light;
+  --sc-font:'Noto Sans KR',sans-serif;
+  --sc-primary:#0F9D58;
+  --sc-primary-hover:#0B8043;
+  --sc-primary-soft:#ECFDF5;
+  --sc-info:#2563EB;
+  --sc-info-soft:#EFF6FF;
+  --sc-warning:#D97706;
+  --sc-warning-soft:#FFFBEB;
+  --sc-danger:#DC2626;
+  --sc-danger-soft:#FEF2F2;
+  --sc-success:#059669;
+  --sc-surface:#FFFFFF;
+  --sc-surface-muted:#F3F6FA;
+  --sc-surface-subtle:#F8FAFC;
+  --sc-text:#172033;
+  --sc-text-muted:#64748B;
+  --sc-border:#DDE3EC;
+  --sc-border-strong:#CBD5E1;
+  --sc-focus:rgba(15,157,88,.24);
+  --sc-radius-sm:6px;
+  --sc-radius-md:8px;
+  --sc-shadow-sm:0 1px 5px rgba(15,23,42,.08);
+  --sc-shadow-md:0 10px 30px rgba(15,23,42,.16);
+}
+
+html,body,button,input,textarea,select{font-family:var(--sc-font)}
+button,input,textarea,select{letter-spacing:0}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{
+  outline:3px solid var(--sc-focus);
+  outline-offset:2px;
+}
+input::placeholder,textarea::placeholder{color:#94A3B8}
+::selection{background:#BBF7D0;color:var(--sc-text)}
+
+.sc-page-header{
+  min-height:52px;
+  display:flex;
+  align-items:center;
+  gap:14px;
+  padding:0 18px;
+  background:var(--sc-primary);
+  color:#fff;
+  position:sticky;
+  top:0;
+  z-index:50;
+  box-shadow:0 2px 10px rgba(0,0,0,.18);
+}
+.sc-page-brand{display:flex;align-items:baseline;gap:9px;min-width:0;white-space:nowrap}
+.sc-page-brand strong{font-size:16px;font-weight:900;overflow:hidden;text-overflow:ellipsis}
+.sc-page-brand span,.sc-page-brand small{font-size:12px;font-weight:800;opacity:.8}
+.sc-page-nav{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.sc-nav-btn,.sc-header-btn{
+  min-height:32px;
+  border:1px solid rgba(255,255,255,.28);
+  border-radius:var(--sc-radius-sm);
+  padding:0 11px;
+  background:rgba(255,255,255,.12);
+  color:#fff;
+  font-size:12px;
+  font-weight:800;
+  cursor:pointer;
+}
+.sc-nav-btn:hover,.sc-header-btn:hover{background:rgba(255,255,255,.22)}
+.sc-nav-btn.active,.sc-nav-btn[aria-current="page"]{
+  border-color:#fff;
+  background:#fff;
+  color:var(--sc-primary);
+}
+.sc-nav-btn:disabled{cursor:default;opacity:1}
+.sc-nav-count{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:18px;
+  height:18px;
+  margin-left:5px;
+  padding:0 5px;
+  border-radius:999px;
+  background:var(--sc-danger);
+  color:#fff;
+  font-size:10px;
+  font-weight:900;
+}
+.sc-nav-count[hidden]{display:none}
+.sc-page-account{display:flex;align-items:center;gap:7px;margin-left:auto;min-width:0;white-space:nowrap}
+.sc-account-badge,.sc-account-name,.staff-auth-role,.staff-auth-name{
+  max-width:120px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:11px;
+  font-weight:800;
+}
+.sc-account-badge,.staff-auth-role{opacity:.78}
+.sc-account-name,.staff-auth-name{opacity:.92}
+.sc-branch-picker{
+  min-height:32px;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  padding:0 5px 0 9px;
+  border:1px solid rgba(255,255,255,.28);
+  border-radius:var(--sc-radius-sm);
+  background:rgba(255,255,255,.12);
+  color:#fff;
+  font-size:10px;
+  font-weight:800;
+  flex:0 0 auto;
+}
+.sc-branch-picker select{
+  min-height:26px;
+  border:0;
+  border-radius:4px;
+  padding:0 22px 0 7px;
+  background:#fff;
+  color:var(--sc-text);
+  font-size:11px;
+  font-weight:900;
+  cursor:pointer;
+}
+.sc-branch-switch{
+  min-height:34px;
+  border:1px solid var(--sc-border-strong);
+  border-radius:var(--sc-radius-sm);
+  padding:0 12px;
+  background:var(--sc-surface);
+  color:var(--sc-text-muted);
+  font-size:12px;
+  font-weight:800;
+  cursor:pointer;
+}
+
+@media (max-width:980px){
+  .sc-account-name,.staff-auth-name{display:none}
+  .sc-page-header{gap:8px;padding-left:12px;padding-right:12px}
+  .sc-nav-btn,.sc-header-btn{padding:0 9px;font-size:11px}
+}
+
+@media (max-width:720px){
+  .sc-page-header{flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
+  .sc-page-brand{flex:1 1 160px}
+  .sc-page-nav{order:3;width:100%;overflow-x:auto;padding-bottom:1px}
+  .sc-page-account{margin-left:0}
+  .sc-account-badge{display:none}
+  .sc-nav-btn,.sc-header-btn,.sc-branch-picker{min-height:36px}
+}

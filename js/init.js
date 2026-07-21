@@ -14,7 +14,7 @@ function startScheduleApp(){
   const b=getBranchInfo();
   if(b){
     const h1Brand=document.getElementById('app-brand');
-    if(h1Brand) h1Brand.textContent='🏊 '+(b.id==='yongam'?'용암':'가경')+' 수영장';
+    if(h1Brand) h1Brand.textContent='슈퍼차일드 수영장';
   }
 
   loadFromFirebase(function(){
@@ -99,9 +99,12 @@ function resetAllScheduleData(){
 
 function runSettingsActionFromUrl(){
   let action='';
+  let fromSettings=false;
+  let params=null;
   try{
-    const params=new URLSearchParams(location.search);
+    params=new URLSearchParams(location.search);
     action=params.get('settings')||'';
+    fromSettings=params.get('from')==='settings';
   }catch(e){}
   if(!action) return;
   const openers={
@@ -114,8 +117,41 @@ function runSettingsActionFromUrl(){
     reset:()=>resetAllScheduleData(),
   };
   const fn=openers[action];
-  try{history.replaceState(null,'',location.pathname+(location.hash||''));}catch(e){}
-  if(typeof fn==='function') setTimeout(fn,80);
+  if(fromSettings){
+    const branch=_selectedBranch==='yongam'?'yongam':'gagyeong';
+    window.SC_SETTINGS_RETURN_URL=`settings.html?branch=${branch}&panel=menu`;
+  }
+  try{
+    if(params){
+      params.delete('settings');
+      params.delete('from');
+      const query=params.toString();
+      history.replaceState(null,'',location.pathname+(query?'?'+query:'')+(location.hash||''));
+    }
+  }catch(e){}
+  if(typeof fn==='function'){
+    setTimeout(()=>{
+      fn();
+      if(!fromSettings) return;
+      const modalIds={
+        records:'record-manager-modal',
+        teachers:'teacher-modal',
+        periods:'period-modal',
+        closed:'closed-modal',
+      };
+      const modal=document.getElementById(modalIds[action]||'');
+      const closeButton=modal?.querySelector('[data-sc-modal-close]');
+      if(closeButton) closeButton.textContent='설정으로 돌아가기';
+    },80);
+  }
+}
+
+function returnToSettingsAfterToolClose(){
+  const url=window.SC_SETTINGS_RETURN_URL;
+  if(!url) return false;
+  window.SC_SETTINGS_RETURN_URL='';
+  location.href=url;
+  return true;
 }
 
 document.addEventListener('DOMContentLoaded', () => {

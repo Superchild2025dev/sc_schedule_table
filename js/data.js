@@ -41,6 +41,7 @@ function openPeriodModal(){
 }
 function closePeriodModal(){
   document.getElementById('period-modal').style.display='none';
+  if(typeof returnToSettingsAfterToolClose==='function' && returnToSettingsAfterToolClose()) return;
   buildTable();
 }
 function addPeriodEntry(){
@@ -773,6 +774,7 @@ function openClosedModal(){
 }
 function closeClosedModal(){
   document.getElementById('closed-modal').style.display='none';
+  if(typeof returnToSettingsAfterToolClose==='function' && returnToSettingsAfterToolClose()) return;
   buildTable(); // 변경사항 반영
 }
 function addClosedEntry(){
@@ -1882,6 +1884,7 @@ function openRecordManagerModal(){
 }
 function closeRecordManagerModal(){
   document.getElementById('record-manager-modal').style.display='none';
+  if(typeof returnToSettingsAfterToolClose==='function') returnToSettingsAfterToolClose();
 }
 function _recordItems(includeSafety){
   const withSafety=includeSafety!==false;

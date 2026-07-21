@@ -1,8 +1,9 @@
-html,body{background:#F3F6FA}
-#teacher-select-screen{justify-content:center;align-items:center;padding:32px 18px;background:#EEF4FA}
-#teacher-select-screen .login-box{max-width:520px;padding:42px 42px;text-align:left;border-radius:12px;box-shadow:0 18px 50px rgba(15,23,42,0.14)}
+html,body{background:var(--sc-surface-muted)}
+#teacher-select-screen{justify-content:center;align-items:center;padding:32px 18px;background:var(--sc-surface-muted)}
+#teacher-select-screen,#teacher-dashboard{min-height:calc(100vh - 52px);min-height:calc(100dvh - 52px)}
+#teacher-select-screen .login-box{max-width:520px;padding:42px 42px;text-align:left;border-radius:var(--sc-radius-md);box-shadow:var(--sc-shadow-md)}
 #teacher-select-screen .login-box .logo{text-align:center;font-size:52px;margin-bottom:10px}
-#teacher-select-screen .login-box h1{text-align:center;font-size:28px;margin-bottom:5px;color:#1D4ED8}
+#teacher-select-screen .login-box h1{text-align:center;font-size:28px;margin-bottom:5px;color:var(--sc-primary)}
 #teacher-select-screen .login-box .subtitle{text-align:center;font-size:14px;margin-bottom:22px}
 .teacher-auth-line{display:flex;align-items:center;justify-content:center;gap:8px;margin:-8px 0 16px;color:#6B7280;font-size:12px;font-weight:800}
 .teacher-auth-line button{background:#F3F4F6;color:#374151;border:none;border-radius:7px;padding:5px 9px;font-size:11px;font-weight:900;cursor:pointer;font-family:inherit}
@@ -12,16 +13,18 @@ html,body{background:#F3F6FA}
 #teacher-select-screen .btn-primary{padding:14px 16px;font-size:16px;margin-top:12px}
 #teacher-select-screen .btn-secondary{padding:13px 16px;font-size:15px;margin-top:9px}
 
-#teacher-dashboard{background:#F3F6FA;align-items:center}
-#teacher-dashboard .dashboard-header{width:min(1120px,calc(100% - 36px));margin:18px auto 0;padding:16px 20px;border-radius:10px;background:#1D4ED8;box-shadow:0 12px 30px rgba(29,78,216,0.18)}
+#teacher-dashboard{background:var(--sc-surface-muted);align-items:center}
+#teacher-dashboard .dashboard-header{width:min(1120px,calc(100% - 36px));margin:18px auto 0;padding:16px 20px;border-radius:var(--sc-radius-md);background:var(--sc-primary);box-shadow:0 12px 30px rgba(15,157,88,.16)}
 #teacher-dashboard .child-name{font-size:22px;line-height:1.2}
 #teacher-dashboard .child-info{font-size:13px;margin-top:5px}
 #teacher-dashboard .btn-icon{width:38px;height:38px;font-size:17px}
+.teacher-change-btn{min-height:36px;border:1px solid rgba(255,255,255,.4);border-radius:var(--sc-radius-sm);padding:0 12px;background:rgba(255,255,255,.16);color:#fff;font-size:12px;font-weight:900;cursor:pointer}
+.teacher-change-btn:hover{background:rgba(255,255,255,.26)}
 #teacher-dashboard .container{width:min(1120px,calc(100% - 36px));max-width:none;padding:14px 0 36px}
 
-.tab-row{display:flex;gap:8px;margin-bottom:12px;background:#fff;padding:7px;border-radius:10px;box-shadow:0 1px 4px rgba(15,23,42,0.08);border:1px solid #E5E7EB}
+.tab-row{display:flex;gap:8px;margin-bottom:12px;background:var(--sc-surface);padding:7px;border-radius:var(--sc-radius-md);box-shadow:var(--sc-shadow-sm);border:1px solid var(--sc-border)}
 .tab-btn{flex:1;padding:11px 14px;font-size:14px;font-weight:800;background:transparent;color:#6B7280;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:8px;transition:all 0.15s}
-.tab-btn.active{background:#3B82F6;color:#fff}
+.tab-btn.active{background:var(--sc-primary);color:#fff}
 .tab-btn.active .cnt-badge{background:rgba(255,255,255,0.25);color:#fff}
 .cnt-badge{background:#EF4444;color:#fff;font-size:12px;font-weight:900;padding:3px 9px;border-radius:10px;min-width:22px;text-align:center}
 .tab-btn:not(.active) .cnt-badge{background:#F3F4F6;color:#6B7280}
@@ -29,7 +32,7 @@ html,body{background:#F3F6FA}
 .cnt-badge[data-n="0"]{display:none}
 
 .req-list{display:flex;flex-direction:column;gap:10px}
-.req-empty{background:#fff;padding:64px 24px;border-radius:10px;text-align:center;color:#9CA3AF;font-size:15px;border:1px solid #E5E7EB}
+.req-empty{background:var(--sc-surface);padding:64px 24px;border-radius:var(--sc-radius-md);text-align:center;color:#9CA3AF;font-size:15px;border:1px solid var(--sc-border)}
 /* [v118] 대기 요청 있는 선생님 칩 (선생님 선택 화면) */
 .pending-teachers{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
 .pending-teachers:empty{display:none}
@@ -38,7 +41,7 @@ html,body{background:#F3F6FA}
 .pending-chip:hover{background:#FEF2F2;transform:translateY(-1px);box-shadow:0 4px 12px rgba(239,68,68,0.2)}
 .pending-chip-badge{position:absolute;top:-7px;right:-7px;background:#EF4444;color:#fff;border-radius:11px;padding:2px 7px;font-size:11px;font-weight:900;min-width:22px;text-align:center;box-shadow:0 2px 4px rgba(0,0,0,0.2)}
 
-.req-card{background:#fff;border-radius:10px;padding:15px 18px;box-shadow:0 1px 5px rgba(15,23,42,0.08);border:1px solid #E5E7EB;border-left:5px solid #3B82F6}
+.req-card{background:var(--sc-surface);border-radius:var(--sc-radius-md);padding:15px 18px;box-shadow:var(--sc-shadow-sm);border:1px solid var(--sc-border);border-left:5px solid var(--sc-info)}
 /* [v118] 같은 반 학생들 (시간표 셀 스타일) */
 .classmates-wrap{margin:14px 0 10px;padding:14px;background:#F9FAFB;border-radius:8px;border:1px solid #E5E7EB}
 .classmates-label{font-size:13px;font-weight:800;color:#374151;margin-bottom:10px}
@@ -114,6 +117,7 @@ html,body{background:#F3F6FA}
 .history-source,.history-time{color:#6B7280;white-space:nowrap}
 
 @media (max-width:720px){
+  #teacher-select-screen,#teacher-dashboard{min-height:calc(100vh - 128px);min-height:calc(100dvh - 128px)}
   #teacher-select-screen{padding:22px 14px}
   #teacher-select-screen .login-box{max-width:420px;padding:30px 22px;text-align:center}
   #teacher-select-screen .login-box h1{font-size:23px}

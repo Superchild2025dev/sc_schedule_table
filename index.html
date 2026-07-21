@@ -24,18 +24,24 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/navigation.js')</script>
+<script>scJs('js/modal-system.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script>scCss('ui-tokens.css')</script>
 <script>scCss('auth.css')</script>
 <script>scCss('style.css')</script>
+<script>scCss('modal-system.css')</script>
+<script>scCss('ui-accessibility.css')</script>
 </head>
 <body>
+<a class="sc-skip-link" href="#sc-main-content">시간표 본문으로 이동</a>
 
 <!-- 지점 선택 모달 (첫 방문 / 변경) -->
-<div id="branch-modal" class="branch-modal">
-  <div class="branch-modal-box">
-    <h2 class="branch-modal-title">🏊 지점을 선택하세요</h2>
+<div id="branch-modal" class="branch-modal sc-modal-backdrop" data-sc-modal data-sc-modal-required="true" aria-hidden="true">
+  <div class="branch-modal-box sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="branch-modal-title" tabindex="-1">
+    <h2 id="branch-modal-title" class="branch-modal-title sc-modal-title">🏊 지점을 선택하세요</h2>
     <div class="branch-modal-btns">
       <button class="branch-btn" onclick="selectBranch('gagyeong')">
         <span class="branch-emoji">🏢</span>
@@ -49,10 +55,21 @@
   </div>
 </div>
 
-<div class="appbar">
-  <h1><span id="app-brand">🏊 가경 수영장</span><small id="app-period"></small></h1>
-  <button class="hbtn" id="branch-switch-btn" onclick="openBranchModal()" style="margin-left:8px;font-size:11px" title="지점 변경">⇄ 지점 변경</button>
+<div class="appbar sc-page-header">
+  <h1 class="sc-page-brand"><strong id="app-brand">슈퍼차일드 수영장</strong><small id="app-period"></small></h1>
+  <label class="sc-branch-picker" title="지점 변경">
+    <span>지점</span>
+    <select data-sc-branch-select onchange="SCNav.changeBranch(this.value)" aria-label="지점 변경">
+      <option value="gagyeong">가경점</option>
+      <option value="yongam">용암점</option>
+    </select>
+  </label>
   <div class="appbar-r">
+    <nav class="sc-page-nav" aria-label="직원 메뉴">
+      <button type="button" class="sc-nav-btn" id="parent-req-btn" data-sc-nav="requests" data-perm="teacherRequests" onclick="SCNav.go('requests')">보강 요청<span id="parent-req-cnt" class="sc-nav-count" hidden>0</span></button>
+      <button type="button" class="sc-nav-btn" data-sc-nav="desk" data-perm="teacherRequests" onclick="SCNav.go('desk')">데스크</button>
+      <button type="button" class="sc-nav-btn" data-sc-nav="settings" data-perm="manageSettings" onclick="SCNav.go('settings')">설정</button>
+    </nav>
     <div id="schedule-summary" class="schedule-summary" title="현재 탭 기준 수업 시수와 중복 제외 원생수">
       <span><b>수업 시수</b> <strong id="schedule-class-hours">0/0</strong></span>
       <span class="schedule-summary-sep"></span>
@@ -66,40 +83,60 @@
       <span id="tbl-zoom-pct" class="zoom-pct" onclick="tblZoomReset()" title="100%로 복원">100%</span>
       <button class="hbtn zoom-btn" onclick="tblZoomIn()" title="확대">＋</button>
     </div>
-    <input type="date" id="tm-date" class="hbtn" style="width:130px;color:#fff;background:rgba(255,255,255,.12);font-size:11px" title="타임머신" onchange="setTimeMachine(this.value)">
+    <input type="date" id="tm-date" class="hbtn" style="width:130px;color:#fff;background:rgba(255,255,255,.12);font-size:11px" title="타임머신" aria-label="시간표 조회 날짜" onchange="setTimeMachine(this.value)">
     <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
     <button class="hbtn" id="attendance-toggle-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">📋 출석부</button>
     <button class="hbtn" id="schedule-excel-btn" data-perm="exportData" onclick="exportExcel()" title="현재 시간표 엑셀 저장">💾 엑셀 저장</button>
     <button class="hbtn" id="schedule-print-btn" onclick="openSchedulePrintModal()" title="날짜별 등원 원생 인쇄">🖨️ 인쇄</button>
-    <button class="hbtn" id="parent-req-btn" data-perm="teacherRequests" onclick="window.open('teacher.html','_blank')" style="position:relative">📋 학부모 요청<span id="parent-req-cnt" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:10px;min-width:18px;text-align:center">0</span></button>
-    <button class="hbtn" data-perm="manageSettings" onclick="window.open('settings.html','_blank')">⚙️ 설정</button>
     <span class="staff-auth-role" data-auth-role></span>
-    <span class="staff-auth-email" data-auth-email></span>
-    <button class="hbtn staff-auth-logout" onclick="SCAuth.signOut()" title="계정 로그아웃">로그아웃</button>
+    <span class="staff-auth-name" data-auth-name></span>
+    <button class="sc-header-btn staff-auth-logout" onclick="SCAuth.signOut()">로그아웃</button>
+  </div>
+  <div class="mobile-command-bar" aria-label="모바일 시간표 도구">
+    <label class="mobile-date-control">
+      <span>날짜</span>
+      <input type="date" id="mobile-tm-date" aria-label="조회 날짜" onchange="setTimeMachine(this.value)">
+    </label>
+    <button type="button" id="attendance-mobile-btn" class="mobile-command-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">출석부</button>
+    <button type="button" id="mobile-tools-toggle" class="mobile-command-btn" aria-expanded="false" aria-controls="mobile-tools-menu" onclick="SCMobileTools.toggle(event)">더보기</button>
   </div>
 </div>
 
-<div id="schedule-student-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeScheduleStudentList()">
-  <div class="modal schedule-student-modal">
-    <div class="modal-hd">
-      <div class="modal-title">원생목록</div>
-      <div class="modal-hd-r schedule-student-toolbar">
-        <input id="schedule-student-search" class="record-search" type="search" placeholder="이름, 전화번호, 상태 검색" oninput="renderScheduleStudentList()">
+<div id="mobile-tools-menu" class="mobile-tools-menu" hidden>
+  <div class="mobile-tools-title">시간표 도구</div>
+  <div class="mobile-tools-grid">
+    <button type="button" data-mobile-action="excel" data-perm="exportData" onclick="SCMobileTools.run('excel',event)">엑셀 저장</button>
+    <button type="button" data-mobile-action="print" onclick="SCMobileTools.run('print',event)">인쇄</button>
+    <button type="button" data-mobile-action="zoomOut" aria-label="시간표 축소" onclick="SCMobileTools.run('zoomOut',event)">축소</button>
+    <button type="button" data-mobile-action="zoomReset" onclick="SCMobileTools.run('zoomReset',event)">100%</button>
+    <button type="button" data-mobile-action="zoomIn" aria-label="시간표 확대" onclick="SCMobileTools.run('zoomIn',event)">확대</button>
+    <button type="button" data-mobile-action="today" onclick="SCMobileTools.run('today',event)">현재 날짜</button>
+  </div>
+  <button type="button" class="mobile-tools-logout" data-mobile-action="logout" onclick="SCMobileTools.run('logout',event)">로그아웃</button>
+</div>
+
+<div id="schedule-student-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closeScheduleStudentList" aria-hidden="true" onclick="if(event.target===this)closeScheduleStudentList()">
+  <div class="modal schedule-student-modal sc-modal-dialog sc-modal-xl" role="dialog" aria-modal="true" aria-labelledby="schedule-student-modal-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header">
+      <div id="schedule-student-modal-title" class="modal-title sc-modal-title">원생목록</div>
+      <div class="modal-hd-r schedule-student-toolbar sc-modal-tools">
+        <input id="schedule-student-search" class="record-search" type="search" placeholder="이름, 전화번호, 상태 검색" aria-label="원생목록 검색" oninput="renderScheduleStudentList()">
         <button class="btn btn-o" onclick="downloadScheduleStudentListCsv()">CSV 다운로드</button>
-        <button class="btn btn-o" onclick="closeScheduleStudentList()">닫기</button>
+        <button class="btn btn-o" data-sc-modal-close onclick="closeScheduleStudentList()">닫기</button>
       </div>
     </div>
-    <div class="modal-body">
+    <div class="modal-body sc-modal-body">
       <div id="schedule-student-list-summary" class="schedule-student-list-summary"></div>
       <div class="schedule-student-table-wrap">
         <table class="schedule-student-table">
+          <caption class="sc-sr-only">현재 시간표 원생목록</caption>
           <thead>
             <tr>
-              <th>집계</th>
-              <th>전화번호</th>
-              <th>원생/상태</th>
-              <th>선생님</th>
-              <th>수업 위치</th>
+              <th scope="col">집계</th>
+              <th scope="col">전화번호</th>
+              <th scope="col">원생/상태</th>
+              <th scope="col">선생님</th>
+              <th scope="col">수업 위치</th>
             </tr>
           </thead>
           <tbody id="schedule-student-list-body"></tbody>
@@ -113,7 +150,7 @@
 <div id="attendance-bar" style="display:none;position:sticky;top:0;z-index:100;background:linear-gradient(135deg,#10B981,#059669);color:#fff;padding:10px 16px;display:none;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15);flex-wrap:wrap">
   <span style="font-size:15px;font-weight:900">📋 출석 체크 모드</span>
   <button onclick="attWeekShift(-1)" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 10px;border-radius:6px;font-weight:700;cursor:pointer">◀ 이전주</button>
-  <input type="date" id="att-date-input" onchange="setAttendanceDate(this.value)" style="padding:6px 10px;border-radius:6px;border:none;font-size:14px;font-weight:700">
+  <input type="date" id="att-date-input" aria-label="출석부 날짜" onchange="setAttendanceDate(this.value)" style="padding:6px 10px;border-radius:6px;border:none;font-size:14px;font-weight:700">
   <button onclick="attWeekShift(1)" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:6px 10px;border-radius:6px;font-weight:700;cursor:pointer">다음주 ▶</button>
   <button onclick="setAttToday()" style="background:rgba(255,255,255,0.25);color:#fff;border:none;padding:6px 12px;border-radius:6px;font-weight:700;cursor:pointer">오늘</button>
   <span id="att-bar-date-label" style="font-size:16px;font-weight:900;margin-left:8px;padding:4px 12px;background:#fff;color:#059669;border-radius:8px"></span>
@@ -131,44 +168,50 @@
 </div>
 
 <!-- 원생 추가 모달 (출석부 + 버튼) -->
-<div id="att-add-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10002;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:16px;padding:22px;min-width:320px;max-width:400px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
-    <div style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111">➕ 원생 추가</div>
-    <div id="att-add-sub" style="font-size:11px;color:#6B7280;margin-bottom:14px"></div>
-    <div style="margin-bottom:10px">
-      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">이름</label>
-      <input type="text" id="att-add-name" placeholder="학생 이름" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+<div id="att-add-modal" class="sc-modal-backdrop" style="display:none;z-index:10002" data-sc-modal data-sc-close-function="_closeAttAddModal" aria-hidden="true">
+  <div class="sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="att-add-title" tabindex="-1">
+    <div class="sc-modal-header">
+      <div><h2 id="att-add-title" class="sc-modal-title">원생 추가</h2><p id="att-add-sub" class="att-modal-subtitle"></p></div>
     </div>
-    <div style="margin-bottom:14px">
-      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">나이 (선택)</label>
-      <input type="number" id="att-add-age" placeholder="나이" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
-    </div>
-    <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:6px">상태 선택 (클릭 시 저장)</div>
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:8px">
+    <div class="sc-modal-body">
+      <div class="att-modal-field">
+        <label for="att-add-name">이름</label>
+        <input type="text" id="att-add-name" placeholder="학생 이름">
+      </div>
+      <div class="att-modal-field">
+        <label for="att-add-age">나이 (선택)</label>
+        <input type="number" id="att-add-age" placeholder="나이">
+      </div>
+      <div style="font-size:11px;font-weight:800;color:#374151;margin-bottom:6px">상태 선택 (클릭 시 저장)</div>
+      <div class="sc-modal-choice-grid">
       <button id="att-add-present" style="padding:10px;font-size:13px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:8px;cursor:pointer">✓ 출석</button>
       <button id="att-add-absent" style="padding:10px;font-size:13px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:8px;cursor:pointer">✗ 결석</button>
       <button id="att-add-bogang" style="padding:10px;font-size:13px;font-weight:800;background:#C4B5FD;color:#4C1D95;border:2px solid #7C3AED;border-radius:8px;cursor:pointer">🟪 보강</button>
       <button id="att-add-sample" style="padding:10px;font-size:13px;font-weight:800;background:#FDBA74;color:#7C2D12;border:2px solid #EA580C;border-radius:8px;cursor:pointer">🟧 샘플</button>
       <button id="att-add-hyuwon" style="padding:10px;font-size:13px;font-weight:800;background:#BAE6FD;color:#0369A1;border:2px solid #0EA5E9;border-radius:8px;cursor:pointer;grid-column:span 2">🏥 휴원</button>
+      </div>
     </div>
-    <button id="att-add-cancel" style="width:100%;padding:8px;font-size:12px;background:#F3F4F6;color:#6B7280;border:none;border-radius:8px;cursor:pointer">취소</button>
+    <div class="sc-modal-footer"><button id="att-add-cancel" data-sc-modal-close style="padding:8px 16px;font-size:12px;background:#F3F4F6;color:#6B7280;border:none;border-radius:8px;cursor:pointer">취소</button></div>
   </div>
 </div>
 
 <!-- 학생 편집 모달 (과거 스냅샷 편집 or 일반 편집) -->
-<div id="att-edit-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10001;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:16px;padding:22px;min-width:320px;max-width:380px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
-    <div style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111">✏️ 학생 편집</div>
-    <div id="att-edit-sub" style="font-size:11px;color:#6B7280;margin-bottom:14px"></div>
-    <div style="margin-bottom:10px">
-      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">이름</label>
-      <input type="text" id="att-edit-name" placeholder="학생 이름" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+<div id="att-edit-modal" class="sc-modal-backdrop" style="display:none;z-index:10001" data-sc-modal data-sc-close-function="_closeEditModal" aria-hidden="true">
+  <div class="sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="att-edit-title" tabindex="-1">
+    <div class="sc-modal-header">
+      <div><h2 id="att-edit-title" class="sc-modal-title">학생 편집</h2><p id="att-edit-sub" class="att-modal-subtitle"></p></div>
     </div>
-    <div style="margin-bottom:12px">
-      <label style="font-size:11px;font-weight:700;color:#374151;display:block;margin-bottom:4px">나이</label>
-      <input type="number" id="att-edit-age" placeholder="나이" style="width:100%;padding:10px;font-size:14px;border:1.5px solid #D1D5DB;border-radius:8px">
+    <div class="sc-modal-body">
+      <div class="att-modal-field">
+        <label for="att-edit-name">이름</label>
+        <input type="text" id="att-edit-name" placeholder="학생 이름">
+      </div>
+      <div class="att-modal-field">
+        <label for="att-edit-age">나이</label>
+        <input type="number" id="att-edit-age" placeholder="나이">
+      </div>
     </div>
-    <div style="display:flex;gap:6px">
+    <div class="sc-modal-footer">
       <button id="att-edit-delete" style="padding:10px 14px;font-size:13px;font-weight:700;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:8px;cursor:pointer">삭제</button>
       <button id="att-edit-cancel" style="padding:10px 14px;font-size:13px;font-weight:700;background:#F3F4F6;color:#6B7280;border:none;border-radius:8px;cursor:pointer;flex:1">취소</button>
       <button id="att-edit-save" style="padding:10px 14px;font-size:13px;font-weight:800;background:#F59E0B;color:#fff;border:none;border-radius:8px;cursor:pointer;flex:1">저장</button>
@@ -177,23 +220,24 @@
 </div>
 
 <!-- 출석 체크 모달 (셀 클릭 시 3개 버튼) -->
-<div id="att-cell-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:16px;padding:20px 22px;min-width:280px;max-width:340px;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
-    <div id="att-modal-title" style="font-size:18px;font-weight:900;margin-bottom:4px;color:#111;text-align:center"></div>
-    <div id="att-modal-sub" style="font-size:11px;color:#6B7280;margin-bottom:16px;text-align:center"></div>
-    <div style="display:flex;flex-direction:column;gap:8px">
+<div id="att-cell-modal" class="sc-modal-backdrop" style="display:none;z-index:10000" data-sc-modal data-sc-close-function="_closeAttModal" aria-hidden="true">
+  <div class="sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="att-modal-title" tabindex="-1">
+    <div class="sc-modal-header" style="justify-content:center;text-align:center">
+      <div><h2 id="att-modal-title" class="sc-modal-title"></h2><p id="att-modal-sub" class="att-modal-subtitle"></p></div>
+    </div>
+    <div class="sc-modal-body" style="display:flex;flex-direction:column;gap:8px">
       <button id="att-modal-present" style="padding:12px;font-size:15px;font-weight:800;background:#FEF08A;color:#713F12;border:2px solid #EAB308;border-radius:10px;cursor:pointer">✓ 출석</button>
       <button id="att-modal-absent" style="padding:12px;font-size:15px;font-weight:800;background:#FCA5A5;color:#7F1D1D;border:2px solid #DC2626;border-radius:10px;cursor:pointer">✗ 결석</button>
       <button id="att-modal-cancel" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#6B7280;border:2px solid #D1D5DB;border-radius:10px;cursor:pointer">○ 취소 (미체크)</button>
       <button id="att-modal-delete" data-perm="attendanceCheck" style="padding:12px;font-size:15px;font-weight:800;background:#fff;color:#DC2626;border:2px solid #DC2626;border-radius:10px;cursor:pointer">🗑️ 이 학생 삭제</button>
     </div>
-    <button id="att-modal-close" style="width:100%;margin-top:12px;padding:8px;font-size:12px;background:transparent;color:#9CA3AF;border:none;cursor:pointer">닫기</button>
+    <div class="sc-modal-footer"><button id="att-modal-close" data-sc-modal-close style="padding:8px 16px;font-size:12px;background:transparent;color:#6B7280;border:none;cursor:pointer">닫기</button></div>
   </div>
 </div>
 
-<div id="tab-modal" class="tab-modal">
-  <div class="tab-modal-box">
-    <div class="tab-modal-title">방특 시간표 만들기</div>
+<div id="tab-modal" class="tab-modal sc-modal-backdrop" data-sc-modal aria-hidden="true">
+  <div class="tab-modal-box sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="tab-modal-title" tabindex="-1">
+    <div id="tab-modal-title" class="tab-modal-title sc-modal-title">방특 시간표 만들기</div>
     <div class="tab-modal-btns tab-type-row">
       <button class="tab-type-btn" data-tab-type="regular" style="display:none">정규시간표</button>
       <button class="tab-type-btn active" data-tab-type="bangteuk">방특시간표</button>
@@ -208,16 +252,16 @@
       <div class="tab-period-field" data-tab-period-bangteuk style="display:none">
         <label class="tab-modal-label" for="tab-season-start">방특 운영 기간</label>
         <div class="tab-date-row">
-          <input id="tab-season-start" class="tab-modal-input" type="date">
-          <input id="tab-season-end" class="tab-modal-input" type="date">
+          <input id="tab-season-start" class="tab-modal-input" type="date" aria-label="방특 시작일">
+          <input id="tab-season-end" class="tab-modal-input" type="date" aria-label="방특 종료일">
         </div>
       </div>
     </div>
     <label class="tab-modal-label" for="tab-new-folder">폴더</label>
     <select id="tab-new-folder" class="tab-modal-input"></select>
-    <input id="tab-new-folder-name" class="tab-modal-input" placeholder="새 폴더 이름">
-    <div class="tab-modal-actions">
-      <button class="tab-modal-cancel" data-tab-cancel>취소</button>
+    <input id="tab-new-folder-name" class="tab-modal-input" placeholder="새 폴더 이름" aria-label="새 폴더 이름">
+    <div class="tab-modal-actions sc-modal-footer sc-modal-actions">
+      <button class="tab-modal-cancel" data-tab-cancel data-sc-modal-close>취소</button>
       <button class="tab-modal-create" data-tab-create>만들기</button>
     </div>
   </div>
@@ -226,23 +270,23 @@
 <div id="tab-bar" class="tab-bar"></div>
 <div id="snap-banner" class="snap-banner">📷 스냅샷 — 읽기 전용 (캡처 시점 그대로 고정)</div>
 
-<div class="page">
-  <div id="mobile-schedule-view" class="mobile-schedule-view" aria-label="모바일 시간표">
+<main id="sc-main-content" class="page" tabindex="-1">
+  <div id="mobile-schedule-view" class="mobile-schedule-view" role="region" aria-label="모바일 시간표">
     <div class="mobile-schedule-head">
       <div>
         <strong id="mobile-schedule-title">모바일 시간표</strong>
         <span id="mobile-schedule-sub"></span>
       </div>
-      <button type="button" id="mobile-schedule-table-toggle" onclick="toggleMobileTableView()">표 보기</button>
+      <button type="button" id="mobile-schedule-table-toggle" aria-pressed="false" onclick="toggleMobileTableView()">표 보기</button>
     </div>
-    <div id="mobile-schedule-days" class="mobile-schedule-days"></div>
+    <div id="mobile-schedule-days" class="mobile-schedule-days" aria-label="요일 선택"></div>
     <div id="mobile-schedule-body" class="mobile-schedule-body">
       <div class="mobile-schedule-none">지점을 선택하면 모바일 시간표가 표시됩니다.</div>
     </div>
   </div>
   <div id="tab-regular" class="tbl-outer"><div id="tbl"></div></div>
   <div id="scroll-proxy" class="tbl-scroll-proxy"><div class="tbl-scroll-proxy-inner" id="scroll-proxy-inner"></div></div>
-</div>
+</main>
 
 <div id="move-bar" class="move-bar" style="display:none">
   <span id="move-msg"></span>
@@ -254,12 +298,12 @@
 <div id="cell-tip" class="cell-tip"></div>
 
 <!-- [v118] 퇴원 기록 모달 -->
-<div id="retire-history-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeRetireHistoryModal()">
-  <div class="modal" style="max-width:880px;width:95vw">
-    <div class="modal-hd">📋 퇴원 기록
-      <div class="modal-hd-r" style="display:flex;gap:6px;align-items:center">
-        <input id="rh-search" type="search" placeholder="이름/메모 검색" class="fi" style="width:160px;margin:0;padding:4px 8px;font-size:12px" oninput="renderRetireHistoryList()">
-        <select id="rh-sort" class="fi" style="width:130px;margin:0;padding:4px 8px;font-size:12px" onchange="renderRetireHistoryList()">
+<div id="retire-history-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closeRetireHistoryModal" aria-hidden="true" onclick="if(event.target===this)closeRetireHistoryModal()">
+  <div class="modal sc-modal-dialog sc-modal-lg" role="dialog" aria-modal="true" aria-labelledby="retire-history-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header"><span id="retire-history-title" class="sc-modal-title">📋 퇴원 기록</span>
+      <div class="modal-hd-r sc-modal-tools" style="display:flex;gap:6px;align-items:center">
+        <input id="rh-search" type="search" placeholder="이름/메모 검색" aria-label="퇴원 기록 검색" class="fi" style="width:160px;margin:0;padding:4px 8px;font-size:12px" oninput="renderRetireHistoryList()">
+        <select id="rh-sort" class="fi" aria-label="퇴원 기록 정렬" style="width:130px;margin:0;padding:4px 8px;font-size:12px" onchange="renderRetireHistoryList()">
           <option value="recent">기록순 (최신)</option>
           <option value="retired">퇴원일순 (최신)</option>
           <option value="oldest">기록순 (오래된)</option>
@@ -267,22 +311,22 @@
         <button class="btn btn-o" onclick="exportRetireHistoryCsv()" style="padding:4px 10px;font-size:11px">📥 CSV</button>
       </div>
     </div>
-    <div class="modal-body" style="max-height:60vh;overflow:auto">
+    <div class="modal-body sc-modal-body" style="max-height:60vh;overflow:auto">
       <div id="rh-summary" style="font-size:11px;color:#666;margin-bottom:8px"></div>
       <div id="rh-list"></div>
     </div>
-    <div class="modal-ft">
-      <button class="btn btn-o" onclick="closeRetireHistoryModal()">닫기</button>
+    <div class="modal-ft sc-modal-footer">
+      <button class="btn btn-o" data-sc-modal-close onclick="closeRetireHistoryModal()">닫기</button>
     </div>
   </div>
 </div>
 
-<div id="record-manager-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeRecordManagerModal()">
-  <div class="modal record-modal">
-    <div class="modal-hd">📋 기록관리
-      <div class="modal-hd-r record-toolbar">
-        <input id="record-search" type="search" placeholder="이름/내용 검색" class="fi record-search" oninput="changeRecordFilter()">
-        <select id="record-type" class="fi record-select" onchange="changeRecordFilter()">
+<div id="record-manager-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closeRecordManagerModal" aria-hidden="true" onclick="if(event.target===this)closeRecordManagerModal()">
+  <div class="modal record-modal sc-modal-dialog sc-modal-xl" role="dialog" aria-modal="true" aria-labelledby="record-manager-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header"><span id="record-manager-title" class="sc-modal-title">📋 기록관리</span>
+      <div class="modal-hd-r record-toolbar sc-modal-tools">
+        <input id="record-search" type="search" placeholder="이름/내용 검색" aria-label="기록 검색" class="fi record-search" oninput="changeRecordFilter()">
+        <select id="record-type" class="fi record-select" aria-label="기록 종류" onchange="changeRecordFilter()">
           <option value="all">전체 기록</option>
           <option value="move">이동 로그</option>
           <option value="edit">편집 로그</option>
@@ -290,67 +334,67 @@
           <option value="delete">삭제 안전기록</option>
           <option value="restore">되돌리기 기록</option>
         </select>
-        <input id="record-month" type="month" class="fi record-month" title="월별 필터" onchange="changeRecordFilter()">
-        <input id="record-date" type="date" class="fi record-date" title="날짜별 필터" onchange="changeRecordFilter()">
+        <input id="record-month" type="month" class="fi record-month" title="월별 필터" aria-label="기록 월 필터" onchange="changeRecordFilter()">
+        <input id="record-date" type="date" class="fi record-date" title="날짜별 필터" aria-label="기록 날짜 필터" onchange="changeRecordFilter()">
         <button class="btn btn-o record-clear" onclick="clearRecordDateFilters()">초기화</button>
       </div>
     </div>
-    <div class="modal-body record-body">
+    <div class="modal-body record-body sc-modal-body">
       <div id="record-summary" class="record-summary"></div>
       <div id="record-list" class="record-list"></div>
     </div>
-    <div class="modal-ft">
+    <div class="modal-ft sc-modal-footer">
       <button class="btn btn-o" onclick="exportRecordManagerCsv()">📥 CSV</button>
-      <button class="btn btn-o" onclick="closeRecordManagerModal()">닫기</button>
+      <button class="btn btn-o" data-sc-modal-close onclick="closeRecordManagerModal()">닫기</button>
     </div>
   </div>
 </div>
 
-<div id="teacher-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeTeacherModal()">
-  <div class="modal" style="max-width:480px">
-    <div class="modal-hd">👥 선생님 관리</div>
-    <div class="modal-body">
+<div id="teacher-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closeTeacherModal" aria-hidden="true" onclick="if(event.target===this)closeTeacherModal()">
+  <div class="modal sc-modal-dialog sc-modal-md" role="dialog" aria-modal="true" aria-labelledby="teacher-modal-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header"><span id="teacher-modal-title" class="sc-modal-title">👥 선생님 관리</span></div>
+    <div class="modal-body sc-modal-body">
       <div id="tm-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
-      <button class="btn btn-p" onclick="addTeacher()" style="width:100%;padding:8px">＋ 선생님 추가</button>
+      <button class="btn btn-p" onclick="trackTeacherOperation(addTeacher())" style="width:100%;padding:8px">＋ 선생님 추가</button>
       <div style="margin-top:10px;font-size:10px;color:#888;line-height:1.5">
         • 이름을 수정하고 Enter/포커스 해제하면 시간표의 모든 셀이 자동으로 업데이트됩니다<br>
         • 이미 배정된 선생님은 삭제할 수 없어요. 먼저 셀에서 선생님을 해제해주세요
       </div>
     </div>
-    <div class="modal-ft">
-      <button class="btn btn-o" onclick="closeTeacherModal()">닫기</button>
+    <div class="modal-ft sc-modal-footer">
+      <button class="btn btn-o" data-sc-modal-close onclick="closeTeacherModal()">닫기</button>
     </div>
   </div>
 </div>
 
-<div id="closed-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closeClosedModal()">
-  <div class="modal">
-    <div class="modal-hd">📅 휴관일/의무보강일 관리
-      <div class="modal-hd-r">
-        <select id="cm-year" class="fi" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderClosedList()"></select>
+<div id="closed-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closeClosedModal" aria-hidden="true" onclick="if(event.target===this)closeClosedModal()">
+  <div class="modal sc-modal-dialog sc-modal-md" role="dialog" aria-modal="true" aria-labelledby="closed-modal-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header"><span id="closed-modal-title" class="sc-modal-title">📅 휴관일/의무보강일 관리</span>
+      <div class="modal-hd-r sc-modal-tools">
+        <select id="cm-year" class="fi" aria-label="휴관일 관리 연도" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderClosedList()"></select>
       </div>
     </div>
-    <div class="modal-body">
+    <div class="modal-body sc-modal-body">
       <div style="display:flex;gap:6px;margin-bottom:12px">
         <div style="flex:1">
-          <label class="fl">시작일</label>
+          <label class="fl" for="cm-start">시작일</label>
           <input type="date" id="cm-start" class="fi">
         </div>
         <div style="flex:1">
-          <label class="fl">종료일 (단일이면 비워두기)</label>
+          <label class="fl" for="cm-end">종료일 (단일이면 비워두기)</label>
           <input type="date" id="cm-end" class="fi">
         </div>
       </div>
       <div style="display:flex;gap:6px;margin-bottom:12px;align-items:end">
         <div style="flex:1">
-          <label class="fl">유형</label>
+          <label class="fl" for="cm-type">유형</label>
           <select id="cm-type" class="fi" style="padding:7px 8px">
             <option value="휴관">휴관</option>
             <option value="의무보강">의무보강</option>
           </select>
         </div>
         <div style="flex:1">
-          <label class="fl">메모 (선택)</label>
+          <label class="fl" for="cm-memo">메모 (선택)</label>
           <input id="cm-memo" class="fi" placeholder="예: 설 연휴">
         </div>
         <button class="btn btn-p" onclick="addClosedEntry()" style="margin-bottom:0;height:36px">추가</button>
@@ -360,31 +404,31 @@
         <ul id="cm-list" class="closed-list"></ul>
       </div>
     </div>
-    <div class="modal-ft">
-      <button class="btn btn-o" onclick="closeClosedModal()">닫기</button>
+    <div class="modal-ft sc-modal-footer">
+      <button class="btn btn-o" data-sc-modal-close onclick="closeClosedModal()">닫기</button>
     </div>
   </div>
 </div>
 
-<div id="period-modal" class="modal-bg" style="display:none" onclick="if(event.target===this)closePeriodModal()">
-  <div class="modal" style="max-width:520px">
-    <div class="modal-hd">📆 수업 기간 관리
-      <div class="modal-hd-r">
-        <select id="pm-year" class="fi" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderPeriodList()"></select>
+<div id="period-modal" class="modal-bg sc-modal-backdrop" style="display:none" data-sc-modal data-sc-close-function="closePeriodModal" aria-hidden="true" onclick="if(event.target===this)closePeriodModal()">
+  <div class="modal sc-modal-dialog sc-modal-md" role="dialog" aria-modal="true" aria-labelledby="period-modal-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header"><span id="period-modal-title" class="sc-modal-title">📆 수업 기간 관리</span>
+      <div class="modal-hd-r sc-modal-tools">
+        <select id="pm-year" class="fi" aria-label="수업 기간 관리 연도" style="width:90px;margin:0;padding:4px 8px;font-size:12px" onchange="renderPeriodList()"></select>
       </div>
     </div>
-    <div class="modal-body">
+    <div class="modal-body sc-modal-body">
       <div style="display:flex;gap:6px;margin-bottom:12px;align-items:end">
         <div style="width:50px">
-          <label class="fl">월</label>
+          <label class="fl" for="pm-month">월</label>
           <input type="number" id="pm-month" class="fi" min="1" max="12" placeholder="월" style="padding:7px 4px;text-align:center">
         </div>
         <div style="flex:1">
-          <label class="fl">시작일</label>
+          <label class="fl" for="pm-start">시작일</label>
           <input type="date" id="pm-start" class="fi">
         </div>
         <div style="flex:1">
-          <label class="fl">종료일</label>
+          <label class="fl" for="pm-end">종료일</label>
           <input type="date" id="pm-end" class="fi">
         </div>
         <button class="btn btn-p" onclick="addPeriodEntry()" style="height:36px">추가</button>
@@ -394,13 +438,13 @@
         <ul id="pm-list" class="closed-list"></ul>
       </div>
     </div>
-    <div class="modal-ft">
-      <button class="btn btn-o" onclick="closePeriodModal()">닫기</button>
+    <div class="modal-ft sc-modal-footer">
+      <button class="btn btn-o" data-sc-modal-close onclick="closePeriodModal()">닫기</button>
     </div>
   </div>
 </div>
 
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
 <script>scJs('js/schedule-time.js')</script>
@@ -414,6 +458,6 @@
 <script>scJs('js/print.js')</script>
 <script>scJs('js/defaults.js')</script>
 <script>scJs('js/init.js')</script>
-
+<script>scJs('js/mobile-toolbar.js')</script>
 </body>
 </html>

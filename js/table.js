@@ -662,20 +662,28 @@ async function _deleteEditModal(){
 function toggleAttendanceMode(){
   _attendanceMode=!_attendanceMode;
   const bar=document.getElementById('attendance-bar');
-  const btn=document.getElementById('attendance-toggle-btn');
+  const buttons=[document.getElementById('attendance-toggle-btn'),document.getElementById('attendance-mobile-btn')].filter(Boolean);
   if(_attendanceMode){
     if(!_attendanceDate) _attendanceDate=toDateStr(getToday());
     document.getElementById('att-date-input').value=_attendanceDate;
     bar.style.display='flex';
-    btn.style.background='rgba(255,255,255,0.3)';
-    btn.style.fontWeight='900';
+    buttons.forEach(btn=>{
+      btn.classList.add('active');
+      btn.style.fontWeight='900';
+      btn.setAttribute('aria-pressed','true');
+      if(btn.id==='attendance-mobile-btn') btn.textContent='출석부 닫기';
+    });
     // 오늘 스냅샷 저장
     _ensureTodaySnapshot();
   } else {
     _attSnapshotRefreshSeq++;
     bar.style.display='none';
-    btn.style.background='';
-    btn.style.fontWeight='';
+    buttons.forEach(btn=>{
+      btn.classList.remove('active');
+      btn.style.fontWeight='';
+      btn.setAttribute('aria-pressed','false');
+      if(btn.id==='attendance-mobile-btn') btn.textContent='출석부';
+    });
     _attBatchMode=false;
     _attBatchTargets.clear();
     document.body.classList.remove('att-batch-on');
@@ -2502,7 +2510,9 @@ function _mobileRenderTimeCard(ctx,t,day,lanes){
 function _updateMobileTableButton(){
   const btn=document.getElementById('mobile-schedule-table-toggle');
   if(!btn) return;
-  btn.textContent=document.body.classList.contains('mobile-table-mode')?'모바일뷰':'표 보기';
+  const tableMode=document.body.classList.contains('mobile-table-mode');
+  btn.textContent=tableMode?'모바일뷰':'표 보기';
+  btn.setAttribute('aria-pressed',tableMode?'true':'false');
 }
 function toggleMobileTableView(){
   document.body.classList.toggle('mobile-table-mode');
@@ -2531,7 +2541,7 @@ function renderMobileScheduleView(ctx){
   if(title) title.textContent=_mobileTabLabel()||'모바일 시간표';
   if(sub) sub.textContent=(dateHeaders[day]&&dateHeaders[day].label)?dateHeaders[day].label:day;
   if(daysEl){
-    daysEl.innerHTML=days.map(d=>`<button type="button" class="${d===day?'active':''}" data-mobile-day="${esc(d)}">${esc(d)}</button>`).join('');
+    daysEl.innerHTML=days.map(d=>`<button type="button" class="${d===day?'active':''}" data-mobile-day="${esc(d)}" aria-pressed="${d===day?'true':'false'}">${esc(d)}</button>`).join('');
     daysEl.querySelectorAll('[data-mobile-day]').forEach(btn=>{
       btn.onclick=()=>setMobileScheduleDay(btn.dataset.mobileDay||'');
     });
@@ -2552,9 +2562,9 @@ function updateParentReqCount(){
   const pending=Object.values(REQUESTS||{}).filter(r=>!r.status||r.status==='pending').length;
   if(pending>0){
     btn.textContent=pending;
-    btn.style.display='inline-block';
+    btn.hidden=false;
   } else {
-    btn.style.display='none';
+    btn.hidden=true;
   }
 }
 

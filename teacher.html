@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>가경 수영장 - 선생님 승인 페이지</title>
+<title>슈퍼차일드 수영장 - 보강 요청</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <script>
@@ -25,17 +25,23 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/navigation.js')</script>
+<script>scJs('js/modal-system.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>scCss('ui-tokens.css')</script>
 <script>scCss('auth.css')</script>
 <script>scCss('parent.css')</script>
 <script>scCss('teacher.css')</script>
+<script>scCss('modal-system.css')</script>
+<script>scCss('ui-accessibility.css')</script>
 </head>
 <body>
+<a class="sc-skip-link" href="#teacher-main">보강 요청 본문으로 이동</a>
 
 <!-- [v118] 지점 선택 모달 -->
-<div id="branch-modal" class="branch-modal">
-  <div class="branch-modal-box">
-    <h2 class="branch-modal-title">🏊 지점을 선택하세요</h2>
+<div id="branch-modal" class="branch-modal sc-modal-backdrop" data-sc-modal data-sc-modal-required="true" aria-hidden="true">
+  <div class="branch-modal-box sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="branch-modal-title" tabindex="-1">
+    <h2 id="branch-modal-title" class="branch-modal-title sc-modal-title">🏊 지점을 선택하세요</h2>
     <div class="branch-modal-btns">
       <button class="branch-btn" onclick="selectBranch('gagyeong')">
         <span class="branch-emoji">🏢</span>
@@ -49,29 +55,43 @@
   </div>
 </div>
 
+<header class="sc-page-header teacher-topbar">
+  <div class="sc-page-brand"><strong>슈퍼차일드 수영장</strong><span>보강 요청</span></div>
+  <nav class="sc-page-nav" aria-label="직원 메뉴">
+    <button type="button" class="sc-nav-btn" data-sc-nav="schedule" onclick="SCNav.go('schedule')">시간표</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="requests" onclick="SCNav.go('requests')">보강 요청</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="desk" onclick="SCNav.go('desk')">데스크</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="settings" onclick="SCNav.go('settings')">설정</button>
+  </nav>
+  <div class="sc-page-account">
+    <label class="sc-branch-picker">
+      <span>지점</span>
+      <select data-sc-branch-select onchange="SCNav.changeBranch(this.value)" aria-label="지점 변경">
+        <option value="gagyeong">가경점</option>
+        <option value="yongam">용암점</option>
+      </select>
+    </label>
+    <span class="sc-account-badge" data-auth-role></span>
+    <span class="sc-account-name" data-auth-name></span>
+    <button type="button" class="sc-header-btn" onclick="SCAuth.signOut()">로그아웃</button>
+  </div>
+</header>
+
+<main id="teacher-main" tabindex="-1">
 <!-- 선생님 선택 화면 -->
 <div id="teacher-select-screen" class="screen">
   <div class="login-box">
     <div class="logo">🏫</div>
-    <h1>가경 수영장</h1>
-    <p class="subtitle">선생님 승인 페이지</p>
-    <div class="teacher-auth-line">
-      <span data-auth-role></span>
-      <span data-auth-email></span>
-      <button type="button" onclick="SCAuth.signOut()">계정 로그아웃</button>
-    </div>
-    <div style="text-align:center;margin-bottom:8px">
-      <button onclick="openBranchModal()" style="background:transparent;border:1px dashed #9CA3AF;color:#6B7280;padding:4px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit">⇄ 지점 변경</button>
-    </div>
+    <h1 data-sc-branch-label>가경점</h1>
+    <p class="subtitle">담당 선생님을 선택해주세요</p>
     <div id="pending-teachers" class="pending-teachers"></div>
     <div class="form-group">
-      <label>담당 선생님 선택</label>
+      <label for="teacher-pick">담당 선생님 선택</label>
       <select id="teacher-pick" class="bg-select">
         <option value="">선택하세요</option>
       </select>
     </div>
     <button id="teacher-enter" class="btn-primary">입장</button>
-    <button id="teacher-all" class="btn-secondary" onclick="(function(){var b=new URLSearchParams(location.search).get('branch')||localStorage.getItem('selected_branch')||'';location.href='desk.html'+(b?'?branch='+b:'');})()">데스크 페이지</button>
   </div>
 </div>
 
@@ -82,23 +102,25 @@
       <div class="child-name" id="teacher-display"></div>
       <div class="child-info" id="teacher-stats"></div>
     </div>
-    <button id="teacher-logout" class="btn-icon">🚪</button>
+    <button id="teacher-logout" class="teacher-change-btn" type="button">선생님 변경</button>
   </div>
 
   <div class="container">
-    <div class="tab-row">
-      <button class="tab-btn active" data-tab="bogang">보강 신청 <span id="cnt-bogang" class="cnt-badge">0</span></button>
-      <button class="tab-btn" data-tab="cancel">보강 취소 <span id="cnt-cancel" class="cnt-badge">0</span></button>
+    <div class="tab-row" role="tablist" aria-label="보강 요청 종류">
+      <button id="teacher-tab-bogang" class="tab-btn active" role="tab" aria-selected="true" aria-controls="bogang-list" data-tab="bogang">보강 신청 <span id="cnt-bogang" class="cnt-badge">0</span></button>
+      <button id="teacher-tab-cancel" class="tab-btn" role="tab" aria-selected="false" aria-controls="cancel-list" tabindex="-1" data-tab="cancel">보강 취소 <span id="cnt-cancel" class="cnt-badge">0</span></button>
     </div>
 
-    <div id="bogang-list" class="req-list"></div>
+    <div id="bogang-list" class="req-list" role="tabpanel" aria-labelledby="teacher-tab-bogang" aria-hidden="false"></div>
     <div id="bogang-history" class="history-panel"></div>
-    <div id="cancel-list" class="req-list" style="display:none"></div>
+    <div id="cancel-list" class="req-list" role="tabpanel" aria-labelledby="teacher-tab-cancel" aria-hidden="true" style="display:none"></div>
   </div>
 </div>
 
+</main>
+
 <!-- 토스트 -->
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>scJs('js/schedule-time.js')</script>
 <script>scJs('js/auth-guard.js')</script>

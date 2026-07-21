@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>슈퍼차일드 - 데스크 요청 현황</title>
+<title>슈퍼차일드 수영장 - 데스크</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <script>
@@ -25,16 +25,22 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/navigation.js')</script>
+<script>scJs('js/modal-system.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>scCss('ui-tokens.css')</script>
 <script>scCss('auth.css')</script>
 <script>scCss('parent.css')</script>
 <script>scCss('desk.css')</script>
+<script>scCss('modal-system.css')</script>
+<script>scCss('ui-accessibility.css')</script>
 </head>
 <body>
+<a class="sc-skip-link" href="#desk-app">데스크 요청 본문으로 이동</a>
 
-<div id="branch-modal" class="branch-modal">
-  <div class="branch-modal-box">
-    <h2 class="branch-modal-title">지점을 선택하세요</h2>
+<div id="branch-modal" class="branch-modal sc-modal-backdrop" data-sc-modal data-sc-modal-required="true" aria-hidden="true">
+  <div class="branch-modal-box sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="branch-modal-title" tabindex="-1">
+    <h2 id="branch-modal-title" class="branch-modal-title sc-modal-title">지점을 선택하세요</h2>
     <div class="branch-modal-btns">
       <button class="branch-btn" onclick="selectBranch('gagyeong')">
         <span class="branch-name">가경점</span>
@@ -46,50 +52,68 @@
   </div>
 </div>
 
-<main id="desk-app" class="desk-screen" style="display:none">
-  <header class="desk-header">
-    <div>
-      <div class="desk-eyebrow">데스크 요청 현황</div>
-      <h1 id="desk-title">요청 현황</h1>
-      <p id="desk-sync">연결 준비 중</p>
-    </div>
-    <div class="desk-actions">
-      <button type="button" onclick="openBranchModal()">지점 변경</button>
-      <button type="button" onclick="SCAuth.signOut()">로그아웃</button>
+<main id="desk-app" class="desk-screen" tabindex="-1" style="display:none">
+  <header class="desk-header sc-page-header">
+    <div class="sc-page-brand"><strong>슈퍼차일드 수영장</strong><span>데스크</span></div>
+    <nav class="sc-page-nav" aria-label="직원 메뉴">
+      <button type="button" class="sc-nav-btn" data-sc-nav="schedule" onclick="SCNav.go('schedule')">시간표</button>
+      <button type="button" class="sc-nav-btn" data-sc-nav="requests" onclick="SCNav.go('requests')">보강 요청</button>
+      <button type="button" class="sc-nav-btn" data-sc-nav="desk" onclick="SCNav.go('desk')">데스크</button>
+      <button type="button" class="sc-nav-btn" data-sc-nav="settings" onclick="SCNav.go('settings')">설정</button>
+    </nav>
+    <div class="sc-page-account">
+      <label class="sc-branch-picker">
+        <span>지점</span>
+        <select data-sc-branch-select onchange="SCNav.changeBranch(this.value)" aria-label="지점 변경">
+          <option value="gagyeong">가경점</option>
+          <option value="yongam">용암점</option>
+        </select>
+      </label>
+      <span class="sc-account-badge" data-auth-role></span>
+      <span class="sc-account-name" data-auth-name></span>
+      <button type="button" class="sc-header-btn" onclick="SCAuth.signOut()">로그아웃</button>
     </div>
   </header>
 
-  <section class="desk-summary">
-    <div class="desk-stat urgent">
-      <span class="stat-label">결석 요청 대기</span>
-      <strong id="cancel-count">0</strong>
-    </div>
-    <div class="desk-stat">
-      <span class="stat-label">오늘 이후 결석</span>
-      <strong id="absent-count">0</strong>
-    </div>
-  </section>
+  <div class="desk-content">
+    <section class="desk-page-heading">
+      <div class="desk-eyebrow">데스크 요청 현황</div>
+      <h1 id="desk-title">요청 현황</h1>
+      <p id="desk-sync" role="status" aria-live="polite">연결 준비 중</p>
+    </section>
 
-  <section class="desk-grid">
-    <article class="desk-panel">
-      <div class="panel-head">
-        <h2>결석 요청 현황</h2>
-        <span>승인 대기</span>
+    <section class="desk-summary">
+      <div class="desk-stat urgent">
+        <span class="stat-label">결석 요청 대기</span>
+        <strong id="cancel-count">0</strong>
       </div>
-      <div id="cancel-list" class="desk-list"></div>
-    </article>
+      <div class="desk-stat">
+        <span class="stat-label">오늘 이후 결석</span>
+        <strong id="absent-count">0</strong>
+      </div>
+    </section>
 
-    <article class="desk-panel">
-      <div class="panel-head">
-        <h2>결석 현황</h2>
-        <span>오늘 이후</span>
-      </div>
-      <div id="absent-list" class="desk-list"></div>
-    </article>
-  </section>
+    <section class="desk-grid">
+      <article class="desk-panel">
+        <div class="panel-head">
+          <h2>결석 요청 현황</h2>
+          <span>승인 대기</span>
+        </div>
+        <div id="cancel-list" class="desk-list"></div>
+      </article>
+
+      <article class="desk-panel">
+        <div class="panel-head">
+          <h2>결석 현황</h2>
+          <span>오늘 이후</span>
+        </div>
+        <div id="absent-list" class="desk-list"></div>
+      </article>
+    </section>
+  </div>
 </main>
 
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>scJs('js/schedule-time.js')</script>
 <script>scJs('js/auth-guard.js')</script>

@@ -1784,17 +1784,24 @@ document.addEventListener('DOMContentLoaded',()=>{ setTableZoom(getTableZoom(), 
 function setTimeMachine(val){
   if(!val){resetTimeMachine();return;}
   _fakeDate = val+'T12:00:00';
-  document.getElementById('tm-reset').style.display='inline-flex';
-  document.getElementById('tm-date').style.border='2px solid #FCD34D';
+  const desktopDate=document.getElementById('tm-date');
+  const mobileDate=document.getElementById('mobile-tm-date');
+  const resetButton=document.getElementById('tm-reset');
+  if(desktopDate){desktopDate.value=val;desktopDate.style.border='2px solid #FCD34D';}
+  if(mobileDate){mobileDate.value=val;mobileDate.classList.add('active');}
+  if(resetButton) resetButton.style.display='inline-flex';
   document.body.classList.add('is-timemachine');
   buildTable();
   toast('🕐 타임머신: '+val+' (읽기 전용)','ok');
 }
 function resetTimeMachine(){
   _fakeDate=null;
-  document.getElementById('tm-date').value='';
-  document.getElementById('tm-reset').style.display='none';
-  document.getElementById('tm-date').style.border='';
+  const desktopDate=document.getElementById('tm-date');
+  const mobileDate=document.getElementById('mobile-tm-date');
+  const resetButton=document.getElementById('tm-reset');
+  if(desktopDate){desktopDate.value='';desktopDate.style.border='';}
+  if(mobileDate){mobileDate.value='';mobileDate.classList.remove('active');}
+  if(resetButton) resetButton.style.display='none';
   document.body.classList.remove('is-timemachine');
   buildTable();
   toast('현재 시간으로 복원','ok');

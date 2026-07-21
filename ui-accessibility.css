@@ -1,0 +1,77 @@
+.sc-sr-only{
+  position:absolute!important;
+  width:1px!important;
+  height:1px!important;
+  padding:0!important;
+  margin:-1px!important;
+  overflow:hidden!important;
+  clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important;
+  border:0!important;
+}
+
+.sc-skip-link{
+  position:fixed;
+  top:8px;
+  left:12px;
+  z-index:100001;
+  min-height:40px;
+  display:inline-flex;
+  align-items:center;
+  padding:0 14px;
+  border:2px solid #fff;
+  border-radius:var(--sc-radius-sm,6px);
+  background:var(--sc-text,#172033);
+  color:#fff;
+  font-size:13px;
+  font-weight:900;
+  text-decoration:none;
+  box-shadow:var(--sc-shadow-md,0 10px 30px rgba(15,23,42,.16));
+  transform:translateY(-140%);
+  transition:transform .15s ease;
+}
+
+.sc-skip-link:focus{transform:translateY(0)}
+
+:where(a,button,input,select,textarea,[tabindex]:not([tabindex="-1"])):focus-visible{
+  outline:3px solid var(--sc-focus,rgba(15,157,88,.24))!important;
+  outline-offset:2px!important;
+}
+
+:where(button,input,select,textarea)[disabled],
+:where(button,[role="button"])[aria-disabled="true"]{
+  cursor:not-allowed!important;
+  opacity:.56;
+}
+
+[aria-busy="true"]{cursor:wait}
+
+:where(button,.btn,.quick-btn,.nav-btn,.sc-nav-btn,.sc-header-btn){
+  overflow-wrap:anywhere;
+}
+
+:where(main,section,[role="main"])[tabindex="-1"]:focus{
+  outline:none!important;
+}
+
+@media (pointer:coarse){
+  :where(.sc-modal-footer,.modal-actions,.panel-actions,.dashboard-actions,.login-box,.feedback-actions) button,
+  .settings-nav .nav-btn{
+    min-height:44px;
+  }
+}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    scroll-behavior:auto!important;
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.01ms!important;
+  }
+}
+
+@media (forced-colors:active){
+  :where(button,a,input,select,textarea):focus-visible{outline-color:Highlight!important}
+  :where(button,[role="button"])[aria-disabled="true"]{color:GrayText}
+  .sc-nav-count,.nav-badge,.quick-badge{border:1px solid ButtonText}
+}

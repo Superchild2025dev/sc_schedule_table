@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>SC 수영장 설정</title>
+<title>슈퍼차일드 수영장 - 설정</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/favicon.png">
 <script>
@@ -25,96 +25,136 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/navigation.js')</script>
+<script>scJs('js/modal-system.js')</script>
 <script>scJs('js/summer-layout-2026.js')</script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>scCss('ui-tokens.css')</script>
 <script>scCss('auth.css')</script>
 <script>scCss('settings.css')</script>
+<script>scCss('modal-system.css')</script>
+<script>scCss('ui-accessibility.css')</script>
 </head>
 <body>
-<header class="settings-topbar">
+<a class="sc-skip-link" href="#settings-main">설정 본문으로 이동</a>
+<header class="settings-topbar sc-page-header">
   <div class="settings-brand">
-    <strong>SC 설정</strong>
-    <span id="settings-branch-title">가경점</span>
+    <strong>슈퍼차일드 수영장</strong>
+    <span><span id="settings-branch-title">가경점</span> · <span id="settings-panel-title">운영 도구</span></span>
   </div>
+  <nav class="sc-page-nav" aria-label="직원 메뉴">
+    <button type="button" class="sc-nav-btn" data-sc-nav="schedule" onclick="SCNav.go('schedule')">시간표</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="requests" onclick="SCNav.go('requests')">보강 요청</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="desk" onclick="SCNav.go('desk')">데스크</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="settings" onclick="SCNav.go('settings')">설정</button>
+  </nav>
   <div class="settings-top-actions">
-    <button type="button" class="top-btn" data-open-action="schedule">시간표</button>
-    <span class="staff-auth-role" data-auth-role></span>
-    <span class="staff-auth-email" data-auth-email></span>
-    <button type="button" class="top-btn" onclick="SCAuth.signOut()">로그아웃</button>
+    <label class="sc-branch-picker">
+      <span>지점</span>
+      <select data-sc-branch-select onchange="SCNav.changeBranch(this.value)" aria-label="지점 변경">
+        <option value="gagyeong">가경점</option>
+        <option value="yongam">용암점</option>
+      </select>
+    </label>
+    <span class="sc-account-badge" data-auth-role></span>
+    <span class="sc-account-name" data-auth-name></span>
+    <button type="button" class="sc-header-btn" onclick="SCAuth.signOut()">로그아웃</button>
   </div>
 </header>
 
-<main class="settings-shell">
-  <aside class="settings-nav">
-    <button type="button" class="nav-btn active" data-panel="menu">운영 메뉴</button>
-    <button type="button" class="nav-btn" data-panel="students" data-perm="manageSettings">원생목록</button>
-    <button type="button" class="nav-btn" data-panel="backup" data-perm="manageSettings">백업 관리</button>
-    <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">의견접수 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
-    <button type="button" class="nav-btn" data-panel="recipients" data-perm="manageSettings">수신번호</button>
-    <button type="button" class="nav-btn" data-panel="templates" data-perm="manageSettings">템플릿</button>
-    <button type="button" class="nav-btn" data-panel="aligo" data-perm="manageSettings">알림톡 설정</button>
-    <button type="button" class="nav-btn" data-panel="sms" data-perm="manageSettings">문자 설정</button>
+<main id="settings-main" class="settings-shell" tabindex="-1">
+  <aside class="settings-nav" aria-label="설정 메뉴">
+    <div class="settings-nav-heading">설정 메뉴</div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">운영</div>
+      <button type="button" class="nav-btn active" data-panel="menu">운영 도구</button>
+      <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">의견접수 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">원생</div>
+      <button type="button" class="nav-btn" data-panel="students" data-perm="manageSettings">원생목록</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">메시지</div>
+      <button type="button" class="nav-btn" data-panel="recipients" data-perm="manageSettings">수신번호</button>
+      <button type="button" class="nav-btn" data-panel="templates" data-perm="manageSettings">알림톡 템플릿</button>
+      <button type="button" class="nav-btn" data-panel="aligo" data-perm="manageSettings">알림톡 연결</button>
+      <button type="button" class="nav-btn" data-panel="sms" data-perm="manageSettings">문자 연결</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">시스템</div>
+      <button type="button" class="nav-btn" data-panel="backup" data-perm="manageSettings">백업 관리</button>
+    </div>
   </aside>
 
   <section class="settings-main">
-    <div class="branch-tabs" id="branch-tabs">
-      <button type="button" class="branch-tab active" data-branch="gagyeong">가경점</button>
-      <button type="button" class="branch-tab" data-branch="yongam">용암점</button>
-    </div>
-
     <section class="settings-panel active" id="panel-menu">
       <div class="panel-head">
         <div>
-          <h1>운영 메뉴</h1>
-          <p>관리 기능을 이 페이지에서 열어요.</p>
+          <h1>운영 도구</h1>
+          <p>자주 사용하는 업무를 종류별로 모았습니다.</p>
         </div>
       </div>
-      <div class="quick-grid">
-        <button type="button" class="quick-btn" data-open-action="records" data-perm="manageRecords">
-          <span>기록관리</span><small>이동/편집 로그</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="teachers" data-perm="manageTeachers">
-          <span>선생님 관리</span><small>담당/색상</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="periods" data-perm="manageCalendar">
-          <span>기간 관리</span><small>월별 수업 기간</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="closed" data-perm="manageCalendar">
-          <span>휴관일 관리</span><small>휴관/의무보강일</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="teacherPage" data-perm="teacherRequests">
-          <span>학부모 요청</span><small>승인 페이지</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="parentPage">
-          <span>학부모 페이지</span><small>신청 화면</small>
-        </button>
-        <button type="button" class="quick-btn" data-panel-jump="feedback" data-perm="manageSettings">
-          <span>의견접수 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>오류/불편사항</small>
-        </button>
-        <button type="button" class="quick-btn" data-panel-jump="students" data-perm="manageSettings">
-          <span>원생목록</span><small>검색/필터/CSV</small>
-        </button>
-        <button type="button" class="quick-btn" data-panel-jump="backup" data-perm="manageSettings">
-          <span>백업 관리</span><small>JSON 다운로드</small>
-        </button>
-        <button type="button" class="quick-btn" data-panel-jump="recipients" data-perm="manageSettings">
-          <span>수신번호</span><small>선생님/차량/데스크</small>
-        </button>
-        <button type="button" class="quick-btn" data-panel-jump="templates" data-perm="manageSettings">
-          <span>알림톡 템플릿</span><small>코드/문구 관리</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="export" data-perm="exportData">
-          <span>엑셀 다운로드</span><small>현재 시간표</small>
-        </button>
-        <button type="button" class="quick-btn" data-open-action="print">
-          <span>인쇄</span><small>시간표 출력</small>
-        </button>
-        <button type="button" class="quick-btn danger" data-open-action="reset" data-perm="resetData">
-          <span>초기화</span><small>전체 데이터</small>
-        </button>
+      <div class="quick-section">
+        <h2>시간표 운영</h2>
+        <div class="quick-grid">
+          <button type="button" class="quick-btn" data-open-action="records" data-perm="manageRecords">
+            <span>기록관리</span><small>이동·편집 기록</small>
+          </button>
+          <button type="button" class="quick-btn" data-open-action="teachers" data-perm="manageTeachers">
+            <span>선생님 관리</span><small>담당·색상</small>
+          </button>
+          <button type="button" class="quick-btn" data-open-action="periods" data-perm="manageCalendar">
+            <span>기간 관리</span><small>월별 수업 기간</small>
+          </button>
+          <button type="button" class="quick-btn" data-open-action="closed" data-perm="manageCalendar">
+            <span>휴관일 관리</span><small>휴관·의무보강일</small>
+          </button>
+        </div>
       </div>
 
-      <div class="link-table">
+      <div class="quick-section">
+        <h2>접수와 원생</h2>
+        <div class="quick-grid">
+          <button type="button" class="quick-btn" data-open-action="teacherPage" data-perm="teacherRequests">
+            <span>보강 요청</span><small>접수·승인 현황</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="feedback" data-perm="manageSettings">
+            <span>의견접수 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>오류·불편사항</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="students" data-perm="manageSettings">
+            <span>원생목록</span><small>검색·필터·엑셀</small>
+          </button>
+        </div>
+      </div>
+
+      <div class="quick-section">
+        <h2>공유와 데이터</h2>
+        <div class="quick-grid">
+          <button type="button" class="quick-btn" data-open-action="parentPage">
+            <span>학부모 페이지</span><small>신청 화면</small>
+          </button>
+          <button type="button" class="quick-btn" data-open-action="export" data-perm="exportData">
+            <span>엑셀 다운로드</span><small>현재 시간표</small>
+          </button>
+          <button type="button" class="quick-btn" data-open-action="print">
+            <span>인쇄</span><small>시간표 출력</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="backup" data-perm="manageSettings">
+            <span>백업 관리</span><small>JSON 다운로드</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="recipients" data-perm="manageSettings">
+            <span>수신번호</span><small>선생님·차량·데스크</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="templates" data-perm="manageSettings">
+            <span>알림톡 템플릿</span><small>코드·문구 관리</small>
+          </button>
+        </div>
+      </div>
+
+      <div class="quick-section quick-links-section">
+        <h2>페이지 주소</h2>
+        <div class="link-table">
         <div class="link-row">
           <div>
             <strong>학부모 페이지</strong>
@@ -124,11 +164,17 @@
         </div>
         <div class="link-row">
           <div>
-            <strong>선생님 승인 페이지</strong>
+            <strong>보강 요청 페이지</strong>
             <code id="teacher-page-link"></code>
           </div>
           <button type="button" class="mini-btn" data-copy-link="teacher">복사</button>
         </div>
+        </div>
+      </div>
+
+      <div class="danger-zone" data-perm="resetData">
+        <div><strong>전체 데이터 초기화</strong><span>복구가 필요한 경우에만 사용합니다.</span></div>
+        <button type="button" class="danger-action" data-open-action="reset">초기화</button>
       </div>
     </section>
 
@@ -145,11 +191,11 @@
       </div>
 
       <div class="student-filter-bar">
-        <input type="search" id="students-search" placeholder="이름, 전화번호, 위치 검색">
-        <select id="students-teacher-filter">
+        <input type="search" id="students-search" placeholder="이름, 전화번호, 위치 검색" aria-label="원생 검색">
+        <select id="students-teacher-filter" aria-label="선생님 필터">
           <option value="all">전체 선생님</option>
         </select>
-        <select id="students-status-filter">
+        <select id="students-status-filter" aria-label="원생 상태 필터">
           <option value="all">전체 상태</option>
           <option value="counted">집계 포함</option>
           <option value="current">재원</option>
@@ -160,7 +206,7 @@
           <option value="hidden">숨김후보</option>
           <option value="missing_phone">전화번호 없음</option>
         </select>
-        <select id="students-sort">
+        <select id="students-sort" aria-label="원생목록 정렬">
           <option value="count">집계순</option>
           <option value="phone">전화번호순</option>
           <option value="name">원생명순</option>
@@ -182,13 +228,14 @@
 
       <div class="student-table-wrap">
         <table class="student-table">
+          <caption class="sc-sr-only">현재 지점 원생목록</caption>
           <thead>
             <tr>
-              <th>집계</th>
-              <th>전화번호</th>
-              <th>원생/상태</th>
-              <th>선생님</th>
-              <th>수업 위치</th>
+              <th scope="col">집계</th>
+              <th scope="col">전화번호</th>
+              <th scope="col">원생/상태</th>
+              <th scope="col">선생님</th>
+              <th scope="col">수업 위치</th>
             </tr>
           </thead>
           <tbody id="students-list-body">
@@ -213,7 +260,7 @@
       <div class="backup-card">
         <div>
           <h2>백업 대상</h2>
-          <p>원생, 담임, 출석부, 학부모 요청, 탭/폴더, 설정, 기록관리 데이터를 포함합니다.</p>
+          <p>원생, 담임, 출석부, 학부모 신청·요청, 탭/폴더, 설정, 기록관리 데이터를 포함합니다.</p>
         </div>
         <label class="toggle-row">
           <input type="checkbox" id="backup-include-history" checked>
@@ -281,12 +328,13 @@
       </div>
       <div class="recipient-table-wrap">
         <table class="recipient-table">
+          <caption class="sc-sr-only">선생님 수신번호</caption>
           <thead>
             <tr>
-              <th>사용</th>
-              <th>이름</th>
-              <th>수신번호</th>
-              <th>설명</th>
+              <th scope="col">사용</th>
+              <th scope="col">이름</th>
+              <th scope="col">수신번호</th>
+              <th scope="col">설명</th>
             </tr>
           </thead>
           <tbody id="recipient-teachers"></tbody>
@@ -299,12 +347,13 @@
       </div>
       <div class="recipient-table-wrap">
         <table class="recipient-table">
+          <caption class="sc-sr-only">고정 수신번호</caption>
           <thead>
             <tr>
-              <th>사용</th>
-              <th>대상</th>
-              <th>수신번호</th>
-              <th>저장 키</th>
+              <th scope="col">사용</th>
+              <th scope="col">대상</th>
+              <th scope="col">수신번호</th>
+              <th scope="col">저장 키</th>
             </tr>
           </thead>
           <tbody id="recipient-fixed"></tbody>
@@ -326,14 +375,15 @@
 
       <div class="template-table-wrap">
         <table class="template-table">
+          <caption class="sc-sr-only">알림톡 템플릿 목록</caption>
           <thead>
             <tr>
-              <th>사용</th>
-              <th>템플릿</th>
-              <th>템플릿 코드</th>
-              <th>타이틀</th>
-              <th>승인 본문</th>
-              <th>승인 버튼</th>
+              <th scope="col">사용</th>
+              <th scope="col">템플릿</th>
+              <th scope="col">템플릿 코드</th>
+              <th scope="col">타이틀</th>
+              <th scope="col">승인 본문</th>
+              <th scope="col">승인 버튼</th>
             </tr>
           </thead>
           <tbody id="template-list"></tbody>
@@ -344,7 +394,7 @@
     <section class="settings-panel" id="panel-aligo" data-perm="manageSettings">
       <div class="panel-head">
         <div>
-          <h1>알림톡 설정</h1>
+          <h1>알림톡 연결</h1>
           <p>지점별 알리고 알림톡 값을 저장합니다.</p>
         </div>
         <div class="panel-actions">
@@ -411,7 +461,7 @@
     <section class="settings-panel" id="panel-sms" data-perm="manageSettings">
       <div class="panel-head">
         <div>
-          <h1>문자 설정</h1>
+          <h1>문자 연결</h1>
           <p>알림톡 실패 또는 직접 문자 발송에 사용할 값을 저장합니다.</p>
         </div>
         <div class="panel-actions">
@@ -452,7 +502,7 @@
   </section>
 </main>
 
-<div id="settings-toast" class="settings-toast"></div>
+<div id="settings-toast" class="settings-toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>scJs('js/schedule-time.js')</script>
 <script>scJs('js/auth-guard.js')</script>

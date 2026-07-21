@@ -983,7 +983,7 @@ function openAbsentModal(ds, slotKey){
   if(vehicleRadio) vehicleRadio.checked=true;
   document.getElementById('ab-submit').dataset.ds=ds;
   document.getElementById('ab-submit').dataset.slot=slotKey;
-  document.getElementById('ab-form').style.display='block';
+  document.getElementById('ab-form').style.display='flex';
   document.getElementById('ab-success').style.display='none';
   document.getElementById('absent-modal').style.display='flex';
 }
@@ -1001,7 +1001,7 @@ function openAbsentCancelModal(ds, slotKey){
     `<strong>${esc(slotInfo)}</strong><br>${parseInt(m)}월 ${parseInt(d)}일(${dow}) 결석 신청 취소를 요청하시겠습니까?`;
   document.getElementById('ac-submit').dataset.ds=ds;
   document.getElementById('ac-submit').dataset.slot=slotKey;
-  document.getElementById('ac-form').style.display='block';
+  document.getElementById('ac-form').style.display='flex';
   document.getElementById('ac-success').style.display='none';
   document.getElementById('absent-cancel-modal').style.display='flex';
 }
@@ -1149,7 +1149,7 @@ function openBogangModal(ds, slotKey){
   }
   _bgTeacherMode='mine';
   // 폼/성공 화면 초기화
-  document.getElementById('bg-form').style.display='block';
+  document.getElementById('bg-form').style.display='flex';
   document.getElementById('bg-success').style.display='none';
 
   const dateSel=document.getElementById('bg-date');

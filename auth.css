@@ -6,15 +6,15 @@
   align-items:center;
   justify-content:center;
   padding:22px;
-  background:linear-gradient(135deg,#0F9D58 0%,#1D4ED8 100%);
+  background:rgba(15,35,28,.96);
 }
 .staff-auth-box{
   width:100%;
   max-width:380px;
-  background:#fff;
-  border-radius:14px;
+  background:var(--sc-surface);
+  border-radius:var(--sc-radius-md);
   padding:32px 28px;
-  box-shadow:0 18px 60px rgba(15,23,42,.28);
+  box-shadow:var(--sc-shadow-md);
   display:flex;
   flex-direction:column;
   gap:9px;
@@ -22,8 +22,8 @@
 .staff-auth-logo{
   width:52px;
   height:52px;
-  border-radius:12px;
-  background:#0F9D58;
+  border-radius:var(--sc-radius-md);
+  background:var(--sc-primary);
   color:#fff;
   display:flex;
   align-items:center;
@@ -62,8 +62,8 @@
   outline:none;
 }
 .staff-auth-box input:focus{
-  border-color:#0F9D58;
-  box-shadow:0 0 0 3px rgba(15,157,88,.12);
+  border-color:var(--sc-primary);
+  box-shadow:0 0 0 3px var(--sc-focus);
 }
 .staff-auth-box button{
   border:none;
@@ -75,11 +75,11 @@
   cursor:pointer;
 }
 #staff-auth-submit{
-  background:#0F9D58;
+  background:var(--sc-primary);
   color:#fff;
   margin-top:10px;
 }
-#staff-auth-submit:hover{background:#0B8043}
+#staff-auth-submit:hover{background:var(--sc-primary-hover)}
 #staff-auth-submit:disabled{
   background:#9CA3AF;
   cursor:wait;
