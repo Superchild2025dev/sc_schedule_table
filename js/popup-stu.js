@@ -432,13 +432,17 @@ function _bogangGroupCandidates(list){
   });
   return [...map.values()].map(row=>{
     const slots=row.slots.filter((slot,idx,arr)=>arr.findIndex(v=>v.slotKey===slot.slotKey)===idx);
-    const label=slots.map(slot=>slot.label).filter(Boolean).join(' / ');
+    const classLabel=[...new Set(slots.map(slot=>[slot.day,slot.time].filter(Boolean).join('')).filter(Boolean))].join(' · ');
+    const teacherLabel=[...row.teachers].map(name=>/쌤$/.test(name)?name:name+'쌤').join(' · ');
+    const label=[classLabel,teacherLabel].filter(Boolean).join(' · ');
     return Object.assign(row,{
       slotKey:slots[0]?.slotKey||row.slotKey,
       slotKeys:slots.map(slot=>slot.slotKey).join('|'),
       teacher:[...row.teachers].join(', '),
       day:[...row.days].join(', '),
       time:[...row.times].join(', '),
+      classLabel,
+      teacherLabel,
       label,
     });
   });
@@ -487,7 +491,10 @@ function _renderBogangCandidates(){
     data-slot-keys="${_spAttr(c.slotKeys)}" data-phone="${_spAttr(c.p)}" data-teacher="${_spAttr(c.teacher)}" data-day="${_spAttr(c.day)}" data-time="${_spAttr(c.time)}" data-label="${_spAttr(c.label)}"
     data-source-type="${c.sourceType}" data-source-tab="${_spAttr(c.sourceTabId)}" data-source-tab-name="${_spAttr(c.sourceTabName)}">
       <span class="sp-bogang-candidate-name"><b>${c.sourceType==='bangteuk'?'방':'정'}</b>${esc(c.n)}${c.a?esc(c.a):''}</span>
-      <span class="sp-bogang-candidate-slot">${esc(c.label||'-')}</span>
+      <span class="sp-bogang-candidate-detail">
+        <span class="sp-bogang-candidate-slot">${esc(c.classLabel||'-')}</span>
+        <small class="sp-bogang-candidate-teacher">${esc(c.teacherLabel||'담당쌤 미지정')}</small>
+      </span>
     </button>`).join('');
 }
 function _setBogangSelected(data){
@@ -2631,6 +2638,22 @@ document.getElementById('stu-popup').addEventListener('input',function(e){
     _renderBogangCandidates();
   }
 });
+
+document.getElementById('stu-popup').addEventListener('wheel',function(e){
+  const inner=e.target?.closest?.('#sp-bogang-candidates');
+  if(!inner||!e.deltaY) return;
+  const atTop=inner.scrollTop<=1;
+  const atBottom=inner.scrollTop+inner.clientHeight>=inner.scrollHeight-1;
+  const transferDown=e.deltaY>0&&atBottom;
+  const transferUp=e.deltaY<0&&atTop;
+  if(!transferDown&&!transferUp) return;
+
+  const outer=this;
+  const before=outer.scrollTop;
+  const delta=e.deltaMode===1?e.deltaY*16:e.deltaMode===2?e.deltaY*inner.clientHeight:e.deltaY;
+  outer.scrollTop+=delta;
+  if(outer.scrollTop!==before) e.preventDefault();
+},{passive:false});
 
 // [v118] 승차/하차 각각 자가 체크 → 해당 input 비활성/활성
 document.getElementById('stu-popup').addEventListener('change',function(e){

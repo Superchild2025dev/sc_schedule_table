@@ -491,10 +491,13 @@ body.is-snapshot .snap-banner{display:block}
 .sp-bogang-candidate.source-regular{background:#EFF6FF;color:#1E3A8A}
 .sp-bogang-candidate.source-bangteuk{background:#ECFDF5;color:#065F46}
 .sp-bogang-candidate:hover{filter:brightness(.97)}
-.sp-bogang-candidate-name{display:flex;align-items:center;min-width:0;font-size:11px;font-weight:800;color:#111}
+.sp-bogang-candidate-name{display:flex;align-items:center;min-width:0;max-width:42%;overflow:hidden;font-size:11px;font-weight:800;color:#111;white-space:nowrap;text-overflow:ellipsis}
 .sp-bogang-candidate-name b{flex:none;margin-right:4px;padding:1px 4px;border-radius:3px;background:#2563EB;color:#fff;font-size:9px}
 .sp-bogang-candidate.source-bangteuk .sp-bogang-candidate-name b{background:#059669}
-.sp-bogang-candidate-slot{overflow:hidden;color:#4B5563;font-size:10px;white-space:nowrap;text-overflow:ellipsis}
+.sp-bogang-candidate-detail{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-end;line-height:1.25}
+.sp-bogang-candidate-slot,.sp-bogang-candidate-teacher{display:block;width:100%;overflow:hidden;white-space:nowrap;text-align:right;text-overflow:ellipsis}
+.sp-bogang-candidate-slot{color:#374151;font-size:10px;font-weight:800}
+.sp-bogang-candidate-teacher{color:#6B7280;font-size:9px;font-weight:700}
 .sp-identity-warning{margin-top:6px;padding:8px;border:1.5px solid #F59E0B;border-radius:7px;background:#FFFBEB;display:flex;flex-direction:column;gap:4px}
 .sp-identity-warning>b{font-size:11px;font-weight:900;color:#92400E}
 .sp-identity-warning>span{font-size:9px;font-weight:700;line-height:1.4;color:#78350F}
