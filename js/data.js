@@ -194,16 +194,25 @@ let STUDENTS,INST_MAP;
 const _stuIdx={};
 let _studentSlotConflictSignature='';
 function rebuildStuIdx(){
+  const previous=Object.assign({},_stuIdx);
   for(const k in _stuIdx) delete _stuIdx[k];
-  const counts=new Map();
+  const groups=new Map();
   (Array.isArray(STUDENTS)?STUDENTS:[]).forEach(s=>{
     const slotKey=s.t+'/'+s.d+'/'+s.l+'/'+s.r;
-    counts.set(slotKey,(counts.get(slotKey)||0)+1);
-    _stuIdx[slotKey]=s;
+    if(!groups.has(slotKey)) groups.set(slotKey,[]);
+    groups.get(slotKey).push(s);
   });
-  const conflicts=[...counts.entries()]
-    .filter(([,count])=>count>1)
-    .map(([slotKey,count])=>({slotKey,count}));
+  const identityKey=student=>String(student?.sid||'')
+    || [String(student?.n||'').trim(),normPhone(String(student?.p||'')),String(student?.a||'')].join('|');
+  groups.forEach((students,slotKey)=>{
+    const oldKey=identityKey(previous[slotKey]);
+    const winner=(oldKey&&students.find(student=>identityKey(student)===oldKey))
+      || students.slice().sort((a,b)=>identityKey(a).localeCompare(identityKey(b),'ko'))[0];
+    if(winner) _stuIdx[slotKey]=winner;
+  });
+  const conflicts=[...groups.entries()]
+    .filter(([,students])=>students.length>1)
+    .map(([slotKey,students])=>({slotKey,count:students.length}));
   window.SC_STUDENT_SLOT_CONFLICTS=conflicts;
   const signature=conflicts.map(item=>item.slotKey+':'+item.count).join('|');
   if(signature&&signature!==_studentSlotConflictSignature){

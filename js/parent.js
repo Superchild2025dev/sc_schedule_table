@@ -528,12 +528,19 @@ function logout(){
 function renderDashboard(){
   if(!_currentStudents.length) return;
 
-  // 최신 데이터 동기화 — 모든 슬롯에 학생이 살아있는지 확인
-  const fresh=[];
-  for(const s of _currentStudents){
-    const found=STUDENTS.find(x=>x.t===s.t&&x.d===s.d&&x.l===s.l&&x.r===s.r);
-    if(found) fresh.push(found);
-  }
+  // 최신 데이터 동기화 — 자리 이동 뒤에도 같은 원생 ID/이름+전화번호로 다시 연결한다.
+  const currentIds=new Set(_currentStudents.map(s=>String(s?.sid||'')).filter(Boolean));
+  const anchor=_currentStudents[0]||{};
+  const anchorName=String(anchor.n||'').trim();
+  const anchorPhone=normalizePhone(anchor.p||'');
+  const fresh=STUDENTS.filter(student=>{
+    if(!student) return false;
+    const sid=String(student.sid||'');
+    if(sid&&currentIds.has(sid)) return true;
+    return anchorName&&anchorPhone
+      && String(student.n||'').trim()===anchorName
+      && normalizePhone(student.p||'')===anchorPhone;
+  });
   if(!fresh.length){
     alert('등록 정보가 삭제되었습니다. 다시 로그인해주세요.');
     logout();return;

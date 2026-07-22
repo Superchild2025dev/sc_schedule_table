@@ -168,3 +168,51 @@ test('legacy chunked documents without a version are read again for safety', asy
 
   assert.equal(reads, 2);
 });
+
+test('metadata-only snapshots with the same stored version are ignored', async () => {
+  const harness = createHarness();
+  const item = {
+    key:'swim_students',
+    value:'[]',
+    updatedAt:{seconds:20, nanoseconds:30},
+  };
+  const doc = makeDoc('swim_students', item);
+  const snapshot = makeSnapshot([doc]);
+  let reads = 0;
+  const events = [];
+  harness.root._readStoredValue = async ()=>{
+    reads += 1;
+    return '[]';
+  };
+  harness.setSnapshot(snapshot);
+
+  await harness.root._list();
+  harness.root._listenFirestore('child_changed', snap=>events.push(snap.key));
+  await harness.emit(snapshot);
+  await harness.emit(makeSnapshot([doc], [{type:'modified', doc}]));
+
+  assert.equal(reads, 1);
+  assert.deepEqual(events, []);
+});
+
+test('invalid chunked JSON is rejected instead of becoming a null payload', async () => {
+  const harness = createHarness();
+  harness.root._chunkDoc = ()=>({
+    get(){
+      return Promise.resolve({
+        exists:true,
+        data(){ return {text:'{"students":'}; },
+      });
+    },
+  });
+
+  await assert.rejects(
+    harness.root._readStoredValue('swim_students', {
+      key:'swim_students',
+      chunked:true,
+      chunkCount:1,
+      valueType:'json',
+    }),
+    error=>error && error.code === 'invalid-chunked-value'
+  );
+});

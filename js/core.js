@@ -481,6 +481,22 @@ window.SCDataDiagnostics={
   },
 };
 
+function _isStudentPayloadKey(key){
+  key=String(key||'');
+  return key==='swim_students'
+      || key.startsWith('swim_stu_')
+      || (key.startsWith('swim_bt_')&&key.endsWith('_stu'));
+}
+function _validStudentPayload(key,value){
+  if(!_isStudentPayloadKey(key)) return true;
+  try{
+    const parsed=typeof value==='string'?JSON.parse(value):value;
+    return Array.isArray(parsed);
+  }catch(e){
+    return false;
+  }
+}
+
 function _flushRemoteScheduleRefresh(){
   _remoteSyncTimer=null;
   const keys=[..._remoteSyncKeys];
@@ -498,11 +514,19 @@ function _flushRemoteScheduleRefresh(){
     _recordDataSyncDiagnostic('snapshot',keys,beforeCount,_activeStudentCount());
     return;
   }
+  const tabBefore=typeof _activeTab!=='undefined'?String(_activeTab||''):'';
+  const cfgBefore=typeof getTabConfig==='function'?getTabConfig():null;
   reloadGlobalData();
-  loadTabData();
+  const cfgAfter=typeof getTabConfig==='function'?getTabConfig():null;
+  const activeTabDataChanged=tabBefore!==String(_activeTab||'')
+    || keys.includes(cfgBefore?.stuKey)
+    || keys.includes(cfgBefore?.instKey)
+    || keys.includes(cfgAfter?.stuKey)
+    || keys.includes(cfgAfter?.instKey);
+  if(activeTabDataChanged) loadTabData();
   reloadBadgeMaps();
   buildTable();
-  _recordDataSyncDiagnostic('remote-batch',keys,beforeCount,_activeStudentCount());
+  _recordDataSyncDiagnostic(activeTabDataChanged?'remote-tab-data':'remote-maps',keys,beforeCount,_activeStudentCount());
 }
 function _queueRemoteScheduleRefresh(key){
   if(!_remoteSyncKeys.size) _remoteSyncBeforeCount=_activeStudentCount();
@@ -516,6 +540,11 @@ function _attachFirebaseDataListeners(){
   _fb.on('child_changed',(snap)=>{
     if(_isDeferredStorageKey(snap.key)) return;
     const newVal=snap.val();
+    if(!_validStudentPayload(snap.key,newVal)){
+      console.error('[DATA SAFETY] 불완전한 원생 데이터 수신을 무시했습니다:',snap.key);
+      _recordDataSyncDiagnostic('ignored-invalid-students',[snap.key],_activeStudentCount(),_activeStudentCount());
+      return;
+    }
     const asStr=typeof newVal==='string'?newVal:JSON.stringify(newVal);
     const q=_localWriteQueue[snap.key];
     if(q&&q.length&&q[0]===asStr){

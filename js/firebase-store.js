@@ -106,7 +106,12 @@
   }
   function decodeStoredValue(text, isString){
     if(isString) return text;
-    try{return JSON.parse(text);}catch(e){return null;}
+    try{return JSON.parse(text);}catch(e){
+      const error = new Error('Stored JSON chunks are incomplete or invalid');
+      error.code = 'invalid-chunked-value';
+      error.cause = e;
+      throw error;
+    }
   }
   function timestampVersion(value){
     if(!value) return '';
@@ -233,6 +238,11 @@
     const count = Number(item.chunkCount || 0);
     for(let i=0;i<count;i++) reads.push(this._chunkDoc(key, i).get());
     return Promise.all(reads).then(snaps=>{
+      if(snaps.some(snap=>snap && snap.exists === false)){
+        const error = new Error('Stored value chunk is missing: '+key);
+        error.code = 'missing-chunk';
+        throw error;
+      }
       const text = snaps.map(s=>((s.data() || {}).text || '')).join('');
       return decodeStoredValue(text, item.valueType !== 'json');
     });
@@ -243,6 +253,11 @@
     const count = Number(item.chunkCount || 0);
     for(let i=0;i<count;i++) reads.push(tx.get(this._chunkDoc(key, i)));
     return Promise.all(reads).then(snaps=>{
+      if(snaps.some(snap=>snap && snap.exists === false)){
+        const error = new Error('Stored value chunk is missing in transaction: '+key);
+        error.code = 'missing-chunk';
+        throw error;
+      }
       const text = snaps.map(s=>((s.data() || {}).text || '')).join('');
       return decodeStoredValue(text, item.valueType !== 'json');
     });
@@ -632,8 +647,10 @@
             return Promise.resolve({event:'child_removed',snapshot:new StoreSnapshot(key,null)});
           }
           const version = storedItemVersion(item);
-          const previousVersion = knownBefore && knownBefore.get(key);
-          if(initialSnapshot && previousVersion && version && previousVersion === version){
+          const previousVersion = initialSnapshot
+            ? (knownBefore && knownBefore.get(key))
+            : this.firestoreVersions.get(key);
+          if(previousVersion && version && previousVersion === version){
             this.firestoreVersions.set(key, version);
             return Promise.resolve(null);
           }
