@@ -2067,7 +2067,6 @@ function _scheduleAuditNameFromSegment(segment,item){
 }
 function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
   const text=[rowText,_scheduleAuditText(item)].join(' ');
-  if(/퇴원/.test(text)) return '퇴원';
   if(toSlot){
     const fromDays=_scheduleAuditExpandDay(fromSlot?.dayToken||'', ['월','화','수','목','금','토','일']).join('');
     const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'', ['월','화','수','목','금','토','일']).join('');
@@ -2075,8 +2074,13 @@ function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
     if(fromSlot?.time!==toSlot.time) return '시간변경';
     if(fromSlot?.lane!==toSlot.lane||fromSlot?.row!==toSlot.row) return '반변경';
   }
+  const explicitText=text.replace(/제외\s*\/\s*퇴원(?:\s*예약)?(?:\s*편집)?/g,'');
+  if(item?.type==='retire'||item?._source==='retire'||/퇴원/.test(explicitText)) return '퇴원';
   if(/삭제/.test(text)) return '삭제';
   return '횟수줄임';
+}
+function _scheduleAuditIsGenericRetireEditSegment(text){
+  return /제외\s*\/\s*퇴원\s*예약\s*편집/.test(String(text||''));
 }
 function _scheduleAuditTarget(item){
   const target=String(item?.target||'').trim();
@@ -2209,7 +2213,7 @@ function _scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback){
   if(entry?.excludeReason==='reduce') return '횟수줄임';
   if(entry?.excludeReason==='move'||entry?.moveType) return '반변경';
   if(entry?.retireType==='exclude') return '횟수줄임';
-  return '퇴원';
+  return '횟수줄임';
 }
 function _scheduleAuditDisplayTime(slot,day){
   try{
@@ -3029,6 +3033,10 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
   segments.forEach(segment=>{
     const text=[item?.label,item?.target,segment].map(v=>String(v||'')).join(' ');
     if(/휴원/.test(text)) return;
+    // RETIRE_MAP 변경은 현재 예약 데이터에서 정확한 유형으로 별도 생성된다.
+    // 공통 라벨의 "퇴원"을 다시 해석하면 시간/요일 변경에도 가짜 퇴원 행이 생긴다.
+    if(_scheduleAuditIsGenericRetireEditSegment(segment)
+      || (item?._source==='audit'&&_scheduleAuditIsGenericRetireEditSegment(item?.label))) return;
     const isDisappear=/원생\s*(이동|삭제)|퇴원|제외|→/.test(text);
     if(!isDisappear) return;
     if(/등록/.test(text)&&!/원생\s*이동|→|퇴원|제외|삭제/.test(text)) return;
