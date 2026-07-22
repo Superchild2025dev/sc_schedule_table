@@ -72,12 +72,14 @@
       <button type="button" class="sc-nav-btn" data-sc-nav="desk" data-perm="teacherRequests" onclick="SCNav.go('desk')">데스크</button>
       <button type="button" class="sc-nav-btn" data-sc-nav="settings" data-perm="manageSettings" onclick="SCNav.go('settings')">설정</button>
     </nav>
-    <div id="schedule-summary" class="schedule-summary" title="현재 탭 기준 수업 시수와 중복 제외 원생수">
-      <span><b>수업 시수</b> <strong id="schedule-class-hours">0/0</strong></span>
+    <div id="schedule-summary" class="schedule-summary" title="현재 탭 기준 정규·방특 수업 시수와 중복 제외 원생수">
+      <span><b>정규 시수</b> <strong id="schedule-class-hours">0/0</strong></span>
       <span class="schedule-summary-sep"></span>
-      <button type="button" class="schedule-summary-students" onclick="openScheduleStudentList()" title="원생목록 보기"><b>원생수</b> <strong id="schedule-student-total">0</strong></button>
+      <span><b>방특 시수</b> <strong id="schedule-bangteuk-hours">0/0</strong></span>
       <span class="schedule-summary-sep"></span>
-      <span><b>방특</b> <strong id="schedule-bangteuk-total">0</strong></span>
+      <button type="button" class="schedule-summary-students" onclick="openScheduleStudentList()" title="원생목록 보기"><b>정규 원생</b> <strong id="schedule-student-total">0</strong></button>
+      <span class="schedule-summary-sep"></span>
+      <span><b>방특 원생</b> <strong id="schedule-bangteuk-total">0</strong></span>
     </div>
     <!-- [v118] 시간표 줌 컨트롤 -->
     <div class="zoom-ctrl" title="시간표 크기 조절">

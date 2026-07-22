@@ -690,6 +690,12 @@
     if(aPhone&&bPhone&&aPhone!==bPhone) return false;
     return !!(aName||bName);
   }
+  function studentIsTemporaryOnly(entry){
+    if(!entry||typeof entry!=='object') return false;
+    if(entry.bogangOnly||entry.makeupOnly||entry.sampleOnly) return true;
+    const kind=String(entry.type||entry.kind||entry.status||'').trim().toLowerCase();
+    return kind==='bogang'||kind==='makeup'||kind==='보강'||kind==='sample'||kind==='샘플';
+  }
   function studentDirectoryRowsFromRoot(root){
     const tabs=selectStudentDirectoryTabs(
       studentRootValue(root,TAB_LIST_KEY,[]),
@@ -698,23 +704,21 @@
     const enrollMap=studentRootValue(root,ENROLL_KEY,{})||{};
     const retireMap=studentRootValue(root,RETIRE_KEY,{})||{};
     const disabledMap=studentRootValue(root,DISABLED_KEY,{})||{};
-    const today=new Date().toISOString().slice(0,10);
     const activeRetireSlots=new Map();
     Object.entries(retireMap||{}).forEach(([slotKey,entry])=>{
       if(!entry) return;
-      const ds=typeof entry==='string'?entry:entry.ds;
-      if(ds&&ds<today) return;
       activeRetireSlots.set(slotKey,entry);
     });
     const enrollPersonKeys=new Set();
     Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
-      if(!entry) return;
+      if(!entry||studentIsTemporaryOnly(entry)) return;
       const key=studentEntryPersonKey(entry,studentPairFallback(entry,retireMap));
       if(key) enrollPersonKeys.add(key);
     });
 
     const groups=new Map();
     const bangteukPeople=new Set();
+    const bangteukSlots=new Set();
     const teacherByInstKey={};
     const handledRetireSlots=new Set();
     const tabOptions=[];
@@ -771,6 +775,7 @@
     const addBangteukPerson=(entry,tab,slotKey,fallback,teacherName,source)=>{
       const key=studentEntryPersonKey(entry,fallback);
       if(key) bangteukPeople.add(key);
+      if(slotKey) bangteukSlots.add(slotKey);
       if(slotKey){
         addStudentGroup(groups,studentRecord(
           entry,
@@ -815,7 +820,7 @@
       };
       const actualBySlot=new Map();
       (Array.isArray(students)?students:[]).forEach(stu=>{
-        if(!stu||!stu.n) return;
+        if(!stu||!stu.n||studentIsTemporaryOnly(stu)) return;
         const slotKey=studentSlotKey(stu);
         if(canCountSlot(slotKey)) actualBySlot.set(slotKey,stu);
         else {
@@ -829,7 +834,8 @@
         }
       });
       actualBySlot.forEach((stu,slotKey)=>{
-        const retire=activeRetireSlots.get(slotKey);
+        const retireEntry=activeRetireSlots.get(slotKey);
+        const retire=retireEntry&&studentEntryMatchesPerson(retireEntry,stu,stu)?retireEntry:null;
         const enroll=enrollMap&&enrollMap[slotKey];
         if(enroll&&studentEntryMatchesPerson(enroll,null,stu)) return;
         if(retire){
@@ -847,7 +853,7 @@
 
     const reservationTab={id:'reservation',name:'예약'};
     Object.entries(enrollMap||{}).forEach(([slotKey,entry])=>{
-      if(!entry) return;
+      if(!entry||studentIsTemporaryOnly(entry)) return;
       const hidden=checkSlotInAnyContext(slotKey);
       if(hidden.bangteuk){
         const instKey=slotKey.split('/').slice(0,3).join('/');
@@ -929,7 +935,7 @@
     const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
     const hidden=rows.reduce((sum,row)=>sum+(row.hiddenCount||0),0);
     const missingPhone=rows.reduce((sum,row)=>sum+(row.missingPhoneCount||0),0);
-    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,averageHours,retire,move,hidden,bangteuk:bangteukPeople.size,missingPhone,loadedAt:new Date().toISOString()};
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,regularClassHours:classHours,bangteukClassHours:bangteukSlots.size,averageHours,retire,move,hidden,bangteuk:bangteukPeople.size,missingPhone,loadedAt:new Date().toISOString()};
   }
   async function loadStudentDirectory(force){
     const branchId=activeBranch;
@@ -945,7 +951,7 @@
       studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
     }catch(e){
       console.error(e);
-      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0,error:e.message||String(e)};
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0,error:e.message||String(e)};
       toast('원생목록 로드 실패','err');
     }finally{
       studentDirectoryLoadingByBranch[branchId]=false;
@@ -2050,7 +2056,7 @@
     if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
   }
   function currentStudentDirectory(){
-    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0};
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0};
   }
   function studentRowTeachers(row){
     return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
@@ -2263,13 +2269,15 @@
     const rows=filteredStudentRows();
     const totalEl=$('students-total-count');
     const classHoursEl=$('students-class-hours');
+    const bangteukHoursEl=$('students-bangteuk-hours');
     const avgEl=$('students-average-hours');
     const retireEl=$('students-retire-count');
     const netEl=$('students-net-count');
     const bangteukEl=$('students-bangteuk-count');
     const missingPhoneEl=$('students-missing-phone-count');
     if(totalEl) totalEl.textContent=String(dir.total||0);
-    if(classHoursEl) classHoursEl.textContent=String(dir.classHours||0);
+    if(classHoursEl) classHoursEl.textContent=String(dir.regularClassHours??dir.classHours??0);
+    if(bangteukHoursEl) bangteukHoursEl.textContent=String(dir.bangteukClassHours||0);
     if(avgEl) avgEl.textContent=(Number(dir.averageHours||0)).toFixed(1);
     if(retireEl) retireEl.textContent=String(dir.retire||0);
     if(netEl) netEl.textContent=String(dir.counted||0);

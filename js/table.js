@@ -2607,6 +2607,12 @@ function _summaryIsBangteukSlotKey(slotKey){
   if(window.SCScheduleTime&&typeof window.SCScheduleTime.isBangteukSlot==='function') return window.SCScheduleTime.isBangteukSlot(inst,p[3],{bangteukTable:typeof isBangteuk==='function'&&isBangteuk()});
   return _summaryIsBangteukInst(inst)&&parseInt(p[3],10)>=1&&parseInt(p[3],10)<=6;
 }
+function _summaryIsTemporaryOnly(entry){
+  if(!entry||typeof entry!=='object') return false;
+  if(entry.bogangOnly||entry.makeupOnly||entry.sampleOnly) return true;
+  const kind=String(entry.type||entry.kind||entry.status||'').trim().toLowerCase();
+  return kind==='bogang'||kind==='makeup'||kind==='보강'||kind==='sample'||kind==='샘플';
+}
 function _summaryStudentKey(stu){
   const person=_summaryRecordPerson(stu,null);
   const name=String(person.n||'').trim();
@@ -2830,8 +2836,11 @@ function _summaryRowsFromMap(map){
   })).sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.p).localeCompare(String(b.p),'ko'));
 }
 function getScheduleSummaryData(){
-  const instRowsByKey={};
-  let capacity=0;
+  const regularInstRowsByKey={};
+  const bangteukInstRowsByKey={};
+  let regularCapacity=0;
+  let bangteukCapacity=0;
+  const bangteukTable=typeof isBangteuk==='function'&&isBangteuk();
   const days=typeof getDays==='function'?getDays():[];
   const lanes=typeof getLanes==='function'?getLanes():0;
   const timeSet=new Set((typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean));
@@ -2850,13 +2859,17 @@ function getScheduleSummaryData(){
         const instKey=t+'/'+day+'/'+lane;
         const inst=INST_MAP&&INST_MAP[instKey];
         if(!_summaryInstExists(inst)) continue;
-        if(typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(t,day,lane)) continue;
-        if(_summaryIsBangteukInst(inst)) continue;
-        const rows=_summaryRowsForInst(inst,t);
-        instRowsByKey[instKey]=rows;
+        const isBangteukClass=bangteukTable
+          || _summaryIsBangteukGroupDay(day)
+          || _summaryIsBangteukInst(inst)
+          || (typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(t,day,lane));
+        const rows=isBangteukClass?6:_summaryRowsForInst(inst,t);
+        const rowsByKey=isBangteukClass?bangteukInstRowsByKey:regularInstRowsByKey;
+        rowsByKey[instKey]=rows;
         for(let row=1;row<=rows;row++){
           if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) continue;
-          capacity++;
+          if(isBangteukClass) bangteukCapacity++;
+          else regularCapacity++;
         }
       }
     });
@@ -2872,39 +2885,37 @@ function getScheduleSummaryData(){
     const p=String(slotKey||'').split('/');
     const saturday=p[1]==='토';
     if(p.length<4) return {visible:false,saturday,reason:'슬롯 형식 오류'};
-    if(_summaryIsBangteukGroupDay(p[1])) return {visible:false,saturday:false,bangteuk:true,reason:'방특반'};
+    const bangteuk=_summaryIsBangteukGroupDay(p[1])||_summaryIsBangteukSlotKey(slotKey);
     if(!days.includes(p[1])) return {visible:false,saturday,reason:'현재 시간표 요일 아님'};
     if(!times.includes(p[0]) || (saturday&&!validSaturdayTime(p[0]))) return {visible:false,saturday,reason:'현재 시간표 시간 밖'};
     const lane=parseInt(p[2],10);
     if(!Number.isFinite(lane)||lane<1||lane>lanes) return {visible:false,saturday,reason:'현재 시간표 레인 밖'};
     const instKey=p[0]+'/'+p[1]+'/'+p[2];
-    if(_summaryIsBangteukSlotKey(slotKey)) return {visible:false,saturday,bangteuk:true,reason:'방특반'};
-    const maxRows=instRowsByKey[instKey];
-    if(!maxRows) return {visible:false,saturday,reason:'담임 없는 칸'};
+    const maxRows=(bangteuk?bangteukInstRowsByKey:regularInstRowsByKey)[instKey];
+    if(!maxRows) return {visible:false,saturday,bangteuk,reason:'담임 없는 칸'};
     const row=parseInt(p[3],10);
-    if(!Number.isFinite(row) || row<1 || row>maxRows) return {visible:false,saturday,reason:'현재 시간표 번호 밖'};
-    if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) return {visible:false,saturday,reason:'비활성 칸'};
-    return {visible:true,saturday,reason:''};
+    if(!Number.isFinite(row) || row<1 || row>maxRows) return {visible:false,saturday,bangteuk,reason:'현재 시간표 번호 밖'};
+    if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) return {visible:false,saturday,bangteuk,reason:'비활성 칸'};
+    return {visible:true,saturday,bangteuk,reason:''};
   };
-  const today=typeof toDateStr==='function'&&typeof getToday==='function'?toDateStr(getToday()):'';
   const activeRetireSlots=new Map();
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
     if(!entry) return;
-    const ds=typeof entry==='string'?entry:entry.ds;
-    if(today&&ds&&ds<today) return;
     activeRetireSlots.set(slotKey,entry);
   });
   const enrollPersonKeys=new Set();
   Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
-    if(!entry) return;
+    if(!entry||_summaryIsTemporaryOnly(entry)) return;
     const key=_summaryEntryPersonKey(entry,_summaryPairFallback(entry,RETIRE_MAP));
     if(key) enrollPersonKeys.add(key);
   });
 
   const hiddenPeople=new Map();
   const bangteukPeople=new Map();
-  const addBangteukPerson=(entry,slotKey,fallback)=>{
+  const bangteukOccupiedSlots=new Set();
+  const addBangteukPerson=(entry,slotKey,fallback,visible)=>{
     _summaryAddPerson(bangteukPeople,_summaryRecord(entry,'방특',slotKey,'',fallback),true);
+    if(visible) bangteukOccupiedSlots.add(slotKey);
   };
   const addHiddenSaturday=(entry,slotKey,fallback,reason)=>{
     if(!isSaturdaySlot(slotKey)) return;
@@ -2912,10 +2923,13 @@ function getScheduleSummaryData(){
   };
   const actualBySlot=new Map();
   (Array.isArray(STUDENTS)?STUDENTS:[]).forEach(stu=>{
-    if(!stu || !stu.n) return;
+    if(!stu || !stu.n || _summaryIsTemporaryOnly(stu)) return;
     const slotKey=String(stu.t||'')+'/'+String(stu.d||'')+'/'+String(stu.l||'')+'/'+String(stu.r||'');
     const visibility=slotVisibility(slotKey);
-    if(visibility.bangteuk){ addBangteukPerson(stu,slotKey,null); return; }
+    if(visibility.bangteuk){
+      if(visibility.visible) addBangteukPerson(stu,slotKey,null,true);
+      return;
+    }
     if(visibility.visible) actualBySlot.set(slotKey,stu);
     else if(visibility.saturday) addHiddenSaturday(stu,slotKey,null,visibility.reason);
   });
@@ -2925,7 +2939,8 @@ function getScheduleSummaryData(){
   const excludedPeople=new Map();
 
   actualBySlot.forEach((stu,slotKey)=>{
-    const retire=activeRetireSlots.get(slotKey);
+    const retireEntry=activeRetireSlots.get(slotKey);
+    const retire=retireEntry&&_summaryEntryMatchesPerson(retireEntry,stu,stu)?retireEntry:null;
     const enroll=ENROLL_MAP&&ENROLL_MAP[slotKey];
     if(enroll&&_summaryEntryMatchesPerson(enroll,null,stu)) return;
     if(retire){
@@ -2939,9 +2954,12 @@ function getScheduleSummaryData(){
   });
 
   Object.entries(ENROLL_MAP||{}).forEach(([slotKey,entry])=>{
-    if(!entry) return;
+    if(!entry||_summaryIsTemporaryOnly(entry)) return;
     const visibility=slotVisibility(slotKey);
-    if(visibility.bangteuk){ addBangteukPerson(entry,slotKey,null); return; }
+    if(visibility.bangteuk){
+      if(visibility.visible) addBangteukPerson(entry,slotKey,null,true);
+      return;
+    }
     if(visibility.saturday&&!visibility.visible){
       addHiddenSaturday(entry,slotKey,null,visibility.reason);
       return;
@@ -2971,9 +2989,15 @@ function getScheduleSummaryData(){
   const bangteukRows=_summaryRowsFromMap(bangteukPeople);
   const countedKeys=new Set(countedRows.map(row=>row.key));
   const excludedOnlyRows=excludedRows.filter(row=>!countedKeys.has(row.key));
+  const regularHours=occupiedSlots.size;
+  const bangteukHours=bangteukOccupiedSlots.size;
   return {
-    hours:occupiedSlots.size,
-    capacity,
+    hours:regularHours,
+    capacity:regularCapacity,
+    regularHours,
+    regularCapacity,
+    bangteukHours,
+    bangteukCapacity,
     countedRows,
     excludedRows,
     hiddenRows,
@@ -2984,11 +3008,13 @@ function getScheduleSummaryData(){
 }
 function updateScheduleSummary(){
   const hoursEl=document.getElementById('schedule-class-hours');
+  const bangteukHoursEl=document.getElementById('schedule-bangteuk-hours');
   const studentsEl=document.getElementById('schedule-student-total');
   const bangteukEl=document.getElementById('schedule-bangteuk-total');
-  if(!hoursEl && !studentsEl && !bangteukEl) return;
+  if(!hoursEl && !bangteukHoursEl && !studentsEl && !bangteukEl) return;
   const data=getScheduleSummaryData();
-  if(hoursEl) hoursEl.textContent=_summaryNumber(data.hours)+'/'+_summaryNumber(data.capacity);
+  if(hoursEl) hoursEl.textContent=_summaryNumber(data.regularHours)+'/'+_summaryNumber(data.regularCapacity);
+  if(bangteukHoursEl) bangteukHoursEl.textContent=_summaryNumber(data.bangteukHours)+'/'+_summaryNumber(data.bangteukCapacity);
   if(studentsEl) studentsEl.textContent=_summaryNumber(data.countedRows.length);
   if(bangteukEl) bangteukEl.textContent=_summaryNumber((data.bangteukRows||[]).length);
 }
@@ -3142,7 +3168,7 @@ function renderScheduleStudentList(){
     return String(row.search||'').includes(q);
   });
   if(summary){
-    summary.textContent=`집계 원생 ${_summaryNumber(data.countedRows.length)}명 · 방특 ${_summaryNumber((data.bangteukRows||[]).length)}명 · 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
+    summary.textContent=`정규 원생 ${_summaryNumber(data.countedRows.length)}명 · 정규 시수 ${_summaryNumber(data.regularHours)} · 방특 원생 ${_summaryNumber((data.bangteukRows||[]).length)}명 · 방특 시수 ${_summaryNumber(data.bangteukHours)} · 정규 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
   }
   body.innerHTML=filtered.map(row=>{
     const badges=[
