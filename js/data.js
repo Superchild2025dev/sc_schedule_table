@@ -2749,6 +2749,55 @@ function _deskNoteVisible(note,monthKey,visibleDays){
   const recordMonth=_deskNoteRecordPeriodMonth(note,targetMonth);
   return recordMonth===targetMonth;
 }
+function _deskNoteIsRetireHistoryProjection(note){
+  if(!note) return false;
+  const source=String(note.source||note.original?.source||'').trim();
+  if(source==='retire') return true;
+  const text=[
+    note.detail,
+    note.original?.detail,
+    note.original?.source,
+  ].map(v=>String(v||'')).join(' ');
+  return /퇴원\s*기록(?:\s*추가|\s*편집)?/.test(text);
+}
+function _deskNoteRetireEffectiveDateKey(note){
+  const direct=String(note?.effectiveDateKey||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(direct)) return direct;
+  const text=[note?.detail,note?.original?.detail].map(v=>String(v||'')).join(' ');
+  const full=text.match(/20\d{2}-\d{2}-\d{2}/);
+  if(full) return full[0];
+  const original=String(note?.original?.dateKey||'').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(original)?original:'';
+}
+function _deskNoteRetireDuplicateKey(note){
+  if(String(note?.change||note?.original?.change||'').trim()!=='퇴원') return '';
+  const effectiveDate=_deskNoteRetireEffectiveDateKey(note);
+  if(!effectiveDate) return '';
+  const student=String(note?.student||note?.original?.student||'')
+    .trim()
+    .replace(/\s*\(.+?\)\s*$/,'');
+  if(!student) return '';
+  return [
+    note?.day||note?.original?.day||'기타',
+    student,
+    note?.time||note?.original?.time||'-',
+    effectiveDate,
+  ].map(v=>String(v||'').trim()).join('|');
+}
+function _deskNotesWithoutRetireHistoryDuplicates(notes){
+  const list=Array.isArray(notes)?notes:[];
+  const primaryKeys=new Set();
+  list.forEach(note=>{
+    if(_deskNoteIsRetireHistoryProjection(note)) return;
+    const key=_deskNoteRetireDuplicateKey(note);
+    if(key) primaryKeys.add(key);
+  });
+  return list.filter(note=>{
+    if(!_deskNoteIsRetireHistoryProjection(note)) return true;
+    const key=_deskNoteRetireDuplicateKey(note);
+    return !key||!primaryKeys.has(key);
+  });
+}
 function _findDeskNote(id){
   DESK_NOTES=Array.isArray(DESK_NOTES)?DESK_NOTES:[];
   return DESK_NOTES.find(note=>String(note.id)===String(id));
@@ -3039,6 +3088,16 @@ function deleteDeskNoteModal(){
   });
 }
 function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
+  const itemKeys=Array.isArray(item?.keys)?item.keys:[];
+  const itemLabel=String(item?.label||'');
+  // 퇴원 이력은 기록관리용 영구 원본이다. 시간표 하단에는 RETIRE_MAP에서
+  // 만든 적용일 기록만 표시해야 같은 퇴원이 두 번 생기지 않는다.
+  if(item?._source==='retire'
+    || (item?._source==='audit'&&(
+      itemKeys.includes(STORAGE_KEYS.RETIRE_HISTORY)
+      || item?.type==='retire'
+      || /퇴원\s*기록/.test(itemLabel)
+    ))) return [];
   const scope=_scheduleAuditScopeFromItem(item);
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
@@ -3168,7 +3227,10 @@ function renderScheduleAuditSummary(){
   });
   const notes=_syncDeskNotesFromRows(sourceRows);
   const visibleNoteKeys=new Set();
-  notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays)).forEach(note=>{
+  const visibleNotes=_deskNotesWithoutRetireHistoryDuplicates(
+    notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+  );
+  visibleNotes.forEach(note=>{
     const noteKey=[note.day,note.teacher,note.student,note.change,note.date,note.time].map(v=>String(v||'').trim()).join('|');
     if(visibleNoteKeys.has(noteKey)) return;
     visibleNoteKeys.add(noteKey);
