@@ -1298,43 +1298,53 @@ function _auditStudentId(stu){
   if(stu.sid) return String(stu.sid);
   return [stu.n||'',stu.p||'',stu.a||'',stu.g||''].join('|');
 }
-function _studentOccurrenceKey(stu){
-  return _auditStudentId(stu)+'@'+_auditStudentSlot(stu);
-}
-function _studentSidCounts(list){
-  const counts=new Map();
-  (Array.isArray(list)?list:[]).forEach(stu=>{
-    const sid=_auditStudentId(stu);
-    if(sid) counts.set(sid,(counts.get(sid)||0)+1);
-  });
-  return counts;
+function _auditSameStudentIdentity(a,b){
+  if(!a||!b) return false;
+  if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
+    return window.SCScheduleTime.sameStudentIdentity(a,b);
+  }
+  const aid=String(a.sid||'').trim();
+  const bid=String(b.sid||'').trim();
+  if(aid&&bid) return aid===bid;
+  const name=v=>String(v?.n||v?.name||'').trim().replace(/\s+/g,' ').toLowerCase();
+  const phone=v=>String(v?.p||v?.phone||'').replace(/\D/g,'');
+  const an=name(a), bn=name(b);
+  if(!an||!bn||an!==bn) return false;
+  const ap=phone(a), bp=phone(b);
+  if(ap&&bp) return ap===bp;
+  const aa=String(a.a??a.age??'').trim();
+  const ba=String(b.a??b.age??'').trim();
+  return !aa||!ba||aa===ba;
 }
 function _studentDeletionEvents(storageKey,beforeValue,afterValue,meta){
   if(!_auditIsStudentKey(String(storageKey||''))||meta?.skipDeleteSafety) return [];
   const before=Array.isArray(beforeValue)?beforeValue:[];
   const after=Array.isArray(afterValue)?afterValue:[];
-  const remaining=new Map();
-  after.forEach(stu=>{
-    const key=_studentOccurrenceKey(stu);
-    remaining.set(key,(remaining.get(key)||0)+1);
-  });
-  const beforeSidCounts=_studentSidCounts(before);
-  const afterSidCounts=_studentSidCounts(after);
+  const usedAfter=new Set();
   const events=[];
   before.forEach(stu=>{
-    const occurrenceKey=_studentOccurrenceKey(stu);
-    const count=remaining.get(occurrenceKey)||0;
-    if(count>0){
-      remaining.set(occurrenceKey,count-1);
+    const slotKey=_auditStudentSlot(stu);
+    const sameSlotIndex=after.findIndex((candidate,index)=>
+      !usedAfter.has(index)
+      && _auditStudentSlot(candidate)===slotKey
+      && _auditSameStudentIdentity(stu,candidate)
+    );
+    if(sameSlotIndex>=0){
+      usedAfter.add(sameSlotIndex);
+      return;
+    }
+    const relocatedIndex=meta?.type==='move'
+      ? after.findIndex((candidate,index)=>!usedAfter.has(index)&&_auditSameStudentIdentity(stu,candidate))
+      : -1;
+    if(relocatedIndex>=0){
+      usedAfter.add(relocatedIndex);
       return;
     }
     const sid=_auditStudentId(stu);
-    const isRelocated=meta?.type==='move'&&sid&&(afterSidCounts.get(sid)||0)>=(beforeSidCounts.get(sid)||0);
-    if(isRelocated) return;
     events.push({
       storageKey,
       sid,
-      slotKey:_auditStudentSlot(stu),
+      slotKey,
       student:_cloneJSON(stu),
     });
   });
@@ -1360,17 +1370,21 @@ function _auditStudentDiff(oldVal,newVal){
   const changes=[];
 
   oldBySlot.forEach((stu,slot)=>{
-    if(!newBySlot.has(slot)) removed.push({slot,stu});
+    const next=newBySlot.get(slot);
+    if(!next||!_auditSameStudentIdentity(stu,next)) removed.push({slot,stu});
   });
   newBySlot.forEach((stu,slot)=>{
-    if(!oldBySlot.has(slot)) added.push({slot,stu});
+    const previous=oldBySlot.get(slot);
+    if(!previous||!_auditSameStudentIdentity(previous,stu)) added.push({slot,stu});
   });
 
   const usedAdded=new Set();
-  removed.forEach(rem=>{
-    const idx=added.findIndex((add,i)=>!usedAdded.has(i)&&_auditStudentId(add.stu)===_auditStudentId(rem.stu));
+  const usedRemoved=new Set();
+  removed.forEach((rem,remIndex)=>{
+    const idx=added.findIndex((add,i)=>!usedAdded.has(i)&&_auditSameStudentIdentity(add.stu,rem.stu));
     if(idx>=0){
       usedAdded.add(idx);
+      usedRemoved.add(remIndex);
       const add=added[idx];
       changes.push({
         label:'원생 이동',
@@ -1379,8 +1393,8 @@ function _auditStudentDiff(oldVal,newVal){
       });
     }
   });
-  removed.forEach(rem=>{
-    if(added.some((add,i)=>usedAdded.has(i)&&_auditStudentId(add.stu)===_auditStudentId(rem.stu))) return;
+  removed.forEach((rem,index)=>{
+    if(usedRemoved.has(index)) return;
     changes.push({
       label:'원생 삭제',
       target:_auditStudentName(rem.stu),
@@ -1397,7 +1411,7 @@ function _auditStudentDiff(oldVal,newVal){
   });
   oldBySlot.forEach((oldStu,slot)=>{
     const newStu=newBySlot.get(slot);
-    if(!newStu) return;
+    if(!newStu||!_auditSameStudentIdentity(oldStu,newStu)) return;
     const diffs=_auditFieldDiff(oldStu,newStu,['n','a','p','loc','memo','v','g','enrolled']);
     if(diffs.length){
       changes.push({
