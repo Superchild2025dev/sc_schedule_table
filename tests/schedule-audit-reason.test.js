@@ -46,3 +46,19 @@ test('legacy exclusion without retirement evidence defaults to reduced frequency
   const from = {dayToken:'월', time:'4시', lane:'1', row:'1'};
   assert.equal(context._scheduleAuditVisibleReason({ds:'2026-07-22'}, '4시/월/1/1', from, null, {}), '횟수줄임');
 });
+
+test('movement labels are decided consistently from source and destination slots', () => {
+  const from = {dayToken:'월', time:'4시', lane:'1', row:'1'};
+  assert.equal(
+    context._scheduleAuditMovementReason(from, {dayToken:'월', time:'4시', lane:'2', row:'1'}),
+    '반변경'
+  );
+  assert.equal(
+    context._scheduleAuditMovementReason(from, {dayToken:'월', time:'5시', lane:'1', row:'1'}),
+    '시간변경'
+  );
+  assert.equal(
+    context._scheduleAuditMovementReason(from, {dayToken:'수', time:'4시', lane:'1', row:'1'}),
+    '일정변경'
+  );
+});

@@ -1251,6 +1251,7 @@ function createAuditPoint(keys,meta){
     meta:meta||{},
     tabId:_activeTab,
     tabName:_auditTabName(),
+    tabType:((typeof _tabById==='function'&&_tabById(_activeTab)?.type)==='bangteuk')?'bangteuk':'regular',
     user:_auditUser(),
   };
 }
@@ -1817,6 +1818,7 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
   if(!keys.length) return;
   const meta={...(point.meta||{}),...(metaOverride||{})};
   const summary=_buildAuditSummary(point,keys,meta);
+  const tabType=meta.bangteuk===true||point.tabType==='bangteuk'?'bangteuk':'regular';
   const entry={
     id:_auditId('log'),
     restoreId:point.id,
@@ -1828,6 +1830,8 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     keys,
     tabId:point.tabId,
     tabName:point.tabName,
+    tabType,
+    bangteuk:tabType==='bangteuk',
     user:point.user,
   };
   let restorePoint={
@@ -1841,6 +1845,8 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     before:point.before,
     tabId:point.tabId,
     tabName:point.tabName,
+    tabType,
+    bangteuk:tabType==='bangteuk',
     user:point.user,
   };
   restorePoint=_prepareRestorePointForStorage(restorePoint);
@@ -2079,15 +2085,21 @@ function _scheduleAuditNameFromSegment(segment,item){
   if(!beforeSlot||/^(추가|삭제|수정|\d{4})/.test(beforeSlot)) return _scheduleAuditTarget(item);
   return beforeSlot.replace(/\s*\(.+?\)\s*$/,'')||'-';
 }
+function _scheduleAuditMovementReason(fromSlot,toSlot){
+  if(!fromSlot||!toSlot) return '';
+  const allDays=['월','화','수','목','금','토','일'];
+  const fromDays=_scheduleAuditExpandDay(fromSlot.dayToken||'',allDays).join('');
+  const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'',allDays).join('');
+  if(fromDays!==toDays) return '일정변경';
+  if(String(fromSlot.time||'')!==String(toSlot.time||'')) return '시간변경';
+  if(String(fromSlot.lane||'')!==String(toSlot.lane||'')
+    ||String(fromSlot.row||'')!==String(toSlot.row||'')) return '반변경';
+  return '';
+}
 function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
   const text=[rowText,_scheduleAuditText(item)].join(' ');
-  if(toSlot){
-    const fromDays=_scheduleAuditExpandDay(fromSlot?.dayToken||'', ['월','화','수','목','금','토','일']).join('');
-    const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'', ['월','화','수','목','금','토','일']).join('');
-    if(fromDays!==toDays) return '일정변경';
-    if(fromSlot?.time!==toSlot.time) return '시간변경';
-    if(fromSlot?.lane!==toSlot.lane||fromSlot?.row!==toSlot.row) return '반변경';
-  }
+  const movement=_scheduleAuditMovementReason(fromSlot,toSlot);
+  if(movement) return movement;
   const explicitText=text.replace(/제외\s*\/\s*퇴원(?:\s*예약)?(?:\s*편집)?/g,'');
   if(item?.type==='retire'||item?._source==='retire'||/퇴원/.test(explicitText)) return '퇴원';
   if(/삭제/.test(text)) return '삭제';
@@ -2141,6 +2153,12 @@ function _scheduleAuditIsBangteukSlot(slot,day){
     if(typeof btPreviewLaneActive==='function'&&btPreviewLaneActive(slot.time,day,slot.lane)) return true;
   }catch(e){}
   return false;
+}
+function _scheduleAuditRecordIsBangteuk(value){
+  if(!value) return false;
+  if(value.bangteuk===true||value.original?.bangteuk===true) return true;
+  const tabType=String(value.tabType||value.original?.tabType||'');
+  return tabType==='bangteuk';
 }
 function _scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item){
   if(!fromSlot||!toSlot) return false;
@@ -2216,14 +2234,8 @@ function _scheduleAuditIsActualRetire(entry,slotKey,fallback){
 function _scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback){
   if(_scheduleAuditIsActualRetire(entry,slotKey,fallback)) return '퇴원';
   if(entry?.retireType==='retire') return '퇴원';
-  if(toSlot){
-    const allDays=['월','화','수','목','금','토','일'];
-    const fromDays=_scheduleAuditExpandDay(fromSlot?.dayToken||'',allDays).join('');
-    const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'',allDays).join('');
-    if(fromDays!==toDays) return '일정변경';
-    if(fromSlot?.time!==toSlot.time) return '시간변경';
-    if(fromSlot?.lane!==toSlot.lane||fromSlot?.row!==toSlot.row) return '반변경';
-  }
+  const movement=_scheduleAuditMovementReason(fromSlot,toSlot);
+  if(movement) return movement;
   if(entry?.excludeReason==='reduce') return '횟수줄임';
   if(entry?.excludeReason==='move'||entry?.moveType) return '반변경';
   if(entry?.retireType==='exclude') return '횟수줄임';
@@ -2240,7 +2252,9 @@ function _scheduleAuditDisplayTime(slot,day){
 function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
   const rows=[];
   const scope=_scheduleAuditActiveScope();
+  if(scope.tabType==='bangteuk') return rows;
   Object.entries(RETIRE_MAP||{}).forEach(([slotKey,entry])=>{
+    if(_scheduleAuditRecordIsBangteuk(entry)) return;
     const ds=_scheduleAuditEntryDate(entry);
     if(!ds) return;
     // 하단 기록의 월 구분은 수업 운영기간이 아니라 날짜의 달력 월을 따른다.
@@ -2250,6 +2264,7 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     const fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey);
     const pairKey=entry&&typeof entry==='object'?entry.pairKey:'';
     const pairEntry=pairKey?(ENROLL_MAP||{})[pairKey]:null;
+    if(_scheduleAuditRecordIsBangteuk(pairEntry)) return;
     const toSlot=pairEntry?_scheduleAuditSlotFromKey(pairKey):null;
     const date=_scheduleAuditDateLabel(ds);
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
@@ -2319,7 +2334,7 @@ function _scheduleAuditScopeFromItem(item){
   const active=_scheduleAuditActiveScope();
   const tabId=String(item?.tabId||'');
   const tab=tabId&&typeof _tabById==='function'?_tabById(tabId):null;
-  const tabType=String(item?.tabType||tab?.type||'');
+  const tabType=String(item?.bangteuk===true?'bangteuk':(item?.tabType||tab?.type||''));
   return {
     tabId,
     tabName:String(item?.tabName||tab?.name||''),
@@ -2467,6 +2482,7 @@ function _deskNoteFromScheduleRow(row){
   const tabId=scope.tabId||row.tabId||'global';
   const tabName=scope.tabName||row.tabName||'전체 기록';
   const tabType=scope.tabType||row.tabType||'regular';
+  const bangteuk=_scheduleAuditRecordIsBangteuk(row)||tabType==='bangteuk';
   const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _deskNoteMonthFromDateKey(written.key) : '';
   return {
     id:_deskNoteId(),
@@ -2485,10 +2501,12 @@ function _deskNoteFromScheduleRow(row){
       tabId,
       tabName,
       tabType,
+      bangteuk,
     },
     tabId,
     tabName,
     tabType,
+    bangteuk,
     monthKey:row.monthKey||_scheduleAuditMonthKey(),
     day:row.day||'기타',
     effectiveDateKey:row.dateKey||'',
@@ -2507,13 +2525,16 @@ function _deskNoteFromScheduleRow(row){
     updatedAt:now,
   };
 }
-function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
+function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
   if(!slotKey||!entry) return Promise.resolve(false);
   const ds=_scheduleAuditEntryDate(entry);
   const fromSlot=_scheduleAuditSlotFromKey(slotKey);
   if(!ds||!fromSlot) return Promise.resolve(false);
   fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey,fallback);
   const scope=_scheduleAuditActiveScope();
+  if(scope.tabType==='bangteuk'||options?.bangteuk===true||_scheduleAuditRecordIsBangteuk(entry)){
+    return Promise.resolve(false);
+  }
   const monthKey=_scheduleAuditMonthKey();
   const visibleDays=_scheduleAuditDays();
   const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
@@ -2556,19 +2577,23 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback){
     return true;
   });
 }
-function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
+function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType,options){
   const fromSlot=_scheduleAuditSlotFromKey(srcKey);
   const toSlot=_scheduleAuditSlotFromKey(dstKey);
   const sourceStu=_scheduleAuditStudentFromSlot(fromSlot,srcKey,stu);
   const target=String(sourceStu?.n||sourceStu?.name||stu?.n||stu?.name||'').trim();
   if(!fromSlot||!toSlot||!target) return Promise.resolve(false);
   const scope=_scheduleAuditActiveScope();
+  if(scope.tabType==='bangteuk'||options?.bangteuk===true){
+    return Promise.resolve(false);
+  }
   const visibleDays=_scheduleAuditDays();
   const todayKey=toDateStr(getToday());
   const date=_scheduleAuditDateLabel(todayKey);
   const additions=[];
   _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
     if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
+    if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
     const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,sourceStu||stu);
     additions.push(_deskNoteFromScheduleRow({
       day,
@@ -2597,6 +2622,21 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType){
     return true;
   });
 }
+function _deskNoteAutomaticMovementReason(note){
+  if(!note||note.manual) return '';
+  const candidates=[
+    note.detail,
+    note.original?.detail,
+  ].map(v=>String(v||'')).filter(v=>v.includes('→'));
+  for(const text of candidates){
+    const parts=text.split('→');
+    const fromSlot=_scheduleAuditSlotFromText(parts[0]);
+    const toSlot=_scheduleAuditSlotFromText(parts.slice(1).join('→'));
+    const reason=_scheduleAuditMovementReason(fromSlot,toSlot);
+    if(reason) return reason;
+  }
+  return '';
+}
 function _normalizeDeskNoteForDisplay(note){
   if(!note||typeof note!=='object') return null;
   const original=note.original||{};
@@ -2604,6 +2644,12 @@ function _normalizeDeskNoteForDisplay(note){
   next.teacher=String(next.teacher||original.teacher||'-').trim()||'-';
   next.student=String(next.student||next.target||original.student||'-').trim()||'-';
   next.change=String(next.change||next.reason||original.change||'메모').trim()||'메모';
+  const originalChange=String(original.change||'').trim();
+  const userEditedChange=!!(originalChange&&next.change!==originalChange);
+  if(!userEditedChange){
+    const movementReason=_deskNoteAutomaticMovementReason(next);
+    if(movementReason) next.change=movementReason;
+  }
   const ownDate=Object.prototype.hasOwnProperty.call(next,'date');
   const dateText=ownDate?String(next.date||'').trim():String(original.date||'').trim();
   next.date=dateText||'-';
@@ -2622,7 +2668,12 @@ function _deskNoteFindIndex(list,note){
   }
   const sourceKey=String(note?.sourceKey||'');
   if(sourceKey){
-    return list.findIndex(n=>String(n?.sourceKey||'')===sourceKey);
+    const idx=list.findIndex(n=>String(n?.sourceKey||'')===sourceKey);
+    if(idx>=0) return idx;
+  }
+  const movementKey=_deskNoteAutomaticMovementKey(note);
+  if(movementKey){
+    return list.findIndex(n=>_deskNoteAutomaticMovementKey(n)===movementKey);
   }
   return -1;
 }
@@ -2631,6 +2682,12 @@ function _mergeDeskNote(list,note){
   const idx=_deskNoteFindIndex(next,note);
   if(idx>=0){
     if(next[idx]?.deleted && note?.sourceKey && !note?.manual && !note?.deleted) return next;
+    const sameMovement=_deskNoteAutomaticMovementKey(next[idx])
+      &&_deskNoteAutomaticMovementKey(next[idx])===_deskNoteAutomaticMovementKey(note);
+    const differentRecord=String(next[idx]?.id||'')!==String(note?.id||'')
+      &&String(next[idx]?.sourceKey||'')!==String(note?.sourceKey||'');
+    if(sameMovement&&differentRecord
+      &&_deskNoteAutomaticPriority(next[idx])>_deskNoteAutomaticPriority(note)) return next;
     next[idx]={...next[idx],...note};
   }
   else next.push(note);
@@ -2716,7 +2773,7 @@ function _syncDeskNotesFromRows(rows){
   const sourceKeys=new Set(DESK_NOTES.map(note=>String(note?.sourceKey||'')).filter(Boolean));
   const additions=[];
   (rows||[]).forEach(row=>{
-    if(row?.bangteuk) return;
+    if(_scheduleAuditRecordIsBangteuk(row)) return;
     const sourceKey=_deskNoteSourceKeyForRow(row);
     const legacyKey=_scheduleAuditRowKey(row);
     if(!sourceKey||sourceKeys.has(sourceKey)||sourceKeys.has(legacyKey)) return;
@@ -2742,6 +2799,7 @@ function _deskNoteSourceKeyForRow(row){
 }
 function _deskNoteVisible(note,monthKey,visibleDays){
   if(!note||note.deleted) return false;
+  if(_scheduleAuditRecordIsBangteuk(note)) return false;
   if(String(note.change||'').trim()==='휴원') return false;
   if(/휴원/.test(String(note.detail||'')+' '+String(note.original?.detail||''))) return false;
   const targetMonth=String(monthKey||'');
@@ -2797,6 +2855,58 @@ function _deskNotesWithoutRetireHistoryDuplicates(notes){
     const key=_deskNoteRetireDuplicateKey(note);
     return !key||!primaryKeys.has(key);
   });
+}
+function _deskNoteAutomaticMovementKey(note){
+  if(!note||note.manual||note.deleted) return '';
+  const candidates=[note.detail,note.original?.detail].map(v=>String(v||'')).filter(v=>v.includes('→'));
+  let fromSlot=null;
+  let toSlot=null;
+  for(const text of candidates){
+    const parts=text.split('→');
+    fromSlot=_scheduleAuditSlotFromText(parts[0]);
+    toSlot=_scheduleAuditSlotFromText(parts.slice(1).join('→'));
+    if(fromSlot&&toSlot) break;
+  }
+  if(!fromSlot||!toSlot) return '';
+  const slotKey=slot=>[slot.time,slot.dayToken,slot.lane,slot.row].map(v=>String(v||'')).join('/');
+  const student=String(note.student||note.original?.student||'')
+    .trim()
+    .replace(/\s*\(.+?\)\s*$/,'');
+  const dateKey=_deskNoteRecordDateKey(note,note.recordMonthKey||note.monthKey||'')
+    ||_recordLocalDateKey(note.at||note.createdAt||note.updatedAt);
+  const tabId=String(note.tabId||note.original?.tabId||'global');
+  if(!student||!dateKey) return '';
+  return [tabId,student,dateKey,slotKey(fromSlot),slotKey(toSlot)].join('|');
+}
+function _deskNoteAutomaticPriority(note){
+  const original=note?.original||{};
+  const edited=['teacher','student','change','time'].some(key=>{
+    const current=String(note?.[key]||'').trim();
+    const initial=String(original?.[key]||'').trim();
+    return !!(initial&&current&&current!==initial);
+  });
+  const source=String(note?.source||original.source||'');
+  const teacher=String(note?.teacher||original.teacher||'').trim();
+  return (edited?1000:0)+(source==='direct-move'?100:0)+(teacher&&teacher!=='-'?10:0);
+}
+function _deskNotesWithoutAutomaticMovementDuplicates(notes){
+  const out=[];
+  const indexByKey=new Map();
+  (Array.isArray(notes)?notes:[]).forEach(note=>{
+    const key=_deskNoteAutomaticMovementKey(note);
+    if(!key){
+      out.push(note);
+      return;
+    }
+    if(!indexByKey.has(key)){
+      indexByKey.set(key,out.length);
+      out.push(note);
+      return;
+    }
+    const index=indexByKey.get(key);
+    if(_deskNoteAutomaticPriority(note)>_deskNoteAutomaticPriority(out[index])) out[index]=note;
+  });
+  return out;
 }
 function _findDeskNote(id){
   DESK_NOTES=Array.isArray(DESK_NOTES)?DESK_NOTES:[];
@@ -3099,6 +3209,7 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
       || /퇴원\s*기록/.test(itemLabel)
     ))) return [];
   const scope=_scheduleAuditScopeFromItem(item);
+  if(scope.tabType==='bangteuk'||_scheduleAuditRecordIsBangteuk(item)) return [];
   const detail=String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
   const segments=parts.length?parts:[_scheduleAuditText(item)];
@@ -3227,8 +3338,10 @@ function renderScheduleAuditSummary(){
   });
   const notes=_syncDeskNotesFromRows(sourceRows);
   const visibleNoteKeys=new Set();
-  const visibleNotes=_deskNotesWithoutRetireHistoryDuplicates(
-    notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+  const visibleNotes=_deskNotesWithoutAutomaticMovementDuplicates(
+    _deskNotesWithoutRetireHistoryDuplicates(
+      notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+    )
   );
   visibleNotes.forEach(note=>{
     const noteKey=[note.day,note.teacher,note.student,note.change,note.date,note.time].map(v=>String(v||'').trim()).join('|');
@@ -3854,11 +3967,11 @@ function updateStudentsTx(mutator,meta){
 function updateInstMapTx(mutator){
   return _txJSONMap(getTabConfig().instKey,INST_MAP,next=>{INST_MAP=next;},mutator);
 }
-function updateRetireMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.RETIRE,RETIRE_MAP,next=>{RETIRE_MAP=next;},mutator);
+function updateRetireMapTx(mutator,meta){
+  return _txJSONMap(STORAGE_KEYS.RETIRE,RETIRE_MAP,next=>{RETIRE_MAP=next;},mutator,meta);
 }
-function updateEnrollMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.ENROLL,ENROLL_MAP,next=>{ENROLL_MAP=next;},mutator);
+function updateEnrollMapTx(mutator,meta){
+  return _txJSONMap(STORAGE_KEYS.ENROLL,ENROLL_MAP,next=>{ENROLL_MAP=next;},mutator,meta);
 }
 function updateDisabledMapTx(mutator){
   return _txJSONMap(STORAGE_KEYS.DISABLED,DISABLED_MAP,next=>{DISABLED_MAP=next;},mutator);

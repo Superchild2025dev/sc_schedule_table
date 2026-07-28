@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f6c62">
+  <title>슈퍼차일드 정규반 자리 현황</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script src="./config.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#availability">자리 현황으로 이동</a>
+
+  <header class="hero">
+    <div class="hero-shade" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <p class="brand">SUPERCHILD SWIMMING</p>
+      <h1>슈퍼차일드 정규반 자리 현황</h1>
+      <p class="hero-copy">2026년 9월 정규반 등록 가능 시간을 확인하세요.</p>
+    </div>
+  </header>
+
+  <main id="availability">
+    <section class="control-band" aria-labelledby="availability-title">
+      <div class="content">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">정규반 전환 안내</p>
+            <h2 id="availability-title">등록 가능한 시간</h2>
+          </div>
+          <div class="sync-state" aria-live="polite">
+            <span class="sync-dot" aria-hidden="true"></span>
+            <span id="sync-label">현황 확인 중</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <span class="control-label">지점</span>
+          <div id="branch-tabs" class="segmented" role="tablist" aria-label="지점 선택"></div>
+        </div>
+
+        <div class="control-group day-control">
+          <span class="control-label">요일</span>
+          <div id="day-tabs" class="day-tabs" role="tablist" aria-label="요일 선택"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="schedule-band" aria-labelledby="schedule-title">
+      <div class="content schedule-layout">
+        <div class="schedule-panel">
+          <div class="schedule-title-row">
+            <div>
+              <p id="selected-branch" class="selected-branch"></p>
+              <h2 id="schedule-title"><span id="selected-day"></span> 시간별 현황</h2>
+            </div>
+            <span id="basis-label" class="basis-badge">9월 수업 시작 기준</span>
+          </div>
+
+          <div class="schedule-table" role="table" aria-label="시간별 정규반 자리 현황">
+            <div class="schedule-head" role="row">
+              <span role="columnheader">수업 시간</span>
+              <span role="columnheader">등록 현황</span>
+            </div>
+            <div id="time-list" class="time-list" role="rowgroup"></div>
+          </div>
+        </div>
+
+        <aside class="consult-panel" aria-labelledby="consult-title">
+          <p class="eyebrow">등록 상담</p>
+          <h2 id="consult-title">선택한 시간으로 상담하기</h2>
+          <p id="selection-copy" class="selection-copy">자리가 있는 시간을 선택해주세요.</p>
+
+          <div class="consult-actions">
+            <a id="phone-link" class="action-button phone-button" href="#">
+              <i data-lucide="phone" aria-hidden="true"></i>
+              <span>전화 문의</span>
+            </a>
+            <a id="kakao-link" class="action-button kakao-button" href="#" target="_blank" rel="noopener">
+              <i data-lucide="message-circle" aria-hidden="true"></i>
+              <span>카카오톡 상담</span>
+            </a>
+          </div>
+
+          <dl class="branch-contact">
+            <div>
+              <dt>선택 지점</dt>
+              <dd id="contact-branch"></dd>
+            </div>
+            <div>
+              <dt>전화번호</dt>
+              <dd id="contact-phone"></dd>
+            </div>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
+    <section class="notice-band">
+      <div class="content notice-inner">
+        <i data-lucide="info" aria-hidden="true"></i>
+        <p>연령 및 수영 수준에 따라 상담 후 최종 확정됩니다.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="content footer-inner">
+      <strong>슈퍼차일드 어린이수영장</strong>
+      <span>본 화면은 정규반 전환 안내용 프로토타입입니다.</span>
+    </div>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -1,10 +1,12 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {onCall, onRequest, HttpsError} = require("firebase-functions/v2/https");
+const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore");
+const {buildRegularAvailability} = require("./regular-availability");
 
 initializeApp({projectId: "scswimming-schedule"});
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
@@ -15,6 +17,24 @@ const CHUNK_SIZE = 600000;
 const AUDIT_INDEX_KEY = "zz_swim_audit_index";
 const AUDIT_ENTRY_PREFIX = "zz_swim_audit_entry__";
 const AUDIT_LOG_MAX = 200;
+const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
+const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
+const PUBLIC_AVAILABILITY_SOURCE_KEYS = new Set([
+  "swim_students",
+  "swim_inst",
+  "swim_retire",
+  "swim_enroll",
+  "swim_disabled",
+  "swim_periods",
+  "swim_main_tab",
+]);
+
+function isPublicAvailabilitySourceKey(key) {
+  const value = String(key || "");
+  return PUBLIC_AVAILABILITY_SOURCE_KEYS.has(value) ||
+    (/^swim_stu_/.test(value) && !/^swim_bt_/.test(value)) ||
+    (/^swim_inst_/.test(value) && !/^swim_bt_/.test(value));
+}
 
 const BRANCHES = {
   gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동", phone: "043-715-2019"},
@@ -324,6 +344,97 @@ function writeStoredValue(tx, branch, key, value, previousItem) {
 
 async function readJSON(branch, key, fallback) {
   return normalizeStoredScheduleValue(key, parseJSON(await readStoredValue(branch, key), fallback));
+}
+
+function publicAvailabilityRef(branch) {
+  return db.collection(PUBLIC_AVAILABILITY_COLLECTION).doc(branch.id);
+}
+
+function publicAvailabilityKeys(mainSetting) {
+  const setting = mainSetting && typeof mainSetting === "object" ? mainSetting : {};
+  const stuKey = String(setting.stuKey || "swim_students");
+  const instKey = String(setting.instKey || "swim_inst");
+  if (/^swim_bt_/.test(stuKey) || /^swim_bt_/.test(instKey)) {
+    return {stuKey: "swim_students", instKey: "swim_inst"};
+  }
+  return {stuKey, instKey};
+}
+
+function publicAvailabilityBasisDate(periods) {
+  const list = Array.isArray(periods) && periods.length ? periods : DEFAULT_PERIODS;
+  const exact = list.find(period => {
+    if (!period || !period.start) return false;
+    const startYear = String(period.start).slice(0, 4);
+    const month = String(Number(period.month || 0)).padStart(2, "0");
+    return `${startYear}-${month}` === PUBLIC_AVAILABILITY_BASIS_MONTH;
+  });
+  return exact && exact.start || "2026-08-31";
+}
+
+function publicAvailabilityPayload(branch, summary) {
+  const data = summary && typeof summary === "object" ? summary : {};
+  return {
+    branchId: branch.id,
+    branchName: branch.name,
+    basisMonth: PUBLIC_AVAILABILITY_BASIS_MONTH,
+    basisDate: data.basisDate || "2026-08-31",
+    updatedAt: data.updatedAtIso || "",
+    days: data.days || {},
+  };
+}
+
+async function computePublicAvailability(branch) {
+  const [mainSetting, periods] = await Promise.all([
+    readJSON(branch, "swim_main_tab", null),
+    readJSON(branch, "swim_periods", null),
+  ]);
+  const keys = publicAvailabilityKeys(mainSetting);
+  const [students, inst, retire, enroll, disabled] = await Promise.all([
+    readJSON(branch, keys.stuKey, []),
+    readJSON(branch, keys.instKey, {}),
+    readJSON(branch, "swim_retire", {}),
+    readJSON(branch, "swim_enroll", {}),
+    readJSON(branch, "swim_disabled", {}),
+  ]);
+  const basisDate = publicAvailabilityBasisDate(periods);
+  const calculated = buildRegularAvailability({
+    basisDate,
+    students,
+    inst,
+    retire,
+    enroll,
+    disabled,
+  });
+  const updatedAtIso = new Date().toISOString();
+  const summary = {
+    schemaVersion: 1,
+    branchId: branch.id,
+    basisMonth: PUBLIC_AVAILABILITY_BASIS_MONTH,
+    basisDate,
+    days: calculated.days,
+    updatedAtIso,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await publicAvailabilityRef(branch).set(summary, {merge: false});
+  return publicAvailabilityPayload(branch, summary);
+}
+
+async function readPublicAvailability(branch) {
+  const snap = await publicAvailabilityRef(branch).get();
+  if (!snap.exists) return computePublicAvailability(branch);
+  const data = snap.data() || {};
+  if (data.schemaVersion !== 1 || data.basisMonth !== PUBLIC_AVAILABILITY_BASIS_MONTH) {
+    return computePublicAvailability(branch);
+  }
+  return publicAvailabilityPayload(branch, data);
+}
+
+function decodedScheduleKey(docId) {
+  try {
+    return decodeURIComponent(String(docId || ""));
+  } catch (error) {
+    return String(docId || "");
+  }
 }
 
 async function readAligoSettings(branch) {
@@ -1377,4 +1488,53 @@ exports.parentPortal = onCall({
   if (action === "cancelBogang") return cancelBogang(branch, data);
   if (action === "notifyStaffRequestProcessed") return notifyStaffRequestProcessed(branch, data, request);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
+});
+
+exports.refreshRegularAvailability = onDocumentWritten({
+  document: "scheduleStores/{branchId}/kv/{docId}",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async event => {
+  const branch = BRANCHES[String(event.params.branchId || "")];
+  if (!branch) return null;
+  const key = decodedScheduleKey(event.params.docId);
+  if (!isPublicAvailabilitySourceKey(key)) return null;
+  await computePublicAvailability(branch);
+  return null;
+});
+
+exports.regularAvailability = onRequest({
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  cors: true,
+}, async (request, response) => {
+  response.set("Access-Control-Allow-Origin", "*");
+  response.set("Cache-Control", "public, max-age=5, s-maxage=10, stale-while-revalidate=30");
+  if (request.method === "OPTIONS") {
+    response.status(204).send("");
+    return;
+  }
+  if (request.method !== "GET") {
+    response.status(405).json({ok: false, message: "Method not allowed"});
+    return;
+  }
+  try {
+    const results = await Promise.all(Object.values(BRANCHES).map(readPublicAvailability));
+    const branches = {};
+    let updatedAt = "";
+    let basisDate = "";
+    results.forEach(result => {
+      branches[result.branchId] = result.days;
+      if (result.updatedAt > updatedAt) updatedAt = result.updatedAt;
+      if (!basisDate) basisDate = result.basisDate;
+    });
+    response.status(200).json({
+      ok: true,
+      basisMonth: PUBLIC_AVAILABILITY_BASIS_MONTH,
+      basisDate,
+      updatedAt,
+      branches,
+    });
+  } catch (error) {
+    console.error("regular availability failed", error);
+    response.status(500).json({ok: false, message: "현황을 불러오지 못했습니다"});
+  }
 });

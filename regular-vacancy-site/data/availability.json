@@ -1,0 +1,116 @@
+{
+  "updatedAt": "2026-07-27T12:00:00+09:00",
+  "basisDate": "2026-09-01",
+  "branches": {
+    "gagyeong": {
+      "mon": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": true },
+        { "time": 16, "available": false },
+        { "time": 17, "available": true },
+        { "time": 18, "available": true },
+        { "time": 19, "available": false },
+        { "time": 20, "available": true }
+      ],
+      "tue": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": false },
+        { "time": 16, "available": true },
+        { "time": 17, "available": true },
+        { "time": 18, "available": false },
+        { "time": 19, "available": true },
+        { "time": 20, "available": false }
+      ],
+      "wed": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": true },
+        { "time": 16, "available": true },
+        { "time": 17, "available": false },
+        { "time": 18, "available": true },
+        { "time": 19, "available": false },
+        { "time": 20, "available": true }
+      ],
+      "thu": [
+        { "time": 14, "available": false },
+        { "time": 15, "available": true },
+        { "time": 16, "available": true },
+        { "time": 17, "available": false },
+        { "time": 18, "available": true },
+        { "time": 19, "available": true },
+        { "time": 20, "available": false }
+      ],
+      "fri": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": false },
+        { "time": 16, "available": false },
+        { "time": 17, "available": true },
+        { "time": 18, "available": true },
+        { "time": 19, "available": false },
+        { "time": 20, "available": true }
+      ],
+      "sat": [
+        { "time": 9, "available": true },
+        { "time": 10, "available": true },
+        { "time": 11, "available": false },
+        { "time": 12, "available": true },
+        { "time": 13, "available": true },
+        { "time": 14, "available": false }
+      ]
+    },
+    "yongam": {
+      "mon": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": false },
+        { "time": 16, "available": true },
+        { "time": 17, "available": true },
+        { "time": 18, "available": false },
+        { "time": 19, "available": true },
+        { "time": 20, "available": false }
+      ],
+      "tue": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": true },
+        { "time": 16, "available": false },
+        { "time": 17, "available": true },
+        { "time": 18, "available": true },
+        { "time": 19, "available": false },
+        { "time": 20, "available": true }
+      ],
+      "wed": [
+        { "time": 14, "available": false },
+        { "time": 15, "available": true },
+        { "time": 16, "available": true },
+        { "time": 17, "available": false },
+        { "time": 18, "available": true },
+        { "time": 19, "available": true },
+        { "time": 20, "available": false }
+      ],
+      "thu": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": false },
+        { "time": 16, "available": true },
+        { "time": 17, "available": true },
+        { "time": 18, "available": false },
+        { "time": 19, "available": false },
+        { "time": 20, "available": true }
+      ],
+      "fri": [
+        { "time": 14, "available": true },
+        { "time": 15, "available": true },
+        { "time": 16, "available": false },
+        { "time": 17, "available": false },
+        { "time": 18, "available": true },
+        { "time": 19, "available": true },
+        { "time": 20, "available": true }
+      ],
+      "sat": [
+        { "time": 9, "available": true },
+        { "time": 10, "available": false },
+        { "time": 11, "available": true },
+        { "time": 12, "available": true },
+        { "time": 13, "available": false },
+        { "time": 14, "available": true }
+      ]
+    }
+  }
+}

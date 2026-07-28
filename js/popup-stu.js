@@ -1663,12 +1663,14 @@ async function handleSave(e, ctx){
         detail:`${slotKey} 원생 교체 · ID 연결 자동 확인`,
         deleteReason:'student-replace',
         skipUndo:true,
+        bangteuk:isBt,
       });
     }else{
       await updateStudentsTx(mutateStudents, {
         type:'edit',
         label:'원생 정보 저장',
         deleteReason:'schedule-edit',
+        bangteuk:isBt,
       });
     }
     if(isBt&&!replaceMode){
@@ -1700,6 +1702,7 @@ async function handleDelete(e, ctx){
   const {t, day, lane, row, key} = ctx;
   const oldStu=getStu(t,day,lane,row);
   const groupSlots=_btGroupSlotsForParts(t,day,lane,row);
+  const isBt=_isBangteukPopupSlot(t,day,lane);
   try{
     await updateStudentsTx((students,abort)=>{
       const removeIndexes=[];
@@ -1715,7 +1718,7 @@ async function handleDelete(e, ctx){
       }
       removeIndexes.sort((a,b)=>b-a).forEach(idx=>students.splice(idx,1));
       return students;
-    }, {type:'edit', label:'학생 직접 삭제', deleteReason:'manual-delete'});
+    }, {type:'edit', label:'학생 직접 삭제', deleteReason:'manual-delete', bangteuk:isBt});
     _flashKey=key;
     closeStuPopup();
     buildTable();
@@ -2034,17 +2037,20 @@ async function _setRetireChoice(slotKey,ds,stu,existingEntry,kind){
   const previousEntry=RETIRE_MAP[slotKey]||existingEntry||null;
   const previousDs=_retireEntryDate(previousEntry);
   const previousWasRetire=!!(previousEntry&&_retireChoiceKind(previousEntry,stu,slotKey)==='retire');
+  const parts=_slotParts(slotKey);
+  const isBt=_isBangteukPopupSlot(parts.t,parts.d,parts.l);
   let savedEntry=null;
   await updateRetireMapTx(retire=>{
     const extra=kind==='retire'
       ? {retireType:'retire'}
       : {retireType:'exclude', excludeReason:kind};
+    if(isBt) extra.bangteuk=true;
     savedEntry=_reservationEntryFromStudent(stu,ds,extra);
     retire[slotKey]=savedEntry;
     return retire;
-  });
+  }, {bangteuk:isBt});
   if(typeof ensureDeskNoteForRetireReservation==='function'){
-    await ensureDeskNoteForRetireReservation(slotKey,savedEntry||RETIRE_MAP[slotKey],stu).catch(err=>{
+    await ensureDeskNoteForRetireReservation(slotKey,savedEntry||RETIRE_MAP[slotKey],stu,{bangteuk:isBt}).catch(err=>{
       console.warn('하단 기록 자동 추가 실패:',err);
     });
   }
@@ -2318,7 +2324,12 @@ async function _commitEnroll(slotKey, form){
         ctx.set(stuKey,students);
         if(isBt) ctx.set(STORAGE_KEYS.ENROLL,enroll);
         return true;
-      }, {type:'edit', label:isBt?'방특 원생 저장':'즉시 등록', detail:isBt?`${form.name} 방특 원생 저장`:`${form.name} ${ds} 즉시 등록`});
+      }, {
+        type:'edit',
+        label:isBt?'방특 원생 저장':'즉시 등록',
+        detail:isBt?`${form.name} 방특 원생 저장`:`${form.name} ${ds} 즉시 등록`,
+        bangteuk:isBt,
+      });
       if(groupSlots.some(s=>DISABLED_MAP[s.slotKey])){
         await updateDisabledMapTx(disabled=>{
           groupSlots.forEach(s=>{delete disabled[s.slotKey];});
@@ -3187,6 +3198,9 @@ function _deleteReserveMovePair(retire,enroll,kind,slotKey){
 
 async function deleteRetireReservation(slotKey){
   let paired=false;
+  const parts=_slotParts(slotKey);
+  const entry=RETIRE_MAP[slotKey];
+  const isBt=_isBangteukPopupSlot(parts.t,parts.d,parts.l)||entry?.bangteuk===true;
   await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
@@ -3195,7 +3209,7 @@ async function deleteRetireReservation(slotKey){
     ctx.set(STORAGE_KEYS.RETIRE,retire);
     if(paired) ctx.set(STORAGE_KEYS.ENROLL,enroll);
     return true;
-  });
+  }, {type:'edit', label:'제외 예약 취소', bangteuk:isBt});
   return paired;
 }
 
@@ -3204,6 +3218,9 @@ async function deleteEnrollReservation(slotKey){
   let removedStudent=false;
   const stuKey=getTabConfig().stuKey;
   const groupSlots=_btGroupSlotsForSlotKey(slotKey);
+  const parts=_slotParts(slotKey);
+  const entryBefore=ENROLL_MAP[slotKey];
+  const isBt=_isBangteukPopupSlot(parts.t,parts.d,parts.l)||entryBefore?.bangteuk===true;
   await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,stuKey], ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
@@ -3233,7 +3250,7 @@ async function deleteEnrollReservation(slotKey){
     }
     ctx.set(STORAGE_KEYS.ENROLL,enroll);
     return true;
-  }, {type:'edit', label:'등록 예약 취소', deleteReason:'enroll-cancel'});
+  }, {type:'edit', label:'등록 예약 취소', deleteReason:'enroll-cancel', bangteuk:isBt});
   return {paired, removedStudent};
 }
 
@@ -3393,6 +3410,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
   if(!_moveMode) return;
   const {srcKey, type}=_moveMode;
   const dstKey=dstT+'/'+dstDay+'/'+dstLane+'/'+dstRow;
+  const srcParts=_slotParts(srcKey);
+  const bangteukChange=_isBangteukPopupSlot(srcParts.t,srcParts.d,srcParts.l)
+    ||_isBangteukPopupSlot(dstT,dstDay,dstLane);
   const dstDateDay=_btDateDayForSlot(dstT,dstDay,dstLane);
   const dstDateOpts=opts=>_btDateOptsForSlot(dstT,dstDay,dstLane,opts);
 
@@ -3456,7 +3476,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           ctx.set(STORAGE_KEYS.REQUESTS,requests);
         }
         return true;
-      }, {type:'move', label:'자리바꾸기', detail:`${srcKey} → ${dstKey}`});
+      }, {type:'move', label:'자리바꾸기', detail:`${srcKey} → ${dstKey}`, bangteuk:bangteukChange});
       const srcLabel=srcStu.n+(srcStu.a||'');
       const dstLabel=dstStu?dstStu.n+(dstStu.a||''):'빈 셀';
       _finishMove(`${srcLabel} ↔ ${dstLabel} 자리바꾸기 완료`);
@@ -3490,7 +3510,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         marks[dstKey+'/'+newDs]=markData;
         ctx.set(STORAGE_KEYS.MARK,marks);
         return true;
-      }, {type:'move', label:(markType==='bogang'?'보강 이동':'샘플 이동'), detail:`${srcKey}/${srcDs} → ${dstKey}/${newDs}`});
+      }, {type:'move', label:(markType==='bogang'?'보강 이동':'샘플 이동'), detail:`${srcKey}/${srcDs} → ${dstKey}/${newDs}`, bangteuk:bangteukChange});
     };
     // 요일이 다르면 날짜 선택 모달
     if(sD!==dstDay){
@@ -3536,7 +3556,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         enroll[dstKey]=_cloneEnrollEntryForCopy(enrData,newDs);
         ctx.set(STORAGE_KEYS.ENROLL,enroll);
         return true;
-      }, {type:'edit', label:'등록 예약 복사', detail:`${srcKey} → ${dstKey}`});
+      }, {type:'edit', label:'등록 예약 복사', detail:`${srcKey} → ${dstKey}`, bangteuk:bangteukChange});
     };
     if(sD!==dstDay){
       askDateForDay(dstDateDay, async function(newDs){
@@ -3580,7 +3600,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         enroll[dstKey]={...srcEnroll, ...enrData, ds:newDs};
         ctx.set(STORAGE_KEYS.ENROLL,enroll);
         return true;
-      }, {type:'move', label:'등록 예약 이동', detail:`${srcKey} → ${dstKey}`});
+      }, {type:'move', label:'등록 예약 이동', detail:`${srcKey} → ${dstKey}`, bangteuk:bangteukChange});
     };
     // 요일이 다르면 날짜 선택
     if(sD!==dstDay){
@@ -3625,12 +3645,20 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
           moveId,
           pairKey:srcKey,
         };
+        if(bangteukChange) enrollEntry.bangteuk=true;
         if(stu.p) enrollEntry.p=stu.p;
         if(stu.v) enrollEntry.v=true;
         if(stu.loc) enrollEntry.loc=stu.loc;
         if(stu.memo) enrollEntry.memo=stu.memo;
         if(stu.g) enrollEntry.g=stu.g;
-        const retireEntry=_reservationEntryFromStudent(stu,sourceDs,{retireType:'exclude', excludeReason:'move', moveType:'reserve', moveId, pairKey:dstKey});
+        const retireEntry=_reservationEntryFromStudent(stu,sourceDs,{
+          retireType:'exclude',
+          excludeReason:'move',
+          moveType:'reserve',
+          moveId,
+          pairKey:dstKey,
+          bangteuk:bangteukChange||undefined,
+        });
         try{
           const stuKey=getTabConfig().stuKey;
           await updateScheduleTx([stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
@@ -3646,9 +3674,9 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
             ctx.set(STORAGE_KEYS.RETIRE,retire);
             ctx.set(STORAGE_KEYS.ENROLL,enroll);
             return true;
-          }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`});
+          }, {type:'move', label:'예약 이동', detail:`${srcKey} → ${dstKey} (${sourceDs} / ${newDs})`, bangteuk:bangteukChange});
           if(typeof ensureDeskNoteForRetireReservation==='function'){
-            await ensureDeskNoteForRetireReservation(srcKey,retireEntry,stu).catch(err=>{
+            await ensureDeskNoteForRetireReservation(srcKey,retireEntry,stu,{bangteuk:bangteukChange}).catch(err=>{
               console.warn('예약 이동 하단 기록 자동 추가 실패:',err);
             });
           }
@@ -3692,7 +3720,7 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         delete disabled[dstKey];
         ctx.set(STORAGE_KEYS.DISABLED,disabled);
         return true;
-      }, {type:'edit', label:'원생 복사', detail:`${srcKey} → ${dstKey}`});
+      }, {type:'edit', label:'원생 복사', detail:`${srcKey} → ${dstKey}`, bangteuk:bangteukChange});
       _finishMove(stu.n+(stu.a||'')+' 복사 완료');
     }catch(err){
       toast(err?.message||'복사 실패','err');
@@ -3772,9 +3800,14 @@ async function executeMove(dstT,dstDay,dstLane,dstRow){
         ctx.set(STORAGE_KEYS.REQUESTS,requests);
       }
       return true;
-    }, {type:'move', label:type==='all'?'전체 이동':'원생 이동', detail:`${srcKey} → ${dstKey}`});
+    }, {
+      type:'move',
+      label:type==='all'?'전체 이동':'원생 이동',
+      detail:`${srcKey} → ${dstKey}`,
+      bangteuk:bangteukChange,
+    });
     if(typeof ensureDeskNoteForStudentMove==='function'){
-      await ensureDeskNoteForStudentMove(srcKey,dstKey,movedStuForLog,type).catch(err=>{
+      await ensureDeskNoteForStudentMove(srcKey,dstKey,movedStuForLog,type,{bangteuk:bangteukChange}).catch(err=>{
         console.warn('이동 하단 기록 자동 추가 실패:',err);
       });
     }
