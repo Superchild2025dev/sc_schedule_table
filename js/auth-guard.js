@@ -9,12 +9,12 @@
   const SUPER_ADMIN_EMAILS = ['2025superchild@gmail.com'];
   const STAFF_EMAIL_PROFILES = {
     'gagyeong.desk@scswim.local': {name:'가경점 데스크', role:'desk', branchIds:['gagyeong'], teacherName:''},
-    'gagyeong.son@scswim.local': {name:'손용곤', role:'teacher', branchIds:['gagyeong'], teacherName:'손용곤'},
-    'gagyeong.park@scswim.local': {name:'박형진', role:'teacher', branchIds:['gagyeong'], teacherName:'박형진'},
-    'gagyeong.lee1@scswim.local': {name:'이수성', role:'teacher', branchIds:['gagyeong'], teacherName:'이수성'},
-    'gagyeong.kimjy@scswim.local': {name:'김재용', role:'teacher', branchIds:['gagyeong'], teacherName:'김재용'},
-    'gagyeong.kimms@scswim.local': {name:'김민승', role:'teacher', branchIds:['gagyeong'], teacherName:'김민승'},
-    'gagyeong.yoo@scswim.local': {name:'유정희', role:'teacher', branchIds:['gagyeong'], teacherName:'유정희'},
+    'gagyeong.son@scswim.local': {name:'손용곤', role:'teacher', branchIds:['gagyeong'], teacherName:'손용곤', permissions:['editMakeup']},
+    'gagyeong.park@scswim.local': {name:'박형진', role:'teacher', branchIds:['gagyeong'], teacherName:'박형진', permissions:['editMakeup']},
+    'gagyeong.lee1@scswim.local': {name:'이수성', role:'teacher', branchIds:['gagyeong'], teacherName:'이수성', permissions:['editMakeup']},
+    'gagyeong.kimjy@scswim.local': {name:'김재용', role:'teacher', branchIds:['gagyeong'], teacherName:'김재용', permissions:['editMakeup']},
+    'gagyeong.kimms@scswim.local': {name:'김민승', role:'teacher', branchIds:['gagyeong'], teacherName:'김민승', permissions:['editMakeup']},
+    'gagyeong.yoo@scswim.local': {name:'유정희', role:'teacher', branchIds:['gagyeong'], teacherName:'유정희', permissions:['editMakeup']},
     'yongam.desk@scswim.local': {name:'용암점 데스크', role:'desk', branchIds:['yongam'], teacherName:''},
     'yongam.lee1@scswim.local': {name:'이수재', role:'teacher', branchIds:['yongam'], teacherName:'이수재'},
     'yongam.jung@scswim.local': {name:'정연재', role:'teacher', branchIds:['yongam'], teacherName:'정연재'},
@@ -235,6 +235,8 @@
     if(!p || p.active === false) return false;
     if(permission === 'viewSchedule') return true;
     if(p.missingProfile) return false;
+    const direct = Array.isArray(p.permissions) ? p.permissions : [];
+    if(direct.includes('*') || direct.includes(permission)) return true;
     const role = p.role || 'teacher';
     const list = ROLE_PERMISSIONS[role] || [];
     return list.includes('*') || list.includes(permission);

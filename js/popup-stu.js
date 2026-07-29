@@ -18,11 +18,22 @@ function _resetReplacementIdentityState(){
 function stuPopupCanEdit(){
   return !(window.SCAuth && !SCAuth.can('editSchedule'));
 }
+function stuPopupCanEditBogang(){
+  return stuPopupCanEdit() || !(window.SCAuth && !SCAuth.can('editMakeup'));
+}
 function stuPopupCanView(){
   return !(window.SCAuth && !SCAuth.can('viewSchedule'));
 }
 function isStuPopupReadOnly(){
   return !stuPopupCanEdit();
+}
+function isStuPopupMakeupOnly(){
+  return isStuPopupReadOnly() && stuPopupCanEditBogang();
+}
+function requireStuPopupBogangEdit(){
+  if(stuPopupCanEditBogang()) return true;
+  if(typeof toast==='function') toast('보강 편집 권한이 없습니다','err');
+  return false;
 }
 
 function applyStuPopupReadOnlyState(){
@@ -41,6 +52,16 @@ function applyStuPopupReadOnlyState(){
   popup.querySelectorAll('button').forEach(btn=>{
     btn.disabled=true;
   });
+  if(isStuPopupMakeupOnly()){
+    popup.classList.add('stu-popup-makeup-only');
+    popup.querySelectorAll('#sp-bogang-name,#sp-bogang-type-regular,#sp-bogang-type-bangteuk,#sp-bogang-mandatory').forEach(el=>{
+      el.disabled=false;
+      el.readOnly=false;
+    });
+    popup.querySelectorAll('#sp-mark-bogang-show,#sp-mark-bogang,#sp-mark-bogang-del,.sp-bogang-candidate').forEach(btn=>{
+      btn.disabled=false;
+    });
+  }
 }
 
 function handleReadOnlyDateBoxClick(dateBox){
@@ -75,13 +96,14 @@ function handleReadOnlyDateBoxClick(dateBox){
     (hyuwon.dates && hyuwon.dates.includes(ds)) ||
     (hyuwon.from && !hyuwon.dates && ds>=hyuwon.from && ds<=hyuwon.to)
   ));
-  if(ENROLL_MAP[slotKey]?.ds===ds){
+  const makeupOnly=isStuPopupMakeupOnly();
+  if(!makeupOnly&&ENROLL_MAP[slotKey]?.ds===ds){
     _stuPopup.showEnroll=true;
   } else if(mark?.type==='bogang'||(mark?.type==='absent'&&sub?.type==='bogang')){
     _stuPopup.showBogang=true;
-  } else if(mark?.type==='sample'||(mark?.type==='absent'&&sub?.type==='sample')){
+  } else if(!makeupOnly&&(mark?.type==='sample'||(mark?.type==='absent'&&sub?.type==='sample'))){
     _stuPopup.showSample=true;
-  } else if(isHyuwon){
+  } else if(!makeupOnly&&isHyuwon){
     _stuPopup.showHyuwon=true;
   }
   renderStuPopup();
@@ -527,6 +549,31 @@ function _setBogangSelected(data){
     selected.style.color=summary?'#5B21B6':'#9CA3AF';
   }
 }
+function _selectBogangCandidate(candidate){
+  if(!candidate) return;
+  const data={
+    key:candidate.dataset.key||'',
+    slotKey:candidate.dataset.slotKey||'',
+    slotKeys:candidate.dataset.slotKeys||candidate.dataset.slotKey||'',
+    n:candidate.dataset.name||'',
+    a:candidate.dataset.age||'',
+    p:candidate.dataset.phone||'',
+    teacher:candidate.dataset.teacher||'',
+    day:candidate.dataset.day||'',
+    time:candidate.dataset.time||'',
+    label:candidate.dataset.label||'',
+    sourceType:candidate.dataset.sourceType||'',
+    sourceTabId:candidate.dataset.sourceTab||'',
+    sourceTabName:candidate.dataset.sourceTabName||'',
+  };
+  const nameEl=document.getElementById('sp-bogang-name');
+  const ageEl=document.getElementById('sp-bogang-age');
+  if(nameEl) nameEl.value=data.n;
+  if(ageEl) ageEl.value=data.a||'';
+  _setBogangSelected(data);
+  const box=document.getElementById('sp-bogang-candidates');
+  if(box) box.innerHTML='';
+}
 function _readBogangSelected(){
   const slotKey=document.getElementById('sp-bogang-student-slot')?.value||'';
   if(!slotKey) return null;
@@ -786,6 +833,15 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     : `${bs}background:#fff;border:1.5px solid ${color};color:${color}`;
   const enrollBtnStyle = btnStyle(isEnroll||_stuPopup.showEnroll,'#3B82F6');
   const enrollBtnText = enrollDate&&selDate&&enrollDate!==selDate ? '등록일 변경' : '등록';
+
+  if(isStuPopupMakeupOnly()){
+    const existBo=boOn?(sub?.type==='bogang'?sub:(curMark?.type==='bogang'?curMark:null)):null;
+    const makeupForm=_stuPopup.showBogang?buildBogangFormHtml(existBo):'';
+    return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px">
+      <button class="btn" id="sp-mark-bogang-show" style="${btnStyle(boOn,'#7C3AED')};width:100%">보강</button>
+      ${makeupForm}
+    </div>`;
+  }
 
   return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px">
     <div style="display:flex;gap:3px;margin-bottom:3px">
@@ -1893,6 +1949,7 @@ function handleBogangShow(e, ctx){
 }
 
 function handleBogangSet(e, ctx){
+  if(!requireStuPopupBogangEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const n=document.getElementById('sp-bogang-name')?.value.trim();
@@ -1926,6 +1983,7 @@ function handleBogangSet(e, ctx){
 }
 
 function handleBogangDel(e, ctx){
+  if(!requireStuPopupBogangEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const cur=getMark(slotKey,ds);
@@ -2510,6 +2568,11 @@ const STU_POPUP_MARK_HANDLERS = [
   ['#sp-hyuwon-show',      handleHyuwonShow],
   ['#sp-hyuwon-del',       handleHyuwonDel],
 ];
+const STU_POPUP_MAKEUP_HANDLERS = [
+  ['#sp-mark-bogang-show', handleBogangShow],
+  ['#sp-mark-bogang-del',  handleBogangDel],
+  ['#sp-mark-bogang',      handleBogangSet],
+];
 
 /**
  * 예약(제외/등록) 핸들러 맵
@@ -2553,37 +2616,22 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
     return;
   }
 
-  if(isStuPopupReadOnly()){
-    if(dateBox&&!dateBox.classList.contains('closed')){
-      handleReadOnlyDateBoxClick(dateBox);
-    }
+  const bogangCandidate=e.target.closest('.sp-bogang-candidate');
+  if(bogangCandidate&&stuPopupCanEditBogang()){
+    _selectBogangCandidate(bogangCandidate);
     return;
   }
 
-  const bogangCandidate=e.target.closest('.sp-bogang-candidate');
-  if(bogangCandidate){
-    const data={
-      key:bogangCandidate.dataset.key||'',
-      slotKey:bogangCandidate.dataset.slotKey||'',
-      slotKeys:bogangCandidate.dataset.slotKeys||bogangCandidate.dataset.slotKey||'',
-      n:bogangCandidate.dataset.name||'',
-      a:bogangCandidate.dataset.age||'',
-      p:bogangCandidate.dataset.phone||'',
-      teacher:bogangCandidate.dataset.teacher||'',
-      day:bogangCandidate.dataset.day||'',
-      time:bogangCandidate.dataset.time||'',
-      label:bogangCandidate.dataset.label||'',
-      sourceType:bogangCandidate.dataset.sourceType||'',
-      sourceTabId:bogangCandidate.dataset.sourceTab||'',
-      sourceTabName:bogangCandidate.dataset.sourceTabName||'',
-    };
-    const nameEl=document.getElementById('sp-bogang-name');
-    const ageEl=document.getElementById('sp-bogang-age');
-    if(nameEl) nameEl.value=data.n;
-    if(ageEl) ageEl.value=data.a||'';
-    _setBogangSelected(data);
-    const box=document.getElementById('sp-bogang-candidates');
-    if(box) box.innerHTML='';
+  if(isStuPopupReadOnly()){
+    if(dateBox&&!dateBox.classList.contains('closed')){
+      handleReadOnlyDateBoxClick(dateBox);
+      return;
+    }
+    if(isStuPopupMakeupOnly()&&_stuPopup.selDate){
+      for(const [sel,fn] of STU_POPUP_MAKEUP_HANDLERS){
+        if(e.target.closest(sel)){fn(e,ctx);return;}
+      }
+    }
     return;
   }
 
@@ -2617,7 +2665,7 @@ document.getElementById('stu-popup').addEventListener('click',function(e){
 
 // Enter 키 저장
 document.getElementById('stu-popup').addEventListener('keydown',function(e){
-  if(isStuPopupReadOnly()) return;
+  if(isStuPopupReadOnly()&&!isStuPopupMakeupOnly()) return;
   if(e.key==='Enter'){
     // [v96 #2] textarea에서 Enter는 항상 줄바꿈. 저장은 저장 버튼 클릭만.
     //   (이전엔 plain Enter가 저장+팝업닫힘으로 동작해서 사용자가 텍스트 사라진 것처럼 느꼈음)
@@ -2626,6 +2674,8 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
     e.preventDefault();
     if(ae?.id==='sp-bogang-name'||ae?.id==='sp-bogang-age'){
       document.getElementById('sp-mark-bogang')?.click();
+    } else if(isStuPopupMakeupOnly()){
+      return;
     } else if(ae?.id==='sp-sample-name'||ae?.id==='sp-sample-age'||ae?.id==='sp-sample-phone'||ae?.id==='sp-sample-memo'){
       document.getElementById('sp-mark-sample')?.click();
     } else if(ae?.id==='sp-enroll-name'||ae?.id==='sp-enroll-age'||ae?.id==='sp-enroll-phone'||ae?.id==='sp-enroll-pickup'||ae?.id==='sp-enroll-dropoff'){
@@ -2640,7 +2690,7 @@ document.getElementById('stu-popup').addEventListener('keydown',function(e){
 });
 
 document.getElementById('stu-popup').addEventListener('input',function(e){
-  if(isStuPopupReadOnly()) return;
+  if(isStuPopupReadOnly()&&!isStuPopupMakeupOnly()) return;
   if(_stuPopup.replaceMode&&(e.target?.id==='sp-name'||e.target?.id==='sp-phone')){
     const name=document.getElementById('sp-name')?.value||'';
     const phone=document.getElementById('sp-phone')?.value||'';
