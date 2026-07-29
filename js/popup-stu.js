@@ -21,6 +21,9 @@ function stuPopupCanEdit(){
 function stuPopupCanEditBogang(){
   return stuPopupCanEdit() || !(window.SCAuth && !SCAuth.can('editMakeup'));
 }
+function stuPopupCanEditAbsence(){
+  return stuPopupCanEdit() || !(window.SCAuth && !SCAuth.can('attendanceCheck'));
+}
 function stuPopupCanView(){
   return !(window.SCAuth && !SCAuth.can('viewSchedule'));
 }
@@ -33,6 +36,11 @@ function isStuPopupMakeupOnly(){
 function requireStuPopupBogangEdit(){
   if(stuPopupCanEditBogang()) return true;
   if(typeof toast==='function') toast('보강 편집 권한이 없습니다','err');
+  return false;
+}
+function requireStuPopupAbsenceEdit(){
+  if(stuPopupCanEditAbsence()) return true;
+  if(typeof toast==='function') toast('결석 편집 권한이 없습니다','err');
   return false;
 }
 
@@ -61,6 +69,11 @@ function applyStuPopupReadOnlyState(){
     popup.querySelectorAll('#sp-mark-bogang-show,#sp-mark-bogang,#sp-mark-bogang-del,.sp-bogang-candidate').forEach(btn=>{
       btn.disabled=false;
     });
+    if(stuPopupCanEditAbsence()){
+      popup.querySelectorAll('#sp-mark-absent').forEach(btn=>{
+        btn.disabled=false;
+      });
+    }
   }
 }
 
@@ -838,7 +851,10 @@ function renderActionPanel(slotKey, selDate, retireDate, enrollDate, enrollMode,
     const existBo=boOn?(sub?.type==='bogang'?sub:(curMark?.type==='bogang'?curMark:null)):null;
     const makeupForm=_stuPopup.showBogang?buildBogangFormHtml(existBo):'';
     return `<div style="margin-top:6px;padding:6px;border:1.5px solid #E5E7EB;border-radius:8px">
-      <button class="btn" id="sp-mark-bogang-show" style="${btnStyle(boOn,'#7C3AED')};width:100%">보강</button>
+      <div style="display:flex;gap:3px">
+        ${stuPopupCanEditAbsence()?`<button class="btn" id="sp-mark-absent" style="${btnStyle(abOn,'#EF4444')}">${abOn?'결석 해제':'결석'}</button>`:''}
+        <button class="btn" id="sp-mark-bogang-show" style="${btnStyle(boOn,'#7C3AED')}">보강</button>
+      </div>
       ${makeupForm}
     </div>`;
   }
@@ -1910,6 +1926,7 @@ async function handleDateBoxClick(dateBox, ctx, clickTarget){
 /* ── 마크(결석/보강/샘플) 핸들러 ── */
 
 function handleMarkAbsent(e, ctx){
+  if(!requireStuPopupAbsenceEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const cur=getMark(slotKey,ds);
@@ -2569,6 +2586,7 @@ const STU_POPUP_MARK_HANDLERS = [
   ['#sp-hyuwon-del',       handleHyuwonDel],
 ];
 const STU_POPUP_MAKEUP_HANDLERS = [
+  ['#sp-mark-absent',      handleMarkAbsent],
   ['#sp-mark-bogang-show', handleBogangShow],
   ['#sp-mark-bogang-del',  handleBogangDel],
   ['#sp-mark-bogang',      handleBogangSet],
