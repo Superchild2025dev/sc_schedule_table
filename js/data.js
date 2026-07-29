@@ -1059,6 +1059,9 @@ function bogangSchedulePrefix(mark){
   if(type==='bangteuk') return '(방)';
   return '';
 }
+function isMandatoryBogang(mark){
+  return !!(mark&&mark.type==='bogang'&&mark.mandatoryMakeup===true);
+}
 function bogangDisplayName(mark){
   const raw=String(mark?.n||mark?.name||'').trim();
   const prefix=bogangSchedulePrefix(mark);

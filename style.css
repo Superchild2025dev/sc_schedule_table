@@ -240,6 +240,8 @@ body.is-snapshot .snap-banner{display:block}
 .att-absent .att-nm{color:#7F1D1D!important;text-decoration:line-through}
 .att-bogang{background:#C4B5FD!important}                   /* 보라색 = 보강 */
 .att-bogang .att-nm{color:#4C1D95!important}
+.att-mandatory-bogang{background:#7CFF4F!important}
+.att-mandatory-bogang .att-nm{color:#052E16!important}
 .att-sample{background:#FDBA74!important}                   /* 주황색 = 샘플 */
 .att-sample .att-nm{color:#7C2D12!important}
 .att-hyuwon{background:#BAE6FD!important}                   /* 하늘색 = 휴원 */
@@ -487,6 +489,8 @@ body.is-snapshot .snap-banner{display:block}
 .sp-bogang-type.regular{color:#1D4ED8;background:#EFF6FF;border-color:#93C5FD}
 .sp-bogang-type.bangteuk{color:#047857;background:#ECFDF5;border-color:#6EE7B7}
 .sp-bogang-type.bangteuk input{accent-color:#059669}
+.sp-bogang-type.mandatory{grid-column:1/-1;color:#14532D;background:#B7FF5A;border-color:#22C55E}
+.sp-bogang-type.mandatory input{accent-color:#16A34A}
 .sp-bogang-candidate{width:100%;display:flex;justify-content:space-between;gap:6px;align-items:center;padding:6px;border:0;border-bottom:1px solid #E5E7EB;cursor:pointer;text-align:left;font-family:inherit}
 .sp-bogang-candidate.source-regular{background:#EFF6FF;color:#1E3A8A}
 .sp-bogang-candidate.source-bangteuk{background:#ECFDF5;color:#065F46}
@@ -531,6 +535,8 @@ body.is-snapshot .snap-banner{display:block}
 .stu-date-box.absent-request-set .date-absent-request-label{display:block}
 .stu-date-box.bogang-set{background:#EDE9FE!important;color:#7C3AED!important;border-color:#7C3AED!important}
 .stu-date-box.bogang-set .date-bogang-label{display:block}
+.stu-date-box.bogang-set.mandatory-bogang-set{background:#7CFF4F!important;color:#052E16!important;border-color:#16A34A!important}
+.stu-date-box.bogang-set.mandatory-bogang-set .date-bogang-label{color:#052E16!important}
 .stu-date-box.sample-set{background:#FEF3C7!important;color:#D97706!important;border-color:#F59E0B!important}
 .stu-date-box.sample-set .date-sample-label{display:block}
 .date-retire-label,.date-enroll-label,.date-absent-label,.date-absent-request-label,.date-bogang-label,.date-sample-label{display:none;font-size:var(--f-badge);font-weight:800;line-height:1.1;margin-top:calc(2px * var(--tbl-scale));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
@@ -579,6 +585,7 @@ body.is-snapshot .snap-banner{display:block}
 .stu-bt-new-text{color:#DC2626!important}
 .cb-absent{background:#EF4444}
 .cb-bogang{background:#7C3AED}
+.cb-mandatory-bogang{background:#7CFF4F;color:#052E16}
 .cb-sample{background:#F59E0B;color:#333}
 .cb-hyuwon{background:#0EA5E9}
 .cb-pending-absent{background:#F59E0B;color:#fff;animation:pendingPulse 1.8s ease-in-out infinite;flex-basis:100%;padding:1px calc(2px * var(--tbl-scale))}
@@ -741,6 +748,8 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .print-student b{display:inline-flex;align-items:center;justify-content:center;min-width:10px;height:10px;border-radius:2px;background:#111;color:#fff;font-size:7px;line-height:1;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .print-student.bogang{color:#5B21B6}
 .print-student.bogang b{background:#7C3AED}
+.print-student.mandatory-bogang{padding:0 2px;background:#7CFF4F;color:#052E16}
+.print-student.mandatory-bogang b{background:#16A34A;color:#fff}
 .print-student.sample{color:#9A3412}
 .print-student.sample b{background:#F59E0B;color:#111}
 .print-student.enroll{color:#1D4ED8}
@@ -789,6 +798,7 @@ textarea.fi{resize:vertical;min-height:32px;max-height:120px;line-height:1.4}
 .mobile-schedule-chip.retire{background:#555;color:#fff}
 .mobile-schedule-chip.absent{background:#EF4444;color:#fff}
 .mobile-schedule-chip.bogang{background:#7C3AED;color:#fff}
+.mobile-schedule-chip.mandatory-bogang{background:#7CFF4F;color:#052E16}
 .mobile-schedule-chip.sample{background:#F59E0B;color:#333}
 .mobile-schedule-chip.enroll{background:#DBEAFE;color:#111}
 .mobile-schedule-chip.enroll-new{background:#DBEAFE;color:#1D4ED8}

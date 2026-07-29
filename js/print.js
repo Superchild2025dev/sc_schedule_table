@@ -157,6 +157,7 @@ function _printItemFromMark(mark){
     n:mark?.n||'',
     a:mark?.a||null,
     p:mark?.p||'',
+    mandatoryMakeup:mark?.mandatoryMakeup===true,
   };
 }
 
@@ -322,7 +323,7 @@ function _printRowsForTime(t,sourceDay,ds){
 }
 
 function _printItemHtml(item){
-  const cls=item.type==='bogang'?' bogang':item.type==='sample'?' sample':item.type==='enroll'?' enroll':'';
+  const cls=item.type==='bogang'?(item.mandatoryMakeup?' mandatory-bogang':' bogang'):item.type==='sample'?' sample':item.type==='enroll'?' enroll':'';
   const tag=item.type==='bogang'?'보':item.type==='sample'?'샘':item.isNew?'신':item.reenroll?'재':item.type==='enroll'?'등':'';
   return `<div class="print-student${cls}"><span>${esc((item.n||'')+(item.a||''))}</span>${tag?`<b>${tag}</b>`:''}</div>`;
 }

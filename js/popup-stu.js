@@ -307,7 +307,11 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
     const isBogangOnly=mark?.type==='bogang';
     const isSampleOnly=mark?.type==='sample';
     if(isAbsent) cls+=isAbsentRequest?' absent-request-set':' absent-set';
-    if(sub?.type==='bogang'||isBogangOnly) cls+=(isAbsent?'':' bogang-set');
+    if(sub?.type==='bogang'||isBogangOnly){
+      cls+=(isAbsent?'':' bogang-set');
+      const bogangMark=isBogangOnly?mark:sub;
+      if(!isAbsent&&typeof isMandatoryBogang==='function'&&isMandatoryBogang(bogangMark)) cls+=' mandatory-bogang-set';
+    }
     if(sub?.type==='sample'||isSampleOnly) cls+=(isAbsent?'':' sample-set');
     const hyuwon=HYUWON_MAP[slotKey];
     if(hyuwon&&hyuwon.dates&&hyuwon.dates.includes(d.ds)) cls+=' hyuwon-set';
@@ -331,7 +335,8 @@ function renderDateBoxes(dates, slotKey, selDate, retireDate, retireName, enroll
     }
     if(isBogangOnly){
       const bogangName=typeof bogangDisplayName==='function'?bogangDisplayName(mark):(mark.n||'');
-      markLabel=`<span class="date-bogang-label">${esc(bogangName+(mark.a||''))}</span>`;
+      const mandatory=typeof isMandatoryBogang==='function'&&isMandatoryBogang(mark);
+      markLabel=`<span class="date-bogang-label${mandatory?' mandatory':''}">${esc(bogangName+(mark.a||''))}</span>`;
     }
     if(isSampleOnly) markLabel=`<span class="date-sample-label">${esc((mark.n||'')+(mark.a||''))}</span>`;
 
@@ -558,6 +563,7 @@ function buildBogangFormHtml(existBo){
     sourceTabName:existBo?.studentSourceTabName||'',
   };
   const scheduleType=existBo?.studentScheduleType||'';
+  const mandatoryMakeup=existBo?.mandatoryMakeup===true;
   const selectedSummary=_bogangSelectedSummary(selected);
   return `<div style="padding:6px 0;border-top:1px solid #E5E7EB;margin-top:4px">
     <input class="fi" id="sp-bogang-name" placeholder="이름" aria-label="보강 원생 이름" autocomplete="off" value="${existBo?esc(existBo.n||''):''}" style="margin:0 0 4px;padding:4px 6px;font-size:11px">
@@ -575,6 +581,7 @@ function buildBogangFormHtml(existBo){
     <div class="sp-bogang-type-row" role="group" aria-label="보강 원생 구분">
       <label class="sp-bogang-type regular"><input type="checkbox" id="sp-bogang-type-regular" ${scheduleType==='regular'?'checked':''}> <b>(정)</b> 정규반</label>
       <label class="sp-bogang-type bangteuk"><input type="checkbox" id="sp-bogang-type-bangteuk" ${scheduleType==='bangteuk'?'checked':''}> <b>(방)</b> 방특반</label>
+      <label class="sp-bogang-type mandatory"><input type="checkbox" id="sp-bogang-mandatory" ${mandatoryMakeup?'checked':''}> 의무보강</label>
     </div>
     <div id="sp-bogang-selected" aria-live="polite" style="font-size:10px;color:${selectedSummary?'#5B21B6':'#9CA3AF'};font-weight:700;margin:-1px 0 4px;min-height:14px">
       ${selectedSummary?'선택됨 · '+esc(selectedSummary):'원생을 선택하면 요일/담당쌤이 함께 저장됩니다.'}
@@ -1896,6 +1903,7 @@ function handleBogangSet(e, ctx){
   const subObj={type:'bogang',n,a};
   const scheduleType=_readBogangScheduleType();
   if(scheduleType) subObj.studentScheduleType=scheduleType;
+  if(document.getElementById('sp-bogang-mandatory')?.checked) subObj.mandatoryMakeup=true;
   if(selected){
     if(selected.p) subObj.p=selected.p;
     subObj.studentSlotKey=selected.slotKey;
