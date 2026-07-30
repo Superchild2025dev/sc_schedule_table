@@ -2120,6 +2120,11 @@ function _scheduleAuditIsFalseMoveDeleteSegment(item,text,toSlot){
   if(item?._source!=='audit'||item?.type!=='move') return false;
   return /원생\s*삭제/.test(String(text||''));
 }
+function _scheduleAuditIsAutoRetireProcessingItem(item){
+  if(item?._source!=='audit') return false;
+  const operationLabel=String(item?.operationLabel||item?.label||'');
+  return item?.deleteReason==='auto-retire'||operationLabel==='자동 등록·제외 처리';
+}
 function _scheduleAuditTarget(item){
   const target=String(item?.target||'').trim();
   if(target){
@@ -2261,6 +2266,10 @@ function _scheduleAuditDisplayTime(slot,day){
   }catch(e){}
   return slot?.time||'-';
 }
+function _scheduleAuditReservationDetail(target,dateLabel,reason){
+  if(reason==='퇴원') return `${target} · 퇴원 적용일: ${dateLabel}`;
+  return `현재 시간표 표시: ${target} ${dateLabel} ${reason}`;
+}
 function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
   const rows=[];
   const scope=_scheduleAuditActiveScope();
@@ -2294,9 +2303,10 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
         date:date.label,
         dateKey:date.key,
         time:_scheduleAuditDisplayTime(fromSlot,day),
-        detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
+        detail:_scheduleAuditReservationDetail(target,date.label,reason),
         at:date.key?date.key+'T00:00:00':'',
         source:'visible-reservation',
+        reservationSlotKey:slotKey,
         tabId:scope.tabId,
         tabName:scope.tabName,
         tabType:scope.tabType,
@@ -2510,6 +2520,7 @@ function _deskNoteFromScheduleRow(row){
       detail:row.detail||'',
       at:row.at||'',
       source:row.source||'audit',
+      reservationSlotKey:row.reservationSlotKey||'',
       operationLabel:row.operationLabel||'',
       operationDetail:row.operationDetail||'',
       operationType:row.operationType||'',
@@ -2540,6 +2551,7 @@ function _deskNoteFromScheduleRow(row){
     deleteReason:row.deleteReason||'',
     at:row.source==='visible-reservation'?now:(row.at||now),
     source:row.source||'audit',
+    reservationSlotKey:row.reservationSlotKey||'',
     deleted:false,
     createdAt:now,
     updatedAt:now,
@@ -2578,9 +2590,10 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
       date:date.label,
       dateKey:date.key,
       time:_scheduleAuditDisplayTime(fromSlot,day),
-      detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
+      detail:_scheduleAuditReservationDetail(target,date.label,reason),
       at:date.key?date.key+'T00:00:00':'',
       source:'visible-reservation',
+      reservationSlotKey:slotKey,
       monthKey,
       tabId:scope.tabId,
       tabName:scope.tabName,
@@ -2594,6 +2607,53 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
     return next;
   },{type:'edit',label:'하단 기록 자동 추가'},true).then(()=>{
     additions.forEach(note=>{ DESK_NOTES=_mergeDeskNote(DESK_NOTES,note); });
+    return true;
+  });
+}
+function _deskNoteMatchesRetireCancellation(note,exactKeys,identityKeys,ds){
+  if(note?.manual) return false;
+  const source=String(note?.source||note?.original?.source||'');
+  if(source!=='visible-reservation') return false;
+  if(exactKeys.has(String(note?.sourceKey||''))) return true;
+  if(note?.reservationSlotKey||note?.original?.reservationSlotKey) return false;
+  const noteDs=String(note?.effectiveDateKey||note?.original?.dateKey||'');
+  if(ds&&noteDs&&noteDs!==ds) return false;
+  return _deskNoteRetireProcessingKeys(note).some(key=>identityKeys.has(key));
+}
+function _deskNotesAfterRetireReservationCancellation(list,slotKey,entry,fallback,options){
+  const current=_normalizeDeskNotesList(list);
+  if(!slotKey||!entry) return current;
+  const fromSlot=_scheduleAuditSlotFromKey(slotKey);
+  const scope=_scheduleAuditActiveScope();
+  if(!fromSlot||scope.tabType==='bangteuk'||options?.bangteuk===true||_scheduleAuditRecordIsBangteuk(entry)){
+    return current;
+  }
+  const visibleDays=_scheduleAuditDays();
+  const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
+  const ds=_scheduleAuditEntryDate(entry);
+  const candidates=[];
+  _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
+    candidates.push({
+      tabId:scope.tabId,
+      day,
+      student:target,
+      time:_scheduleAuditDisplayTime(fromSlot,day),
+      source:'visible-reservation',
+      reservationSlotKey:slotKey,
+      sourceKey:_deskNoteReservationSourceKey(scope.tabId,slotKey,day),
+    });
+  });
+  if(!candidates.length) return current;
+  const exactKeys=new Set(candidates.map(row=>row.sourceKey).filter(Boolean));
+  const identityKeys=new Set(candidates.flatMap(row=>_deskNoteRetireProcessingKeys(row)));
+  return current.filter(note=>!_deskNoteMatchesRetireCancellation(note,exactKeys,identityKeys,ds));
+}
+function removeDeskNotesForRetireReservation(slotKey,entry,fallback,options){
+  if(!slotKey||!entry) return Promise.resolve(false);
+  return _updateDeskNotesTx(list=>{
+    return _deskNotesAfterRetireReservationCancellation(list,slotKey,entry,fallback,options);
+  },{type:'edit',label:'하단 퇴원/제외 기록 취소'},true).then(()=>{
+    if(typeof renderScheduleAuditSummary==='function') renderScheduleAuditSummary();
     return true;
   });
 }
@@ -2689,6 +2749,16 @@ function _deskNoteFindIndex(list,note){
   const sourceKey=String(note?.sourceKey||'');
   if(sourceKey){
     const idx=list.findIndex(n=>String(n?.sourceKey||'')===sourceKey);
+    if(idx>=0) return idx;
+  }
+  if(String(note?.source||note?.original?.source||'')==='visible-reservation'&&note?.reservationSlotKey){
+    const identityKeys=new Set(_deskNoteRetireProcessingKeys(note));
+    const idx=list.findIndex(existing=>{
+      if(existing?.manual) return false;
+      if(String(existing?.source||existing?.original?.source||'')!=='visible-reservation') return false;
+      if(existing?.reservationSlotKey||existing?.original?.reservationSlotKey) return false;
+      return _deskNoteRetireProcessingKeys(existing).some(key=>identityKeys.has(key));
+    });
     if(idx>=0) return idx;
   }
   const movementKey=_deskNoteAutomaticMovementKey(note);
@@ -2813,9 +2883,17 @@ function _deskNoteSourceKeyForRow(row){
   if(!row) return '';
   const scope=_scheduleAuditScopeFromItem(row);
   const tabId=scope.tabId||row.tabId||'global';
+  if(String(row.source||'')==='visible-reservation'&&row.reservationSlotKey){
+    return _deskNoteReservationSourceKey(tabId,row.reservationSlotKey,row.day);
+  }
   const monthKey=_deskNoteMonthFromDateKey(row.dateKey)||_deskNoteMonthFromDateKey(_recordLocalDateKey(row.at))||row.recordMonthKey||row.monthKey||'all';
   const rowKey=_scheduleAuditRowKey(row);
   return [tabId,monthKey,rowKey].map(v=>String(v||'').trim()).join('|');
+}
+function _deskNoteReservationSourceKey(tabId,slotKey,day){
+  return [tabId||'global','retire-reservation',slotKey||'',day||'기타']
+    .map(v=>String(v||'').trim())
+    .join('|');
 }
 function _deskNoteVisible(note,monthKey,visibleDays){
   if(!note||note.deleted) return false;
@@ -2874,6 +2952,53 @@ function _deskNotesWithoutRetireHistoryDuplicates(notes){
     if(!_deskNoteIsRetireHistoryProjection(note)) return true;
     const key=_deskNoteRetireDuplicateKey(note);
     return !key||!primaryKeys.has(key);
+  });
+}
+function _deskNoteRetireProcessingKey(note){
+  return _deskNoteRetireProcessingKeys(note)[0]||'';
+}
+function _deskNoteRetireProcessingKeys(note){
+  if(!note) return [];
+  const student=String(note.student||note.original?.student||'')
+    .trim()
+    .replace(/\s+/g,' ')
+    .replace(/\s*\(.+?\)\s*$/,'');
+  let day=String(note.day||note.original?.day||'기타').trim();
+  const rawTime=String(note.time||note.original?.time||'-').trim();
+  const timeAliases=new Set([rawTime]);
+  try{
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.normalizeDayText==='function'){
+      day=window.SCScheduleTime.normalizeDayText(day)||day;
+    }
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.internalTimeForDay==='function'){
+      timeAliases.add(window.SCScheduleTime.internalTimeForDay(day,rawTime)||rawTime);
+    }
+    if(window.SCScheduleTime&&typeof window.SCScheduleTime.displayTimeForDay==='function'){
+      timeAliases.add(window.SCScheduleTime.displayTimeForDay(day,rawTime)||rawTime);
+    }
+  }catch(e){}
+  const tabId=String(note.tabId||note.original?.tabId||'global').trim();
+  if(!student) return [];
+  return [...timeAliases].filter(Boolean).map(time=>[tabId,day,student,time].join('|'));
+}
+function _deskNoteIsDirectStudentDelete(note){
+  const operationLabel=String(note?.operationLabel||note?.original?.operationLabel||'').trim();
+  const deleteReason=String(note?.deleteReason||note?.original?.deleteReason||'').trim();
+  return deleteReason==='manual-delete'||operationLabel==='학생 직접 삭제';
+}
+function _deskNotesWithoutRetireProcessingDuplicates(notes){
+  const list=Array.isArray(notes)?notes:[];
+  const retireKeys=new Set();
+  list.forEach(note=>{
+    if(String(note?.change||note?.original?.change||'').trim()!=='퇴원') return;
+    _deskNoteRetireProcessingKeys(note).forEach(key=>retireKeys.add(key));
+  });
+  return list.filter(note=>{
+    if(note?.manual||_deskNoteIsDirectStudentDelete(note)) return true;
+    const change=String(note?.change||note?.original?.change||'').trim();
+    if(change!=='삭제'&&change!=='횟수줄임') return true;
+    const keys=_deskNoteRetireProcessingKeys(note);
+    return !keys.length||!keys.some(key=>retireKeys.has(key));
   });
 }
 function _deskNoteAutomaticMovementKey(note){
@@ -3234,6 +3359,9 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
       || item?.type==='retire'
       || /퇴원\s*기록/.test(itemLabel)
     ))) return [];
+  // 퇴원/제외 예약 자체가 이미 하단 기록을 만든다. 기한 경과 후 학생을 실제로
+  // 제거하는 자동 동기화 감사기록까지 변환하면 퇴원과 삭제가 두 줄로 생긴다.
+  if(_scheduleAuditIsAutoRetireProcessingItem(item)) return [];
   const scope=_scheduleAuditScopeFromItem(item);
   if(scope.tabType==='bangteuk'||_scheduleAuditRecordIsBangteuk(item)) return [];
   const operationDetail=String(item?.operationDetail||'');
@@ -3374,8 +3502,10 @@ function renderScheduleAuditSummary(){
   const notes=_syncDeskNotesFromRows(sourceRows);
   const visibleNoteKeys=new Set();
   const visibleNotes=_deskNotesWithoutAutomaticMovementDuplicates(
-    _deskNotesWithoutRetireHistoryDuplicates(
-      notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+    _deskNotesWithoutRetireProcessingDuplicates(
+      _deskNotesWithoutRetireHistoryDuplicates(
+        notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+      )
     )
   );
   visibleNotes.forEach(note=>{

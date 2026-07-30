@@ -2202,12 +2202,22 @@ async function handleRetireDelete(e,ctx){
   if(!confirm(_reserveMoveDeleteMessage(existingEntry))) return;
   try{
     let paired=false;
+    const cleanupEntry=existingEntry;
+    const cleanupStu=stu||{
+      n:existingEntry.name||'',
+      p:existingEntry.p||'',
+      a:existingEntry.age||null,
+    };
+    const cleanupOptions={bangteuk:_isBangteukPopupSlot(t,day,lane)};
     if(liveRetireEntry){
-      paired=await deleteRetireReservation(slotKey);
+      paired=await deleteRetireReservation(slotKey,cleanupStu,cleanupOptions);
       _removeMatchingRetireHistory(stu,ds,slotKey);
     }else{
       const historyStu={n:historyRetireEntry.name||'',p:historyRetireEntry.p||''};
       _removeMatchingRetireHistory(historyStu,historyRetireEntry.ds||ds,slotKey);
+      if(typeof removeDeskNotesForRetireReservation==='function'){
+        await removeDeskNotesForRetireReservation(slotKey,cleanupEntry,cleanupStu,cleanupOptions);
+      }
     }
     _stuPopup.selDate=null;
     _stuPopup.showRetire=false;
@@ -3272,15 +3282,27 @@ function _deleteReserveMovePair(retire,enroll,kind,slotKey){
   return false;
 }
 
-async function deleteRetireReservation(slotKey){
+async function deleteRetireReservation(slotKey,fallback,options){
   let paired=false;
   const parts=_slotParts(slotKey);
   const entry=RETIRE_MAP[slotKey];
   const isBt=_isBangteukPopupSlot(parts.t,parts.d,parts.l)||entry?.bangteuk===true;
-  await updateScheduleTx([STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL], ctx=>{
+  const keys=[STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL];
+  const canCleanDeskNotes=!isBt
+    &&typeof _deskNotesAfterRetireReservationCancellation==='function'
+    &&STORAGE_KEYS.DESK_NOTES;
+  if(canCleanDeskNotes) keys.push(STORAGE_KEYS.DESK_NOTES);
+  await updateScheduleTx(keys, ctx=>{
     const retire=ctx.get(STORAGE_KEYS.RETIRE,{});
     const enroll=ctx.get(STORAGE_KEYS.ENROLL,{});
     if(!retire[slotKey]){ctx.abort('제외 예약이 이미 없습니다');return;}
+    if(canCleanDeskNotes){
+      const notes=ctx.get(STORAGE_KEYS.DESK_NOTES,[]);
+      ctx.set(
+        STORAGE_KEYS.DESK_NOTES,
+        _deskNotesAfterRetireReservationCancellation(notes,slotKey,entry,fallback,options)
+      );
+    }
     paired=_deleteReserveMovePair(retire,enroll,'retire',slotKey);
     ctx.set(STORAGE_KEYS.RETIRE,retire);
     if(paired) ctx.set(STORAGE_KEYS.ENROLL,enroll);
