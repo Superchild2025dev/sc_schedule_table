@@ -62,3 +62,22 @@ test('movement labels are decided consistently from source and destination slots
     '일정변경'
   );
 });
+
+test('a broken identity comparison inside a move cannot create a standalone deletion row', () => {
+  assert.equal(
+    context._scheduleAuditIsFalseMoveDeleteSegment(
+      {_source:'audit', type:'move', label:'원생 이동'},
+      '원생 삭제: 홍길동 4시 월 1레인 1번',
+      null
+    ),
+    true
+  );
+  assert.equal(
+    context._scheduleAuditIsFalseMoveDeleteSegment(
+      {_source:'audit', type:'delete', label:'학생 직접 삭제'},
+      '원생 삭제: 홍길동 4시 월 1레인 1번',
+      null
+    ),
+    false
+  );
+});

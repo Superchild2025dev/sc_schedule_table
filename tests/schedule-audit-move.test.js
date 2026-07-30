@@ -39,6 +39,15 @@ test('moving a legacy student does not become delete plus add when an id is assi
   assert.equal(context._studentDeletionEvents('swim_students', before, after, {type:'move'}).length, 0);
 });
 
+test('canonicalizing an existing id does not turn the same child into deletion', () => {
+  const before = [{sid:'stu_legacy', n:'홍길동', p:'010-1234-5678', t:'4시', d:'월', l:1, r:1}];
+  const after = [{sid:'stu_canonical', n:'홍길동', p:'01012345678', t:'5시', d:'월', l:2, r:1}];
+  const changes = context._auditStudentDiff(before, after);
+
+  assert.deepEqual(Array.from(changes, row => row.label), ['원생 이동']);
+  assert.equal(context._studentDeletionEvents('swim_students', before, after, {type:'move'}).length, 0);
+});
+
 test('siblings sharing a phone number are not matched as the same student', () => {
   const before = [{n:'홍길동', p:'01012345678', t:'4시', d:'월', l:1, r:1}];
   const after = [{n:'홍길순', p:'01012345678', t:'5시', d:'월', l:2, r:1}];
@@ -46,6 +55,14 @@ test('siblings sharing a phone number are not matched as the same student', () =
 
   assert.deepEqual(Array.from(changes, row => row.label), ['원생 삭제', '원생 추가']);
   assert.equal(context._studentDeletionEvents('swim_students', before, after, {type:'move'}).length, 1);
+});
+
+test('different ids without a phone are not merged only because name and age match', () => {
+  const before = [{sid:'stu_one', n:'김민준', a:'10', t:'4시', d:'월', l:1, r:1}];
+  const after = [{sid:'stu_two', n:'김민준', a:'10', t:'5시', d:'월', l:2, r:1}];
+  const changes = context._auditStudentDiff(before, after);
+
+  assert.deepEqual(Array.from(changes, row => row.label), ['원생 삭제', '원생 추가']);
 });
 
 test('swapping two students produces only movement rows', () => {

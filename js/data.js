@@ -1305,16 +1305,17 @@ function _auditStudentId(stu){
 function _auditSameStudentIdentity(a,b){
   if(!a||!b) return false;
   if(window.SCScheduleTime&&typeof window.SCScheduleTime.sameStudentIdentity==='function'){
-    return window.SCScheduleTime.sameStudentIdentity(a,b);
+    if(window.SCScheduleTime.sameStudentIdentity(a,b)) return true;
   }
   const aid=String(a.sid||'').trim();
   const bid=String(b.sid||'').trim();
-  if(aid&&bid) return aid===bid;
+  if(aid&&bid&&aid===bid) return true;
   const name=v=>String(v?.n||v?.name||'').trim().replace(/\s+/g,' ').toLowerCase();
   const phone=v=>String(v?.p||v?.phone||'').replace(/\D/g,'');
   const an=name(a), bn=name(b);
   if(!an||!bn||an!==bn) return false;
   const ap=phone(a), bp=phone(b);
+  if(aid&&bid&&aid!==bid) return !!(ap&&bp&&ap===bp);
   if(ap&&bp) return ap===bp;
   const aa=String(a.a??a.age??'').trim();
   const ba=String(b.a??b.age??'').trim();
@@ -1827,6 +1828,9 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     restoreId:point.id,
     at:_auditNow(),
     type:meta.type||_auditTypeForKeys(keys),
+    operationLabel:String(meta.label||''),
+    operationDetail:String(meta.detail||''),
+    deleteReason:String(meta.deleteReason||''),
     label:summary.label,
     target:summary.target,
     detail:summary.detail,
@@ -2110,6 +2114,11 @@ function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
 }
 function _scheduleAuditIsGenericRetireEditSegment(text){
   return /제외\s*\/\s*퇴원\s*예약\s*편집/.test(String(text||''));
+}
+function _scheduleAuditIsFalseMoveDeleteSegment(item,text,toSlot){
+  if(toSlot) return false;
+  if(item?._source!=='audit'||item?.type!=='move') return false;
+  return /원생\s*삭제/.test(String(text||''));
 }
 function _scheduleAuditTarget(item){
   const target=String(item?.target||'').trim();
@@ -2501,6 +2510,10 @@ function _deskNoteFromScheduleRow(row){
       detail:row.detail||'',
       at:row.at||'',
       source:row.source||'audit',
+      operationLabel:row.operationLabel||'',
+      operationDetail:row.operationDetail||'',
+      operationType:row.operationType||'',
+      deleteReason:row.deleteReason||'',
       tabId,
       tabName,
       tabType,
@@ -2521,6 +2534,10 @@ function _deskNoteFromScheduleRow(row){
     recordMonthKey,
     time:row.time||'-',
     detail:row.detail||'',
+    operationLabel:row.operationLabel||'',
+    operationDetail:row.operationDetail||'',
+    operationType:row.operationType||'',
+    deleteReason:row.deleteReason||'',
     at:row.source==='visible-reservation'?now:(row.at||now),
     source:row.source||'audit',
     deleted:false,
@@ -3015,13 +3032,19 @@ function openDeskNoteModal(id,anchor){
   document.getElementById('desk-note-time').value=note.time||'';
   document.getElementById('desk-note-delete-btn').style.display='';
   const original=note.original||{};
+  const operationText=[
+    original.operationLabel||note.operationLabel||'',
+    original.operationDetail||note.operationDetail||'',
+    original.deleteReason||note.deleteReason||'',
+  ].filter(Boolean).join(' · ');
   document.getElementById('desk-note-origin').textContent=[
     '원본:',
     original.teacher||note.teacher||'-',
     original.student||note.student||'-',
     original.change||'',
     original.date||'',
-    original.time||''
+    original.time||'',
+    operationText?`원본 작업: ${operationText}`:''
   ].filter(Boolean).join(' ');
   modal.style.visibility='hidden';
   modal.style.display='block';
@@ -3213,7 +3236,10 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     ))) return [];
   const scope=_scheduleAuditScopeFromItem(item);
   if(scope.tabType==='bangteuk'||_scheduleAuditRecordIsBangteuk(item)) return [];
-  const detail=String(item?.detail||'');
+  const operationDetail=String(item?.operationDetail||'');
+  const detail=item?.type==='move'&&operationDetail.includes('→')
+    ? operationDetail
+    : String(item?.detail||'');
   const parts=detail.split(/\s+\/\s+/).map(v=>v.trim()).filter(Boolean);
   const segments=parts.length?parts:[_scheduleAuditText(item)];
   const rows=[];
@@ -3232,6 +3258,8 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     const fromSlot=_scheduleAuditSlotFromText(fromText)||_scheduleAuditSlotFromText(text);
     if(!fromSlot) return;
     const toSlot=_scheduleAuditSlotFromText(toText);
+    // 이동 작업 중 일시적인 ID 불일치가 생겨도 삭제 조각만 하단 기록으로 남기지 않는다.
+    if(_scheduleAuditIsFalseMoveDeleteSegment(item,text,toSlot)) return;
     const date=_scheduleAuditRecordedDateInfo(item);
     if(monthKey&&_deskNoteMonthFromDateKey(date.key)!==String(monthKey)) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,['월','화','수','목','금','토','일']);
@@ -3248,6 +3276,10 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
         dateKey:date.key,
         time:_scheduleAuditDisplayTime(fromSlot,day)||_scheduleAuditTime(item),
         detail:String(segment||item?.detail||item?.label||''),
+        operationLabel:item?.operationLabel||item?.label||'',
+        operationDetail:item?.operationDetail||'',
+        operationType:item?.type||'',
+        deleteReason:item?.deleteReason||'',
         at:item?.at||'',
         source:item?._source||'audit',
         tabId:scope.tabId||'global',
