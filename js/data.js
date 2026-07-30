@@ -1803,7 +1803,9 @@ function recordStudentDeletionSafety(events,meta){
   if(document.getElementById('record-manager-modal')?.style.display==='flex') renderRecordManager();
   return Promise.all(entries.map(entry=>_persistStudentDeleteEntry(entry).catch(err=>{
     console.error('원생 삭제 안전기록 저장 실패:',err);
-    if(typeof _showOfflineWarning==='function') _showOfflineWarning();
+    if(typeof _reportFirebaseWriteFailure==='function'){
+      _reportFirebaseWriteFailure(err,'원생 삭제 안전기록');
+    }
   })));
 }
 function recordAuditPoint(point,touchedKeys,metaOverride){
@@ -1868,7 +1870,9 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
   _trimAuditStorage();
   const saved=_persistIncrementalRecord(entry,restorePoint).catch(err=>{
     console.error('개별 기록 저장 실패:',err);
-    if(typeof _showOfflineWarning==='function') _showOfflineWarning();
+    if(typeof _reportFirebaseWriteFailure==='function'){
+      _reportFirebaseWriteFailure(err,'개별 기록');
+    }
   });
   if(document.getElementById('record-manager-modal')?.style.display==='flex'){
     renderRecordManager();
