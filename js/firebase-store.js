@@ -17,10 +17,8 @@
     'unavailable': true,
     'unimplemented': true,
   };
-  // Firestore's document limit is measured in UTF-8 bytes, not JavaScript
-  // characters. Korean text can use three bytes per character.
-  const CHUNK_THRESHOLD_BYTES = 450 * 1024;
-  const CHUNK_SIZE_BYTES = 400 * 1024;
+  const CHUNK_THRESHOLD = 650000;
+  const CHUNK_SIZE = 600000;
   const DEFERRED_ROOT_KEYS = {
     swim_audit_log: true,
     swim_restore_points: true,
@@ -93,38 +91,10 @@
   function chunkId(i){
     return String(i).padStart(4, '0');
   }
-  function utf8CodePointBytes(codePoint){
-    if(codePoint <= 0x7f) return 1;
-    if(codePoint <= 0x7ff) return 2;
-    if(codePoint <= 0xffff) return 3;
-    return 4;
-  }
-  function utf8ByteLength(text){
-    let bytes = 0;
-    for(const char of String(text || '')){
-      bytes += utf8CodePointBytes(char.codePointAt(0));
-    }
-    return bytes;
-  }
   function splitChunks(text){
     const chunks = [];
-    let chars = [];
-    let bytes = 0;
-    for(const char of String(text || '')){
-      const charBytes = utf8CodePointBytes(char.codePointAt(0));
-      if(chars.length && bytes + charBytes > CHUNK_SIZE_BYTES){
-        chunks.push(chars.join(''));
-        chars = [];
-        bytes = 0;
-      }
-      chars.push(char);
-      bytes += charBytes;
-    }
-    if(chars.length) chunks.push(chars.join(''));
+    for(let i=0;i<text.length;i+=CHUNK_SIZE) chunks.push(text.slice(i, i + CHUNK_SIZE));
     return chunks.length ? chunks : [''];
-  }
-  function shouldChunkStoredText(text){
-    return utf8ByteLength(text) > CHUNK_THRESHOLD_BYTES;
   }
   function encodeStoredValue(value){
     const isString = typeof value === 'string';
@@ -295,7 +265,7 @@
   FirestoreKVRoot.prototype._writeStoredValue = function(writer, key, value, previousItem){
     const encoded = encodeStoredValue(value);
     const previousCount = this._knownChunkCount(previousItem);
-    if(shouldChunkStoredText(encoded.text)){
+    if(encoded.text.length > CHUNK_THRESHOLD){
       const chunks = splitChunks(encoded.text);
       writer.set(this._doc(key), {
         key,

@@ -1186,10 +1186,6 @@ function _buildStudentDatePreview(todayStr,cp){
   return {students,enroll,retire,hyuwon};
 }
 let _studentSyncInFlight=null;
-function _retireReservationDueForAutoApply(entry,todayStr){
-  const retDs=entry?.ds||entry;
-  return !!(!entry?.blocked&&retDs&&String(retDs)<String(todayStr||''));
-}
 function syncStudentsBeforeRender(){
   const cp=SCHEDULE_PERIODS[getCurrentPeriod()];
   if(cp){
@@ -1216,7 +1212,8 @@ function syncStudentsBeforeRender(){
   };
   let needsSync=false;
   Object.entries(RETIRE_MAP||{}).some(([slotKey,entry])=>{
-    if(!_retireReservationDueForAutoApply(entry,todayStr)) return false;
+    const retDs=entry?.ds||entry;
+    if(entry?.blocked||!retDs||retDs>=todayStr) return false;
     needsSync=true;
     return true;
   });
@@ -1273,7 +1270,7 @@ function syncStudentsBeforeRender(){
 
     for(const [slotKey,entry] of Object.entries(retire)){
       const retDs=entry?.ds||entry;
-      if(!_retireReservationDueForAutoApply(entry,todayStr)) continue;
+      if(entry?.blocked||!retDs||retDs>=todayStr) continue;
       const idx=students.findIndex(s=>slotMatch(s,slotKey));
       const current=idx>=0?students[idx]:null;
       if(current&&!identityMatches(current,entry)){

@@ -60,7 +60,6 @@ test('retire desk notes are written for regular students and skipped for bangteu
   vm.createContext(context);
   vm.runInContext(
     sourceBetween(dataSource, '_scheduleAuditRecordIsBangteuk', '_scheduleAuditIsSameTeacherClassMove')
-      + sourceBetween(dataSource, '_scheduleAuditReservationDetail', '_scheduleAuditRowsFromVisibleReservations')
       + sourceBetween(dataSource, 'ensureDeskNoteForRetireReservation', 'ensureDeskNoteForStudentMove'),
     context
   );
