@@ -1,0 +1,28 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn()
+        && request.auth.token.email == "2025superchild@gmail.com";
+    }
+
+    function isDeveloper() {
+      return signedIn()
+        && request.auth.token.email == "developer@scswim.local";
+    }
+
+    match /scheduleV2/{document=**} {
+      allow read: if isOwner() || isDeveloper();
+      allow write: if isDeveloper();
+    }
+
+    match /scheduleStores/{branch}/{document=**} {
+      allow read, write: if signedIn();
+    }
+  }
+}

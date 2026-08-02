@@ -306,6 +306,7 @@ const STORAGE_KEYS = {
   DAY_SNAPSHOT: 'swim_day_snapshot', // 날짜별 학생/담임 스냅샷 (date → {students, inst})
   CLOSED:   'swim_closed',
   TAB_LIST: 'swim_tab_list',
+  ARCHIVED_TABS: 'swim_archived_tabs', // 화면에서 제거한 과거 정규표의 출석부 기준 정보
   TAB_FOLDERS: 'swim_tab_folders',
   PARENT_TAB: 'swim_parent_tab', // 학부모 페이지가 기준으로 삼을 운영 시간표 탭
   MAIN_TAB: 'swim_main_tab',     // 관리자 새로고침 시 기본으로 열 운영 시간표 탭

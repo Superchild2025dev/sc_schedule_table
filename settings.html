@@ -86,6 +86,7 @@
     <div class="settings-nav-group">
       <div class="settings-nav-label">시스템</div>
       <button type="button" class="nav-btn" data-panel="backup" data-perm="manageSettings">백업 관리</button>
+      <button type="button" class="nav-btn" data-panel="dataV2" data-perm="manageSettings">V2 동시운영 <span class="nav-badge" id="v2-nav-badge" hidden>!</span></button>
     </div>
   </aside>
 
@@ -144,6 +145,9 @@
           </button>
           <button type="button" class="quick-btn" data-panel-jump="backup" data-perm="manageSettings">
             <span>백업 관리</span><small>JSON 다운로드</small>
+          </button>
+          <button type="button" class="quick-btn" data-panel-jump="dataV2" data-perm="manageSettings">
+            <span>V2 동시운영 <em class="quick-badge" id="v2-quick-badge" hidden>!</em></span><small>호환 상태·오류 확인</small>
           </button>
           <button type="button" class="quick-btn" data-panel-jump="recipients" data-perm="manageSettings">
             <span>수신번호</span><small>선생님·차량·데스크</small>
@@ -311,6 +315,49 @@
       <div class="feedback-list" id="feedback-list">
         <div class="feedback-empty">의견을 불러오는 중입니다...</div>
       </div>
+    </section>
+
+    <section class="settings-panel" id="panel-dataV2" data-perm="manageSettings">
+      <div class="panel-head">
+        <div>
+          <h1>V2 동시운영</h1>
+          <p>현재 운영은 V1을 그대로 사용하고, V2는 뒤에서 같은 내용으로 자동 동기화합니다.</p>
+        </div>
+        <div class="panel-actions">
+          <button type="button" class="ghost-btn" id="v2-monitor-refresh">상태 새로고침</button>
+        </div>
+      </div>
+
+      <div class="v2-monitor-notice">
+        <strong>운영 안전장치</strong>
+        <span>V2 오류가 발생해도 V1 저장은 정상 처리됩니다. 불일치가 발견되면 이 화면과 시간표 상단에 즉시 표시됩니다.</span>
+      </div>
+
+      <div class="v2-monitor-summary">
+        <div class="v2-monitor-state-card" id="v2-monitor-state-card" data-state="idle">
+          <span>현재 상태</span><strong id="v2-monitor-state">확인 중</strong>
+        </div>
+        <div><span>마지막 확인</span><strong id="v2-monitor-time">-</strong></div>
+        <div><span>V2 기준</span><strong id="v2-monitor-generation">-</strong></div>
+        <div><span>최근 변경</span><strong id="v2-monitor-keys">-</strong></div>
+      </div>
+
+      <div class="data-v2-status" id="v2-monitor-message">
+        동시운영 상태를 불러오는 중입니다.
+      </div>
+
+      <section class="v2-monitor-alerts" aria-labelledby="v2-monitor-alerts-title">
+        <div class="subsection-head">
+          <div>
+            <h2 id="v2-monitor-alerts-title">불일치 기록</h2>
+            <span>같은 문제는 한 줄로 묶고, 마지막으로 발생한 시각과 횟수를 표시합니다.</span>
+          </div>
+          <strong class="identity-conflict-count" id="v2-monitor-alert-count">0건</strong>
+        </div>
+        <div class="v2-monitor-alert-list" id="v2-monitor-alert-list">
+          <div class="feedback-empty">기록을 불러오는 중입니다...</div>
+        </div>
+      </section>
     </section>
 
     <section class="settings-panel" id="panel-recipients" data-perm="manageSettings">
@@ -508,6 +555,9 @@
 <div id="settings-toast" class="settings-toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>scJs('js/schedule-time.js')</script>
+<script>scJs('js/schedule-schema-v2.js')</script>
+<script>scJs('js/schedule-v2-store.js')</script>
+<script>scJs('js/schedule-v2-shadow.js')</script>
 <script>scJs('js/auth-guard.js')</script>
 <script>scJs('js/settings.js')</script>
 </body>

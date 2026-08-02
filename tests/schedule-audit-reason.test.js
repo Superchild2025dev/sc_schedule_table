@@ -81,3 +81,16 @@ test('a broken identity comparison inside a move cannot create a standalone dele
     false
   );
 });
+
+test('automatic reservation processing is not interpreted as another schedule deletion', () => {
+  assert.equal(context._scheduleAuditIsAutomaticReservationProcessingItem({
+    _source:'audit',
+    operationLabel:'자동 등록·제외 처리',
+    deleteReason:'auto-retire',
+  }), true);
+  assert.equal(context._scheduleAuditIsAutomaticReservationProcessingItem({
+    _source:'audit',
+    operationLabel:'학생 직접 삭제',
+    deleteReason:'manual-delete',
+  }), false);
+});

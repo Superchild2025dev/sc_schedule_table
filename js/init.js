@@ -32,6 +32,7 @@ function startScheduleApp(){
         SCAuth.applyPagePermissions(document);
       }
       runSettingsActionFromUrl();
+      if(typeof startRealtimeScheduleRollover==='function') startRealtimeScheduleRollover();
     };
     const continueStartup=()=>{
       const migrateIds=typeof ensureStudentIdsPersisted==='function'

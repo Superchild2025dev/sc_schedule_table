@@ -325,7 +325,8 @@ function _printRowsForTime(t,sourceDay,ds){
 function _printItemHtml(item){
   const cls=item.type==='bogang'?(item.mandatoryMakeup?' mandatory-bogang':' bogang'):item.type==='sample'?' sample':item.type==='enroll'?' enroll':'';
   const tag=item.type==='bogang'?'보':item.type==='sample'?'샘':item.isNew?'신':item.reenroll?'재':item.type==='enroll'?'등':'';
-  return `<div class="print-student${cls}"><span>${esc((item.n||'')+(item.a||''))}</span>${tag?`<b>${tag}</b>`:''}</div>`;
+  const name=(item.btWeek5?'*':'')+String(item.n||'').replace(/^[*＊]+\s*/,'');
+  return `<div class="print-student${cls}"><span>${esc(name+(item.a||''))}</span>${tag?`<b>${tag}</b>`:''}</div>`;
 }
 
 function _printLayoutStyle(totalRows){

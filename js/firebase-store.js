@@ -188,6 +188,20 @@
     this.disabled = true;
     console.warn('[SCFirebaseStore] Firestore disabled, using Realtime Database fallback.', reason || '');
   };
+  FirestoreKVRoot.prototype._scheduleV2Shadow = function(changes, reason, full){
+    try{
+      if(window.SCV2Shadow && typeof window.SCV2Shadow.schedule === 'function'){
+        window.SCV2Shadow.schedule(this, {
+          changes: changes || {},
+          reason: reason || '',
+          full: !!full,
+        });
+      }
+    }catch(error){
+      // V2는 검증용 보조 경로다. 어떤 오류도 운영 V1 저장을 막지 않는다.
+      console.warn('[SCFirebaseStore] V2 shadow schedule failed:', error);
+    }
+  };
   FirestoreKVRoot.prototype._list = function(opts){
     opts = opts || {};
     const source=opts.includeDeferred?this.col:this.liveCol;
@@ -378,26 +392,44 @@
   };
   FirestoreKVRoot.prototype._setKey = function(key, value, opts){
     opts = opts || {};
-    if(this.disabled) return this.fallback.child(key).set(value);
+    if(this.disabled) return this.fallback.child(key).set(value).then(result=>{
+      this._scheduleV2Shadow({[key]:value}, 'fallback-set');
+      return result;
+    });
     return this._setFirestore(key, value).then(()=>{
       if(!opts.skipMirror) return this._mirrorSet(key, value);
+    }).then(result=>{
+      this._scheduleV2Shadow({[key]:value}, 'set');
+      return result;
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
-        return this.fallback.child(key).set(value);
+        return this.fallback.child(key).set(value).then(result=>{
+          this._scheduleV2Shadow({[key]:value}, 'fallback-set-after-error');
+          return result;
+        });
       }
       throw error;
     });
   };
   FirestoreKVRoot.prototype._removeKey = function(key, opts){
     opts = opts || {};
-    if(this.disabled) return this.fallback.child(key).remove();
+    if(this.disabled) return this.fallback.child(key).remove().then(result=>{
+      this._scheduleV2Shadow({[key]:null}, 'fallback-remove');
+      return result;
+    });
     return this._setFirestore(key, undefined).then(()=>{
       if(!opts.skipMirror) return this._mirrorRemove(key);
+    }).then(result=>{
+      this._scheduleV2Shadow({[key]:null}, 'remove');
+      return result;
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
-        return this.fallback.child(key).remove();
+        return this.fallback.child(key).remove().then(result=>{
+          this._scheduleV2Shadow({[key]:null}, 'fallback-remove-after-error');
+          return result;
+        });
       }
       throw error;
     });
@@ -423,10 +455,10 @@
       });
     }).then(()=>{
       if(!committed) return {committed:false, snapshot:new StoreSnapshot(key, null)};
-      return this._mirrorSet(key, nextValue).then(()=>({
-        committed:true,
-        snapshot:new StoreSnapshot(key, nextValue),
-      }));
+      return this._mirrorSet(key, nextValue).then(()=>{
+        this._scheduleV2Shadow({[key]:nextValue}, 'transaction-key');
+        return {committed:true,snapshot:new StoreSnapshot(key, nextValue)};
+      });
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
@@ -488,10 +520,10 @@
       const mirrors = Object.entries(changed).map(([key,value])=>{
         return value === null ? this._mirrorRemove(key) : this._mirrorSet(key, value);
       });
-      return Promise.all(mirrors).then(()=>({
-        committed:true,
-        snapshot:new StoreSnapshot(null, resultRoot || {}),
-      }));
+      return Promise.all(mirrors).then(()=>{
+        this._scheduleV2Shadow(changed, 'transaction-root');
+        return {committed:true,snapshot:new StoreSnapshot(null, resultRoot || {})};
+      });
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
@@ -564,10 +596,10 @@
       const mirrors = Object.entries(changed).map(([key,value])=>{
         return value === null ? this._mirrorRemove(key) : this._mirrorSet(key, value);
       });
-      return Promise.all(mirrors).then(()=>({
-        committed:true,
-        snapshot:new StoreSnapshot(null, resultRoot || {}),
-      }));
+      return Promise.all(mirrors).then(()=>{
+        this._scheduleV2Shadow(changed, 'transaction-keys');
+        return {committed:true,snapshot:new StoreSnapshot(null, resultRoot || {})};
+      });
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
@@ -597,7 +629,10 @@
           return batch.commit();
         });
       });
-      return chain.then(()=>this.mirrorRTDB ? this.fallback.remove() : undefined);
+      return chain.then(()=>this.mirrorRTDB ? this.fallback.remove() : undefined).then(result=>{
+        this._scheduleV2Shadow({}, 'remove-root', true);
+        return result;
+      });
     }).catch(error=>{
       if(recoverable(error) && this.fallbackEnabled){
         this._disable(error);
@@ -675,9 +710,17 @@
         // 한 Firestore 커밋에서 바뀐 문서를 모두 읽은 뒤 함께 전달한다.
         // 학생 문서와 등록/제외 문서가 서로 다른 시점의 화면으로 섞이는 것을 막는다.
         return Promise.all(reads).then(events=>{
-          events.filter(Boolean).forEach(event=>{
+          const validEvents=events.filter(Boolean);
+          validEvents.forEach(event=>{
             this._emitFirestore(event.event,event.snapshot);
           });
+          const shadowChanges={};
+          validEvents.forEach(event=>{
+            shadowChanges[event.snapshot.key]=event.event==='child_removed'?null:event.snapshot.val();
+          });
+          if(initialSnapshot||validEvents.length){
+            this._scheduleV2Shadow(shadowChanges,initialSnapshot?'initial-listener':'remote-change',initialSnapshot);
+          }
         });
       }).catch(error=>{
         console.warn('[SCFirebaseStore] Firestore listener batch failed:',error);

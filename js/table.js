@@ -20,7 +20,14 @@ function _tableLocUsesVehicle(loc){
 function _layoutStudentName(stu){
   if(!stu) return '';
   const marker=stu.layoutAdded?'(추가) ':'';
-  return marker+String(stu.n||stu.name||'');
+  const rawName=String(stu.n||stu.name||'');
+  const parsed=window.SCScheduleTime&&typeof window.SCScheduleTime.parseBangteukWeek5Name==='function'
+    ? window.SCScheduleTime.parseBangteukWeek5Name(rawName)
+    : {name:rawName.replace(/^[*＊]+\s*/,''),week5:/^[*＊]+\s*/.test(rawName)};
+  const slotKey=[stu.t||'',stu.d||'',stu.l||'',stu.r||''].join('/');
+  const isBt=typeof _isBangteukSlotKey==='function'&&_isBangteukSlotKey(slotKey);
+  const week5=isBt&&(stu.btWeek5===true||parsed.week5);
+  return marker+(week5?'*':'')+parsed.name;
 }
 let _attendanceMode=false;
 let _attendanceDate=null;  // YYYY-MM-DD
@@ -258,6 +265,22 @@ function _attReservationNameMatches(entry,item){
   if(pa&&pb&&pa!==pb) return false;
   return !!(name||pa||pb);
 }
+function _scheduleReservationMatchesStudent(entry,item){
+  if(!entry||!item) return false;
+  // 구형 문자열 예약은 사람 정보가 없어 기존처럼 해당 자리 원생에게 연결한다.
+  if(typeof entry==='string') return true;
+  const entrySid=String(entry.sid||'').trim();
+  const itemSid=String(item.sid||'').trim();
+  if(entrySid&&itemSid&&entrySid===itemSid) return true;
+  const entryName=String(entry.n||entry.name||'').trim();
+  const itemName=String(item.n||item.name||'').trim();
+  if(!entryName) return true;
+  if(!itemName||entryName!==itemName) return false;
+  const entryPhone=String(entry.p||entry.phone||entry.tel||'').replace(/\D/g,'');
+  const itemPhone=String(item.p||item.phone||item.tel||'').replace(/\D/g,'');
+  if(entryPhone&&itemPhone&&entryPhone!==itemPhone) return false;
+  return true;
+}
 function _isBangteukTableActive(){
   try{return typeof isBangteuk==='function'&&isBangteuk();}catch(e){return false;}
 }
@@ -330,7 +353,7 @@ function _attDisplayName(item,slotKey,ds){
   const suffixes=[];
   const ret=RETIRE_MAP&&RETIRE_MAP[slotKey];
   const retDs=(typeof ret==='string'?ret:ret?.ds)||item._attRetireDs||'';
-  if(retDs&&retDs===ds){
+  if(retDs&&retDs===ds&&_scheduleReservationMatchesStudent(ret,item)){
     const suffix=(typeof _retireReservationSuffix==='function')?_retireReservationSuffix(ret,slotKey,item):'까지';
     suffixes.push('~'+_attMd(retDs)+suffix);
   }
@@ -1151,6 +1174,7 @@ function _buildStudentDatePreview(todayStr,cp){
     if(!isBtEnroll){
       delete entry.paid;
       delete entry.btNew;
+      delete entry.btWeek5;
       if(entry.ds>todayStr) continue;
     }
     const existing=students.find(s=>slotMatch(s,slotKey));
@@ -1165,6 +1189,7 @@ function _buildStudentDatePreview(todayStr,cp){
       if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
       if(entry.v) obj.v=true;
       if(entry.paid) obj.paid=true;
+      if(isBtEnroll&&entry.btWeek5) obj.btWeek5=true;
       if(entry.loc) obj.loc=entry.loc;
       if(entry.memo) obj.memo=entry.memo;
       if(entry.g) obj.g=entry.g;
@@ -1175,6 +1200,8 @@ function _buildStudentDatePreview(todayStr,cp){
   students.forEach(s=>{
     const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
     if(!isBtStu&&s.paid) delete s.paid;
+    if(!isBtStu&&s.btWeek5) delete s.btWeek5;
+    if(isBtStu&&window.SCScheduleTime?.normalizeBangteukStudent) window.SCScheduleTime.normalizeBangteukStudent(s);
     if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;}
     if(s.isNew&&!isBtStu&&s.isNew!==cp.month) delete s.isNew;
     if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)) delete s.reenroll;
@@ -1221,7 +1248,7 @@ function syncStudentsBeforeRender(){
     Object.entries(ENROLL_MAP||{}).some(([slotKey,entry])=>{
       if(!entry||typeof entry!=='object') return false;
       const isBtEnroll=_isBangteukSlotKey(slotKey);
-      if(!isBtEnroll&&(entry.paid||entry.btNew)){
+      if(!isBtEnroll&&(entry.paid||entry.btNew||entry.btWeek5)){
         needsSync=true;
         return true;
       }
@@ -1239,6 +1266,8 @@ function syncStudentsBeforeRender(){
       const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
       needsSync=!!(
         (!isBtStu&&s.paid)
+        || (!isBtStu&&s.btWeek5)
+        || (isBtStu&&window.SCScheduleTime?.parseBangteukWeek5Name?.(s.n||s.name).week5)
         || (isBtStu&&s.isNew)
         || (s.isNew&&!isBtStu&&s.isNew!==cp.month)
         || (s.reenroll&&(isBtStu||s.reenroll!==cp.month))
@@ -1307,9 +1336,10 @@ function syncStudentsBeforeRender(){
     for(const [slotKey,entry] of Object.entries(enroll)){
       if(!entry||typeof entry!=='object') continue;
       const isBtEnroll=_isBangteukSlotKey(slotKey);
-      if(!isBtEnroll&&(entry.paid||entry.btNew)){
+      if(!isBtEnroll&&(entry.paid||entry.btNew||entry.btWeek5)){
         delete entry.paid;
         delete entry.btNew;
+        delete entry.btWeek5;
         enrollChanged=true;
       }
       if(!isBtEnroll&&entry.ds>todayStr) continue;
@@ -1326,6 +1356,7 @@ function syncStudentsBeforeRender(){
         if(!isBtEnroll&&(entry.enrolled||entry.isNew||entry.reenroll)) obj.enrolled=entry.ds;
         if(entry.v) obj.v=true;
         if(entry.paid) obj.paid=true;
+        if(isBtEnroll&&entry.btWeek5) obj.btWeek5=true;
         if(entry.loc) obj.loc=entry.loc;
         if(entry.memo) obj.memo=entry.memo;
         if(entry.g) obj.g=entry.g;
@@ -1339,6 +1370,16 @@ function syncStudentsBeforeRender(){
     students.forEach(s=>{
       const isBtStu=_isBangteukSlotKey(s.t+'/'+s.d+'/'+s.l+'/'+s.r);
       if(!isBtStu&&s.paid){delete s.paid;studentsChanged=true;}
+      if(!isBtStu&&s.btWeek5){delete s.btWeek5;studentsChanged=true;}
+      if(isBtStu&&window.SCScheduleTime?.parseBangteukWeek5Name){
+        const parsed=window.SCScheduleTime.parseBangteukWeek5Name(s.n||s.name);
+        if(parsed.week5){
+          if(s.n!=null) s.n=parsed.name;
+          else s.name=parsed.name;
+          s.btWeek5=true;
+          studentsChanged=true;
+        }
+      }
       if(isBtStu&&s.isNew){s.btNew=true;delete s.isNew;studentsChanged=true;}
       if(s.isNew&&!isBtStu&&s.isNew!==cp.month){delete s.isNew;studentsChanged=true;}
       if(s.reenroll&&(isBtStu||s.reenroll!==cp.month)){delete s.reenroll;studentsChanged=true;}
@@ -1351,7 +1392,13 @@ function syncStudentsBeforeRender(){
     if(hyuwonChanged) ctx.set(STORAGE_KEYS.休원,hyuwon);
     committedChange=studentsChanged||enrollChanged||retireChanged||hyuwonChanged;
     return true;
-  }, {type:'edit',label:'자동 등록·제외 처리',deleteReason:'auto-retire',skipUndo:true})
+  }, {
+    type:'edit',
+    label:'자동 등록·제외 처리',
+    deleteReason:'auto-retire',
+    skipDeleteSafety:true,
+    skipUndo:true,
+  })
     .then(()=>{
       if(blockedRetireCount&&typeof toast==='function'){
         toast('예약 원생과 현재 원생이 달라 자동 제외 '+blockedRetireCount+'건을 차단했습니다','err');
@@ -1873,7 +1920,8 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
 
       // 출석 모드에서는 뱃지/마크 전부 숨김 (출석만 깔끔하게)
       const _skipBadges = _attendanceMode;
-      const retireInline=!_skipBadges&&!!exactStu&&hasFutureRetire;
+      const retireBelongsToStudent=!!exactStu&&_scheduleReservationMatchesStudent(retEntry,exactStu);
+      const retireInline=!_skipBadges&&retireBelongsToStudent&&hasFutureRetire;
       const enrollInline=!_skipBadges&&!isBtGhost&&hasFutureEnroll&&!hasFutureRetire;
 
       // 휴원
@@ -1901,10 +1949,11 @@ function buildStuRow(t, ri, rows, hasSat, ctx){
       }
       // 퇴원
       if(!_skipBadges && hasFutureRetire && !retireInline){
-        const dl=_dl(retDs), nm=_scheduleReservationName(retEntry,stu);
-        const suffix=_retireReservationSuffix(retEntry,slotKey,stu);
+        const fallback=retireBelongsToStudent?stu:null;
+        const dl=_dl(retDs), nm=_scheduleReservationName(retEntry,fallback);
+        const suffix=_retireReservationSuffix(retEntry,slotKey,fallback);
         const label=nm?nm+'~'+dl+suffix:dl+suffix;
-        badges.push({type:'retire', ds:retDs, text:label, tip:_retireReservationKindLabel(retEntry,slotKey,stu)+' '+label});
+        badges.push({type:'retire', ds:retDs, text:label, tip:_retireReservationKindLabel(retEntry,slotKey,fallback)+' '+label});
       }
       // 등원
       if(!_skipBadges && hasFutureEnroll && !enrollInline){
@@ -2462,7 +2511,15 @@ function _mobileCellItems(ctx,t,day,lane,row){
   if(stu){
     const chips=[...badges];
     const retDs=(typeof retire==='string'?retire:retire?.ds)||'';
-    if(retDs&&retDs>=todayStr) chips.unshift({type:'retire',text:`~${_mobileShortDate(retDs)}까지`});
+    if(retDs&&retDs>=todayStr){
+      const belongsToStudent=_scheduleReservationMatchesStudent(retire,stu);
+      const retireName=belongsToStudent?'':_scheduleReservationName(retire,null);
+      const suffix=_retireReservationSuffix(retire,slotKey,belongsToStudent?stu:null);
+      chips.unshift({
+        type:'retire',
+        text:`${retireName?retireName+' ':''}~${_mobileShortDate(retDs)}${suffix}`,
+      });
+    }
     const enrDs=enroll&&enroll.ds;
     if(enrDs&&enrDs>todayStr) chips.unshift({type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enrDs)}부터`});
     items.push({row,label:_mobileStudentText(stu),type:_mobileStudentType(stu,enroll,chips,todayStr),chips});

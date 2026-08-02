@@ -80,3 +80,15 @@ test('swapping two students produces only movement rows', () => {
   assert.ok(changes.every(row => row.label === '원생 이동'));
   assert.equal(context._studentDeletionEvents('swim_students', before, after, {type:'move'}).length, 0);
 });
+
+test('a known automatic exclusion does not create a second deletion safety record', () => {
+  const before = [{sid:'stu_retire', n:'박연', p:'01012345678', t:'5시', d:'금', l:2, r:1}];
+  const after = [];
+
+  assert.equal(context._studentDeletionEvents(
+    'swim_students',
+    before,
+    after,
+    {type:'edit', deleteReason:'auto-retire', skipDeleteSafety:true}
+  ).length, 0);
+});

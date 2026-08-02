@@ -51,3 +51,26 @@ test('siblings sharing a phone number keep different person ids', () => {
   const sibling = time.studentIdFor({n:'홍길순', p:'01012345678'});
   assert.notEqual(first, sibling);
 });
+
+test('legacy vacation week-five marker does not create a second person id', () => {
+  const plain = time.studentIdFor({n:'홍길동', p:'01012345678'});
+  const legacyWeekFive = time.studentIdFor({n:'*홍길동', p:'01012345678'});
+  assert.equal(legacyWeekFive, plain);
+});
+
+test('vacation data migrates the legacy star into a separate week-five field', () => {
+  const vacation = time.normalizeStoredValue('swim_bt_summer_stu', [
+    {n:'*홍길동', p:'01012345678', t:'10시', d:'월수금', l:1, r:1},
+  ]);
+  assert.equal(vacation[0].n, '홍길동');
+  assert.equal(vacation[0].btWeek5, true);
+  assert.equal(vacation[0].sid, time.studentIdFor({n:'홍길동', p:'01012345678'}));
+});
+
+test('regular student names are not rewritten as vacation week-five data', () => {
+  const regular = time.normalizeStoredValue('swim_students', [
+    {n:'*표시이름', p:'01011112222', t:'4시', d:'월', l:1, r:1},
+  ]);
+  assert.equal(regular[0].n, '*표시이름');
+  assert.equal(regular[0].btWeek5, undefined);
+});

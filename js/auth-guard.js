@@ -8,6 +8,7 @@
 
   const SUPER_ADMIN_EMAILS = ['2025superchild@gmail.com'];
   const STAFF_EMAIL_PROFILES = {
+    'developer@scswim.local': {name:'시간표 개발자', role:'developer', branchIds:['gagyeong','yongam'], teacherName:''},
     'gagyeong.desk@scswim.local': {name:'가경점 데스크', role:'desk', branchIds:['gagyeong'], teacherName:''},
     'gagyeong.son@scswim.local': {name:'손용곤', role:'teacher', branchIds:['gagyeong'], teacherName:'손용곤', permissions:['editMakeup']},
     'gagyeong.park@scswim.local': {name:'박형진', role:'teacher', branchIds:['gagyeong'], teacherName:'박형진', permissions:['editMakeup']},
@@ -25,6 +26,7 @@
   };
   const ROLE_PERMISSIONS = {
     superAdmin: ['*'],
+    developer: ['*'],
     desk: [
       'viewSchedule',
       'editSchedule',
@@ -49,6 +51,7 @@
 
   function roleLabel(role){
     if(role === 'superAdmin') return '최고관리자';
+    if(role === 'developer') return '개발자';
     if(role === 'desk') return '데스크';
     if(role === 'teacher') return '선생님';
     return '미설정';
@@ -57,6 +60,7 @@
   function normalizeRole(role){
     const v = String(role||'').trim();
     if(v === 'superAdmin' || v === 'superadmin' || v === '최고관리자') return 'superAdmin';
+    if(v === 'developer' || v === 'dev' || v === '개발자') return 'developer';
     if(v === 'desk' || v === 'admin' || v === 'manager' || v === '데스크' || v === '관리자') return 'desk';
     if(v === 'teacher' || v === '선생님' || v === '강사') return 'teacher';
     return '';
@@ -224,7 +228,7 @@
 
   function canAccessBranch(branchId){
     const p = _currentProfile;
-    if(!p || p.role === 'superAdmin') return true;
+    if(!p || p.role === 'superAdmin' || p.role === 'developer') return true;
     const allowed = normalizeBranchIds(p.branchIds);
     if(!allowed.length || !branchId) return true;
     return allowed.includes(branchId);
@@ -245,7 +249,7 @@
   function canWriteKey(key){
     if(!_currentUser || !_currentProfile) return true;
     if(_currentProfile.active === false) return false;
-    if(hasPermission('*') || _currentProfile.role === 'superAdmin') return true;
+    if(hasPermission('*') || _currentProfile.role === 'superAdmin' || _currentProfile.role === 'developer') return true;
     key = String(key||'');
     if(!key) return true;
 
@@ -272,7 +276,7 @@
        /^swim_stu_/.test(key) || /^swim_inst_/.test(key) || /^swim_bt_.+_(stu|inst)$/.test(key)){
       return hasPermission('editSchedule');
     }
-    if(/^staff_users\//.test(key)) return _currentProfile.role === 'superAdmin';
+    if(/^staff_users\//.test(key)) return _currentProfile.role === 'superAdmin' || _currentProfile.role === 'developer';
     return hasPermission('editSchedule');
   }
 

@@ -68,6 +68,8 @@ function getSnapshotSourceInfo(tabId){
 /* ──── 탭 목록 관리 ──── */
 let _tabList = loadJSON(STORAGE_KEYS.TAB_LIST, []);
 if(!_tabList.length) _tabList=[{id:'regular',name:'정규시간표',type:'regular'}];
+let _archivedTabList = loadJSON(STORAGE_KEYS.ARCHIVED_TABS||'swim_archived_tabs', []);
+if(!Array.isArray(_archivedTabList)) _archivedTabList=[];
 let _tabFolderList = loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
 if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
 function _mainTabSetting(){
@@ -210,6 +212,8 @@ function getAttendanceBasisTabForDate(ds){
   const monthKey=_periodMonthForDate(ds);
   const match=(_tabList||[]).find(t=>t&&(!t.type||t.type==='regular')&&_tabPeriodMonth(t)===monthKey);
   if(match) return match;
+  const archived=(_archivedTabList||[]).find(t=>t&&(!t.type||t.type==='regular')&&_tabPeriodMonth(t)===monthKey);
+  if(archived) return archived;
   if(active&&(!active.type||active.type==='regular')) return active;
   return _tabById('regular')||active||null;
 }
@@ -308,7 +312,7 @@ function getAttendanceBasisDataForDate(ds){
   return {tab, cfg, students:Array.isArray(students)?students:[], instMap, stuIdx};
 }
 function getAttendanceStorageKeys(tabId){
-  const tab=_tabById(tabId||_activeTab);
+  const tab=_tabById(tabId||_activeTab)||_archivedTabById(tabId||_activeTab);
   if(tab?.type==='bangteuk'){
     return {
       attendance:'swim_bt_attendance_'+tab.id,
@@ -330,7 +334,7 @@ const _attendanceLegacySnapshotCache=new Map();
 const _attendanceLegacySnapshotLoads=new Map();
 
 function _attendanceSnapshotSourceTab(tabId){
-  let tab=(tabId&&typeof tabId==='object')?tabId:_tabById(tabId||_activeTab);
+  let tab=(tabId&&typeof tabId==='object')?tabId:(_tabById(tabId||_activeTab)||_archivedTabById(tabId||_activeTab));
   if(tab?.type==='snapshot'&&tab.sourceTabId){
     const source=_tabById(tab.sourceTabId);
     if(source) tab=source;
@@ -488,7 +492,8 @@ function _parseTabStored(raw,fallback){
 function _normalizeTabList(list){
   list=Array.isArray(list)?list:[];
   if(!list.length) list=[{id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'}];
-  if(!list.some(t=>t&&t.id==='regular')){
+  const hasRegular=list.some(t=>t&&t.type!=='snapshot'&&t.type!=='bangteuk');
+  if(!hasRegular){
     list.unshift({id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'});
   }
   return list.filter(tab=>tab&&tab.id).map(tab=>{
@@ -498,6 +503,18 @@ function _normalizeTabList(list){
     }
     return tab;
   });
+}
+function _normalizeArchivedTabs(list){
+  const seen=new Set();
+  return (Array.isArray(list)?list:[]).filter(tab=>{
+    const id=String(tab?.id||'').trim();
+    if(!id||seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  }).map(tab=>Object.assign({},tab,{archived:true}));
+}
+function _archivedTabById(tabId){
+  return (_archivedTabList||[]).find(tab=>tab&&tab.id===tabId)||null;
 }
 function _normalizeTabFolders(list){
   return [...new Set((Array.isArray(list)?list:[])
@@ -512,6 +529,7 @@ function _cacheTabValue(key,val){
 function _tabStateFromRoot(root){
   return {
     tabs:_normalizeTabList(_parseTabStored(root?.[STORAGE_KEYS.TAB_LIST], _tabList)),
+    archived:_normalizeArchivedTabs(_parseTabStored(root?.[STORAGE_KEYS.ARCHIVED_TABS], _archivedTabList)),
     folders:_normalizeTabFolders(_parseTabStored(root?.[STORAGE_KEYS.TAB_FOLDERS], _tabFolderList)),
     parent:_parseTabStored(root?.[STORAGE_KEYS.PARENT_TAB], loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{}),
     main:_parseTabStored(root?.[STORAGE_KEYS.MAIN_TAB], loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{}),
@@ -522,6 +540,10 @@ function _applyTabState(state,keys){
   if(set.has(STORAGE_KEYS.TAB_LIST)){
     _tabList=_normalizeTabList(state.tabs);
     _cacheTabValue(STORAGE_KEYS.TAB_LIST,_tabList);
+  }
+  if(set.has(STORAGE_KEYS.ARCHIVED_TABS)){
+    _archivedTabList=_normalizeArchivedTabs(state.archived);
+    _cacheTabValue(STORAGE_KEYS.ARCHIVED_TABS,_archivedTabList);
   }
   if(set.has(STORAGE_KEYS.TAB_FOLDERS)){
     _tabFolderList=_normalizeTabFolders(state.folders);
@@ -540,12 +562,13 @@ function updateTabSettingsTx(keys,mutator,meta){
   if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(keys[0],meta?.label||'시간표 탭 설정')){
     return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
   }
-  const auditPoint=(typeof createAuditPoint==='function')
-    ? createAuditPoint(keys,{type:'edit',label:meta?.label||'시간표 탭 설정'})
-    : null;
+  let auditPoint=null;
+  const auditMeta={type:'edit',label:meta?.label||'시간표 탭 설정'};
   const applyLocal=()=>{
+    if(typeof createAuditPoint==='function') auditPoint=createAuditPoint(keys,auditMeta);
     const state={
       tabs:_normalizeTabList(_tabClone(_tabList)),
+      archived:_normalizeArchivedTabs(_tabClone(_archivedTabList)),
       folders:_normalizeTabFolders(_tabClone(_tabFolderList)),
       parent:loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{},
       main:loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{},
@@ -555,6 +578,7 @@ function updateTabSettingsTx(keys,mutator,meta){
     _applyTabState(state,keys);
     keys.forEach(key=>{
       if(key===STORAGE_KEYS.TAB_LIST) saveJSON(key,_tabList,true);
+      else if(key===STORAGE_KEYS.ARCHIVED_TABS) saveJSON(key,_archivedTabList,true);
       else if(key===STORAGE_KEYS.TAB_FOLDERS) saveJSON(key,_tabFolderList,true);
       else if(key===STORAGE_KEYS.PARENT_TAB) saveJSON(key,state.parent||{},true);
       else if(key===STORAGE_KEYS.MAIN_TAB) saveJSON(key,state.main||{},true);
@@ -570,10 +594,13 @@ function updateTabSettingsTx(keys,mutator,meta){
     : fn=>_fb.transaction(fn);
   return runTx(root=>{
     root=root||{};
+    if(typeof createAuditPointFromRoot==='function') auditPoint=createAuditPointFromRoot(keys,root,auditMeta);
+    else if(typeof createAuditPoint==='function') auditPoint=createAuditPoint(keys,auditMeta);
     const state=_tabStateFromRoot(root);
     const result=mutator(state);
     if(result===undefined) return;
     if(keys.includes(STORAGE_KEYS.TAB_LIST)) root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
+    if(keys.includes(STORAGE_KEYS.ARCHIVED_TABS)) root[STORAGE_KEYS.ARCHIVED_TABS]=JSON.stringify(_normalizeArchivedTabs(state.archived));
     if(keys.includes(STORAGE_KEYS.TAB_FOLDERS)) root[STORAGE_KEYS.TAB_FOLDERS]=JSON.stringify(_normalizeTabFolders(state.folders));
     if(keys.includes(STORAGE_KEYS.PARENT_TAB)) root[STORAGE_KEYS.PARENT_TAB]=JSON.stringify(state.parent||{});
     if(keys.includes(STORAGE_KEYS.MAIN_TAB)) root[STORAGE_KEYS.MAIN_TAB]=JSON.stringify(state.main||{});
@@ -900,12 +927,14 @@ function _openSingleTabMenu(tabId, anchor){
     html+=_menuSep();
     html+=_menuBtn('main-public',tabId,'메인 시간표로 지정');
     html+=_menuBtn('parent-public',tabId,'학부모 공개로 지정');
-    if(!tab.type||tab.type==='regular') html+=_menuBtn('rollover',tabId,'시간표 이월하기');
     html+=_menuBtn('snapshot',tabId,'스냅샷 만들기');
   }
-  if(tab.id!=='regular'){
+  const isRegular=!tab.type||tab.type==='regular';
+  const regularCount=(_tabList||[]).filter(item=>item&&item.type!=='snapshot'&&item.type!=='bangteuk').length;
+  const canDeletePast=isSnap||(isRegular&&regularCount>1);
+  if(canDeletePast){
     html+=_menuSep();
-    html+=_menuBtn('delete',tabId,'시간표 삭제','danger');
+    html+=_menuBtn('delete',tabId,'과거 시간표 삭제','danger');
   }
   _openTabActionMenu(anchor, html);
 }
@@ -1093,37 +1122,80 @@ async function deleteTab(tabId){
   const id=tabId;
   const tab=_tabList.find(t=>t.id===id);
   if(!tab) return;
-  if(tab.id==='regular'){
-    toast('정규시간표는 삭제할 수 없습니다','err');
+  const isSnapshot=tab.type==='snapshot';
+  const isRegular=!tab.type||tab.type==='regular';
+  if(!isSnapshot&&!isRegular){
+    toast('현재 운영 시간표와 방특 시간표는 삭제할 수 없습니다','err');
     return;
   }
+  const mainId=_mainTabSetting().tabId;
+  const parentId=_parentTabSetting().tabId;
+  const liveRegular=(_tabList||[]).filter(item=>item&&item.type!=='snapshot'&&item.type!=='bangteuk');
+  if(isRegular&&liveRegular.length<=1){toast('현재 운영 중인 마지막 정규 시간표는 삭제할 수 없습니다','err');return;}
+  const replacement=isRegular?liveRegular
+    .filter(item=>item.id!==id)
+    .sort((a,b)=>String(_tabPeriodMonth(b)||'').localeCompare(String(_tabPeriodMonth(a)||'')))[0]:null;
+  if(isRegular&&!replacement){toast('대체할 정규 시간표가 없습니다','err');return;}
   const name=tab.name||tab.id;
-  const kind=tab.type==='snapshot'?'스냅샷':'시간표';
-  if(!confirm(`${name} ${kind}을 삭제하시겠습니까?\n\n학생/담임/출석부/날짜 스냅샷 데이터가 함께 정리됩니다.`)) return;
+  const kind='과거 시간표';
+  const pointerNotice=(id===mainId||id===parentId)&&replacement?`\n메인·학부모 기준은 ${replacement.name||replacement.id}(으)로 자동 변경됩니다.`:'';
+  if(!confirm(`${name} ${kind}를 목록에서 삭제하시겠습니까?${pointerNotice}\n\n출석부와 출석 체크 기록은 보존됩니다.`)) return;
   try{
-    await updateTabSettingsTx([STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.PARENT_TAB,STORAGE_KEYS.MAIN_TAB],state=>{
-      const target=state.tabs.find(t=>t.id===id);
-      if(!target) throw new Error('시간표를 찾을 수 없습니다');
-      if(target.id==='regular') throw new Error('정규시간표는 삭제할 수 없습니다');
-      state.tabs=state.tabs.filter(t=>t.id!==id);
-      if(state.parent?.tabId===id) state.parent={};
-      if(state.main?.tabId===id) state.main={};
-      return state;
-    },{label:'시간표 삭제',target:tab.name||tab.id});
-    if(tab.type==='snapshot'){
-      dbRemove(SNAP_KEY_PREFIX+id);
-      if(_activeTab===id) _origGlobalMaps=null;
-    } else if(tab.type==='bangteuk'){
-      dbRemove('swim_bt_'+id+'_stu');
-      dbRemove('swim_bt_'+id+'_inst');
-      dbRemove('swim_bt_attendance_'+id);
-      dbRemove('swim_bt_att_guests_'+id);
-      dbRemove('swim_bt_day_snapshot_'+id);
-      removeAttendanceDaySnapshotsForTab(tab);
-    } else {
-      dbRemove('swim_stu_'+id);
-      dbRemove('swim_inst_'+id);
+    if(typeof canPersistScheduleData==='function'&&!canPersistScheduleData(STORAGE_KEYS.TAB_LIST,'과거 시간표 삭제')){
+      throw new Error('서버 연결을 확인한 뒤 다시 시도해주세요');
     }
+    if(!_fbReady||!_fb) throw new Error('서버 연결 후에만 시간표를 삭제할 수 있습니다');
+    const metadataKeys=[STORAGE_KEYS.TAB_LIST,STORAGE_KEYS.ARCHIVED_TABS,STORAGE_KEYS.PARENT_TAB,STORAGE_KEYS.MAIN_TAB];
+    const dataKeys=isSnapshot?[SNAP_KEY_PREFIX+id]:[];
+    const txKeys=[...new Set([...metadataKeys,...dataKeys])];
+    let auditPoint=null;
+    const runTx=typeof _fb.transactionKeys==='function'
+      ?updateFn=>_fb.transactionKeys(txKeys,updateFn)
+      :updateFn=>_fb.transaction(updateFn);
+    const result=await runTx(root=>{
+      root=root||{};
+      const state=_tabStateFromRoot(root);
+      const target=state.tabs.find(item=>item.id===id);
+      if(!target) throw new Error('시간표를 찾을 수 없습니다');
+      const targetSnapshot=target.type==='snapshot';
+      const targetRegular=!target.type||target.type==='regular';
+      if(!targetSnapshot&&!targetRegular) throw new Error('과거 정규 시간표만 삭제할 수 있습니다');
+      const regulars=state.tabs.filter(item=>item&&item.type!=='snapshot'&&item.type!=='bangteuk');
+      if(targetRegular&&regulars.length<=1) throw new Error('마지막 정규 시간표는 삭제할 수 없습니다');
+      const nextRegular=targetRegular?regulars
+        .filter(item=>item.id!==id)
+        .sort((a,b)=>String(_tabPeriodMonth(b)||'').localeCompare(String(_tabPeriodMonth(a)||'')))[0]:null;
+      if(targetRegular&&!nextRegular) throw new Error('대체할 정규 시간표가 없습니다');
+      if(targetSnapshot&&(state.main?.tabId===id||state.parent?.tabId===id)) throw new Error('현재 공개 중인 스냅샷은 삭제할 수 없습니다');
+      if(typeof createAuditPointFromRoot==='function'){
+        auditPoint=createAuditPointFromRoot(metadataKeys,root,{type:'edit',label:'과거 시간표 삭제'});
+      }
+      if(targetRegular){
+        const keys=_tabStorageKeys(target);
+        state.archived=_normalizeArchivedTabs([...(state.archived||[]),Object.assign({},target,keys,{archivedAt:new Date().toISOString()})]);
+        root[STORAGE_KEYS.ARCHIVED_TABS]=JSON.stringify(state.archived);
+        const nextKeys=_tabStorageKeys(nextRegular);
+        if(state.main?.tabId===id) state.main={...nextKeys,setAt:new Date().toISOString()};
+        if(state.parent?.tabId===id) state.parent={...nextKeys,setAt:new Date().toISOString()};
+        root[STORAGE_KEYS.MAIN_TAB]=JSON.stringify(state.main||{});
+        root[STORAGE_KEYS.PARENT_TAB]=JSON.stringify(state.parent||{});
+      }
+      state.tabs=state.tabs.filter(item=>item.id!==id);
+      root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
+      dataKeys.forEach(key=>{delete root[key];});
+      return root;
+    });
+    if(!result?.committed) throw new Error('시간표 삭제가 취소되었습니다');
+    const state=_tabStateFromRoot(result.snapshot.val()||{});
+    _applyTabState(state,metadataKeys);
+    dataKeys.forEach(key=>{
+      try{_dropParsedSnapshotCache(key);}catch(error){}
+      delete _dbCache[key];
+      try{localStorage.removeItem(_lsKey(key));}catch(error){}
+      _attendanceDaySnapshotCache.delete(key);
+    });
+    if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,metadataKeys,{label:'과거 시간표 삭제',target:name});
+    if(isSnapshot&&_activeTab===id) _origGlobalMaps=null;
     if(_activeTab===id){_activeTab=_mainTabId(_tabList);}
     switchTabView();
     toast(kind+' 삭제 완료','ok');
@@ -1166,6 +1238,89 @@ function _handleFolderMenuAction(action,folder){
 let _origGlobalMaps=null; // 스냅샷 진입 시 백업, 떠날 때 복원
 const SNAP_KEY_PREFIX='swim_snap_';
 
+let _tabOperationState=null;
+function _setTabOperationError(message){
+  const error=document.getElementById('tab-operation-error');
+  if(error) error.textContent=String(message||'');
+}
+function closeTabOperationModal(){
+  if(_tabOperationState?.busy) return;
+  const modal=document.getElementById('tab-operation-modal');
+  if(modal){
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden','true');
+  }
+  _tabOperationState=null;
+}
+function _openTabOperationModal(mode,srcTab){
+  const modal=document.getElementById('tab-operation-modal');
+  const title=document.getElementById('tab-operation-title');
+  const description=document.getElementById('tab-operation-description');
+  const source=document.getElementById('tab-operation-source');
+  const monthWrap=document.getElementById('tab-operation-month-wrap');
+  const monthInput=document.getElementById('tab-operation-month');
+  const nameLabel=document.getElementById('tab-operation-name-label');
+  const nameInput=document.getElementById('tab-operation-name');
+  const submit=document.getElementById('tab-operation-submit');
+  if(!modal||!title||!description||!source||!monthWrap||!monthInput||!nameLabel||!nameInput||!submit) return false;
+  const today=toDateStr(getToday());
+  const isRollover=mode==='rollover';
+  const currentMonth=_tabPeriodMonth(srcTab)||_defaultPeriodMonth();
+  _tabOperationState={mode,srcId:srcTab.id,busy:false};
+  title.textContent=isRollover?'시간표 이월':'스냅샷 만들기';
+  description.textContent=isRollover
+    ? '현재 운영월은 읽기 전용 스냅샷으로 보존하고, 같은 시간표를 다음 운영월로 이어서 사용합니다.'
+    : '현재 학생, 담임, 예약 상태를 읽기 전용 저장본으로 남깁니다.';
+  source.textContent='대상 시간표 · '+(srcTab.name||'시간표');
+  monthWrap.hidden=!isRollover;
+  monthInput.value=isRollover?_addMonthsToMonthKey(currentMonth,1):'';
+  nameLabel.textContent=isRollover?'이월 후 시간표 이름':'스냅샷 이름';
+  nameInput.value=isRollover?_monthTabName(monthInput.value):(srcTab.name+' '+today+' 저장본');
+  submit.textContent=isRollover?'이월하기':'스냅샷 저장';
+  submit.disabled=false;
+  modal.querySelector('[data-tab-operation-cancel]')?.removeAttribute('disabled');
+  _setTabOperationError('');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden','false');
+  setTimeout(()=>{nameInput.focus();nameInput.select();},30);
+  return true;
+}
+async function submitTabOperationModal(){
+  const state=_tabOperationState;
+  if(!state||state.busy) return;
+  const nameInput=document.getElementById('tab-operation-name');
+  const monthInput=document.getElementById('tab-operation-month');
+  const submit=document.getElementById('tab-operation-submit');
+  const cancel=document.querySelector('#tab-operation-modal [data-tab-operation-cancel]');
+  const name=String(nameInput?.value||'').trim();
+  if(!name){
+    _setTabOperationError(state.mode==='rollover'?'이월 후 시간표 이름을 입력해주세요.':'스냅샷 이름을 입력해주세요.');
+    nameInput?.focus();
+    return;
+  }
+  const nextMonth=state.mode==='rollover'?_normalizeMonthKey(monthInput?.value):'';
+  if(state.mode==='rollover'&&!nextMonth){
+    _setTabOperationError('다음 운영 월을 선택해주세요.');
+    monthInput?.focus();
+    return;
+  }
+  state.busy=true;
+  if(submit){submit.disabled=true;submit.textContent=state.mode==='rollover'?'이월 중...':'저장 중...';}
+  if(cancel) cancel.setAttribute('disabled','disabled');
+  _setTabOperationError('');
+  try{
+    if(state.mode==='rollover') await _performScheduleRollover(state.srcId,nextMonth,name);
+    else await _performCreateSnapshot(state.srcId,name);
+    state.busy=false;
+    closeTabOperationModal();
+  }catch(err){
+    state.busy=false;
+    if(submit){submit.disabled=false;submit.textContent=state.mode==='rollover'?'이월하기':'스냅샷 저장';}
+    if(cancel) cancel.removeAttribute('disabled');
+    _setTabOperationError(err?.message||'처리하지 못했습니다. 다시 시도해주세요.');
+  }
+}
+
 function _snapshotDataForTab(srcTab,capturedAt){
   const keys=_tabStorageKeys(srcTab);
   const active=srcTab&&srcTab.id===_activeTab&&srcTab.type!=='snapshot';
@@ -1196,24 +1351,14 @@ async function rolloverScheduleTab(srcId){
   if(!srcTab) return;
   if(srcTab.type==='snapshot'){toast('스냅샷은 이월할 수 없습니다','err');return;}
   if(srcTab.type==='bangteuk'){toast('방특은 기간 설정/스냅샷으로 관리해주세요','err');return;}
+  _openTabOperationModal('rollover',srcTab);
+}
+
+async function _performScheduleRollover(srcId,nextMonth,nextName){
+  const srcTab=_tabList.find(t=>t.id===srcId);
+  if(!srcTab) throw new Error('이월할 시간표를 찾을 수 없습니다.');
   const currentMonth=_tabPeriodMonth(srcTab)||_defaultPeriodMonth();
-  const nextDefault=_addMonthsToMonthKey(currentMonth,1);
-  const nextInput=prompt('이월할 운영 월 (YYYY-MM):', nextDefault);
-  if(nextInput===null) return;
-  const nextMonth=_normalizeMonthKey(nextInput);
-  if(!nextMonth){toast('운영 월 형식은 YYYY-MM 입니다','err');return;}
-  const nextNameInput=prompt('이월 후 시간표 이름:', _monthTabName(nextMonth));
-  if(nextNameInput===null) return;
-  const nextName=nextNameInput.trim();
-  if(!nextName){toast('시간표 이름을 입력하세요','err');return;}
   const snapshotName=(srcTab.name||_monthTabName(currentMonth))+' 박제';
-  const msg=[
-    '현재 시간표를 "'+snapshotName+'" 스냅샷으로 박제하고',
-    '운영 시간표를 "'+nextName+'"로 이월할까요?',
-    '',
-    '메인/학부모 공개 딱지는 이 운영 시간표에 유지됩니다.'
-  ].join('\n');
-  if(!confirm(msg)) return;
 
   const today=toDateStr(getToday());
   const newId='snap_'+Date.now();
@@ -1247,13 +1392,13 @@ async function rolloverScheduleTab(srcId){
   }catch(e){
     console.error(e);
     dbRemove(SNAP_KEY_PREFIX+newId);
-    toast(e.message||'시간표 이월 실패','err');
+    throw new Error(e.message||'시간표 이월 실패');
   }
 }
 
 let _autoRolloverRunning=false;
-function _autoRolloverAllowed(){
-  if(isSnapshotTab()) return false;
+function _autoRolloverAllowed(options){
+  if(isSnapshotTab()&&!options?.background) return false;
   if(window.SCAuth && typeof SCAuth.can==='function' && !SCAuth.can('editSchedule')) return false;
   return true;
 }
@@ -1268,8 +1413,10 @@ function _liveRegularMainTab(){
   if(main && (!main.type || main.type==='regular')) return main;
   return (_tabList||[]).find(t=>t&&(!t.type||t.type==='regular'))||null;
 }
-async function autoRolloverRegularScheduleIfNeeded(){
-  if(_autoRolloverRunning || !_autoRolloverAllowed()) return false;
+async function autoRolloverRegularScheduleIfNeeded(options){
+  options=options||{};
+  if(_autoRolloverRunning || !_autoRolloverAllowed(options)) return false;
+  const activeBefore=_activeTab;
   const targetMonth=_defaultPeriodMonth();
   const srcTab=_liveRegularMainTab();
   if(!srcTab || srcTab.type==='snapshot' || srcTab.type==='bangteuk') return false;
@@ -1330,7 +1477,7 @@ async function autoRolloverRegularScheduleIfNeeded(){
       state.parent={...liveKeys,setAt:new Date().toISOString(),autoRollover:true};
       return state;
     },{label:needsSnapshot?'정규 시간표 자동 이월':'정규 시간표 운영월 자동 설정',target:nextName,detail:needsSnapshot?`${snapshotName} → ${nextName}`:nextName});
-    _activeTab=srcTab.id;
+    _activeTab=options.preserveActiveTab&&_tabById(activeBefore)?activeBefore:srcTab.id;
     return true;
   }catch(e){
     if(wroteSnapshot) dbRemove(SNAP_KEY_PREFIX+snapId);
@@ -1340,14 +1487,66 @@ async function autoRolloverRegularScheduleIfNeeded(){
   }
 }
 
+let _realtimeRolloverTimer=null;
+let _realtimeRolloverEventsBound=false;
+let _realtimeRolloverCheckRunning=false;
+async function _runRealtimeScheduleRolloverCheck(){
+  if(_realtimeRolloverCheckRunning||window.SC_READ_ONLY_PREVIEW) return false;
+  _realtimeRolloverCheckRunning=true;
+  try{
+    const changed=await autoRolloverRegularScheduleIfNeeded({
+      background:true,
+      preserveActiveTab:true,
+    });
+    if(!changed) return false;
+    if(typeof renderTabBar==='function') renderTabBar();
+    if(typeof buildTable==='function') buildTable();
+    if(window.SCAuth&&typeof window.SCAuth.applyPagePermissions==='function'){
+      window.SCAuth.applyPagePermissions(document);
+    }
+    if(typeof toast==='function') toast('새 운영월 시간표로 자동 이월되었습니다','ok');
+    return true;
+  }finally{
+    _realtimeRolloverCheckRunning=false;
+  }
+}
+function startRealtimeScheduleRollover(){
+  if(window.SC_READ_ONLY_PREVIEW) return false;
+  if(_realtimeRolloverTimer) clearInterval(_realtimeRolloverTimer);
+  _realtimeRolloverTimer=setInterval(()=>{
+    _runRealtimeScheduleRolloverCheck().catch(err=>{
+      console.warn('실시간 시간표 이월 확인 실패:',err);
+    });
+  },30000);
+  if(!_realtimeRolloverEventsBound){
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden) return;
+      _runRealtimeScheduleRolloverCheck().catch(err=>{
+        console.warn('화면 복귀 후 시간표 이월 확인 실패:',err);
+      });
+    });
+    window.addEventListener('online',()=>{
+      _runRealtimeScheduleRolloverCheck().catch(err=>{
+        console.warn('온라인 복귀 후 시간표 이월 확인 실패:',err);
+      });
+    });
+    _realtimeRolloverEventsBound=true;
+  }
+  return true;
+}
+
 async function createSnapshot(srcId){
   if(window.SCAuth && !SCAuth.requirePermission('editSchedule','스냅샷 만들기')) return;
   const srcTab=_tabList.find(t=>t.id===srcId);
   if(!srcTab) return;
   if(srcTab.type==='snapshot'){toast('스냅샷의 스냅샷은 만들 수 없음','err');return;}
+  _openTabOperationModal('snapshot',srcTab);
+}
+
+async function _performCreateSnapshot(srcId,name){
+  const srcTab=_tabList.find(t=>t.id===srcId);
+  if(!srcTab) throw new Error('스냅샷을 만들 시간표를 찾을 수 없습니다.');
   const today=toDateStr(getToday());
-  const name=prompt('스냅샷 이름:', srcTab.name+' ('+today+')');
-  if(!name) return;
   const newId='snap_'+Date.now();
   const snapData=_snapshotDataForTab(srcTab,today);
   // 직접 dbSet (saveJSON 가드 통과 위해)
@@ -1374,7 +1573,7 @@ async function createSnapshot(srcId){
   }catch(e){
     console.error(e);
     dbRemove(SNAP_KEY_PREFIX+newId);
-    toast(e.message||'스냅샷 생성 실패','err');
+    throw new Error(e.message||'스냅샷 생성 실패');
   }
 }
 
@@ -1613,6 +1812,27 @@ document.getElementById('tab-modal').addEventListener('keydown',function(e){
   if(e.key==='Escape'){
     document.getElementById('tab-modal').classList.remove('show');
   }
+});
+
+document.getElementById('tab-operation-modal')?.addEventListener('click',function(e){
+  if(e.target.id==='tab-operation-modal'||e.target.closest('[data-tab-operation-cancel]')){
+    closeTabOperationModal();
+    return;
+  }
+  if(e.target.closest('#tab-operation-submit')) submitTabOperationModal();
+});
+document.getElementById('tab-operation-modal')?.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    submitTabOperationModal();
+  }else if(e.key==='Escape'){
+    closeTabOperationModal();
+  }
+});
+document.getElementById('tab-operation-month')?.addEventListener('change',function(){
+  if(_tabOperationState?.mode!=='rollover') return;
+  const nameInput=document.getElementById('tab-operation-name');
+  if(nameInput) nameInput.value=_monthTabName(this.value);
 });
 
 let _snapshotSwitchSeq=0;

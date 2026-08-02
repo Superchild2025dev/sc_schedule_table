@@ -97,3 +97,57 @@ test('transaction merging keeps one movement record and preserves the better dir
   assert.equal(result.length, 1);
   assert.equal(result[0].id, 'direct');
 });
+
+test('automatic retirement and reduced-frequency operations hide only their generic deletion copy', () => {
+  const retire = {
+    id:'retire',
+    source:'visible-reservation',
+    student:'홍길동',
+    change:'퇴원',
+  };
+  const reduce = {
+    id:'reduce',
+    source:'visible-reservation',
+    student:'김가경',
+    change:'횟수줄임',
+  };
+  const autoDelete = {
+    id:'auto-delete',
+    source:'audit',
+    student:'홍길동',
+    change:'삭제',
+    operationLabel:'자동 등록·제외 처리',
+    deleteReason:'auto-retire',
+  };
+  const result = context._deskNotesWithoutGenericDeletesFromSpecificOperations([
+    retire,
+    autoDelete,
+    reduce,
+    {...autoDelete, id:'reduce-delete', student:'김가경'},
+  ]);
+
+  assert.deepEqual(Array.from(result, row => row.id), ['retire', 'reduce']);
+});
+
+test('time changes cannot leave a generic deletion but a real manual deletion remains', () => {
+  const timeChangeDelete = {
+    id:'move-delete',
+    source:'audit',
+    change:'삭제',
+    operationType:'move',
+    operationLabel:'원생 이동',
+  };
+  const manualDelete = {
+    id:'manual-delete',
+    source:'audit',
+    change:'삭제',
+    operationLabel:'학생 직접 삭제',
+    deleteReason:'manual-delete',
+  };
+  const result = context._deskNotesWithoutGenericDeletesFromSpecificOperations([
+    timeChangeDelete,
+    manualDelete,
+  ]);
+
+  assert.deepEqual(Array.from(result, row => row.id), ['manual-delete']);
+});

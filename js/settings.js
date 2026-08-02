@@ -74,6 +74,7 @@
     aligo:{title:'알림톡 연결',section:'메시지'},
     sms:{title:'문자 연결',section:'메시지'},
     backup:{title:'백업 관리',section:'시스템'},
+    dataV2:{title:'V2 동시운영',section:'시스템'},
   };
 
   let activeBranch='gagyeong';
@@ -85,6 +86,14 @@
   let settingsLoadFailedByBranch={};
   let studentDirectoryByBranch={};
   let studentDirectoryLoadingByBranch={};
+  let dataV2ReportByBranch={};
+  let dataV2PreviewByBranch={};
+  let identityRepairConfirm=null;
+  let identityRepairBusy=false;
+  let v2MonitorUnsubscribes=[];
+  let v2MonitorBranch='';
+  let v2MonitorDataByBranch={};
+  let v2MonitorAlertsByBranch={};
   let summerLayoutState=null;
 
   function $(id){return document.getElementById(id);}
@@ -983,6 +992,596 @@
     el.textContent=message;
     el.className='backup-status '+(type||'');
   }
+  function dataV2Status(message,type){
+    const el=$('data-v2-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='data-v2-status '+(type||'');
+  }
+  function v2MonitorDate(value){
+    if(!value) return '-';
+    const date=new Date(value);
+    if(Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  }
+  function v2MonitorStateMeta(state){
+    if(state==='ok') return {label:'정상',type:'ok'};
+    if(state==='mismatch') return {label:'불일치',type:'err'};
+    if(state==='error') return {label:'오류',type:'err'};
+    if(state==='syncing') return {label:'동기화 중',type:''};
+    return {label:'확인 전',type:''};
+  }
+  function updateV2MonitorBadges(state){
+    const visible=state==='mismatch'||state==='error';
+    ['v2-nav-badge','v2-quick-badge'].forEach(id=>{
+      const el=$(id);
+      if(!el) return;
+      el.hidden=!visible;
+      el.textContent='!';
+    });
+  }
+  function renderV2Monitor(){
+    const data=v2MonitorDataByBranch[activeBranch]||{};
+    const alerts=v2MonitorAlertsByBranch[activeBranch]||[];
+    const state=data.shadowStatus||'idle';
+    const meta=v2MonitorStateMeta(state);
+    const stateCard=$('v2-monitor-state-card');
+    const stateText=$('v2-monitor-state');
+    const time=$('v2-monitor-time');
+    const generation=$('v2-monitor-generation');
+    const keys=$('v2-monitor-keys');
+    const message=$('v2-monitor-message');
+    const count=$('v2-monitor-alert-count');
+    const list=$('v2-monitor-alert-list');
+    if(stateCard) stateCard.dataset.state=state;
+    if(stateText) stateText.textContent=meta.label;
+    if(time) time.textContent=v2MonitorDate(data.shadowLastSyncedAt);
+    if(generation) generation.textContent=data.shadowGenerationId||'-';
+    if(keys){
+      const values=Array.isArray(data.shadowChangedKeys)?data.shadowChangedKeys:[];
+      keys.textContent=values.length?values.slice(0,3).join(', ')+(values.length>3?` 외 ${values.length-3}개`:''):'-';
+    }
+    if(message){
+      message.className='data-v2-status '+meta.type;
+      message.textContent=data.shadowMessage||(state==='idle'?'아직 동시운영 기록이 없습니다. 시간표 화면을 열거나 상태를 새로고침해주세요.':'상태 메시지가 없습니다.');
+    }
+    if(count) count.textContent=`${alerts.length}건`;
+    if(list){
+      if(!alerts.length){
+        list.innerHTML='<div class="feedback-empty">현재 남아 있는 불일치 기록이 없습니다.</div>';
+      }else{
+        list.innerHTML=alerts.map(alert=>`<article class="v2-monitor-alert-item">
+          <div><strong>${esc(alert.message||'V2 호환 불일치')}</strong><span>${esc((alert.keys||[]).join(', ')||alert.type||'')}</span></div>
+          <div class="v2-monitor-alert-meta"><span>${v2MonitorDate(alert.lastDetectedAt)}</span><b>${Number(alert.count)||1}회</b></div>
+        </article>`).join('');
+      }
+    }
+    updateV2MonitorBadges(state);
+  }
+  function stopV2Monitor(){
+    v2MonitorUnsubscribes.forEach(unsubscribe=>{try{unsubscribe();}catch(error){}});
+    v2MonitorUnsubscribes=[];
+    v2MonitorBranch='';
+  }
+  function subscribeV2Monitor(forceRefresh){
+    const branchId=activeBranch;
+    if(v2MonitorBranch===branchId&&v2MonitorUnsubscribes.length){
+      if(forceRefresh&&window.SCV2Shadow) SCV2Shadow.refresh(branchRoot(branchId));
+      renderV2Monitor();
+      return;
+    }
+    stopV2Monitor();
+    v2MonitorBranch=branchId;
+    renderV2Monitor();
+    try{
+      const root=branchRoot(branchId);
+      const store=window.SCScheduleV2Store;
+      if(!root?.db||!store) throw new Error('V2 동시운영 모듈을 불러오지 못했습니다.');
+      const ref=root.db.collection(store.ROOT_COLLECTION).doc(store.safeDocId(branchId));
+      v2MonitorUnsubscribes.push(ref.onSnapshot(snapshot=>{
+        v2MonitorDataByBranch[branchId]=snapshot.exists?(snapshot.data()||{}):{};
+        if(activeBranch===branchId) renderV2Monitor();
+      },error=>{
+        v2MonitorDataByBranch[branchId]={shadowStatus:'error',shadowMessage:error.message||String(error)};
+        if(activeBranch===branchId) renderV2Monitor();
+      }));
+      v2MonitorUnsubscribes.push(ref.collection('alerts').onSnapshot(snapshot=>{
+        const rows=[];
+        snapshot.forEach(doc=>rows.push({...doc.data(),id:doc.id}));
+        rows.sort((a,b)=>String(b.lastDetectedAt||'').localeCompare(String(a.lastDetectedAt||'')));
+        v2MonitorAlertsByBranch[branchId]=rows.slice(0,30);
+        if(activeBranch===branchId) renderV2Monitor();
+      },error=>{
+        console.warn('[settings] V2 alerts load failed:',error);
+      }));
+      if(window.SCV2Shadow) SCV2Shadow.refresh(root);
+    }catch(error){
+      v2MonitorDataByBranch[branchId]={shadowStatus:'error',shadowMessage:error.message||String(error)};
+      renderV2Monitor();
+    }
+  }
+  function v2CopyStatus(message,type){
+    const el=$('data-v2-copy-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='data-v2-status '+(type||'');
+  }
+  function v2PreviewStatus(message,type){
+    const el=$('data-v2-preview-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='data-v2-status '+(type||'');
+  }
+  function v2PreviewState(branchId){
+    if(!dataV2PreviewByBranch[branchId]){
+      dataV2PreviewByBranch[branchId]={generation:null,tabs:[],tabId:'',day:'월',tabData:{}};
+    }
+    return dataV2PreviewByBranch[branchId];
+  }
+  function v2PreviewTab(state){
+    return (state?.tabs||[]).find(tab=>tab.id===state.tabId)||(state?.tabs||[])[0]||null;
+  }
+  function v2PreviewDays(tab){
+    return tab?.type==='bangteuk'?['월','화','수','목','금']:['월','화','수','목','금','토'];
+  }
+  function v2PreviewTime(time){
+    const helper=window.SCScheduleTime;
+    return helper&&typeof helper.normalizeTimeText==='function'?helper.normalizeTimeText(time):String(time||'').trim();
+  }
+  function v2PreviewDay(day){
+    const helper=window.SCScheduleTime;
+    return helper&&typeof helper.normalizeDayText==='function'?helper.normalizeDayText(day):String(day||'').replace(/요일/g,'').trim();
+  }
+  function compareV2PreviewTimes(day,a,b){
+    const helper=window.SCScheduleTime;
+    return helper&&typeof helper.compareTimes==='function'
+      ? helper.compareTimes(day,a,b)
+      : String(a||'').localeCompare(String(b||''),'ko',{numeric:true});
+  }
+  function displayV2PreviewTime(day,time){
+    const helper=window.SCScheduleTime;
+    return helper&&typeof helper.displayTimeForDay==='function'?helper.displayTimeForDay(day,time):time;
+  }
+  function v2PreviewSlotParts(slotKey){
+    const parts=String(slotKey||'').split('/');
+    return {time:v2PreviewTime(parts[0]),day:v2PreviewDay(parts[1]),lane:Number(parts[2])||0};
+  }
+  function renderV2PreviewSelectors(state){
+    const tabSelect=$('data-v2-preview-tab');
+    const daysWrap=$('data-v2-preview-days');
+    if(!tabSelect||!daysWrap) return;
+    tabSelect.innerHTML=(state.tabs||[]).map(tab=>`<option value="${esc(tab.id)}" ${tab.id===state.tabId?'selected':''}>${esc(tab.name||tab.id)} · ${tab.type==='bangteuk'?'방특':'정규'}</option>`).join('');
+    const days=v2PreviewDays(v2PreviewTab(state));
+    if(!days.includes(state.day)) state.day=days[0];
+    daysWrap.innerHTML=days.map(day=>`<button type="button" class="v2-preview-day ${day===state.day?'active':''}" data-v2-preview-day="${day}" aria-pressed="${day===state.day?'true':'false'}">${day}</button>`).join('');
+  }
+  function renderV2PreviewDetail(placementId){
+    const state=v2PreviewState(activeBranch);
+    const data=state.tabData[state.tabId];
+    const detail=$('data-v2-preview-detail');
+    if(!detail||!data) return;
+    const placement=(data.placements||[]).find(item=>item.id===placementId);
+    if(!placement){detail.hidden=true;detail.innerHTML='';return;}
+    const person=(data.people||[]).find(item=>item.id===placement.personId)||{};
+    const enrollment=(data.enrollments||[]).find(item=>item.id===placement.enrollmentId)||{};
+    const transport=placement.transport||{};
+    const course=enrollment.courseType==='bangteuk'?'방학특강':'정규반';
+    const flags=[enrollment.weekFive?'주 5일':'',enrollment.newStudent?'신규':'',enrollment.paid?'결제 완료':''].filter(Boolean).join(' · ')||'일반';
+    detail.innerHTML=`<div class="v2-preview-detail-head">
+      <strong>${esc((enrollment.weekFive?'*':'')+(person.name||'이름 없음'))}</strong>
+      <button type="button" data-v2-preview-close aria-label="상세정보 닫기">×</button>
+    </div>
+    <div class="v2-preview-detail-grid">
+      <div><span>전화번호</span><strong>${esc(person.phone||'미입력')}</strong></div>
+      <div><span>수강 구분</span><strong>${course}</strong></div>
+      <div><span>표시 상태</span><strong>${esc(flags)}</strong></div>
+      <div><span>자리</span><strong>${esc(`${state.day} ${displayV2PreviewTime(state.day,placement.time)} · ${placement.lane}레인 ${placement.seat}번`)}</strong></div>
+      <div><span>차량 이용</span><strong>${transport.usesVehicle?'이용':'미이용'}</strong></div>
+      <div><span>승하차 위치</span><strong>${esc(transport.location||'없음')}</strong></div>
+      <div><span>시작일</span><strong>${esc(placement.startDate||'없음')}</strong></div>
+      <div><span>메모</span><strong>${esc(placement.memo||'없음')}</strong></div>
+    </div>`;
+    detail.hidden=false;
+  }
+  function renderV2PreviewTable(state){
+    const head=$('data-v2-preview-head');
+    const body=$('data-v2-preview-body');
+    const summary=$('data-v2-preview-summary');
+    const detail=$('data-v2-preview-detail');
+    if(!head||!body||!summary) return;
+    const data=state.tabData[state.tabId];
+    if(!data){head.innerHTML='';body.innerHTML='';summary.textContent='시간표 데이터를 불러오는 중입니다.';return;}
+    const tab=v2PreviewTab(state)||{};
+    const people=new Map((data.people||[]).map(item=>[item.id,item]));
+    const enrollments=new Map((data.enrollments||[]).map(item=>[item.id,item]));
+    const placements=(data.placements||[]).filter(item=>v2PreviewDay(item.day)===state.day);
+    const assignments=(data.teacherAssignments||[]).filter(item=>v2PreviewSlotParts(item.slotKey).day===state.day);
+    const groups=new Map();
+    const ensureGroup=(time,lane)=>{
+      const normalizedTime=v2PreviewTime(time);
+      const key=`${normalizedTime}|${lane}`;
+      if(!groups.has(key)) groups.set(key,{time:normalizedTime,lane:Number(lane)||0,teacher:'',source:null,seats:new Map()});
+      return groups.get(key);
+    };
+    assignments.forEach(item=>{
+      const slot=v2PreviewSlotParts(item.slotKey);
+      const group=ensureGroup(slot.time,slot.lane);
+      group.teacher=item.teacherName||'';
+      group.source=item.source||null;
+    });
+    placements.forEach(item=>ensureGroup(item.time,item.lane).seats.set(Number(item.seat)||0,item));
+    const rows=[...groups.values()].sort((a,b)=>compareV2PreviewTimes(state.day,a.time,b.time)||a.lane-b.lane);
+    let seatCount=tab.type==='bangteuk'?6:5;
+    rows.forEach(row=>{
+      row.seats.forEach((value,seat)=>{seatCount=Math.max(seatCount,seat);});
+      const helper=window.SCScheduleTime;
+      if(helper&&typeof helper.slotRowsForInst==='function') seatCount=Math.max(seatCount,helper.slotRowsForInst(row.source,{bangteukTable:tab.type==='bangteuk'}));
+    });
+    seatCount=Math.min(8,seatCount);
+    head.innerHTML=`<tr><th scope="col">시간</th><th scope="col">레인</th><th scope="col">선생님</th>${Array.from({length:seatCount},(_,i)=>`<th scope="col">${i+1}번</th>`).join('')}</tr>`;
+    if(!rows.length){
+      body.innerHTML=`<tr><td colspan="${seatCount+3}" class="v2-preview-empty">${state.day}요일에 저장된 V2 수업이 없습니다.</td></tr>`;
+    }else{
+      body.innerHTML=rows.map((row,index)=>{
+        const firstForTime=index===0||rows[index-1].time!==row.time;
+        const rowSpan=firstForTime?rows.filter(item=>item.time===row.time).length:0;
+        const seats=Array.from({length:seatCount},(_,i)=>{
+          const placement=row.seats.get(i+1);
+          if(!placement) return '<td></td>';
+          const person=people.get(placement.personId)||{};
+          const enrollment=enrollments.get(placement.enrollmentId)||{};
+          const name=(enrollment.weekFive?'*':'')+(person.name||'정보 없음');
+          const classes=['v2-preview-seat',enrollment.newStudent?'is-new':'',enrollment.paid?'is-paid':''].filter(Boolean).join(' ');
+          return `<td><button type="button" class="${classes}" data-v2-preview-placement="${esc(placement.id)}" title="상세정보 보기">${esc(name)}</button></td>`;
+        }).join('');
+        return `<tr>${firstForTime?`<th class="preview-time" scope="rowgroup" rowspan="${rowSpan}">${esc(displayV2PreviewTime(state.day,row.time))}</th>`:''}<td class="preview-lane">${row.lane||'-'}</td><td class="preview-teacher">${esc(row.teacher||'미지정')}</td>${seats}</tr>`;
+      }).join('');
+    }
+    const uniqueStudents=new Set(placements.map(item=>item.personId).filter(Boolean));
+    const invalidSeats=placements.filter(item=>Number(item.seat)<1||Number(item.seat)>8).length;
+    summary.textContent=`${tab.name||tab.id} · ${state.day}요일 · 수업 ${assignments.length}칸 · 자리 ${placements.length}명 · 고유 원생 ${uniqueStudents.size}명${invalidSeats?` · 범위 밖 자리 ${invalidSeats}건`:''} · 읽기 전용`;
+    if(detail){detail.hidden=true;detail.innerHTML='';}
+  }
+  function renderV2PreviewState(state){
+    const content=$('data-v2-preview-content');
+    if(!content) return;
+    if(!state?.generation){
+      content.hidden=true;
+      v2PreviewStatus('최신 V2 복사본을 불러오면 시간표와 원생 상세정보를 비교할 수 있습니다.');
+      return;
+    }
+    content.hidden=false;
+    renderV2PreviewSelectors(state);
+    renderV2PreviewTable(state);
+    const created=state.generation.createdAt?new Date(state.generation.createdAt).toLocaleString('ko-KR'):'시간 미상';
+    v2PreviewStatus(`검증 완료 복사본 · ${state.generation.id} · 생성 ${created} · 읽기 전용`,'ok');
+  }
+  async function loadV2PreviewTab(state,tabId){
+    state.tabId=tabId||state.tabId||state.tabs[0]?.id||'';
+    renderV2PreviewSelectors(state);
+    if(!state.tabData[state.tabId]){
+      v2PreviewStatus(`${v2PreviewTab(state)?.name||state.tabId} V2 문서를 읽고 있습니다.`);
+      state.tabData[state.tabId]=await SCScheduleV2Store.readGenerationTab(firebase.firestore(),state.branchId||activeBranch,state.generation.id,state.tabId);
+    }
+    if((state.branchId||activeBranch)===activeBranch) renderV2PreviewState(state);
+  }
+  async function loadV2Preview(button){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','V2 시간표 미리보기')) return;
+    if(!window.SCScheduleV2Store){v2PreviewStatus('V2 읽기 모듈을 불러오지 못했습니다.','err');return;}
+    const branchId=activeBranch;
+    const originalLabel=button?.textContent||'';
+    if(button){button.disabled=true;button.textContent='불러오는 중...';}
+    v2PreviewStatus(`${BRANCHES[branchId].name} 최신 검증 완료 복사본을 찾고 있습니다.`);
+    try{
+      const generation=await SCScheduleV2Store.latestReadyGeneration(firebase.firestore(),branchId);
+      if(!generation) throw new Error('검증 완료된 V2 복사본이 없습니다. 먼저 V2 복사본을 만들어주세요.');
+      const tabs=(await SCScheduleV2Store.readGenerationTabs(firebase.firestore(),branchId,generation.id)).filter(tab=>tab.type!=='snapshot');
+      if(!tabs.length) throw new Error('V2 복사본에 표시할 시간표가 없습니다.');
+      const previous=dataV2PreviewByBranch[branchId];
+      const state={branchId,generation,tabs,tabId:tabs.some(tab=>tab.id===previous?.tabId)?previous.tabId:tabs[0].id,day:previous?.day||'월',tabData:{}};
+      dataV2PreviewByBranch[branchId]=state;
+      if(activeBranch===branchId) await loadV2PreviewTab(state,state.tabId);
+    }catch(error){
+      console.error(error);
+      if(activeBranch===branchId){
+        $('data-v2-preview-content').hidden=true;
+        v2PreviewStatus('V2 미리보기 실패 · '+(error.message||String(error)),'err');
+      }
+    }finally{
+      if(button){button.disabled=false;button.textContent=originalLabel;}
+    }
+  }
+  function dataV2IssueLabel(type){
+    if(type==='slot-conflict') return '자리 충돌';
+    if(type==='person-profile-conflict') return '원생 정보 충돌';
+    if(type==='missing-person-id') return '원생 ID 누락';
+    return type||'확인 필요';
+  }
+  function dataV2IssueDetail(issue){
+    if(issue?.type==='slot-conflict'){
+      return `${issue.currentPersonId||'-'} / ${issue.incomingPersonId||'-'}`;
+    }
+    if(issue?.type==='person-profile-conflict'){
+      const current=issue.current||{};
+      const incoming=issue.incoming||{};
+      return `${current.name||'-'} ${current.phone||'-'} ↔ ${incoming.name||'-'} ${incoming.phone||'-'}`;
+    }
+    if(issue?.type==='missing-person-id') return `원본 순번 ${Number(issue.index||0)+1}`;
+    if(issue?.type==='ambiguous-tab-scope'){
+      return `후보 시간표: ${(issue.candidateTabIds||[]).join(', ')||'없음'}${issue.date?` · ${issue.date}`:''}`;
+    }
+    return '확인이 필요합니다.';
+  }
+  function identityOccurrenceLabel(item){
+    const tab=item.tabType==='bangteuk'?'방특':(item.tabName||'정규');
+    const lane=item.lane?`${item.lane}레인`:'';
+    const seat=item.seat?`${item.seat}번`:'';
+    return [tab,item.day,item.time,lane,seat].filter(Boolean).join(' · ');
+  }
+  function identityRepairConfirmText(conflict){
+    if(!identityRepairConfirm||identityRepairConfirm.personId!==conflict.personId) return '';
+    if(identityRepairConfirm.mode==='split'){
+      return '서로 다른 원생으로 분리합니다. 모든 자리는 그대로 두고, 각 원생에게 서로 다른 ID를 부여합니다.';
+    }
+    const profile=(conflict.profiles||[]).find(item=>item.key===identityRepairConfirm.profileKey);
+    return `${profile?.name||'선택한 원생'} 정보로 통합합니다. 같은 ID를 쓰는 모든 자리의 이름과 전화번호가 이 정보로 맞춰집니다.`;
+  }
+  function renderIdentityConflicts(report){
+    const section=$('identity-conflicts');
+    const list=$('identity-conflict-list');
+    const count=$('identity-conflict-count');
+    if(!section||!list||!count) return;
+    const conflicts=report?.identityConflicts||[];
+    section.hidden=!conflicts.length;
+    count.textContent=`${conflicts.length}건`;
+    if(!conflicts.length){
+      list.innerHTML='';
+      identityRepairConfirm=null;
+      return;
+    }
+    list.innerHTML=conflicts.map(conflict=>{
+      const isConfirm=identityRepairConfirm?.personId===conflict.personId;
+      const profiles=(conflict.profiles||[]).map(profile=>`<article class="identity-profile">
+        <div class="identity-profile-main">
+          <div>
+            <strong class="identity-profile-name">${esc(profile.name||'이름 없음')}</strong>
+            <span class="identity-profile-phone">${esc(profile.phone||'전화번호 없음')}</span>
+          </div>
+          ${profile.key===conflict.suggestedKeepKey?'<span class="identity-keep-badge">현재 ID 유지 권장</span>':''}
+        </div>
+        <ul class="identity-occurrences">${(profile.occurrences||[]).map(item=>`<li>${esc(identityOccurrenceLabel(item))}</li>`).join('')}</ul>
+        <button type="button" class="identity-profile-action" data-identity-action="merge" data-person-id="${esc(encodeURIComponent(conflict.personId))}" data-profile-key="${esc(encodeURIComponent(profile.key))}" ${identityRepairBusy?'disabled':''}>같은 원생이라면 이 정보로 통합</button>
+      </article>`).join('');
+      return `<article class="identity-conflict-card">
+        <header class="identity-conflict-head">
+          <strong>${conflict.occurrenceCount||0}개 자리에서 서로 다른 정보 발견</strong>
+          <span class="identity-conflict-id">${esc(conflict.personId)}</span>
+        </header>
+        <div class="identity-profile-grid">${profiles}</div>
+        <div class="identity-conflict-actions">
+          <button type="button" class="identity-split-button" data-identity-action="split" data-person-id="${esc(encodeURIComponent(conflict.personId))}" ${identityRepairBusy?'disabled':''}>서로 다른 원생으로 분리</button>
+        </div>
+        ${isConfirm?`<div class="identity-repair-confirm">
+          <p>${esc(identityRepairConfirmText(conflict))}<br>실행 직전 관련 데이터가 JSON으로 자동 백업됩니다.</p>
+          <div class="identity-repair-confirm-actions">
+            <button type="button" class="identity-repair-cancel" data-identity-action="cancel" ${identityRepairBusy?'disabled':''}>취소</button>
+            <button type="button" class="identity-repair-run" data-identity-action="run" ${identityRepairBusy?'disabled':''}>${identityRepairBusy?'처리 중...':'확인 후 실행'}</button>
+          </div>
+        </div>`:''}
+      </article>`;
+    }).join('');
+  }
+  function renderDataV2Report(report){
+    const summary=$('data-v2-summary');
+    const issuesWrap=$('data-v2-issues-wrap');
+    const body=$('data-v2-issues-body');
+    const buildButton=$('data-v2-build');
+    if(!summary||!issuesWrap||!body) return;
+    if(!report){
+      summary.hidden=true;
+      issuesWrap.hidden=true;
+      body.innerHTML='';
+      if(buildButton) buildButton.disabled=true;
+      renderIdentityConflicts(null);
+      dataV2Status('아직 진단하지 않았습니다. 진단은 데이터를 읽기만 하며 저장하지 않습니다.');
+      v2CopyStatus('진단을 통과하면 기록까지 포함한 V1 전체 복구점을 먼저 저장합니다. 이 버튼만으로 운영 화면은 V2로 바뀌지 않습니다.');
+      return;
+    }
+    const stats=report.conversion?.stats||{};
+    $('data-v2-people').textContent=String(stats.people||0);
+    $('data-v2-enrollments').textContent=String(stats.enrollments||0);
+    $('data-v2-legacy-placements').textContent=String(report.checks?.legacyPlacements||0);
+    $('data-v2-placements').textContent=String(report.checks?.convertedPlacements||0);
+    $('data-v2-reservations').textContent=String(stats.reservations||0);
+    $('data-v2-waitlist').textContent=String(stats.waitlistEntries||0);
+    $('data-v2-issues').textContent=String(report.blockingIssues?.length||0);
+    summary.hidden=false;
+    if(buildButton) buildButton.disabled=!report.checks?.ready;
+    const issues=report.blockingIssues||[];
+    issuesWrap.hidden=!issues.length;
+    body.innerHTML=issues.map(issue=>`<tr>
+      <td>${esc(dataV2IssueLabel(issue.type))}</td>
+      <td>${esc(issue.tabId||'-')}</td>
+      <td>${esc(issue.slotKey||'-')}</td>
+      <td>${esc(dataV2IssueDetail(issue))}</td>
+    </tr>`).join('');
+    renderIdentityConflicts(report);
+    if(report.checks?.ready){
+      dataV2Status(`진단 통과 · 원생 ID 충돌이 없습니다. 기존 자리 ${report.checks.legacyPlacements}개가 모두 보존됩니다.`, 'ok');
+      if(!report.generation) v2CopyStatus('진단 통과 · V1 전체 복구점 저장 후 별도 V2 복사본을 만들 수 있습니다. V1 원본은 그대로 보관됩니다.','ok');
+    }else{
+      dataV2Status(`정리할 항목이 있습니다 · 확인 항목 ${issues.length}건, 기존 자리 ${report.checks?.legacyPlacements||0}개`, 'err');
+      v2CopyStatus('충돌 항목을 먼저 정리해야 V2 안전 복사본을 만들 수 있습니다.','err');
+    }
+  }
+  async function runIdentityRepair(){
+    if(identityRepairBusy||!identityRepairConfirm) return;
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','원생 정보 충돌 정리')) return;
+    if(!window.SCStudentIdentityRepair){
+      dataV2Status('원생 정보 정리 모듈을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.','err');
+      return;
+    }
+    const branchId=activeBranch;
+    const report=dataV2ReportByBranch[branchId];
+    const conflict=(report?.identityConflicts||[]).find(item=>item.personId===identityRepairConfirm.personId);
+    if(!conflict){
+      identityRepairConfirm=null;
+      renderDataV2Report(report||null);
+      dataV2Status('충돌 정보가 변경되었습니다. 다시 진단해주세요.','err');
+      return;
+    }
+    const action=clone(identityRepairConfirm);
+    identityRepairBusy=true;
+    renderDataV2Report(report);
+    dataV2Status('적용 직전 백업을 만들고 현재 데이터를 다시 확인하고 있습니다.');
+    try{
+      const freshRoot=await readBranchBackupData(branchId,false);
+      const keys=SCStudentIdentityRepair.repairKeysForRoot(freshRoot,branchId);
+      const backupData={};
+      keys.forEach(key=>{
+        if(Object.prototype.hasOwnProperty.call(freshRoot,key)) backupData[key]=freshRoot[key];
+      });
+      downloadJsonFile(`${branchId}-student-identity-before-${backupFileStamp()}.json`,{
+        kind:'sc-student-identity-repair-backup',version:1,branchId,
+        createdAt:new Date().toISOString(),personId:conflict.personId,
+        action:action.mode,keys,data:backupData,
+      });
+      let repairResult=null;
+      let abortReason='';
+      const result=await branchRoot(branchId).transactionKeys(keys,root=>{
+        try{
+          repairResult=SCStudentIdentityRepair.applyRepair(root,{
+            branchId,
+            personId:conflict.personId,
+            mode:action.mode,
+            chosenProfileKey:action.profileKey||'',
+            expectedProfileKeys:(conflict.profiles||[]).map(item=>item.key),
+          });
+          return repairResult.root;
+        }catch(error){
+          abortReason=error.message||String(error);
+          return;
+        }
+      });
+      if(!result?.committed) throw new Error(abortReason||'원생 정보 정리가 취소되었습니다.');
+      identityRepairConfirm=null;
+      dataV2ReportByBranch[branchId]=null;
+      studentDirectoryByBranch[branchId]=null;
+      dataV2Status(`정리 완료 · 자리 ${repairResult?.stats?.studentsUpdated||0}개, 연결정보 ${repairResult?.stats?.referencesUpdated||0}개를 반영했습니다.${repairResult?.stats?.referencesUnresolved?` 확인이 필요한 연결정보 ${repairResult.stats.referencesUnresolved}개는 원본 ID로 보존했습니다.`:''}`,'ok');
+      await runDataV2Diagnostic(null);
+    }catch(error){
+      console.error(error);
+      dataV2Status('정리 실패 · '+(error.message||String(error)),'err');
+      toast('원생 정보 정리 실패','err');
+    }finally{
+      identityRepairBusy=false;
+      if(activeBranch===branchId) renderDataV2Report(dataV2ReportByBranch[branchId]||report||null);
+    }
+  }
+  function handleIdentityRepairClick(event){
+    const button=event.target.closest('[data-identity-action]');
+    if(!button||identityRepairBusy) return;
+    const action=button.dataset.identityAction;
+    if(action==='cancel'){
+      identityRepairConfirm=null;
+      renderDataV2Report(dataV2ReportByBranch[activeBranch]||null);
+      return;
+    }
+    if(action==='run'){
+      runIdentityRepair();
+      return;
+    }
+    const personId=decodeURIComponent(button.dataset.personId||'');
+    if(!personId) return;
+    identityRepairConfirm={
+      personId,
+      mode:action==='merge'?'merge':'split',
+      profileKey:action==='merge'?decodeURIComponent(button.dataset.profileKey||''):'',
+    };
+    renderDataV2Report(dataV2ReportByBranch[activeBranch]||null);
+    button.closest('.identity-conflict-card')?.querySelector('.identity-repair-confirm')?.scrollIntoView({block:'nearest'});
+  }
+  async function runDataV2Diagnostic(button){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','원생 ID 충돌 진단')) return;
+    if(!window.SCScheduleSchemaV2){
+      dataV2Status('원생 ID 진단 모듈을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.','err');
+      return;
+    }
+    const branchId=activeBranch;
+    const originalLabel=button?.textContent||'';
+    if(button){button.disabled=true;button.textContent='진단 중...';}
+    dataV2Status(`${BRANCHES[branchId].name} 원생 ID와 자리 정보를 확인하고 있습니다.`);
+    try{
+      const root=await readBranchBackupData(branchId,false);
+      const report=SCScheduleSchemaV2.diagnoseLegacyRoot(branchId,root);
+      dataV2ReportByBranch[branchId]=report;
+      if(activeBranch===branchId) renderDataV2Report(report);
+    }catch(e){
+      console.error(e);
+      if(activeBranch===branchId) dataV2Status('진단 실패 · '+(e.message||String(e)),'err');
+    }finally{
+      if(button){button.disabled=false;button.textContent=originalLabel;}
+    }
+  }
+  async function runDataV2Build(button){
+    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','V2 안전 복사본 생성')) return;
+    const branchId=activeBranch;
+    const previousReport=dataV2ReportByBranch[branchId];
+    if(!previousReport?.checks?.ready){
+      v2CopyStatus('먼저 현재 지점 진단을 통과해야 합니다.','err');
+      return;
+    }
+    if(!window.SCScheduleV2Store){
+      v2CopyStatus('V2 복사 모듈을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.','err');
+      return;
+    }
+    const originalLabel=button?.textContent||'';
+    if(button){button.disabled=true;button.textContent='백업 중...';}
+    try{
+      v2CopyStatus('기록을 포함한 현재 V1 전체 데이터를 다시 읽고 복구점을 만들고 있습니다.');
+      const root=await readBranchBackupData(branchId,true);
+      const report=SCScheduleSchemaV2.diagnoseLegacyRoot(branchId,root);
+      if(!report.checks?.ready) throw new Error('진단 후 데이터가 변경되었습니다. 다시 진단해주세요.');
+      const baselineCreatedAt=new Date().toISOString();
+      const sourceBuildVersion=String(window.SC_BUILD_VERSION||window.SC_ASSET_VERSION||'');
+      downloadJsonFile(`${branchId}-before-v2-${backupFileStamp()}.json`,{
+        kind:'sc-schedule-before-v2',version:1,branchId,
+        createdAt:baselineCreatedAt,
+        sourceBuildVersion,
+        includeHistory:true,
+        safety:'V2 전환 전 V1 전체 복구점',
+        rollbackPolicy:'V2 이후 변경분을 버리고 이 V1 상태 전체로 복원',
+        data:root,
+      });
+      if(button) button.textContent='복사본 생성 중...';
+      const result=await SCScheduleV2Store.writeGeneration(firebase.firestore(),branchId,report,{
+        baselineCreatedAt,
+        sourceBuildVersion,
+        rollbackPolicy:'return-to-v1-baseline',
+        onProgress:progress=>{
+          if(activeBranch!==branchId) return;
+          v2CopyStatus(`${BRANCHES[branchId].name} V2 복사본 생성 중 · ${progress.written}/${progress.total} · 운영은 계속 V1`);
+        },
+      });
+      report.generation=result;
+      dataV2ReportByBranch[branchId]=report;
+      delete dataV2PreviewByBranch[branchId];
+      if(activeBranch===branchId){
+        v2CopyStatus(`안전 복사 완료 · ${result.generationId} · ${result.written}개 문서 검증 통과 · V1 전체 복구점과 원본은 그대로 보관됩니다.`,'ok');
+      }
+    }catch(error){
+      console.error(error);
+      const denied=error?.code==='permission-denied'||/Missing or insufficient permissions/i.test(String(error?.message||error));
+      if(activeBranch===branchId){
+        v2CopyStatus(denied
+          ? 'V2 복사 경로 권한이 아직 설정되지 않았습니다. V1 백업과 운영 시간표에는 영향이 없습니다.'
+          : 'V2 안전 복사 실패 · '+(error.message||String(error)),'err');
+      }
+    }finally{
+      const report=dataV2ReportByBranch[branchId]||previousReport;
+      if(button){button.disabled=!report?.checks?.ready;button.textContent=originalLabel;}
+    }
+  }
   function updateSummerLayoutPanel(){
     const visible=activeBranch==='yongam'&&!!window.SCSummerLayout2026;
     const card=$('summer-layout-import');
@@ -1465,6 +2064,8 @@
     }catch(e){}
     if(activePanel==='students') loadStudentDirectory(false);
     if(activePanel==='backup') updateSummerLayoutPanel();
+    if(activePanel==='dataV2') subscribeV2Monitor(false);
+    else stopV2Monitor();
   }
   function setBranch(branchId){
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
@@ -1479,6 +2080,7 @@
     if(settingsByBranch[activeBranch]&&teacherNamesByBranch[activeBranch]) renderAll();
     else loadBranchBundle(activeBranch);
     if(activePanel==='students') loadStudentDirectory(false);
+    if(activePanel==='dataV2') subscribeV2Monitor(false);
   }
   function renderAll(){
     const data=currentSettings();
@@ -2523,6 +3125,7 @@ th{background:#D9EAD3;font-weight:700}
     $('sms-remain').addEventListener('click',e=>runProxyTest('sms','remain',e.currentTarget));
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
+    $('v2-monitor-refresh')?.addEventListener('click',()=>subscribeV2Monitor(true));
     $('summer-layout-check')?.addEventListener('click',e=>checkSummerLayout(e.currentTarget));
     $('summer-layout-apply')?.addEventListener('click',e=>applySummerLayout(e.currentTarget));
     $('students-refresh')?.addEventListener('click',()=>loadStudentDirectory(true));

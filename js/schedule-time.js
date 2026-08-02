@@ -77,8 +77,16 @@
     const instKey=p.slice(0,3).join('/');
     return isBangteukSlot(instMap&&instMap[instKey],p[3],opts);
   }
+  function parseBangteukWeek5Name(value){
+    const raw=String(value||'').trim();
+    const week5=/^[*＊]+\s*/.test(raw);
+    return {
+      name:week5?raw.replace(/^[*＊]+\s*/,'').trim():raw,
+      week5,
+    };
+  }
   function normalizeIdentityName(value){
-    return String(value||'').trim().replace(/\s+/g,' ').toLowerCase();
+    return parseBangteukWeek5Name(value).name.replace(/\s+/g,' ').toLowerCase();
   }
   function normalizeIdentityPhone(value){
     return String(value||'').replace(/\D/g,'');
@@ -219,6 +227,21 @@
     if(!Array.isArray(list)) return [];
     return list.map(stu=>normalizeStudent(stu));
   }
+  function normalizeBangteukStudent(stu){
+    if(!stu||typeof stu!=='object') return stu;
+    const hasShortName=stu.n!=null;
+    const parsed=parseBangteukWeek5Name(hasShortName?stu.n:stu.name);
+    if(parsed.week5){
+      if(hasShortName) stu.n=parsed.name;
+      else stu.name=parsed.name;
+      stu.btWeek5=true;
+    }
+    return normalizeStudent(stu);
+  }
+  function normalizeBangteukStudents(list){
+    if(!Array.isArray(list)) return [];
+    return list.map(stu=>normalizeBangteukStudent(stu));
+  }
   function normalizeSlotKey(key){
     const parts=String(key||'').split('/');
     if(parts.length>=2&&isSaturday(parts[1])) parts[0]=internalTimeForDay(parts[1],parts[0]);
@@ -316,7 +339,8 @@
   }
   function normalizeStoredValue(key,value){
     const k=String(key||'');
-    if(k==='swim_students'||/^swim_stu_/.test(k)||/^swim_bt_.*_stu$/.test(k)) return normalizeStudents(value);
+    if(/^swim_bt_.*_stu$/.test(k)) return normalizeBangteukStudents(value);
+    if(k==='swim_students'||/^swim_stu_/.test(k)) return normalizeStudents(value);
     if(k==='swim_inst'||/^swim_inst_/.test(k)||/^swim_bt_.*_inst$/.test(k)) return normalizeSlotMap(value);
     if(k==='swim_retire'||k==='swim_enroll'||k==='swim_mark'||k==='swim_disabled'||k==='swim_reserve'||k==='swim_hyuwon'||k==='swim_attendance'||/^swim_bt_attendance_/.test(k)) return normalizeSlotMap(value);
     if(k==='swim_move') return normalizeMoveMap(value);
@@ -345,6 +369,7 @@
     slotRowsForInst,
     isBangteukSlot,
     isBangteukSlotKey,
+    parseBangteukWeek5Name,
     normalizeIdentityName,
     normalizeIdentityPhone,
     studentIdentitySeed,
@@ -357,6 +382,8 @@
     sameStudentIdentity,
     normalizeStudent,
     normalizeStudents,
+    normalizeBangteukStudent,
+    normalizeBangteukStudents,
     normalizeSlotKey,
     normalizeSlotMap,
     normalizeMoveMap,

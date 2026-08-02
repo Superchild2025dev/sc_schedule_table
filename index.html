@@ -271,6 +271,25 @@
   </div>
 </div>
 
+<div id="tab-operation-modal" class="tab-modal sc-modal-backdrop" data-sc-modal aria-hidden="true">
+  <div class="tab-modal-box tab-operation-box sc-modal-dialog sc-modal-sm" role="dialog" aria-modal="true" aria-labelledby="tab-operation-title" tabindex="-1">
+    <div id="tab-operation-title" class="tab-modal-title sc-modal-title">스냅샷 만들기</div>
+    <p id="tab-operation-description" class="tab-operation-description"></p>
+    <div id="tab-operation-source" class="tab-operation-source"></div>
+    <div id="tab-operation-month-wrap" hidden>
+      <label class="tab-modal-label" for="tab-operation-month">다음 운영 월</label>
+      <input id="tab-operation-month" class="tab-modal-input" type="month">
+    </div>
+    <label id="tab-operation-name-label" class="tab-modal-label" for="tab-operation-name">스냅샷 이름</label>
+    <input id="tab-operation-name" class="tab-modal-input" maxlength="40" autocomplete="off">
+    <div id="tab-operation-error" class="tab-operation-error" role="alert" aria-live="polite"></div>
+    <div class="tab-modal-actions sc-modal-footer sc-modal-actions">
+      <button class="tab-modal-cancel" type="button" data-tab-operation-cancel data-sc-modal-close>취소</button>
+      <button id="tab-operation-submit" class="tab-modal-create" type="button">저장</button>
+    </div>
+  </div>
+</div>
+
 <div id="tab-bar" class="tab-bar"></div>
 <div id="snap-banner" class="snap-banner">📷 스냅샷 — 읽기 전용 (캡처 시점 그대로 고정)</div>
 
@@ -452,6 +471,9 @@
 
 <!-- JS: 로드 순서가 중요! (전역 스코프, file:// 호환) -->
 <script>scJs('js/schedule-time.js')</script>
+<script>scJs('js/schedule-schema-v2.js')</script>
+<script>scJs('js/schedule-v2-store.js')</script>
+<script>scJs('js/schedule-v2-shadow.js')</script>
 <script>scJs('js/auth-guard.js')</script>
 <script>scJs('js/core.js')</script>
 <script>scJs('js/tabs.js')</script>

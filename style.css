@@ -48,6 +48,11 @@ body{font-family:var(--sc-font);background:var(--sc-surface-muted);color:var(--s
 .tab-modal-cancel,.tab-modal-create{flex:1;height:36px;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
 .tab-modal-cancel{background:#fff;border:1.5px solid #D1D5DB;color:#6B7280}
 .tab-modal-create{background:var(--sc-primary);border:1.5px solid var(--sc-primary);color:#fff}
+.tab-modal-create:disabled,.tab-modal-cancel:disabled{opacity:.55;cursor:not-allowed}
+.tab-operation-box{width:min(380px,calc(100vw - 28px));min-width:0}
+.tab-operation-description{font-size:12px;line-height:1.55;color:#4B5563;margin:0 0 10px}
+.tab-operation-source{padding:9px 10px;border:1px solid #D1D5DB;border-radius:7px;background:#F9FAFB;color:#374151;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab-operation-error{min-height:18px;margin-top:7px;color:#DC2626;font-size:11px;font-weight:800}
 .tab-close{font-size:10px;margin-left:4px;opacity:.4;cursor:pointer}
 .tab-close:hover{opacity:1;color:#DC2626}
 .tab-arrows{display:inline-flex;gap:1px;margin-left:2px;opacity:.3;font-size:9px}
