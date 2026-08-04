@@ -2,6 +2,7 @@
   'use strict';
 
   const DEVELOPER_EMAIL='developer@scswim.local';
+  const SNAPSHOT_SCHEMA_VERSION=1;
   const DEBOUNCE_MS=700;
   const states=new Map();
   const ALL_COLLECTIONS=[
@@ -94,7 +95,8 @@
     try{
       const branchSnapshot=await state.root.db.collection(store.ROOT_COLLECTION).doc(store.safeDocId(state.branchId)).get();
       const prior=branchSnapshot.exists?(branchSnapshot.data()||{}):{};
-      state.snapshotMigrationComplete=prior.shadowSnapshotsMigrated===true;
+      state.snapshotMigrationComplete=prior.shadowSnapshotsMigrated===true
+        && Number(prior.shadowSnapshotSchemaVersion||0)===SNAPSHOT_SCHEMA_VERSION;
       (Array.isArray(prior.shadowUnsupportedKeys)?prior.shadowUnsupportedKeys:[])
         .filter(key=>!collectionsForKey(key).length)
         .forEach(key=>state.unresolvedUnsupported.add(key));
@@ -189,6 +191,7 @@
     };
     if(status.snapshotMigrationComplete!==undefined){
       payload.shadowSnapshotsMigrated=status.snapshotMigrationComplete===true;
+      payload.shadowSnapshotSchemaVersion=SNAPSHOT_SCHEMA_VERSION;
     }
     try{
       await branchRef.set(payload,{merge:true});

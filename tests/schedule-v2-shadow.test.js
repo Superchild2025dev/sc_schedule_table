@@ -78,6 +78,9 @@ test('compatibility errors stay in settings and never create a timetable popup',
 test('historical attendance snapshots are loaded once and then tracked incrementally',()=>{
   const source=fs.readFileSync(path.join(__dirname,'..','js','schedule-v2-shadow.js'),'utf8');
   assert.match(source,/shadowSnapshotsMigrated/);
+  assert.match(source,/const SNAPSHOT_SCHEMA_VERSION=1/);
+  assert.match(source,/shadowSnapshotSchemaVersion/);
+  assert.match(source,/Number\(prior\.shadowSnapshotSchemaVersion\|\|0\)===SNAPSHOT_SCHEMA_VERSION/);
   assert.match(source,/loadAttendanceSnapshotRoot/);
   assert.match(source,/syncShadowSnapshotScopes/);
   assert.doesNotMatch(source,/includeDeferred:true[^\n]*_list\s*\(/);

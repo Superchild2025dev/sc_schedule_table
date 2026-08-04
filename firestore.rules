@@ -16,6 +16,17 @@ service cloud.firestore {
         && request.auth.token.email == "developer@scswim.local";
     }
 
+    function canManageReferrals(branch) {
+      return isOwner()
+        || isDeveloper()
+        || (signedIn()
+          && branch == "gagyeong"
+          && request.auth.token.email == "gagyeong.desk@scswim.local")
+        || (signedIn()
+          && branch == "yongam"
+          && request.auth.token.email == "yongam.desk@scswim.local");
+    }
+
     match /scheduleV2/{document=**} {
       allow read: if isOwner() || isDeveloper();
       allow write: if isDeveloper();
@@ -23,6 +34,10 @@ service cloud.firestore {
 
     match /scheduleStores/{branch}/{document=**} {
       allow read, write: if signedIn();
+    }
+
+    match /referralPrograms/{branch}/{document=**} {
+      allow read, write: if canManageReferrals(branch);
     }
   }
 }

@@ -38,6 +38,26 @@
     {key:'bus2',label:'차량 2호차',memo:'차량/승하차 알림'},
     {key:'bus3',label:'차량 3호차',memo:'차량/승하차 알림'},
   ];
+  const REFERRAL_BENEFIT_BY_STAMP={
+    1:'수강료 1만원 할인',2:'수강료 1만원 할인',3:'수강료 1만원 할인',4:'수강료 1만원 할인',
+    5:'1개월 수업 무료',
+    6:'수강료 2만원 할인',7:'수강료 2만원 할인',8:'수강료 2만원 할인',9:'수강료 2만원 할인',
+    10:'2개월 수업 무료',
+  };
+  function referralTemplateDef(count){
+    const dots='●'.repeat(count)+'○'.repeat(10-count);
+    return {
+      id:'parent_referral_stamp_'+count,
+      group:'referral',
+      title:`친구추천 - ${count}개 적립`,
+      target:'학부모',
+      subtitle:'슈퍼차일드 #{지점명}',
+      main:`#{원생명} 어린이 친구추천 ${count}개 적립 안내`,
+      body:`[슈퍼차일드 #{지점명}]\n#{원생명} 어린이 친구추천 적립 안내입니다.\n\n${dots} (${count}/10)\n총 누적 #{누적도장}개\n\n현재 혜택: ${REFERRAL_BENEFIT_BY_STAMP[count]}`,
+      buttonName:'',
+      link:'',
+    };
+  }
   const TEMPLATE_DEFS=[
     {id:'parent_absent_done',title:'학부모 - 결석완료',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 어린이 결석처리 완료입니다.',body:'[슈퍼차일드 #{지점명}]\n#{학생명} 어린이 #{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n\n*결석처리 완료입니다.\n\n*결석 취소 시 꼭 요청이나 문의를 남겨주세요.',buttonName:'보강 신청 바로가기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
     {id:'parent_makeup_rejected',title:'학부모 - 보강거절 / 보류',target:'학부모',subtitle:'슈퍼차일드 #{지점명}',main:'보강신청이 보류되었습니다.',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이 보강요청이 일정 조정이 필요하여 보류되었습니다.\n\n*보류사유 : #{보류사유}',buttonName:'다른 일정 선택하기',link:'https://schedule.adminsuperchild.cloud/parent.html'},
@@ -53,6 +73,7 @@
     {id:'teacher_makeup_cancelled',title:'선생님 - 보강취소',target:'선생님',subtitle:'슈퍼차일드 #{지점명}',main:'#{학생명} 보강취소',body:'[슈퍼차일드 #{지점명}]\n*#{학생명} 어린이\n*#{수업일} #{요일} #{수업시간} #{담당선생님} 선생님 수업\n*보강수업이 취소되었습니다.',buttonName:'',link:''},
     {id:'vehicle_absent',title:'차량 - 결석',target:'차량',subtitle:'슈퍼차일드 #{지점명}',main:'#{차량명} #{학생명} 결석',body:'[슈퍼차일드 #{지점명}]\n#{차량명} #{요일} #{차량시간} #{학생명} #{수업일} 결석\n*차량이용 없습니다.',buttonName:'',link:''},
     {id:'vehicle_absent_cancel',title:'차량 - 결석취소',target:'차량',subtitle:'슈퍼차일드 #{지점명}',main:'#{차량명} #{학생명} 결석취소',body:'[슈퍼차일드 #{지점명}]\n#{차량명} #{차량시간} #{학생명} #{수업일} #{요일} 결석취소\n*#{학생명} 정상등원, 차량이용 합니다.',buttonName:'',link:''},
+    ...Array.from({length:10},(_,index)=>referralTemplateDef(index+1)),
   ];
   const VARIABLE_GUIDE=[
     {name:'#{지점명}',label:'지점명',sample:'가경점'},
@@ -64,6 +85,14 @@
     {name:'#{보류사유}',label:'보류/거절 사유',sample:'일정 조정 필요'},
     {name:'#{차량명}',label:'차량명',sample:'1호차'},
     {name:'#{차량시간}',label:'차량 시간',sample:'7시'},
+    {name:'#{원생명}',label:'친구추천 원생명',sample:'김슈차'},
+    {name:'#{학부모명}',label:'친구추천 원생명 (기존 템플릿 호환)',sample:'김슈차'},
+    {name:'#{추천원생명}',label:'추천받은 원생명',sample:'홍길동'},
+    {name:'#{알림유형}',label:'친구추천 알림 유형',sample:'적립'},
+    {name:'#{도장표시}',label:'현재 도장 표시',sample:'●●●○○○○○○○'},
+    {name:'#{현재도장}',label:'현재 도장 수',sample:'3'},
+    {name:'#{누적도장}',label:'총 누적 도장 수',sample:'3'},
+    {name:'#{혜택안내}',label:'현재 혜택 안내',sample:'수강료 1만원 할인'},
   ];
   const PANEL_META={
     menu:{title:'운영 도구',section:'운영'},
@@ -132,6 +161,14 @@
       '보류사유=일정 조정 필요',
       '차량명=1호차',
       '차량시간=7시',
+      '원생명=김슈차',
+      '학부모명=김슈차',
+      '추천원생명=홍길동',
+      '알림유형=적립',
+      '도장표시=●●●○○○○○○○',
+      '현재도장=3',
+      '누적도장=3',
+      '혜택안내=수강료 1만원 할인',
     ].join('\n');
   }
   function defaultTemplates(branchId){
@@ -1020,9 +1057,19 @@
       el.textContent='!';
     });
   }
+  function visibleV2MonitorAlerts(data,alerts){
+    const rows=(Array.isArray(alerts)?alerts:[]).filter(alert=>alert&&alert.status!=='resolved');
+    if((data&&data.shadowStatus)!=='ok') return rows;
+    const syncedAt=Date.parse(data&&data.shadowLastSyncedAt||'');
+    if(!Number.isFinite(syncedAt)) return rows;
+    return rows.filter(alert=>{
+      const detectedAt=Date.parse(alert.lastDetectedAt||'');
+      return !Number.isFinite(detectedAt)||detectedAt>syncedAt;
+    });
+  }
   function renderV2Monitor(){
     const data=v2MonitorDataByBranch[activeBranch]||{};
-    const alerts=v2MonitorAlertsByBranch[activeBranch]||[];
+    const alerts=visibleV2MonitorAlerts(data,v2MonitorAlertsByBranch[activeBranch]||[]);
     const state=data.shadowStatus||'idle';
     const meta=v2MonitorStateMeta(state);
     const stateCard=$('v2-monitor-state-card');
@@ -2135,9 +2182,13 @@
     const templates=mergeTemplates(defaultTemplates(activeBranch),(data&&data.templates)||{});
     const tbody=$('template-list');
     if(!tbody) return;
-    tbody.innerHTML=TEMPLATE_DEFS.map(item=>{
+    tbody.innerHTML=TEMPLATE_DEFS.map((item,index)=>{
       const tpl=templates[item.id]||item;
-      return `<tr data-template-id="${escAttr(item.id)}">
+      const previous=TEMPLATE_DEFS[index-1];
+      const groupHeading=item.group==='referral'&&(!previous||previous.group!=='referral')
+        ? '<tr class="template-group-row"><th colspan="6">친구추천 적립 1개 ~ 10개</th></tr>'
+        : '';
+      return `${groupHeading}<tr data-template-id="${escAttr(item.id)}">
         <td><input type="checkbox" data-field="enabled" ${tpl.enabled===false?'':'checked'}></td>
         <td>
           <strong>${esc(item.title)}</strong>
@@ -2598,6 +2649,7 @@
     if(action==='schedule') return `index.html?branch=${activeBranch}`;
     if(action==='teacherPage') return `teacher.html?branch=${activeBranch}`;
     if(action==='parentPage') return `parent.html?branch=${activeBranch}`;
+    if(action==='referrals') return `referral.html?branch=${activeBranch}`;
     const returnsToSettings=['records','teachers','periods','closed'].includes(action);
     return `index.html?branch=${activeBranch}&settings=${action}${returnsToSettings?'&from=settings':''}`;
   }

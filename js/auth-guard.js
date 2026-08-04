@@ -36,6 +36,7 @@
       'manageRecords',
       'manageTeachers',
       'manageSettings',
+      'manageReferrals',
       'exportData',
     ],
     teacher: [

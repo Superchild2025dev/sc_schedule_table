@@ -13,6 +13,7 @@
     'teacher.html':'requests',
     'desk.html':'desk',
     'settings.html':'settings',
+    'referral.html':'settings',
     'parent.html':'parent',
   };
 

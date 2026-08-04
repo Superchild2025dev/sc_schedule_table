@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>슈퍼차일드 수영장 - 친구추천</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<script>
+(function(){
+  var v=Date.now().toString(36);
+  window.SC_ASSET_VERSION=v;
+  window.scAsset=function(path){return path+(path.indexOf('?')>=0?'&':'?')+'v='+v;};
+  window.scCss=function(path){document.write('<link rel="stylesheet" href="'+window.scAsset(path)+'">');};
+  window.scJs=function(path){document.write('<script src="'+window.scAsset(path)+'"><\/script>');};
+})();
+</script>
+<script>scJs('js/version.js')</script>
+<script>scJs('js/version-watch.js')</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script>scJs('js/firebase-config.js')</script>
+<script>scJs('js/firebase-store.js')</script>
+<script>scJs('js/navigation.js')</script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>scCss('ui-tokens.css')</script>
+<script>scCss('auth.css')</script>
+<script>scCss('referral.css')</script>
+<script>scCss('ui-accessibility.css')</script>
+</head>
+<body>
+<a class="sc-skip-link" href="#referral-main">친구추천 본문으로 이동</a>
+<header class="referral-topbar sc-page-header">
+  <div class="sc-page-brand">
+    <strong>슈퍼차일드 수영장</strong>
+    <span><span data-sc-branch-label>가경점</span> · 친구추천</span>
+  </div>
+  <nav class="sc-page-nav" aria-label="직원 메뉴">
+    <button type="button" class="sc-nav-btn" data-sc-nav="schedule" onclick="SCNav.go('schedule')">시간표</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="requests" onclick="SCNav.go('requests')">보강 요청</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="desk" onclick="SCNav.go('desk')">데스크</button>
+    <button type="button" class="sc-nav-btn" data-sc-nav="settings" onclick="SCNav.go('settings')">설정</button>
+  </nav>
+  <div class="sc-page-account">
+    <label class="sc-branch-picker">
+      <span>지점</span>
+      <select data-sc-branch-select onchange="SCNav.changeBranch(this.value)" aria-label="지점 변경">
+        <option value="gagyeong">가경점</option>
+        <option value="yongam">용암점</option>
+      </select>
+    </label>
+    <span class="sc-account-badge" data-auth-role></span>
+    <span class="sc-account-name" data-auth-name></span>
+    <button type="button" class="sc-header-btn" onclick="SCAuth.signOut()">로그아웃</button>
+  </div>
+</header>
+
+<main id="referral-main" class="referral-shell" tabindex="-1">
+  <section class="referral-page-head">
+    <div>
+      <h1>친구추천 적립 관리</h1>
+      <p>원생을 찾아 추천 적립을 바로 처리합니다.</p>
+    </div>
+    <button type="button" class="secondary-btn" id="referral-refresh">원생정보 새로고침</button>
+  </section>
+
+  <section class="referral-search-band" aria-label="원생 검색">
+    <label for="referral-query">원생 찾기</label>
+    <div class="referral-search-row">
+      <input id="referral-query" type="search" autocomplete="off" maxlength="30" placeholder="원생 이름 또는 전화번호">
+      <button type="button" class="primary-btn" id="referral-search">검색</button>
+      <button type="button" class="secondary-btn" id="referral-reset">초기화</button>
+    </div>
+    <p id="referral-directory-status" class="referral-directory-status">현재 시간표 원생정보를 준비하고 있습니다.</p>
+    <div id="referral-search-results" class="referral-search-results" hidden></div>
+  </section>
+
+  <div id="referral-alert" class="referral-alert" hidden role="status" aria-live="polite"></div>
+
+  <div class="referral-workspace">
+    <aside class="referral-recent" aria-label="최근 이용 원생">
+      <div class="section-heading">
+        <h2>최근 원생</h2>
+        <button type="button" class="text-btn" id="recent-refresh">새로고침</button>
+      </div>
+      <div id="recent-family-list" class="recent-family-list">
+        <div class="empty-row">불러오는 중입니다.</div>
+      </div>
+    </aside>
+
+    <div class="referral-content">
+      <section id="referral-empty" class="referral-empty-state">
+        <strong>원생을 검색해주세요</strong>
+        <span>이름 또는 전화번호로 찾을 수 있습니다.</span>
+      </section>
+
+      <section id="referral-register-panel" class="referral-panel" hidden>
+        <div class="panel-title-row">
+          <div>
+            <h2>신규 원생 적립 등록</h2>
+            <p>첫 추천 적립 1개와 함께 등록합니다.</p>
+          </div>
+          <span class="state-chip new">신규</span>
+        </div>
+        <div class="form-grid two-col">
+          <label>원생 이름
+            <input id="new-student-name" type="text" maxlength="30" placeholder="원생 이름">
+          </label>
+          <label>추천으로 등록한 원생
+            <input id="new-referral-name" type="text" maxlength="30" placeholder="소개받고 등록한 원생 이름">
+          </label>
+        </div>
+        <div class="linked-students-block">
+          <div class="field-label">시간표 원생 연결</div>
+          <div id="new-student-candidates" class="student-candidates"></div>
+        </div>
+        <label class="wide-label">메모
+          <textarea id="new-referral-memo" rows="3" maxlength="300" placeholder="할인 적용일 등 필요한 내용을 적어주세요"></textarea>
+        </label>
+        <div class="panel-actions end">
+          <button type="button" class="primary-btn" id="register-family">등록 + 첫 적립</button>
+        </div>
+      </section>
+
+      <section id="referral-family-panel" class="referral-panel" hidden>
+        <div class="family-header">
+          <div class="family-identity">
+            <span class="state-chip active">이용 중</span>
+            <h2 id="family-name">-</h2>
+            <p id="family-phone">-</p>
+            <div id="family-students" class="family-student-tags"></div>
+          </div>
+          <div class="family-stats" aria-label="친구추천 적립 현황">
+            <div><strong id="family-current-stamps">0</strong><span>현재 적립</span></div>
+            <div><strong id="family-total-stamps">0</strong><span>총 누적</span></div>
+            <div><strong id="family-cycle">1</strong><span>적립 회차</span></div>
+          </div>
+        </div>
+
+        <div class="stamp-section-head">
+          <strong>스탬프별 혜택 적용</strong>
+          <span>실제 할인·혜택을 적용한 스탬프만 체크</span>
+        </div>
+        <div id="stamp-track" class="stamp-track" aria-label="10개 적립판"></div>
+
+        <div class="referral-primary-action">
+          <h3>추천 적립</h3>
+          <div class="referral-entry-row">
+            <label>추천으로 등록한 원생
+              <input id="referral-student-name" type="text" maxlength="30" placeholder="소개받고 등록한 원생 이름">
+            </label>
+            <label>메모 <span class="optional-text">선택</span>
+              <input id="referral-memo" type="text" maxlength="300" placeholder="필요한 내용만 입력">
+            </label>
+            <button type="button" class="primary-btn" id="stamp-add">적립 1개 추가</button>
+          </div>
+          <button type="button" class="text-danger-btn" id="stamp-remove">적립 1개 차감</button>
+        </div>
+
+        <details class="referral-more">
+          <summary>추가 관리</summary>
+          <div class="referral-more-content">
+            <section class="more-section family-edit-section">
+              <h3>원생 정보</h3>
+              <div class="family-edit-row">
+                <label>원생 이름
+                  <input id="family-student-name" type="text" maxlength="30">
+                </label>
+                <label>전화번호
+                  <input id="family-phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="13" placeholder="010-0000-0000">
+                </label>
+                <div class="linked-students-block compact">
+                  <div class="field-label">시간표 원생 연결</div>
+                  <div id="family-student-candidates" class="student-candidates"></div>
+                </div>
+                <button type="button" class="secondary-btn" id="family-info-save">정보 저장</button>
+              </div>
+            </section>
+
+            <section class="more-section">
+              <h3>적립 수 직접 조정</h3>
+              <div class="manual-adjust-row">
+                <input id="stamp-set-value" type="number" min="0" max="10" step="1" placeholder="0~10" aria-label="현재 적립 수">
+                <button type="button" class="secondary-btn" id="stamp-set">입력한 수로 변경</button>
+              </div>
+              <p class="field-help">오입력 수정용이며 변경 전 값은 기록에 남습니다.</p>
+            </section>
+
+            <section class="more-section message-section">
+              <div class="message-section-head">
+                <h3>알림톡</h3>
+                <div class="message-head-tools">
+                  <span id="alimtalk-state" class="connection-state">설정 확인 중</span>
+                  <a id="referral-template-settings" class="inline-settings-link" href="settings.html?panel=templates">템플릿 설정</a>
+                </div>
+              </div>
+              <pre id="alimtalk-preview" class="message-preview"></pre>
+              <div class="action-buttons">
+                <button type="button" class="secondary-btn" id="send-earned-message">적립 안내 발송</button>
+                <button type="button" class="secondary-btn" id="send-status-message">현황 안내 발송</button>
+              </div>
+            </section>
+          </div>
+        </details>
+      </section>
+
+      <section id="referral-log-panel" class="referral-log-panel" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>처리 기록</h2>
+            <p>최신 처리부터 표시됩니다. 마지막 적립 변경만 안전하게 취소할 수 있습니다.</p>
+          </div>
+        </div>
+        <div class="referral-log-wrap">
+          <table class="referral-log-table">
+            <caption class="sc-sr-only">친구추천 처리 기록</caption>
+            <thead>
+              <tr>
+                <th scope="col">처리일</th>
+                <th scope="col">구분</th>
+                <th scope="col">추천 원생</th>
+                <th scope="col">변경</th>
+                <th scope="col">메모 / 처리자</th>
+                <th scope="col">관리</th>
+              </tr>
+            </thead>
+            <tbody id="referral-log-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>scJs('js/auth-guard.js')</script>
+<script>scJs('js/referral.js')</script>
+</body>
+</html>
