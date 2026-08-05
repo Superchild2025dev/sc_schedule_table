@@ -148,6 +148,7 @@ function buildRegularAvailability(input) {
       const time = internalTime(def.day, hour);
       let capacity = 0;
       let occupied = 0;
+      const availableTeachers = new Set();
 
       for (let lane = 1; lane <= 5; lane++) {
         const instKey = `${time}/${def.day}/${lane}`;
@@ -155,17 +156,27 @@ function buildRegularAvailability(input) {
         if (!instExists(inst) || isBangteukInst(inst) || isYouthInst(inst) || isElmaLikeInst(inst)) continue;
 
         const rows = 5;
+        let laneCapacity = 0;
+        let laneOccupied = 0;
         for (let row = 1; row <= rows; row++) {
           const key = `${instKey}/${row}`;
           if (disabledMap[key]) continue;
           capacity++;
+          laneCapacity++;
 
           const baseStudent = studentsBySlot.get(key);
           const retireEntry = retireMap[key];
           const enrollEntry = enrollMap[key];
           const baseActive = activeBaseStudent(baseStudent, retireEntry, enrollEntry, basisDate);
           const enrollActive = startsBy(enrollEntry, basisDate);
-          if (baseActive || enrollActive) occupied++;
+          if (baseActive || enrollActive) {
+            occupied++;
+            laneOccupied++;
+          }
+        }
+        if (laneCapacity > laneOccupied) {
+          const teacherName = typeof inst === "string" ? inst.trim() : String(inst.n || inst.name || "").trim();
+          if (teacherName) availableTeachers.add(teacherName);
         }
       }
 
@@ -174,6 +185,7 @@ function buildRegularAvailability(input) {
         time: hour,
         available: remaining > 0,
         availabilityLevel: remaining === 0 ? "none" : (remaining === 1 ? "last" : "twoPlus"),
+        teachers: Array.from(availableTeachers),
       };
     });
   });

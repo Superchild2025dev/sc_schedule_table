@@ -18,7 +18,7 @@ const AUDIT_INDEX_KEY = "zz_swim_audit_index";
 const AUDIT_ENTRY_PREFIX = "zz_swim_audit_entry__";
 const AUDIT_LOG_MAX = 200;
 const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
-const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 3;
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
 const PUBLIC_AVAILABILITY_SOURCE_KEYS = new Set([
   "swim_students",

@@ -14,6 +14,7 @@
   var state = {
     branch: "gagyeong",
     day: "mon",
+    expandedSlot: "",
     data: null,
     sampleMode: false,
     error: false,
@@ -70,6 +71,7 @@
       button.textContent = branch.name;
       button.addEventListener("click", function () {
         state.branch = branchId;
+        state.expandedSlot = "";
         render();
       });
       branchTabs.appendChild(button);
@@ -87,6 +89,7 @@
       button.setAttribute("aria-label", dayNames[dayId]);
       button.addEventListener("click", function () {
         state.day = dayId;
+        state.expandedSlot = "";
         render();
       });
       dayTabs.appendChild(button);
@@ -116,6 +119,17 @@
     return "불가";
   }
 
+  function slotTeachers(slot) {
+    var seen = {};
+    return (Array.isArray(slot && slot.teachers) ? slot.teachers : []).map(function (name) {
+      return String(name || "").trim();
+    }).filter(function (name) {
+      if (!name || seen[name]) return false;
+      seen[name] = true;
+      return true;
+    });
+  }
+
   function renderSchedule() {
     var branch = config.branches[state.branch];
     getElement("selected-branch").textContent = "슈퍼차일드 " + branch.name;
@@ -138,26 +152,61 @@
     }
     slots.forEach(function (slot) {
       var level = slotLevel(slot);
-      var row = document.createElement("div");
+      var teachers = slotTeachers(slot);
+      var slotId = state.branch + "/" + state.day + "/" + String(slot.time);
+      var expandable = level !== "none" && teachers.length > 0;
+      var expanded = expandable && state.expandedSlot === slotId;
+      var row = document.createElement(expandable ? "button" : "div");
+      if (expandable) row.type = "button";
       row.className = "time-row " + (level === "none" ? "full" : "available") + " " + level;
-      row.setAttribute("role", "row");
+      if (expandable) row.classList.add("expandable");
+      if (expanded) row.classList.add("expanded");
+      if (expandable) row.setAttribute("aria-expanded", String(expanded));
+      else row.setAttribute("role", "row");
 
       var time = document.createElement("span");
       time.className = "time-label";
-      time.setAttribute("role", "cell");
+      if (!expandable) time.setAttribute("role", "cell");
       time.textContent = formatHour(slot.time);
 
       var status = document.createElement("span");
       status.className = "status-wrap";
-      status.setAttribute("role", "cell");
+      if (!expandable) status.setAttribute("role", "cell");
       status.innerHTML = '<span class="status-mark" aria-hidden="true"></span>' +
         slotStatus(level);
+      if (expandable) {
+        var expandMark = document.createElement("i");
+        expandMark.className = "expand-mark";
+        expandMark.setAttribute("data-lucide", "chevron-down");
+        expandMark.setAttribute("aria-hidden", "true");
+        status.appendChild(expandMark);
+      }
 
       row.appendChild(time);
       row.appendChild(status);
 
+      if (expanded) {
+        var detail = document.createElement("span");
+        detail.className = "teacher-detail";
+        var detailLabel = document.createElement("span");
+        detailLabel.className = "teacher-detail-label";
+        detailLabel.textContent = "담당 선생님";
+        var detailNames = document.createElement("strong");
+        detailNames.textContent = teachers.join(" · ");
+        detail.appendChild(detailLabel);
+        detail.appendChild(detailNames);
+        row.appendChild(detail);
+      }
+
       row.setAttribute("aria-label", dayNames[state.day] + " " + formatHour(slot.time) +
-        " " + slotStatus(level));
+        " " + slotStatus(level) + (expandable ? " 선생님 이름 보기" : ""));
+      if (expandable) {
+        row.addEventListener("click", function () {
+          state.expandedSlot = expanded ? "" : slotId;
+          renderSchedule();
+          if (window.lucide) window.lucide.createIcons();
+        });
+      }
       list.appendChild(row);
     });
   }

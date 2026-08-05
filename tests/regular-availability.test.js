@@ -37,6 +37,9 @@ assert.equal(mondayTwo(calculate({
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4)],
 })).availabilityLevel, "last", "one remaining seat must be marked as last");
+assert.deepEqual(mondayTwo(calculate({
+  students: [student(1), student(2), student(3), student(4)],
+})).teachers, ["담임"], "an available regular class must expose only its teacher name");
 
 assert.equal(mondayTwo(calculate()).availabilityLevel, "twoPlus",
   "two or more remaining seats must use the public two-plus band");
@@ -87,6 +90,9 @@ assert.equal(mondayTwo(calculate({
   inst: {"2시/월/1": {n: "유아반담임", youth: true}},
   students: [student(1)],
 })).available, false, "youth classes must not be advertised as regular seats");
+assert.deepEqual(mondayTwo(calculate({
+  inst: {"2시/월/1": {n: "유아반담임", youth: true}},
+})).teachers, [], "youth teacher names must not be public");
 
 assert.equal(mondayTwo(calculate({
   inst: {
@@ -111,6 +117,15 @@ assert.equal(mondayTwo(calculate({
   students: [],
 })).available, false, "legacy elite-master classes must not be advertised as regular seats");
 
+assert.deepEqual(mondayTwo(calculate({
+  inst: {
+    "2시/월/1": {n: "공통담임"},
+    "2시/월/2": {n: "공통담임"},
+    "2시/월/3": {n: "만석담임"},
+  },
+  students: [1, 2, 3, 4, 5].map(row => student(row, {l: 3})),
+})).teachers, ["공통담임"], "teacher names must be unique and full classes must stay hidden");
+
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4)],
   disabled: {"2시/월/1/5": true},
@@ -127,6 +142,9 @@ assert.match(vacancyApp, /\.onSnapshot\(/,
 assert.match(vacancyApp, /if \(level === "last"\) return "마감 임박"/);
 assert.match(vacancyApp, /if \(level === "twoPlus"\) return "등록 가능"/);
 assert.match(vacancyApp, /return "불가"/);
+assert.match(vacancyApp, /teachers\.join\(" · "\)/);
+assert.match(vacancyApp, /aria-expanded/);
+assert.match(vacancyApp, /선생님 이름 보기/);
 assert.doesNotMatch(vacancyPage, /상담 신청|선택한 시간으로 상담/);
 assert.match(vacancyPage, /id="naver-talk-link"/);
 assert.match(vacancyPage, /id="phone-link"/);
