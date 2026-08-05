@@ -16,6 +16,73 @@ service cloud.firestore {
         && request.auth.token.email == "developer@scswim.local";
     }
 
+    function isGagyeongDesk() {
+      return signedIn()
+        && request.auth.token.email == "gagyeong.desk@scswim.local";
+    }
+
+    function isYongamDesk() {
+      return signedIn()
+        && request.auth.token.email == "yongam.desk@scswim.local";
+    }
+
+    function isGagyeongTeacher() {
+      return signedIn() && request.auth.token.email in [
+        "gagyeong.son@scswim.local",
+        "gagyeong.park@scswim.local",
+        "gagyeong.lee1@scswim.local",
+        "gagyeong.kimjy@scswim.local",
+        "gagyeong.kimms@scswim.local",
+        "gagyeong.yoo@scswim.local"
+      ];
+    }
+
+    function isYongamTeacher() {
+      return signedIn() && request.auth.token.email in [
+        "yongam.lee1@scswim.local",
+        "yongam.jung@scswim.local",
+        "yongam.kimsh@scswim.local",
+        "yongam.kimey@scswim.local",
+        "yongam.kimjs@scswim.local",
+        "yongam.lee2@scswim.local"
+      ];
+    }
+
+    function canReadSchedule(branch) {
+      return isOwner()
+        || isDeveloper()
+        || (branch == "gagyeong" && (isGagyeongDesk() || isGagyeongTeacher()))
+        || (branch == "yongam" && (isYongamDesk() || isYongamTeacher()));
+    }
+
+    function canManageSchedule(branch) {
+      return isOwner()
+        || isDeveloper()
+        || (branch == "gagyeong" && isGagyeongDesk())
+        || (branch == "yongam" && isYongamDesk());
+    }
+
+    function isTeacherForBranch(branch) {
+      return (branch == "gagyeong" && isGagyeongTeacher())
+        || (branch == "yongam" && isYongamTeacher());
+    }
+
+    function isTeacherWritableScheduleKey(docId) {
+      return docId == "swim_mark"
+        || docId == "swim_requests"
+        || docId == "swim_attendance"
+        || docId == "swim_att_guests"
+        || docId == "swim_day_snapshot"
+        || docId == "zz_swim_audit_index"
+        || docId.matches("^zz_swim_day_snapshot__.*$")
+        || docId.matches("^zz_swim_audit_entry__.*$");
+    }
+
+    function canTeacherWriteScheduleKey(branch, docId) {
+      return isTeacherForBranch(branch)
+        && isTeacherWritableScheduleKey(docId);
+    }
+
     function canManageReferrals(branch) {
       return isOwner()
         || isDeveloper()
@@ -33,7 +100,20 @@ service cloud.firestore {
     }
 
     match /scheduleStores/{branch}/{document=**} {
-      allow read, write: if signedIn();
+      allow read: if canReadSchedule(branch);
+      allow write: if canManageSchedule(branch);
+    }
+
+    match /scheduleStores/{branch}/kv/{docId} {
+      allow read: if canReadSchedule(branch);
+      allow write: if canManageSchedule(branch)
+        || canTeacherWriteScheduleKey(branch, docId);
+
+      match /chunks/{chunkId} {
+        allow read: if canReadSchedule(branch);
+        allow write: if canManageSchedule(branch)
+          || canTeacherWriteScheduleKey(branch, docId);
+      }
     }
 
     match /referralPrograms/{branch}/{document=**} {
@@ -41,8 +121,9 @@ service cloud.firestore {
     }
 
     match /publicRegularAvailability/{branch} {
-      allow read: if true;
-      allow write: if false;
+      allow get: if branch in ["gagyeong", "yongam"];
+      allow list: if false;
+      allow create, update, delete: if false;
     }
   }
 }

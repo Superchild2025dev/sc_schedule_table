@@ -152,7 +152,8 @@ assert.match(vacancyConfig, /https:\/\/talk\.naver\.com\/profile\/wdvor89/);
 assert.match(vacancyConfig, /https:\/\/talk\.naver\.com\/profile\/w8swi5f/);
 assert.match(vacancyConfig, /0437152019/);
 assert.match(vacancyConfig, /0432882016/);
-assert.match(rules, /match \/publicRegularAvailability\/\{branch\}[\s\S]*allow read: if true;[\s\S]*allow write: if false;/,
-  "public summaries must be readable but never writable by the browser");
+assert.match(rules,
+  /match \/publicRegularAvailability\/\{branch\}[\s\S]*allow get: if branch in \["gagyeong", "yongam"\];[\s\S]*allow list: if false;[\s\S]*allow create, update, delete: if false;/,
+  "only the two public summaries should be readable and neither should be browser-writable");
 
 console.log("regular availability tests passed");
