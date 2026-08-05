@@ -41,6 +41,10 @@ function isBangteukInst(inst) {
   ));
 }
 
+function isYouthInst(inst) {
+  return !!(inst && typeof inst === "object" && inst.youth);
+}
+
 function isElmaLikeInst(inst) {
   return !!(inst && typeof inst === "object" && (
     inst.elma ||
@@ -148,9 +152,9 @@ function buildRegularAvailability(input) {
       for (let lane = 1; lane <= 5; lane++) {
         const instKey = `${time}/${def.day}/${lane}`;
         const inst = instMap[instKey];
-        if (!instExists(inst) || isBangteukInst(inst)) continue;
+        if (!instExists(inst) || isBangteukInst(inst) || isYouthInst(inst) || isElmaLikeInst(inst)) continue;
 
-        const rows = isElmaLikeInst(inst) ? 8 : 5;
+        const rows = 5;
         for (let row = 1; row <= rows; row++) {
           const key = `${instKey}/${row}`;
           if (disabledMap[key]) continue;
@@ -165,9 +169,11 @@ function buildRegularAvailability(input) {
         }
       }
 
+      const remaining = Math.max(0, capacity - occupied);
       return {
         time: hour,
-        available: capacity > 0 && occupied < capacity,
+        available: remaining > 0,
+        availabilityLevel: remaining === 0 ? "none" : (remaining === 1 ? "last" : "twoPlus"),
       };
     });
   });
@@ -181,4 +187,5 @@ module.exports = {
   entryMatchesStudent,
   internalTime,
   isTemporaryOnly,
+  isYouthInst,
 };

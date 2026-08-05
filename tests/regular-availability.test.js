@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {buildRegularAvailability} = require("../functions/regular-availability");
 
 function student(row, extra) {
@@ -32,10 +34,19 @@ function calculate(overrides) {
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4)],
 })).available, true, "four of five occupied must remain available");
+assert.equal(mondayTwo(calculate({
+  students: [student(1), student(2), student(3), student(4)],
+})).availabilityLevel, "last", "one remaining seat must be marked as last");
+
+assert.equal(mondayTwo(calculate()).availabilityLevel, "twoPlus",
+  "two or more remaining seats must use the public two-plus band");
 
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4), student(5)],
 })).available, false, "five of five occupied must be full");
+assert.equal(mondayTwo(calculate({
+  students: [student(1), student(2), student(3), student(4), student(5)],
+})).availabilityLevel, "none", "a full class must use the none band");
 
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4), student(5)],
@@ -73,13 +84,57 @@ assert.equal(mondayTwo(calculate({
 })).available, false, "bangteuk classes must not be advertised as regular seats");
 
 assert.equal(mondayTwo(calculate({
+  inst: {"2시/월/1": {n: "유아반담임", youth: true}},
+  students: [student(1)],
+})).available, false, "youth classes must not be advertised as regular seats");
+
+assert.equal(mondayTwo(calculate({
+  inst: {
+    "2시/월/1": {n: "유아반담임", youth: true},
+    "2시/월/2": {n: "정규반담임"},
+  },
+  students: [student(1)],
+})).available, true, "regular capacity must remain visible when a youth class shares the same time");
+
+assert.equal(mondayTwo(calculate({
   inst: {"2시/월/1": {n: "엘리트담임", cls: "elite"}},
   students: [1, 2, 3, 4, 5, 6, 7].map(row => student(row)),
-})).available, true, "elite and master classes use their eight real rows");
+})).available, false, "elite classes must not be advertised as regular seats");
+
+assert.equal(mondayTwo(calculate({
+  inst: {"2시/월/1": {n: "마스터즈담임", cls: "master"}},
+  students: [],
+})).available, false, "master classes must not be advertised as regular seats");
+
+assert.equal(mondayTwo(calculate({
+  inst: {"2시/월/1": {n: "엘마담임", elma: true}},
+  students: [],
+})).available, false, "legacy elite-master classes must not be advertised as regular seats");
 
 assert.equal(mondayTwo(calculate({
   students: [student(1), student(2), student(3), student(4)],
   disabled: {"2시/월/1/5": true},
 })).available, false, "disabled rows must not count as public capacity");
+
+const vacancyApp = fs.readFileSync(path.join(__dirname, "../regular-vacancy-site/app.js"), "utf8");
+const vacancyPage = fs.readFileSync(path.join(__dirname, "../regular-vacancy-site/index.html"), "utf8");
+const vacancyConfig = fs.readFileSync(path.join(__dirname, "../regular-vacancy-site/config.js"), "utf8");
+const rules = fs.readFileSync(path.join(__dirname, "../firestore.rules"), "utf8");
+assert.match(vacancyApp, /publicRegularAvailability/,
+  "the public page must subscribe only to the public availability collection");
+assert.match(vacancyApp, /\.onSnapshot\(/,
+  "the public page must update through a Firestore realtime listener");
+assert.match(vacancyApp, /if \(level === "last"\) return "마감 임박"/);
+assert.match(vacancyApp, /if \(level === "twoPlus"\) return "등록 가능"/);
+assert.match(vacancyApp, /return "불가"/);
+assert.doesNotMatch(vacancyPage, /상담 신청|선택한 시간으로 상담/);
+assert.match(vacancyPage, /id="naver-talk-link"/);
+assert.match(vacancyPage, /id="phone-link"/);
+assert.match(vacancyConfig, /https:\/\/talk\.naver\.com\/profile\/wdvor89/);
+assert.match(vacancyConfig, /https:\/\/talk\.naver\.com\/profile\/w8swi5f/);
+assert.match(vacancyConfig, /0437152019/);
+assert.match(vacancyConfig, /0432882016/);
+assert.match(rules, /match \/publicRegularAvailability\/\{branch\}[\s\S]*allow read: if true;[\s\S]*allow write: if false;/,
+  "public summaries must be readable but never writable by the browser");
 
 console.log("regular availability tests passed");

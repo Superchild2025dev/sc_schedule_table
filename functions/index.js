@@ -18,6 +18,7 @@ const AUDIT_INDEX_KEY = "zz_swim_audit_index";
 const AUDIT_ENTRY_PREFIX = "zz_swim_audit_entry__";
 const AUDIT_LOG_MAX = 200;
 const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 3;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
 const PUBLIC_AVAILABILITY_SOURCE_KEYS = new Set([
   "swim_students",
@@ -407,7 +408,7 @@ async function computePublicAvailability(branch) {
   });
   const updatedAtIso = new Date().toISOString();
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: PUBLIC_AVAILABILITY_SCHEMA_VERSION,
     branchId: branch.id,
     basisMonth: PUBLIC_AVAILABILITY_BASIS_MONTH,
     basisDate,
@@ -423,7 +424,8 @@ async function readPublicAvailability(branch) {
   const snap = await publicAvailabilityRef(branch).get();
   if (!snap.exists) return computePublicAvailability(branch);
   const data = snap.data() || {};
-  if (data.schemaVersion !== 1 || data.basisMonth !== PUBLIC_AVAILABILITY_BASIS_MONTH) {
+  if (data.schemaVersion !== PUBLIC_AVAILABILITY_SCHEMA_VERSION ||
+      data.basisMonth !== PUBLIC_AVAILABILITY_BASIS_MONTH) {
     return computePublicAvailability(branch);
   }
   return publicAvailabilityPayload(branch, data);

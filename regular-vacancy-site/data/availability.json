@@ -4,8 +4,8 @@
   "branches": {
     "gagyeong": {
       "mon": [
-        { "time": 14, "available": true },
-        { "time": 15, "available": true },
+        { "time": 14, "available": true, "availabilityLevel": "twoPlus" },
+        { "time": 15, "available": true, "availabilityLevel": "last" },
         { "time": 16, "available": false },
         { "time": 17, "available": true },
         { "time": 18, "available": true },

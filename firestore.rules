@@ -39,5 +39,10 @@ service cloud.firestore {
     match /referralPrograms/{branch}/{document=**} {
       allow read, write: if canManageReferrals(branch);
     }
+
+    match /publicRegularAvailability/{branch} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

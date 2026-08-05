@@ -14,10 +14,11 @@
   var state = {
     branch: "gagyeong",
     day: "mon",
-    selectedTime: "",
     data: null,
     sampleMode: false,
-    error: false
+    error: false,
+    realtime: false,
+    pollTimer: null
   };
 
   var sampleData = {
@@ -69,7 +70,6 @@
       button.textContent = branch.name;
       button.addEventListener("click", function () {
         state.branch = branchId;
-        state.selectedTime = "";
         render();
       });
       branchTabs.appendChild(button);
@@ -87,7 +87,6 @@
       button.setAttribute("aria-label", dayNames[dayId]);
       button.addEventListener("click", function () {
         state.day = dayId;
-        state.selectedTime = "";
         render();
       });
       dayTabs.appendChild(button);
@@ -103,6 +102,18 @@
   function currentSlots() {
     var branchData = state.data && state.data.branches && state.data.branches[state.branch];
     return branchData && Array.isArray(branchData[state.day]) ? branchData[state.day] : [];
+  }
+
+  function slotLevel(slot) {
+    var level = String(slot && slot.availabilityLevel || "");
+    if (level === "last" || level === "twoPlus" || level === "none") return level;
+    return slot && slot.available ? "twoPlus" : "none";
+  }
+
+  function slotStatus(level) {
+    if (level === "last") return "마감 임박";
+    if (level === "twoPlus") return "등록 가능";
+    return "불가";
   }
 
   function renderSchedule() {
@@ -126,14 +137,10 @@
       return;
     }
     slots.forEach(function (slot) {
-      var row = document.createElement(slot.available ? "button" : "div");
-      if (slot.available) row.type = "button";
-      row.className = "time-row " + (slot.available ? "available" : "full");
+      var level = slotLevel(slot);
+      var row = document.createElement("div");
+      row.className = "time-row " + (level === "none" ? "full" : "available") + " " + level;
       row.setAttribute("role", "row");
-      if (slot.available && String(slot.time) === state.selectedTime) {
-        row.classList.add("selected");
-        row.setAttribute("aria-pressed", "true");
-      }
 
       var time = document.createElement("span");
       time.className = "time-label";
@@ -144,64 +151,27 @@
       status.className = "status-wrap";
       status.setAttribute("role", "cell");
       status.innerHTML = '<span class="status-mark" aria-hidden="true"></span>' +
-        (slot.available ? "자리 있음" : "자리 없음");
+        slotStatus(level);
 
       row.appendChild(time);
       row.appendChild(status);
 
-      if (slot.available) {
-        row.setAttribute("aria-label", dayNames[state.day] + " " + formatHour(slot.time) + " 자리 있음");
-        row.addEventListener("click", function () {
-          state.selectedTime = String(slot.time);
-          render();
-        });
-      }
+      row.setAttribute("aria-label", dayNames[state.day] + " " + formatHour(slot.time) +
+        " " + slotStatus(level));
       list.appendChild(row);
     });
   }
 
   function renderContact() {
     var branch = config.branches[state.branch];
+    var talkLink = getElement("naver-talk-link");
     var phoneLink = getElement("phone-link");
-    var kakaoLink = getElement("kakao-link");
-    var selectedLabel = state.selectedTime ?
-      dayNames[state.day] + " " + formatHour(Number(state.selectedTime)) :
-      "";
-
     getElement("contact-branch").textContent = branch.name;
     getElement("contact-phone").textContent = branch.phoneLabel;
+    talkLink.href = branch.naverTalkUrl;
+    talkLink.setAttribute("aria-label", branch.name + " 네이버 톡톡 문의");
     phoneLink.href = "tel:" + branch.phone;
-    phoneLink.setAttribute("aria-label", branch.name + " " + branch.phoneLabel + " 전화 문의");
-
-    if (selectedLabel) {
-      getElement("selection-copy").innerHTML = "<strong>" + selectedLabel + "</strong> 정규반을 상담합니다.";
-    } else {
-      getElement("selection-copy").textContent = "자리가 있는 시간을 선택해주세요.";
-    }
-
-    if (branch.kakaoUrl) {
-      kakaoLink.href = branch.kakaoUrl;
-      kakaoLink.classList.remove("is-disabled");
-      kakaoLink.removeAttribute("aria-disabled");
-    } else {
-      kakaoLink.href = "#";
-      kakaoLink.classList.add("is-disabled");
-      kakaoLink.setAttribute("aria-disabled", "true");
-      kakaoLink.onclick = function (event) {
-        event.preventDefault();
-        showToast("카카오톡 상담 링크는 추후 연결됩니다.");
-      };
-    }
-  }
-
-  function showToast(message) {
-    var toast = getElement("toast");
-    toast.textContent = message;
-    toast.hidden = false;
-    window.clearTimeout(showToast.timer);
-    showToast.timer = window.setTimeout(function () {
-      toast.hidden = true;
-    }, 2400);
+    phoneLink.setAttribute("aria-label", branch.name + " " + branch.phoneLabel + " 전화하기");
   }
 
   function renderSyncState() {
@@ -218,7 +188,7 @@
       label.textContent = "로컬 샘플";
       return;
     }
-    label.textContent = updatedLabel(state.data && state.data.updatedAt);
+    label.textContent = (state.realtime ? "실시간 · " : "") + updatedLabel(state.data && state.data.updatedAt);
   }
 
   function updatedLabel(value) {
@@ -278,8 +248,59 @@
     render();
   }
 
+  function startPolling() {
+    if (state.pollTimer) return;
+    state.pollTimer = window.setInterval(loadAvailability, config.refreshMs);
+  }
+
+  function stopPolling() {
+    if (!state.pollTimer) return;
+    window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+  function mergeRealtimeBranch(branchId, documentData) {
+    var data = documentData && typeof documentData === "object" ? documentData : {};
+    if (!data.days || typeof data.days !== "object") return;
+    if (!state.data || typeof state.data !== "object") state.data = {branches: {}};
+    if (!state.data.branches) state.data.branches = {};
+    state.data.branches[branchId] = data.days;
+    state.data.basisMonth = data.basisMonth || state.data.basisMonth || "2026-09";
+    state.data.basisDate = data.basisDate || state.data.basisDate || "";
+    if (data.updatedAtIso && String(data.updatedAtIso) > String(state.data.updatedAt || "")) {
+      state.data.updatedAt = data.updatedAtIso;
+    }
+    state.sampleMode = false;
+    state.error = false;
+    state.realtime = true;
+    stopPolling();
+    render();
+  }
+
+  function startRealtime() {
+    if (!window.firebase || !window.firebase.firestore || !config.firebaseConfig) {
+      startPolling();
+      return;
+    }
+    try {
+      if (!window.firebase.apps.length) window.firebase.initializeApp(config.firebaseConfig);
+      var firestore = window.firebase.firestore();
+      Object.keys(config.branches).forEach(function (branchId) {
+        firestore.collection("publicRegularAvailability").doc(branchId).onSnapshot(function (snapshot) {
+          if (snapshot.exists) mergeRealtimeBranch(branchId, snapshot.data());
+        }, function () {
+          state.realtime = false;
+          startPolling();
+          renderSyncState();
+        });
+      });
+    } catch (error) {
+      state.realtime = false;
+      startPolling();
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
-    loadAvailability();
-    window.setInterval(loadAvailability, config.refreshMs);
+    loadAvailability().finally(startRealtime);
   });
 })();
