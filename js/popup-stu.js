@@ -3359,30 +3359,21 @@ function _retireEntryDate(entry){
 
 function _retireChoiceKind(entry,stu,slotKey){
   if(!entry) return 'move';
-  if(entry.retireType==='retire') return 'retire';
-  if(entry.excludeReason==='reduce') return 'reduce';
-  if(entry.excludeReason==='move'||entry.retireType==='exclude'||_isReserveMoveEntry(entry)) return 'move';
-  return _popupRetireIsActual(entry,stu,slotKey)?'retire':'move';
+  const kind=SCScheduleChangePolicy.reservationKind(entry,{
+    history:RETIRE_HISTORY,
+    slotKey,
+    student:stu,
+    isMoveEntry:_isReserveMoveEntry,
+  });
+  return kind==='exclude'?'move':kind;
 }
 
 function _popupRetireIsActual(entry,stu,slotKey){
-  if(!entry) return false;
-  if(entry.retireType==='retire') return true;
-  if(entry.retireType==='exclude') return false;
-  if(entry.moveType) return false;
-  const ds=entry.ds||entry;
-  const name=String(entry.name||stu?.n||'').trim();
-  const phone=String(entry.p||stu?.p||'').replace(/\D/g,'');
-  return Array.isArray(RETIRE_HISTORY)&&RETIRE_HISTORY.some(r=>{
-    if((r.retiredAt||'')!==ds) return false;
-    if(name&&String(r.n||'').trim()!==name) return false;
-    const rPhone=String(r.p||'').replace(/\D/g,'');
-    if(phone&&rPhone&&phone!==rPhone) return false;
-    if(slotKey){
-      const rSlot=[r.t,r.d,r.l,r.r].map(v=>String(v||'')).join('/');
-      if(rSlot&&rSlot!==slotKey) return false;
-    }
-    return true;
+  return SCScheduleChangePolicy.isActualRetirement(entry,{
+    history:RETIRE_HISTORY,
+    slotKey,
+    student:stu,
+    isMoveEntry:_isReserveMoveEntry,
   });
 }
 
@@ -3392,10 +3383,10 @@ function _popupRetireDateLabel(entry,stu,slotKey){
 }
 
 function _popupRetireReasonText(entry){
-  if(!entry||entry.retireType==='retire') return '';
-  if(entry.excludeReason==='reduce') return '횟수줄임';
-  if(entry.excludeReason==='move'||_isReserveMoveEntry(entry)) return '이동';
-  return '까지';
+  if(!entry) return '까지';
+  const label=SCScheduleChangePolicy.reservationLabel(entry,{isMoveEntry:_isReserveMoveEntry});
+  if(label==='퇴원') return '';
+  return label==='제외'?'까지':label;
 }
 
 function _retireHistoryMatches(r,stu,ds,slotKey){

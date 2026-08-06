@@ -2746,50 +2746,36 @@ function _scheduleReservationName(entry,fallback){
   return _summaryRecordPerson(entry,fallback).n||'';
 }
 function _retireReservationIsActual(entry,slotKey,fallback){
-  if(!entry) return false;
-  if(entry.retireType==='retire') return true;
-  if(entry.retireType==='exclude') return false;
-  if(_summaryIsMoveEntry(entry)) return false;
-  const ds=typeof entry==='string'?entry:entry.ds;
-  const person=_summaryRecordPerson(entry,fallback);
-  const name=String(person.n||'').trim();
-  const phone=_summaryNormPhone(person.p);
-  return Array.isArray(RETIRE_HISTORY)&&RETIRE_HISTORY.some(r=>{
-    if((r.retiredAt||'')!==ds) return false;
-    if(name&&String(r.n||'').trim()!==name) return false;
-    const rPhone=_summaryNormPhone(r.p);
-    if(phone&&rPhone&&phone!==rPhone) return false;
-    if(slotKey){
-      const rSlot=[r.t,r.d,r.l,r.r].map(v=>String(v||'')).join('/');
-      if(rSlot&&rSlot!==slotKey) return false;
-    }
-    return true;
+  return SCScheduleChangePolicy.isActualRetirement(entry,{
+    history:RETIRE_HISTORY,
+    slotKey,
+    student:_summaryRecordPerson(entry,fallback),
+    isMoveEntry:_summaryIsMoveEntry,
   });
 }
 function _retireReservationSuffix(entry,slotKey,fallback){
   return _retireReservationIsActual(entry,slotKey,fallback)?'퇴원':'까지';
 }
 function _retireReservationReason(entry){
-  if(!entry||typeof entry!=='object') return '';
-  if(entry.excludeReason==='reduce') return 'reduce';
-  if(entry.excludeReason==='move'||_summaryIsMoveEntry(entry)) return 'move';
-  return '';
+  const kind=SCScheduleChangePolicy.reservationKind(entry,{isMoveEntry:_summaryIsMoveEntry});
+  return kind==='reduce'||kind==='move'?kind:'';
 }
 function _retireReservationKindLabel(entry,slotKey,fallback){
-  if(_retireReservationIsActual(entry,slotKey,fallback)) return '퇴원';
-  const reason=_retireReservationReason(entry);
-  if(reason==='reduce') return '횟수줄임';
-  if(reason==='move') return '이동';
-  return '제외';
+  return SCScheduleChangePolicy.reservationLabel(entry,{
+    history:RETIRE_HISTORY,
+    slotKey,
+    student:_summaryRecordPerson(entry,fallback),
+    isMoveEntry:_summaryIsMoveEntry,
+  });
 }
 function _summaryRetireStatus(entry,isChange){
-  if(entry?.retireType==='exclude'||isChange||_summaryIsMoveEntry(entry)){
-    const reason=_retireReservationReason(entry);
-    if(reason==='reduce') return '횟수줄임예정';
-    if(reason==='move'||isChange||_summaryIsMoveEntry(entry)) return '이동예정';
-    return '제외예정';
-  }
-  return '퇴원예정';
+  const source=entry&&typeof entry==='object'?entry:{};
+  const effective=isChange
+    ? {...source,retireType:'exclude',excludeReason:source.excludeReason==='reduce'?'reduce':'move'}
+    : entry;
+  if(!isChange&&entry&&typeof entry==='object'
+    &&!entry.retireType&&!entry.excludeReason&&!_summaryIsMoveEntry(entry)) return '퇴원예정';
+  return SCScheduleChangePolicy.reservationStatus(effective,{isMoveEntry:_summaryIsMoveEntry});
 }
 function _summaryEnrollStatus(entry){
   return '등록예정';

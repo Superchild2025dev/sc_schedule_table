@@ -1,7 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const policy = require('../js/schedule-change-policy.js');
+
+const repoRoot = path.join(__dirname, '..');
+
+function readRepoFile(file){
+  return fs.readFileSync(path.join(repoRoot, file), 'utf8');
+}
+
+function functionSource(source,name,nextName){
+  const start=source.indexOf(`function ${name}`);
+  assert.notEqual(start,-1,`${name} is missing`);
+  const end=nextName?source.indexOf(`function ${nextName}`,start+1):source.indexOf('\nfunction ',start+1);
+  assert.notEqual(end,-1,`${name} boundary is missing`);
+  return source.slice(start,end);
+}
 
 test('movement reason follows day, time, then class priority', () => {
   const from = {dayToken:'월수금', time:'4시', lane:'1', row:'1'};
@@ -112,4 +128,35 @@ test('policy does not mutate entry, context, or slot inputs', () => {
   assert.doesNotThrow(() => policy.reservationKind(entry, context));
   assert.doesNotThrow(() => policy.visibleChangeReason({entry, context, fromSlot:from, toSlot:to}));
   assert.equal(entry.excludeReason, 'move');
+});
+
+test('main page loads the change policy before schedule data', () => {
+  const html=readRepoFile('index.html');
+  const policyIndex=html.indexOf("scJs('js/schedule-change-policy.js')");
+  const dataIndex=html.indexOf("scJs('js/data.js')");
+
+  assert.notEqual(policyIndex,-1,'change policy script is missing');
+  assert.ok(policyIndex<dataIndex,'change policy must load before schedule data');
+});
+
+test('table reservation display delegates to the shared policy', () => {
+  const source=readRepoFile(path.join('js','table.js'));
+  const actual=functionSource(source,'_retireReservationIsActual','_retireReservationSuffix');
+  const label=functionSource(source,'_retireReservationKindLabel','_summaryRetireStatus');
+  const status=functionSource(source,'_summaryRetireStatus','_summaryEnrollStatus');
+
+  assert.match(actual,/SCScheduleChangePolicy\.isActualRetirement/);
+  assert.match(label,/SCScheduleChangePolicy\.reservationLabel/);
+  assert.match(status,/SCScheduleChangePolicy\.reservationStatus/);
+});
+
+test('student popup reservation display delegates to the shared policy', () => {
+  const source=readRepoFile(path.join('js','popup-stu.js'));
+  const kind=functionSource(source,'_retireChoiceKind','_popupRetireIsActual');
+  const actual=functionSource(source,'_popupRetireIsActual','_popupRetireDateLabel');
+  const reason=functionSource(source,'_popupRetireReasonText','_retireHistoryMatches');
+
+  assert.match(kind,/SCScheduleChangePolicy\.reservationKind/);
+  assert.match(actual,/SCScheduleChangePolicy\.isActualRetirement/);
+  assert.match(reason,/SCScheduleChangePolicy\.reservationLabel/);
 });
