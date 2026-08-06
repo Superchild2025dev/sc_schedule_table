@@ -16,6 +16,8 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'js', 'data.js'), 'utf
 const context = {
   getToday(){ return new Date('2026-07-22T00:00:00+09:00'); },
   _recordLocalDateKey(){ return '2026-07-22'; },
+  RETIRE_HISTORY:[],
+  SCScheduleChangePolicy:require('../js/schedule-change-policy.js'),
 };
 vm.createContext(context);
 vm.runInContext(sourceBetween(source, '_scheduleAuditText', '_scheduleAuditTarget'), context, {filename:'schedule-audit-reason.js'});

@@ -160,3 +160,21 @@ test('student popup reservation display delegates to the shared policy', () => {
   assert.match(actual,/SCScheduleChangePolicy\.isActualRetirement/);
   assert.match(reason,/SCScheduleChangePolicy\.reservationLabel/);
 });
+
+test('lower schedule records delegate classification to the shared policy', () => {
+  const source=readRepoFile(path.join('js','data.js'));
+  const movement=functionSource(source,'_scheduleAuditMovementReason','_scheduleAuditDisappearanceReason');
+  const actual=functionSource(source,'_scheduleAuditIsActualRetire','_scheduleAuditVisibleReason');
+  const visible=functionSource(source,'_scheduleAuditVisibleReason','_scheduleAuditDisplayTime');
+  const suppress=functionSource(
+    source,
+    '_deskNoteIsGenericDeleteFromSpecificOperation',
+    '_deskNotesWithoutGenericDeletesFromSpecificOperations'
+  );
+
+  assert.match(movement,/SCScheduleChangePolicy\.movementReason/);
+  assert.match(actual,/SCScheduleChangePolicy\.isActualRetirement/);
+  assert.match(visible,/SCScheduleChangePolicy\.visibleChangeReason/);
+  assert.match(suppress,/SCScheduleChangePolicy\.shouldSuppressGenericDelete/);
+  assert.doesNotMatch(suppress,/예약\\s\*|시간변경\|반변경\|일정변경/);
+});

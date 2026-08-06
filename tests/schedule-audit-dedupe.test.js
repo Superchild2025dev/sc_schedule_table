@@ -17,6 +17,7 @@ const context = {
   _deskNoteRecordDateKey:note => note.dateKey || '',
   _recordLocalDateKey:() => '2026-07-28',
   _normalizeDeskNotesList:list => list,
+  SCScheduleChangePolicy:require('../js/schedule-change-policy.js'),
 };
 vm.createContext(context);
 vm.runInContext(

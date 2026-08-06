@@ -2097,15 +2097,7 @@ function _scheduleAuditNameFromSegment(segment,item){
   return beforeSlot.replace(/\s*\(.+?\)\s*$/,'')||'-';
 }
 function _scheduleAuditMovementReason(fromSlot,toSlot){
-  if(!fromSlot||!toSlot) return '';
-  const allDays=['월','화','수','목','금','토','일'];
-  const fromDays=_scheduleAuditExpandDay(fromSlot.dayToken||'',allDays).join('');
-  const toDays=_scheduleAuditExpandDay(toSlot.dayToken||'',allDays).join('');
-  if(fromDays!==toDays) return '일정변경';
-  if(String(fromSlot.time||'')!==String(toSlot.time||'')) return '시간변경';
-  if(String(fromSlot.lane||'')!==String(toSlot.lane||'')
-    ||String(fromSlot.row||'')!==String(toSlot.row||'')) return '반변경';
-  return '';
+  return SCScheduleChangePolicy.movementReason(fromSlot,toSlot);
 }
 function _scheduleAuditDisappearanceReason(item,rowText,fromSlot,toSlot){
   const text=[rowText,_scheduleAuditText(item)].join(' ');
@@ -2246,22 +2238,19 @@ function _scheduleAuditEntryName(entry,fallback){
   return String(source.n||source.name||fallback?.n||fallback?.name||'').trim();
 }
 function _scheduleAuditIsActualRetire(entry,slotKey,fallback){
-  try{
-    if(typeof _retireReservationIsActual==='function') return _retireReservationIsActual(entry,slotKey,fallback);
-  }catch(e){}
-  if(entry?.retireType==='retire') return true;
-  if(entry?.retireType==='exclude'||entry?.moveType) return false;
-  return false;
+  return SCScheduleChangePolicy.isActualRetirement(entry,{
+    history:RETIRE_HISTORY,
+    slotKey,
+    student:fallback,
+  });
 }
 function _scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback){
-  if(_scheduleAuditIsActualRetire(entry,slotKey,fallback)) return '퇴원';
-  if(entry?.retireType==='retire') return '퇴원';
-  const movement=_scheduleAuditMovementReason(fromSlot,toSlot);
-  if(movement) return movement;
-  if(entry?.excludeReason==='reduce') return '횟수줄임';
-  if(entry?.excludeReason==='move'||entry?.moveType) return '반변경';
-  if(entry?.retireType==='exclude') return '횟수줄임';
-  return '횟수줄임';
+  return SCScheduleChangePolicy.visibleChangeReason({
+    entry,
+    fromSlot,
+    toSlot,
+    context:{history:RETIRE_HISTORY,slotKey,student:fallback},
+  });
 }
 function _scheduleAuditDisplayTime(slot,day){
   try{
@@ -2939,16 +2928,7 @@ function _deskNotesWithoutAutomaticMovementDuplicates(notes){
   return out;
 }
 function _deskNoteIsGenericDeleteFromSpecificOperation(note){
-  if(!note||note.manual||note.deleted) return false;
-  const original=note.original||{};
-  if(String(note.change||original.change||'').trim()!=='삭제') return false;
-  if(String(note.source||original.source||'').trim()!=='audit') return false;
-  const operationType=String(note.operationType||original.operationType||'').trim();
-  const operationLabel=String(note.operationLabel||original.operationLabel||'').trim();
-  const deleteReason=String(note.deleteReason||original.deleteReason||'').trim();
-  if(deleteReason==='auto-retire'||operationLabel==='자동 등록·제외 처리') return true;
-  if(operationType==='move') return true;
-  return /(?:예약\s*)?이동|시간변경|반변경|일정변경|횟수줄임|퇴원/.test(operationLabel);
+  return SCScheduleChangePolicy.shouldSuppressGenericDelete(note);
 }
 function _deskNotesWithoutGenericDeletesFromSpecificOperations(notes){
   return (Array.isArray(notes)?notes:[]).filter(note=>!_deskNoteIsGenericDeleteFromSpecificOperation(note));
