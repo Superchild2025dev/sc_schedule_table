@@ -23,13 +23,6 @@ const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
 const CUSTOMER_VOICE_COLLECTION = "customerVoice";
 const CUSTOMER_VOICE_RATE_COLLECTION = "customerVoiceRateLimits";
-const CUSTOMER_VOICE_STATUS = new Set([
-  "received",
-  "acknowledged",
-  "investigating",
-  "resolved",
-  "answered",
-]);
 const CUSTOMER_VOICE_CATEGORY = new Set([
   "praise",
   "suggestion",
@@ -244,16 +237,6 @@ function customerVoiceTicketNumber(branch) {
   return `${branchCode}-${date}-${random}`;
 }
 
-function customerVoiceTokenHash(token) {
-  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
-}
-
-function customerVoiceTimestampToIso(value) {
-  if (value && typeof value.toDate === "function") return value.toDate().toISOString();
-  if (value instanceof Date) return value.toISOString();
-  return String(value || "");
-}
-
 async function submitCustomerVoice(branch, data, request) {
   if (cleanVoiceText(data.website, 200)) {
     throw new HttpsError("invalid-argument", "요청을 처리할 수 없습니다");
@@ -302,7 +285,6 @@ async function submitCustomerVoice(branch, data, request) {
 
   const ticketRef = customerVoiceTicketCollection(branch).doc();
   const ticketNumber = customerVoiceTicketNumber(branch);
-  const lookupToken = crypto.randomBytes(24).toString("base64url");
   const nowIso = new Date().toISOString();
   const rateRef = customerVoiceRateRef(request);
   await db.runTransaction(async tx => {
@@ -332,7 +314,6 @@ async function submitCustomerVoice(branch, data, request) {
       priority: category === "safety" ? "urgent" : "normal",
       memberVerified,
       contact,
-      lookupTokenHash: customerVoiceTokenHash(lookupToken),
       internalNote: "",
       publicReply: "",
       createdAt: FieldValue.serverTimestamp(),
@@ -343,37 +324,7 @@ async function submitCustomerVoice(branch, data, request) {
 
   return {
     ok: true,
-    ticketId: ticketRef.id,
     ticketNumber,
-    lookupToken,
-    status: "received",
-  };
-}
-
-async function getCustomerVoiceStatus(branch, data) {
-  const ticketId = cleanVoiceText(data.ticketId, 100);
-  const lookupToken = cleanVoiceText(data.lookupToken, 200);
-  if (!ticketId || !lookupToken) {
-    throw new HttpsError("invalid-argument", "접수 조회 정보가 올바르지 않습니다");
-  }
-  const snap = await customerVoiceTicketCollection(branch).doc(ticketId).get();
-  if (!snap.exists) throw new HttpsError("not-found", "접수 내역을 찾을 수 없습니다");
-  const ticket = snap.data() || {};
-  const expected = Buffer.from(String(ticket.lookupTokenHash || ""));
-  const actual = Buffer.from(customerVoiceTokenHash(lookupToken));
-  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
-    throw new HttpsError("permission-denied", "접수 조회 정보가 올바르지 않습니다");
-  }
-  const status = CUSTOMER_VOICE_STATUS.has(String(ticket.status || ""))
-    ? String(ticket.status)
-    : "received";
-  return {
-    ok: true,
-    ticketNumber: String(ticket.ticketNumber || ""),
-    status,
-    mode: ticket.mode === "reply" ? "reply" : "anonymous",
-    publicReply: cleanVoiceText(ticket.publicReply, 1500),
-    updatedAt: customerVoiceTimestampToIso(ticket.updatedAt),
   };
 }
 
@@ -1694,7 +1645,6 @@ exports.customerVoice = onCall({
   const branch = safeBranch(data.branch);
   const action = String(data.action || "submit");
   if (action === "submit") return submitCustomerVoice(branch, data, request);
-  if (action === "status") return getCustomerVoiceStatus(branch, data);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
 });
 

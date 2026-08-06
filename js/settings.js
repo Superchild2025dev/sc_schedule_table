@@ -2787,7 +2787,7 @@
         ? `<div class="voice-ticket-contact"><span>회원 확인 완료</span><strong>${esc(contact.studentName||'-')}</strong><span data-voice-phone>${esc(maskVoicePhone(contact.phone))}</span><button type="button" class="mini-btn" data-voice-reveal data-phone="${escAttr(contact.phone||'')}">연락처 보기</button></div>`
         : '';
       const replyField=isReply
-        ? `<label>고객에게 보이는 답변<textarea data-voice-public-reply maxlength="1500" placeholder="처리 결과를 이해하기 쉽게 적어주세요.">${esc(item.publicReply||'')}</textarea></label>`
+        ? `<label>안내·답변 기록 (자동 전송되지 않음)<textarea data-voice-public-reply maxlength="1500" placeholder="전화나 문자로 안내한 내용을 기록하세요.">${esc(item.publicReply||'')}</textarea></label>`
         : `<label>개별 답변<textarea disabled>익명 접수는 개별 답변 없이 처리 완료 상태로 관리합니다.</textarea></label>`;
       return `<article class="voice-ticket ${item.status==='received'?'is-new':''} ${item.priority==='urgent'?'is-urgent':''}" data-voice-ticket-id="${escAttr(item.id)}">
         <div class="voice-ticket-summary">
@@ -2824,7 +2824,7 @@
     const original=button.textContent;
     try{
       if(status==='answered'&&!publicReply){
-        toast('답변 완료로 바꾸려면 고객 답변을 입력해주세요','err');
+        toast('답변 완료로 바꾸려면 안내·답변 기록을 입력해주세요','err');
         return;
       }
       button.disabled=true;button.textContent='저장 중';

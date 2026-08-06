@@ -15,8 +15,8 @@ const rules = read("firestore.rules");
 const nginx = read(path.join("deploy", "nginx", "schedule.conf"));
 
 assert.match(html, /^<!DOCTYPE html>/);
-assert.match(html, /익명으로 편하게 남기기/);
-assert.match(html, /회원 확인 후 답변받기/);
+assert.match(html, /익명 의견 접수/);
+assert.match(html, /답변이 필요한 의견 접수/);
 assert.match(html, /개인정보 수집·이용 안내/);
 assert.match(html, /처리 완료 후 90일 이내 파기/);
 
@@ -30,6 +30,9 @@ remoteScripts.forEach(match => {
 assert.match(app, /httpsCallable\('customerVoice'\)/);
 assert.doesNotMatch(app, /\.firestore\s*\(/, "the public page must not access Firestore directly");
 assert.doesNotMatch(app, /\.database\s*\(/, "the public page must not access Realtime Database directly");
+assert.doesNotMatch(app, /localStorage|sessionStorage/, "public tickets must not leave lookup credentials in the browser");
+assert.doesNotMatch(html, /처리 상태 확인|최근 접수 상태/,
+  "the public page should finish after submission instead of exposing ticket lookup");
 assert.match(app, /mode:reply\?'reply':'anonymous'/);
 
 assert.match(functions, /async function submitCustomerVoice/);
@@ -37,8 +40,8 @@ assert.match(functions, /findParentStudentSet\(branch, studentName, phone\)/,
   "reply requests must verify a real member on the server");
 assert.match(functions, /contact = \{studentName, phone\}/);
 assert.match(functions, /if \(count >= 5\)/, "public submissions need an hourly server-side limit");
-assert.match(functions, /lookupTokenHash: customerVoiceTokenHash\(lookupToken\)/);
-assert.match(functions, /crypto\.timingSafeEqual/);
+assert.doesNotMatch(functions, /lookupToken|action === "status"/,
+  "public ticket lookup credentials and status actions must not be issued");
 assert.match(functions, /exports\.purgeCustomerVoiceContacts = onSchedule/,
   "reply contact details need an automatic retention cleanup");
 
