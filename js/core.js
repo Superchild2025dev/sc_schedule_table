@@ -551,6 +551,8 @@ let _remoteSyncTimer=null;
 let _remoteSyncBeforeCount=0;
 let _firebaseDataListenersAttached=false;
 let _scheduleReadCoordinator=null;
+let _scheduleSelectedController=null;
+let _scheduleReadUsesSelectedKeys=false;
 let _scheduleReadInitialRemoteKeys=[];
 let _scheduleReadPendingBeforeCount=null;
 let _scheduleReadInitialInvalid=false;
@@ -631,7 +633,11 @@ function _canUseScheduleReadCoordinator(){
     window.SCScheduleReadCoordinator
     &&typeof SCScheduleReadCoordinator.create==='function'
     &&window.SCFirebaseStore
-    &&typeof SCFirebaseStore.subscribeRootBatches==='function'
+    &&typeof SCFirebaseStore.subscribeSelectedRootBatches==='function'
+    &&window.SCScheduleKeySelection
+    &&typeof SCScheduleKeySelection.initialBaseKeys==='function'
+    &&typeof SCScheduleKeySelection.resolveMainTab==='function'
+    &&typeof SCScheduleKeySelection.tabKeys==='function'
   );
 }
 function _ensureScheduleReadCoordinator(){
@@ -767,18 +773,34 @@ function _attachFirebaseDataListeners(){
   }
   _ensureScheduleReadCoordinator();
   _firebaseDataListenersAttached=true;
-  _scheduleReadCoordinator.start(handlers=>SCFirebaseStore.subscribeRootBatches(_fb,{
-    next:batch=>{
-      _consumeScheduleReadLocalEchoes(batch);
-      if(batch&&batch.initial){
-        _scheduleReadInitialRemoteKeys=Object.keys(batch.values||{});
-      }else if(_scheduleReadPendingBeforeCount==null){
-        _scheduleReadPendingBeforeCount=_activeStudentCount();
-      }
-      handlers.next(batch);
-    },
-    error:handlers.error,
-  }));
+  _scheduleReadUsesSelectedKeys=true;
+  _scheduleReadCoordinator.start(handlers=>{
+    const selected=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
+      baseKeys:SCScheduleKeySelection.initialBaseKeys(),
+      resolveInitialActiveKeys:baseValues=>{
+        const tab=SCScheduleKeySelection.resolveMainTab(
+          baseValues,
+          typeof _activeTab!=='undefined'?_activeTab:'regular'
+        );
+        return SCScheduleKeySelection.tabKeys(tab);
+      },
+      next:batch=>{
+        _consumeScheduleReadLocalEchoes(batch);
+        if(batch&&batch.initial){
+          _scheduleReadInitialRemoteKeys=Object.keys(batch.values||{});
+        }else if(_scheduleReadPendingBeforeCount==null){
+          _scheduleReadPendingBeforeCount=_activeStudentCount();
+        }
+        handlers.next(batch);
+      },
+      error:handlers.error,
+    });
+    _scheduleSelectedController=selected;
+    return ()=>{
+      if(selected&&typeof selected.stop==='function') selected.stop();
+      if(_scheduleSelectedController===selected) _scheduleSelectedController=null;
+    };
+  });
 }
 
 function loadFromFirebase(callback){
@@ -801,7 +823,7 @@ function loadFromFirebase(callback){
         toast('원생 데이터 일부가 올바르지 않아 읽기 전용으로 열었습니다','err');
       }else{
         _firebaseUsingLocalFallback=false;
-        _pruneMissingRemoteLocalKeys(_scheduleReadInitialRemoteKeys);
+        if(!_scheduleReadUsesSelectedKeys) _pruneMissingRemoteLocalKeys(_scheduleReadInitialRemoteKeys);
       }
       wrappedCallback();
     }).catch(err=>{

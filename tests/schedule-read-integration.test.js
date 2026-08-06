@@ -28,12 +28,17 @@ test('main page loads the read coordinator after Firebase store and before core'
   assert.ok(coordinator<core,'read coordinator must load before core');
 });
 
-test('main Firebase listeners delegate to one root batch subscription', () => {
+test('main Firebase listeners delegate to one selected-key batch subscription', () => {
   const source=read(path.join('js','core.js'));
   const attach=functionSource(source,'_attachFirebaseDataListeners','loadFromFirebase');
 
-  assert.match(attach,/SCFirebaseStore\.subscribeRootBatches/);
+  assert.match(attach,/SCFirebaseStore\.subscribeSelectedRootBatches/);
+  assert.match(attach,/SCScheduleKeySelection\.initialBaseKeys/);
+  assert.match(attach,/resolveInitialActiveKeys/);
+  assert.match(attach,/SCScheduleKeySelection\.resolveMainTab/);
+  assert.match(attach,/SCScheduleKeySelection\.tabKeys/);
   assert.match(attach,/_scheduleReadCoordinator\.start/);
+  assert.doesNotMatch(attach,/SCFirebaseStore\.subscribeRootBatches/);
   assert.doesNotMatch(attach,/_fb\.on\(['"]child_changed/);
   assert.doesNotMatch(attach,/_fb\.on\(['"]child_removed/);
 });
@@ -108,7 +113,7 @@ test('main schedule reads remain behind one coordinator boundary', () => {
   const load=functionSource(source,'loadFromFirebase','getToday');
 
   assert.equal((source.match(/SCScheduleReadCoordinator\.create\(/g)||[]).length,1);
-  assert.equal((attach.match(/SCFirebaseStore\.subscribeRootBatches\(/g)||[]).length,1);
+  assert.equal((attach.match(/SCFirebaseStore\.subscribeSelectedRootBatches\(/g)||[]).length,1);
   assert.doesNotMatch(attach,/_fb\.on\(/);
   assert.match(load,/if\(_canUseScheduleReadCoordinator\(\)\)\{[\s\S]*?return;[\s\S]*?_fb\.once\(['"]value['"]\)/);
 });
@@ -120,7 +125,7 @@ test('invalid initial student data keeps the page read only and preserves local 
 
   assert.match(ensure,/_scheduleReadInitialInvalid=true/);
   assert.match(load,/if\(_scheduleReadInitialInvalid\)\{[\s\S]*?_firebaseUsingLocalFallback=true/);
-  assert.match(load,/else\{[\s\S]*?_pruneMissingRemoteLocalKeys/);
+  assert.match(load,/_scheduleReadUsesSelectedKeys[\s\S]*?_pruneMissingRemoteLocalKeys/);
 });
 
 test('a fatal realtime read error makes later writes read only', () => {
