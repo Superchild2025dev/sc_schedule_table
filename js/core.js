@@ -575,8 +575,9 @@ const _scheduleAuxiliaryLoadSeq=new Map();
 function _activeStudentCount(){
   return Array.isArray(STUDENTS)?STUDENTS.length:0;
 }
-function _recordDataSyncDiagnostic(kind,keys,beforeCount,afterCount){
+function _recordDataSyncDiagnostic(kind,keys,beforeCount,afterCount,details){
   const cfg=typeof getTabConfig==='function'?getTabConfig():null;
+  const meta=details&&typeof details==='object'?details:{};
   _dataSyncDiagnostics.push({
     at:new Date().toISOString(),
     kind:String(kind||'sync'),
@@ -586,6 +587,10 @@ function _recordDataSyncDiagnostic(kind,keys,beforeCount,afterCount){
     keys:(keys||[]).slice(0,30),
     before:Number(beforeCount||0),
     after:Number(afterCount||0),
+    outcome:String(meta.outcome||''),
+    durationMs:Math.max(0,Number(meta.durationMs||0)||0),
+    owner:String(meta.owner||''),
+    keyCount:Math.max(0,Number(meta.keyCount||(keys||[]).length)||0),
     slotConflicts:Array.isArray(window.SC_STUDENT_SLOT_CONFLICTS)?window.SC_STUDENT_SLOT_CONFLICTS.length:0,
   });
   while(_dataSyncDiagnostics.length>80) _dataSyncDiagnostics.shift();
@@ -695,12 +700,16 @@ async function ensureScheduleTabLoaded(tabId,options){
   const startedAt=Date.now();
   _scheduleTabTransitioning=true;
   keys.forEach(key=>_scheduleReadInvalidKeys.delete(key));
-  _recordDataSyncDiagnostic('tab-load-start',keys,_activeStudentCount(),_activeStudentCount());
+  _recordDataSyncDiagnostic('tab-load-start',keys,_activeStudentCount(),_activeStudentCount(),{
+    outcome:'loading',durationMs:0,keyCount:keys.length,
+  });
   try{
     if(_scheduleSelectedController.ready) await _scheduleSelectedController.ready;
     const result=await _scheduleSelectedController.setActiveKeys(keys);
     if(seq!==_scheduleTabTransitionSeq||(result&&result.stale)){
-      _recordDataSyncDiagnostic('tab-load-stale',keys,_activeStudentCount(),_activeStudentCount());
+      _recordDataSyncDiagnostic('tab-load-stale',keys,_activeStudentCount(),_activeStudentCount(),{
+        outcome:'stale',durationMs:Date.now()-startedAt,keyCount:keys.length,
+      });
       return {stale:true,tabId:id};
     }
     const invalid=studentKeys.filter(key=>{
@@ -715,11 +724,15 @@ async function ensureScheduleTabLoaded(tabId,options){
       readyAt:Date.now(),
       durationMs:Date.now()-startedAt,
     });
-    _recordDataSyncDiagnostic('tab-load-ready',keys,_activeStudentCount(),_activeStudentCount());
+    _recordDataSyncDiagnostic('tab-load-ready',keys,_activeStudentCount(),_activeStudentCount(),{
+      outcome:'ready',durationMs:Date.now()-startedAt,keyCount:keys.length,
+    });
     return {stale:false,tabId:id,keys:keys.slice()};
   }catch(error){
     if(seq===_scheduleTabTransitionSeq){
-      _recordDataSyncDiagnostic('tab-load-failed',keys,_activeStudentCount(),_activeStudentCount());
+      _recordDataSyncDiagnostic('tab-load-failed',keys,_activeStudentCount(),_activeStudentCount(),{
+        outcome:'failed',durationMs:Date.now()-startedAt,keyCount:keys.length,
+      });
     }
     if(opts.silent!==true) console.error('시간표 데이터 로드 실패:',id,error);
     throw error;
@@ -752,13 +765,22 @@ async function ensureScheduleAuxiliaryKeysLoaded(owner,keys){
     return {stale:false,keys:selected,compatibility:true};
   }
   const seq=(_scheduleAuxiliaryLoadSeq.get(owner)||0)+1;
+  const startedAt=Date.now();
   _scheduleAuxiliaryLoadSeq.set(owner,seq);
   _scheduleAuxiliaryLoadingOwners.add(owner);
   selected.forEach(key=>_scheduleReadInvalidKeys.delete(key));
+  _recordDataSyncDiagnostic('auxiliary-load-start',selected,_activeStudentCount(),_activeStudentCount(),{
+    outcome:'loading',durationMs:0,owner,keyCount:selected.length,
+  });
   try{
     if(_scheduleSelectedController.ready) await _scheduleSelectedController.ready;
     const result=await _scheduleSelectedController.setAuxiliaryKeys(owner,selected);
-    if(_scheduleAuxiliaryLoadSeq.get(owner)!==seq||(result&&result.stale)) return {stale:true,keys:selected};
+    if(_scheduleAuxiliaryLoadSeq.get(owner)!==seq||(result&&result.stale)){
+      _recordDataSyncDiagnostic('auxiliary-load-stale',selected,_activeStudentCount(),_activeStudentCount(),{
+        outcome:'stale',durationMs:Date.now()-startedAt,owner,keyCount:selected.length,
+      });
+      return {stale:true,keys:selected};
+    }
     const invalid=selected.filter(key=>{
       if(!_isStudentPayloadKey(key)) return false;
       if(_scheduleReadInvalidKeys.has(key)) return true;
@@ -766,7 +788,17 @@ async function ensureScheduleAuxiliaryKeysLoaded(owner,keys){
       return raw!==null&&!_validStudentPayload(key,raw);
     });
     if(invalid.length) throw new Error('출석부 원생 데이터가 올바르지 않습니다');
+    _recordDataSyncDiagnostic('auxiliary-load-ready',selected,_activeStudentCount(),_activeStudentCount(),{
+      outcome:'ready',durationMs:Date.now()-startedAt,owner,keyCount:selected.length,
+    });
     return {stale:false,keys:selected};
+  }catch(error){
+    if(_scheduleAuxiliaryLoadSeq.get(owner)===seq){
+      _recordDataSyncDiagnostic('auxiliary-load-failed',selected,_activeStudentCount(),_activeStudentCount(),{
+        outcome:'failed',durationMs:Date.now()-startedAt,owner,keyCount:selected.length,
+      });
+    }
+    throw error;
   }finally{
     if(_scheduleAuxiliaryLoadSeq.get(owner)===seq) _scheduleAuxiliaryLoadingOwners.delete(owner);
   }

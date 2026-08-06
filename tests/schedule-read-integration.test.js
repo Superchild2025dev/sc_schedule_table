@@ -165,3 +165,28 @@ test('schedule writes are blocked while selected tab data is loading',()=>{
   assert.match(guard,/isScheduleDataTransitioning\(\)/);
   assert.match(guard,/시간표 데이터를 불러오는 중입니다/);
 });
+
+test('selected tab diagnostics record duration and outcome without payload values',()=>{
+  const source=read(path.join('js','core.js'));
+  const record=functionSource(source,'_recordDataSyncDiagnostic','_isStudentPayloadKey');
+  const ensure=functionSource(source,'ensureScheduleTabLoaded','isScheduleTabDataReady');
+
+  assert.match(record,/durationMs/);
+  assert.match(record,/outcome/);
+  assert.doesNotMatch(record,/value|payload|students/i);
+  assert.match(ensure,/outcome:'ready'/);
+  assert.match(ensure,/outcome:'failed'/);
+  assert.match(ensure,/Date\.now\(\)-startedAt/);
+});
+
+test('attendance auxiliary diagnostics record owner, key count, duration, and outcome',()=>{
+  const source=read(path.join('js','core.js'));
+  const ensure=functionSource(source,'ensureScheduleAuxiliaryKeysLoaded','releaseScheduleAuxiliaryKeys');
+
+  assert.match(ensure,/auxiliary-load-start/);
+  assert.match(ensure,/auxiliary-load-ready/);
+  assert.match(ensure,/auxiliary-load-failed/);
+  assert.match(ensure,/owner/);
+  assert.match(ensure,/keyCount:selected\.length/);
+  assert.match(ensure,/Date\.now\(\)-startedAt/);
+});
