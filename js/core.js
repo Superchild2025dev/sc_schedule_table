@@ -553,6 +553,7 @@ let _firebaseDataListenersAttached=false;
 let _scheduleReadCoordinator=null;
 let _scheduleReadInitialRemoteKeys=[];
 let _scheduleReadPendingBeforeCount=null;
+let _scheduleReadInitialInvalid=false;
 
 function _activeStudentCount(){
   return Array.isArray(STUDENTS)?STUDENTS.length:0;
@@ -621,6 +622,7 @@ function _consumeScheduleReadLocalEchoes(batch){
   });
 }
 function _handleScheduleReadError(error){
+  _firebaseUsingLocalFallback=true;
   console.warn('[FIREBASE READ ERROR]',_firebaseErrorCode(error)||'unknown',error);
   if(_isFirebaseConnectivityError(error)) _showOfflineWarning();
 }
@@ -641,7 +643,9 @@ function _ensureScheduleReadCoordinator(){
     validate:(key,raw)=>_validStudentPayload(key,raw),
     isRenderBlocked:()=>typeof _popupOpen==='function'&&_popupOpen(),
     onRender:(keys,meta)=>_renderRemoteScheduleBatch(keys,meta),
-    onInvalid:(keys)=>{
+    onInvalid:(keys,meta)=>{
+      if(meta&&meta.initial) _scheduleReadInitialInvalid=true;
+      else _firebaseUsingLocalFallback=true;
       console.error('[DATA SAFETY] 불완전한 원생 데이터 수신을 무시했습니다:',keys.join(','));
       _recordDataSyncDiagnostic('ignored-invalid-students',keys,_activeStudentCount(),_activeStudentCount());
     },
@@ -727,9 +731,40 @@ function _queueRemoteScheduleRefresh(key){
   if(_remoteSyncTimer) clearTimeout(_remoteSyncTimer);
   _remoteSyncTimer=setTimeout(_flushRemoteScheduleRefresh,60);
 }
+function _attachLegacyFirebaseDataListeners(){
+  _fb.on('child_changed',snap=>{
+    if(_isDeferredStorageKey(snap.key)) return;
+    const value=snap.val();
+    if(!_validStudentPayload(snap.key,value)){
+      _firebaseUsingLocalFallback=true;
+      _recordDataSyncDiagnostic('ignored-invalid-students',[snap.key],_activeStudentCount(),_activeStudentCount());
+      return;
+    }
+    const raw=typeof value==='string'?value:JSON.stringify(value);
+    const queue=_localWriteQueue[snap.key];
+    if(queue&&queue.length&&queue[0]===raw){
+      queue.shift();
+      if(!queue.length) delete _localWriteQueue[snap.key];
+      return;
+    }
+    if(_dbCache[snap.key]===raw) return;
+    _applyScheduleReadBatchValue(snap.key,raw);
+    _queueRemoteScheduleRefresh(snap.key);
+  });
+  _fb.on('child_removed',snap=>{
+    if(_isDeferredStorageKey(snap.key)) return;
+    const existed=Object.prototype.hasOwnProperty.call(_dbCache,snap.key)||dbGet(snap.key)!==null;
+    _removeScheduleReadBatchValue(snap.key);
+    if(existed) _queueRemoteScheduleRefresh(snap.key);
+  });
+}
 function _attachFirebaseDataListeners(){
   if(_firebaseDataListenersAttached||!_fbReady||!_fb) return;
-  if(!_canUseScheduleReadCoordinator()) return;
+  if(!_canUseScheduleReadCoordinator()){
+    _firebaseDataListenersAttached=true;
+    _attachLegacyFirebaseDataListeners();
+    return;
+  }
   _ensureScheduleReadCoordinator();
   _firebaseDataListenersAttached=true;
   _scheduleReadCoordinator.start(handlers=>SCFirebaseStore.subscribeRootBatches(_fb,{
@@ -761,8 +796,13 @@ function loadFromFirebase(callback){
   if(_canUseScheduleReadCoordinator()){
     _attachFirebaseDataListeners();
     _scheduleReadCoordinator.ready().then(()=>{
-      _firebaseUsingLocalFallback=false;
-      _pruneMissingRemoteLocalKeys(_scheduleReadInitialRemoteKeys);
+      if(_scheduleReadInitialInvalid){
+        _firebaseUsingLocalFallback=true;
+        toast('원생 데이터 일부가 올바르지 않아 읽기 전용으로 열었습니다','err');
+      }else{
+        _firebaseUsingLocalFallback=false;
+        _pruneMissingRemoteLocalKeys(_scheduleReadInitialRemoteKeys);
+      }
       wrappedCallback();
     }).catch(err=>{
       console.error('Firebase 데이터 로드 실패:',err);
@@ -797,7 +837,7 @@ function loadFromFirebase(callback){
     _firebaseUsingLocalFallback=true;
     toast('Firebase 데이터 로드 실패 — 로컬 데이터는 읽기 전용입니다','err');
     wrappedCallback();
-  });
+  }).finally(_attachFirebaseDataListeners);
 }
 
 /* ════════════════════════════════════════════════════════════════

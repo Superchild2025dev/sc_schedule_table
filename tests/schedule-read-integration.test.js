@@ -112,3 +112,32 @@ test('main schedule reads remain behind one coordinator boundary', () => {
   assert.doesNotMatch(attach,/_fb\.on\(/);
   assert.match(load,/if\(_canUseScheduleReadCoordinator\(\)\)\{[\s\S]*?return;[\s\S]*?_fb\.once\(['"]value['"]\)/);
 });
+
+test('invalid initial student data keeps the page read only and preserves local backup', () => {
+  const source=read(path.join('js','core.js'));
+  const ensure=functionSource(source,'_ensureScheduleReadCoordinator','_renderRemoteScheduleBatch');
+  const load=functionSource(source,'loadFromFirebase','getToday');
+
+  assert.match(ensure,/_scheduleReadInitialInvalid=true/);
+  assert.match(load,/if\(_scheduleReadInitialInvalid\)\{[\s\S]*?_firebaseUsingLocalFallback=true/);
+  assert.match(load,/else\{[\s\S]*?_pruneMissingRemoteLocalKeys/);
+});
+
+test('a fatal realtime read error makes later writes read only', () => {
+  const source=read(path.join('js','core.js'));
+  const handler=functionSource(source,'_handleScheduleReadError','_canUseScheduleReadCoordinator');
+
+  assert.match(handler,/_firebaseUsingLocalFallback=true/);
+});
+
+test('the legacy initial read still attaches a gated compatibility listener', () => {
+  const source=read(path.join('js','core.js'));
+  const legacy=functionSource(source,'_attachLegacyFirebaseDataListeners','_attachFirebaseDataListeners');
+  const attach=functionSource(source,'_attachFirebaseDataListeners','loadFromFirebase');
+  const load=functionSource(source,'loadFromFirebase','getToday');
+
+  assert.match(legacy,/_fb\.on\(['"]child_changed/);
+  assert.match(legacy,/_fb\.on\(['"]child_removed/);
+  assert.match(attach,/_attachLegacyFirebaseDataListeners\(\)/);
+  assert.match(load,/\.finally\(_attachFirebaseDataListeners\)/);
+});

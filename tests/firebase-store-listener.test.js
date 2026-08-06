@@ -52,7 +52,7 @@ function createHarness(){
   firestore.FieldPath = {documentId(){ return {}; }};
   firestore.FieldValue = {serverTimestamp(){ return {}; }};
 
-  const context = {console, Map, Set, Promise};
+  const context = {console, Map, Set, Promise, setTimeout, clearTimeout};
   context.window = context;
   context.globalThis = context;
   context.SC_DATA_BACKEND = 'firestore';
@@ -375,4 +375,130 @@ test('root batch adapter queues RTDB changes until its initial value is ready', 
   unsubscribe();
   assert.equal(listeners.child_changed,undefined);
   assert.equal(listeners.child_removed,undefined);
+});
+
+test('an initial document read error is reported before the partial initial batch', async () => {
+  const harness=createHarness();
+  const students=makeDoc('swim_students', {
+    key:'swim_students',value:'[]',updatedAt:{seconds:8,nanoseconds:0},
+  });
+  const teachers=makeDoc('swim_inst', {
+    key:'swim_inst',value:'{"1":"정상"}',updatedAt:{seconds:8,nanoseconds:1},
+  });
+  const order=[];
+  let partialBatch=null;
+  harness.root._readStoredValue=async (key,item)=>{
+    if(key==='swim_students') throw new Error('missing student chunk');
+    return item.value;
+  };
+  harness.root.subscribeBatches({
+    next:batch=>{
+      order.push('batch');
+      partialBatch=batch;
+    },
+    error:()=>order.push('error'),
+  });
+
+  await harness.emit(makeSnapshot([students,teachers]));
+
+  assert.deepEqual(order,['error','batch']);
+  assert.deepEqual(Object.keys(partialBatch.values),['swim_inst']);
+});
+
+test('an empty Firestore initial batch migrates and uses the RTDB fallback', async () => {
+  const harness=createHarness();
+  const fallbackData={swim_students:'[{"n":"백업"}]',swim_inst:'{"1":"선생님"}'};
+  const copied=[];
+  const batches=[];
+  harness.root.fallbackEnabled=true;
+  harness.root.fallback={
+    once(){ return Promise.resolve({val:()=>fallbackData}); },
+  };
+  harness.root._copyRTDBIntoFirestore=async data=>{ copied.push(data); };
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+
+  await harness.emit(makeSnapshot([]));
+
+  assert.equal(batches.length,1);
+  assert.equal(batches[0].values.swim_students,fallbackData.swim_students);
+  assert.equal(batches[0].values.swim_inst,fallbackData.swim_inst);
+  assert.deepEqual(Object.keys(copied[0]).sort(),['swim_inst','swim_students']);
+});
+
+test('batch subscriptions mirror one RTDB multi-key change atomically during transition rollout', async () => {
+  const harness=createHarness();
+  const listeners={};
+  const mirrored=[];
+  harness.root.fallbackEnabled=true;
+  harness.root.mirrorRTDB=true;
+  harness.root.fallback={
+    on(event,handler){ listeners[event]=handler; },
+    off(event,handler){ if(listeners[event]===handler) delete listeners[event]; },
+  };
+  harness.root._applyFallbackBatchToFirestore=async changes=>{ mirrored.push(changes); };
+
+  const unsubscribe=harness.root.subscribeBatches({next() {}});
+  assert.equal(typeof listeners.child_changed,'function');
+  assert.equal(typeof listeners.child_removed,'function');
+
+  listeners.child_changed({key:'swim_mark',val:()=>'{"a":1}'});
+  listeners.child_changed({key:'swim_students',val:()=>'[]'});
+  listeners.child_removed({key:'swim_enroll',val:()=>null});
+  await new Promise(resolve=>setTimeout(resolve,5));
+
+  assert.equal(mirrored.length,1);
+  assert.deepEqual(Object.keys(mirrored[0]).sort(),['swim_enroll','swim_mark','swim_students']);
+  assert.equal(mirrored[0].swim_enroll,null);
+
+  unsubscribe();
+  assert.equal(listeners.child_changed,undefined);
+  assert.equal(listeners.child_removed,undefined);
+});
+
+test('disabled Firestore delivers one queued RTDB batch directly to subscribers', async () => {
+  const harness=createHarness();
+  const listeners={};
+  const batches=[];
+  harness.root.fallbackEnabled=true;
+  harness.root.mirrorRTDB=true;
+  harness.root.disabled=true;
+  harness.root.fallback={
+    on(event,handler){ listeners[event]=handler; },
+    off(event,handler){ if(listeners[event]===handler) delete listeners[event]; },
+  };
+
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+  listeners.child_changed({key:'swim_students',val:()=>'[{"n":"복구"}]'});
+  listeners.child_removed({key:'swim_mark',val:()=>null});
+  await new Promise(resolve=>setTimeout(resolve,5));
+
+  assert.equal(batches.length,1);
+  assert.equal(batches[0].initial,false);
+  assert.equal(batches[0].values.swim_students,'[{"n":"복구"}]');
+  assert.deepEqual(Array.from(batches[0].removedKeys),['swim_mark']);
+});
+
+test('a failed RTDB mirror still delivers the queued batch directly', async () => {
+  const harness=createHarness();
+  const listeners={};
+  const batches=[];
+  const errors=[];
+  harness.root.fallbackEnabled=true;
+  harness.root.mirrorRTDB=true;
+  harness.root.fallback={
+    on(event,handler){ listeners[event]=handler; },
+    off(event,handler){ if(listeners[event]===handler) delete listeners[event]; },
+  };
+  harness.root._applyFallbackBatchToFirestore=async ()=>{ throw new Error('mirror failed'); };
+
+  harness.root.subscribeBatches({
+    next:batch=>batches.push(batch),
+    error:error=>errors.push(error),
+  });
+  listeners.child_changed({key:'swim_inst',val:()=>'{"1":"선생님"}'});
+  await new Promise(resolve=>setTimeout(resolve,5));
+
+  assert.equal(errors.length,1);
+  assert.equal(batches.length,1);
+  assert.equal(batches[0].values.swim_inst,'{"1":"선생님"}');
 });

@@ -164,6 +164,10 @@
     this.firestoreBatchInitialized = false;
     this.firestoreBatchRevision = 0;
     this.firestoreBatchListenerQueue = Promise.resolve();
+    this.firestoreBatchFallbackUnsubscribers = [];
+    this.firestoreBatchFallbackPending = {};
+    this.firestoreBatchFallbackTimer = null;
+    this.firestoreBatchFallbackQueue = Promise.resolve();
   }
 
   FirestoreKVRoot.prototype._doc = function(key){
@@ -358,6 +362,24 @@
   FirestoreKVRoot.prototype._readFallbackRoot = function(opts){
     opts = opts || {};
     return this.fallback.once('value').then(snap=>filterRootData(snap.val() || {}, !!opts.includeDeferred));
+  };
+  FirestoreKVRoot.prototype._prepareInitialBatchValues = function(firestoreData){
+    firestoreData=firestoreData||{};
+    if(!this.fallbackEnabled) return Promise.resolve(firestoreData);
+    return this._readFallbackRoot().then(fallbackData=>{
+      if(!Object.keys(fallbackData).length) return firestoreData;
+      if(!Object.keys(firestoreData).length){
+        return this._copyRTDBIntoFirestore(fallbackData).catch(error=>{
+          if(recoverable(error)) this._disable(error);
+          console.warn('[SCFirebaseStore] Initial batch migration failed:',error);
+        }).then(()=>fallbackData);
+      }
+      return this._backfillMissingRTDBKeys(firestoreData,fallbackData).catch(error=>{
+        if(recoverable(error)) this._disable(error);
+        console.warn('[SCFirebaseStore] Initial batch backfill failed:',error);
+        return Object.assign({},fallbackData,firestoreData);
+      });
+    });
   };
   FirestoreKVRoot.prototype.once = function(event){
     if(event !== 'value') return Promise.reject(new Error('Unsupported event: '+event));
@@ -823,30 +845,35 @@
         return Promise.all(reads).then(items=>{
           const values={};
           items.filter(Boolean).forEach(item=>{ values[item.key]=item.value; });
-          pendingVersions.forEach(([key,version])=>this.firestoreVersions.set(key,version));
-          removedKeys.forEach(key=>this.firestoreVersions.delete(key));
-          const changedKeys=[...new Set(Object.keys(values).concat(removedKeys))];
-          if(initialSnapshot||changedKeys.length){
-            const batch={
-              initial:initialSnapshot,
-              revision:++this.firestoreBatchRevision,
-              values,
-              removedKeys:[...new Set(removedKeys)],
-              changedKeys,
-            };
-            this._emitFirestoreBatch(batch);
-            const shadowChanges=Object.assign({},values);
-            batch.removedKeys.forEach(key=>{ shadowChanges[key]=null; });
-            this._scheduleV2Shadow(
-              shadowChanges,
-              initialSnapshot?'initial-batch-listener':'remote-batch-change',
-              initialSnapshot
-            );
-          }
-          readErrors.forEach(item=>{
-            const error=item.error instanceof Error?item.error:new Error(String(item.error||'read failed'));
-            error.scheduleKey=item.key;
-            this._emitFirestoreBatchError(error);
+          const prepared=initialSnapshot
+            ?this._prepareInitialBatchValues(values)
+            :Promise.resolve(values);
+          return prepared.then(preparedValues=>{
+            pendingVersions.forEach(([key,version])=>this.firestoreVersions.set(key,version));
+            removedKeys.forEach(key=>this.firestoreVersions.delete(key));
+            const changedKeys=[...new Set(Object.keys(preparedValues).concat(removedKeys))];
+            readErrors.forEach(item=>{
+              const error=item.error instanceof Error?item.error:new Error(String(item.error||'read failed'));
+              error.scheduleKey=item.key;
+              this._emitFirestoreBatchError(error);
+            });
+            if(initialSnapshot||changedKeys.length){
+              const batch={
+                initial:initialSnapshot,
+                revision:++this.firestoreBatchRevision,
+                values:preparedValues,
+                removedKeys:[...new Set(removedKeys)],
+                changedKeys,
+              };
+              this._emitFirestoreBatch(batch);
+              const shadowChanges=Object.assign({},preparedValues);
+              batch.removedKeys.forEach(key=>{ shadowChanges[key]=null; });
+              this._scheduleV2Shadow(
+                shadowChanges,
+                initialSnapshot?'initial-batch-listener':'remote-batch-change',
+                initialSnapshot
+              );
+            }
           });
         });
       }).catch(error=>{
@@ -863,21 +890,117 @@
   FirestoreKVRoot.prototype.subscribeBatches = function(handlers){
     const subscriber=handlers&&typeof handlers==='object'?handlers:{};
     if(typeof subscriber.next!=='function') throw new TypeError('batch next callback is required');
+    const firstSubscriber=this.firestoreBatchSubscribers.size===0;
     this.firestoreBatchSubscribers.add(subscriber);
     this._ensureFirestoreBatchListener();
+    if(firstSubscriber){
+      this.firestoreBatchFallbackUnsubscribers=this._listenFallbackBatchMirror();
+    }
     let active=true;
     return ()=>{
       if(!active) return;
       active=false;
       this.firestoreBatchSubscribers.delete(subscriber);
-      if(this.firestoreBatchSubscribers.size||!this.firestoreBatchUnsubscribe) return;
-      this.firestoreBatchUnsubscribe();
-      this.firestoreBatchUnsubscribe=null;
+      if(this.firestoreBatchSubscribers.size) return;
+      this.firestoreBatchFallbackUnsubscribers.splice(0).forEach(fn=>fn());
+      if(this.firestoreBatchFallbackTimer){
+        clearTimeout(this.firestoreBatchFallbackTimer);
+        this.firestoreBatchFallbackTimer=null;
+      }
+      this.firestoreBatchFallbackPending={};
+      if(this.firestoreBatchUnsubscribe){
+        this.firestoreBatchUnsubscribe();
+        this.firestoreBatchUnsubscribe=null;
+      }
       this.firestoreBatchInitialized=false;
     };
   };
+  FirestoreKVRoot.prototype._emitFallbackBatch = function(changes){
+    const values={};
+    const removedKeys=[];
+    Object.entries(changes||{}).forEach(([key,value])=>{
+      if(value===null||value===undefined) removedKeys.push(key);
+      else values[key]=value;
+    });
+    const changedKeys=[...new Set(Object.keys(values).concat(removedKeys))];
+    if(!changedKeys.length) return;
+    this._emitFirestoreBatch({
+      initial:false,
+      revision:++this.firestoreBatchRevision,
+      values,
+      removedKeys,
+      changedKeys,
+    });
+    this._scheduleV2Shadow(changes,'fallback-batch-direct');
+  };
+  FirestoreKVRoot.prototype._applyFallbackBatchToFirestore = function(changes){
+    const keys=Object.keys(changes||{}).filter(key=>!deferredRootKey(key));
+    if(!keys.length) return Promise.resolve();
+    return this.db.runTransaction(tx=>{
+      return Promise.all(keys.map(key=>tx.get(this._doc(key)))).then(docs=>{
+        docs.forEach((doc,index)=>{
+          const key=keys[index];
+          const item=doc&&doc.exists?(doc.data()||{}):null;
+          const value=changes[key];
+          if(value===null||value===undefined) this._deleteKeyValue(tx,key,item);
+          else this._writeStoredValue(tx,key,value,item);
+        });
+      });
+    });
+  };
+  FirestoreKVRoot.prototype._flushFallbackBatch = function(){
+    this.firestoreBatchFallbackTimer=null;
+    const changes=this.firestoreBatchFallbackPending;
+    this.firestoreBatchFallbackPending={};
+    if(!Object.keys(changes).length) return;
+    this.firestoreBatchFallbackQueue=this.firestoreBatchFallbackQueue.then(()=>{
+      if(this.disabled){
+        this._emitFallbackBatch(changes);
+        return;
+      }
+      if(!this.mirrorRTDB) return;
+      return this._applyFallbackBatchToFirestore(changes).catch(error=>{
+        console.warn('[SCFirebaseStore] RTDB batch mirror failed:',error);
+        if(recoverable(error)&&this.fallbackEnabled) this._disable(error);
+        this._emitFirestoreBatchError(error);
+        this._emitFallbackBatch(changes);
+      });
+    });
+  };
+  FirestoreKVRoot.prototype._queueFallbackBatch = function(key,value){
+    if(!key||deferredRootKey(key)) return;
+    this.firestoreBatchFallbackPending[key]=value;
+    if(this.firestoreBatchFallbackTimer) return;
+    this.firestoreBatchFallbackTimer=setTimeout(()=>this._flushFallbackBatch(),0);
+  };
+  FirestoreKVRoot.prototype._listenFallbackBatchMirror = function(){
+    if(!this.fallbackEnabled||!this.fallback||typeof this.fallback.on!=='function') return [];
+    const changed=snap=>{
+      const key=snap.key;
+      const value=snap.val();
+      if(sameValue(this.muteRTDB[key],value)){
+        delete this.muteRTDB[key];
+        return;
+      }
+      this._queueFallbackBatch(key,value);
+    };
+    const removed=snap=>{
+      const key=snap.key;
+      if(sameValue(this.muteRTDB[key],null)){
+        delete this.muteRTDB[key];
+        return;
+      }
+      this._queueFallbackBatch(key,null);
+    };
+    this.fallback.on('child_changed',changed);
+    this.fallback.on('child_removed',removed);
+    return [
+      ()=>this.fallback.off('child_changed',changed),
+      ()=>this.fallback.off('child_removed',removed),
+    ];
+  };
   FirestoreKVRoot.prototype._listenFallbackMirror = function(event, cb){
-    if(!this.fallbackEnabled || !this.mirrorRTDB) return null;
+    if(!this.fallbackEnabled || !this.mirrorRTDB || !this.fallback || typeof this.fallback.on!=='function') return null;
     const type = event === 'child_removed' ? 'child_removed' : 'child_changed';
     const handler = snap=>{
       const key = snap.key;
