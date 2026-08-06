@@ -101,3 +101,14 @@ test('compatibility refresh keeps pending keys while a popup is open', () => {
   assert.ok(popupIndex>=0,'popup guard is missing');
   assert.ok(clearIndex>popupIndex,'pending keys must be cleared only after the popup guard');
 });
+
+test('main schedule reads remain behind one coordinator boundary', () => {
+  const source=read(path.join('js','core.js'));
+  const attach=functionSource(source,'_attachFirebaseDataListeners','loadFromFirebase');
+  const load=functionSource(source,'loadFromFirebase','getToday');
+
+  assert.equal((source.match(/SCScheduleReadCoordinator\.create\(/g)||[]).length,1);
+  assert.equal((attach.match(/SCFirebaseStore\.subscribeRootBatches\(/g)||[]).length,1);
+  assert.doesNotMatch(attach,/_fb\.on\(/);
+  assert.match(load,/if\(_canUseScheduleReadCoordinator\(\)\)\{[\s\S]*?return;[\s\S]*?_fb\.once\(['"]value['"]\)/);
+});
