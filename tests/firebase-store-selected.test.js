@@ -238,6 +238,22 @@ test('a newer active request wins over a slower previous request',async()=>{
   assert.equal(harness.listenerCount('swim_inst_august'),1);
 });
 
+test('requesting the current active keys cancels a pending replacement',async()=>{
+  const harness=createHarness();
+  const {controller}=await startInitial(harness);
+  const replacement=controller.setActiveKeys(['swim_stu_july','swim_inst_july']);
+  const keepCurrent=controller.setActiveKeys(['swim_students','swim_inst']);
+
+  await harness.emit('swim_stu_july','[]');
+  await harness.emit('swim_inst_july','{}');
+  const [replacementResult,currentResult]=await Promise.all([replacement,keepCurrent]);
+
+  assert.equal(replacementResult.stale,true);
+  assert.equal(currentResult.stale,false);
+  assert.equal(harness.listenerCount('swim_stu_july'),0);
+  assert.equal(harness.listenerCount('swim_students'),1);
+});
+
 test('attendance auxiliary keys do not replace visible active keys',async()=>{
   const harness=createHarness();
   const {controller}=await startInitial(harness);

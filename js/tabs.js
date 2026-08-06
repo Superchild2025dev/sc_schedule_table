@@ -838,9 +838,8 @@ async function createTabFromModal(){
     },{label:'시간표 생성',target:name,detail:folder?`폴더 ${folder}`:''});
     if(folder) _collapsedTabFolders[folder]=false;
     _saveCollapsedTabFolders();
-    _activeTab=id;
     if(modal) modal.classList.remove('show');
-    switchTabView();
+    await requestTabSwitch(id);
   }catch(e){
     console.error(e);
     toast('시간표 생성 실패','err');
@@ -1106,8 +1105,7 @@ async function setMainTab(tabId){
       state.main={..._tabStorageKeys(fresh), setAt:new Date().toISOString()};
       return state;
     },{label:'메인 시간표 지정',target:label});
-    _activeTab=tabId;
-    switchTabView();
+    await requestTabSwitch(tabId);
     toast('메인 시간표: '+label,'ok');
   }catch(e){
     console.error(e);
@@ -1190,8 +1188,8 @@ async function deleteTab(tabId){
     });
     if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,metadataKeys,{label:'과거 시간표 삭제',target:name});
     if(isSnapshot&&_activeTab===id) _origGlobalMaps=null;
-    if(_activeTab===id){_activeTab=_mainTabId(_tabList);}
-    switchTabView();
+    if(_activeTab===id) await requestTabSwitch(_mainTabId(_tabList));
+    else switchTabView();
     toast(kind+' 삭제 완료','ok');
   }catch(e){
     console.error(e);
@@ -1380,8 +1378,7 @@ async function _performScheduleRollover(srcId,nextMonth,nextName){
       state.parent={...liveKeys,setAt:new Date().toISOString()};
       return state;
     },{label:'시간표 이월',target:nextName,detail:`${snapshotName} → ${nextName}`});
-    _activeTab=srcId;
-    switchTabView();
+    await requestTabSwitch(srcId);
     toast('시간표 이월 완료: '+nextName,'ok');
   }catch(e){
     console.error(e);
@@ -1621,8 +1618,7 @@ async function copyTab(srcId){
       state.tabs.splice(srcIdx+1, 0, newTab);
       return state;
     },{label:'시간표 복사',target:name,detail:`원본 ${srcTab.name||srcId}`});
-    _activeTab=newId;
-    switchTabView();
+    await requestTabSwitch(newId);
     toast(srcTab.name+' 복사 완료','ok');
   }catch(e){
     console.error(e);
@@ -1744,8 +1740,7 @@ document.getElementById('tab-bar').addEventListener('click',function(e){
   const tab=btn.dataset.tab;
   if(tab===_activeTab) return;
   closeStuPopup();closeInstPopup();
-  _activeTab=tab;
-  switchTabView();
+  requestTabSwitch(tab);
 });
 
 document.addEventListener('click',function(e){
@@ -1834,6 +1829,7 @@ document.getElementById('tab-operation-month')?.addEventListener('change',functi
 });
 
 let _snapshotSwitchSeq=0;
+let _liveTabSwitchSeq=0;
 function _showSnapshotLoading(tab){
   const wrap=document.getElementById('tbl');
   if(wrap){
@@ -1857,22 +1853,78 @@ function _cloneSnapshotView(data){
   }
   return JSON.parse(JSON.stringify(source));
 }
+function _restoreSnapshotGlobalMaps(){
+  if(!_origGlobalMaps) return;
+  RETIRE_MAP=_origGlobalMaps.retire;
+  ENROLL_MAP=_origGlobalMaps.enroll;
+  MARK_MAP=_origGlobalMaps.mark;
+  DISABLED_MAP=_origGlobalMaps.disabled;
+  RESERVE_MAP=_origGlobalMaps.reserve;
+  HYUWON_MAP=_origGlobalMaps.hyuwon;
+  MOVE_MAP=_origGlobalMaps.move;
+  ATTENDANCE=_origGlobalMaps.attendance;
+  ATT_GUESTS=_origGlobalMaps.attGuests;
+  DAY_SNAPSHOT=_origGlobalMaps.daySnapshot;
+  _origGlobalMaps=null;
+}
+function _showLiveTabLoading(tab){
+  const outer=document.getElementById('tab-regular');
+  if(!outer) return;
+  let overlay=document.getElementById('live-tab-loading');
+  if(!overlay){
+    overlay=document.createElement('div');
+    overlay.id='live-tab-loading';
+    overlay.className='live-tab-loading';
+    outer.appendChild(overlay);
+  }
+  overlay.textContent=(tab?.name||'시간표')+' 불러오는 중...';
+  overlay.hidden=false;
+}
+function _hideLiveTabLoading(){
+  const overlay=document.getElementById('live-tab-loading');
+  if(overlay) overlay.hidden=true;
+}
+async function requestTabSwitch(tabId){
+  tabId=String(tabId||'').trim();
+  const tab=_tabList.find(item=>item&&item.id===tabId);
+  if(!tab) return false;
+  const switchSeq=++_liveTabSwitchSeq;
+  closeStuPopup();closeInstPopup();
+  if(tab.type==='snapshot'){
+    if(typeof cancelScheduleTabLoad==='function') cancelScheduleTabLoad();
+    _hideLiveTabLoading();
+    _activeTab=tabId;
+    await switchTabView();
+    return true;
+  }
+
+  _showLiveTabLoading(tab);
+  try{
+    const result=typeof ensureScheduleTabLoaded==='function'
+      ?await ensureScheduleTabLoaded(tabId)
+      :{stale:false};
+    if(switchSeq!==_liveTabSwitchSeq||(result&&result.stale)) return false;
+    _restoreSnapshotGlobalMaps();
+    _activeTab=tabId;
+    const rendered=typeof flushPendingScheduleReads==='function'
+      ?flushPendingScheduleReads()
+      :false;
+    if(!rendered) await switchTabView();
+    else renderTabBar();
+    return true;
+  }catch(error){
+    if(switchSeq!==_liveTabSwitchSeq) return false;
+    console.error('시간표 탭 전환 실패:',tabId,error);
+    toast(error?.message||'시간표를 불러오지 못했습니다. 다시 시도해주세요.','err');
+    return false;
+  }finally{
+    if(switchSeq===_liveTabSwitchSeq) _hideLiveTabLoading();
+  }
+}
 async function switchTabView(){
   const switchSeq=++_snapshotSwitchSeq;
   // 이전 탭이 스냅샷이었다면 전역 맵을 백업본으로 복원
-  if(_origGlobalMaps){
-    RETIRE_MAP=_origGlobalMaps.retire;
-    ENROLL_MAP=_origGlobalMaps.enroll;
-    MARK_MAP=_origGlobalMaps.mark;
-    DISABLED_MAP=_origGlobalMaps.disabled;
-    RESERVE_MAP=_origGlobalMaps.reserve;
-    HYUWON_MAP=_origGlobalMaps.hyuwon;
-    MOVE_MAP=_origGlobalMaps.move;
-    ATTENDANCE=_origGlobalMaps.attendance;
-    ATT_GUESTS=_origGlobalMaps.attGuests;
-    DAY_SNAPSHOT=_origGlobalMaps.daySnapshot;
-    _origGlobalMaps=null;
-  }
+  _restoreSnapshotGlobalMaps();
 
   const tab=_tabList.find(t=>t.id===_activeTab)||_tabList[0];
   _activeTab=tab.id;
@@ -1900,8 +1952,7 @@ async function switchTabView(){
     }
     if(!snapData){
       toast('스냅샷을 불러오지 못했습니다 — 운영 시간표로 복귀','err');
-      _activeTab=_snapshotFallbackTabId();
-      switchTabView();
+      await requestTabSwitch(_snapshotFallbackTabId());
       return;
     }
     // 구버전 월 스냅샷에 들어 있던 중복 날짜 명단은 메모리에서도 즉시 제외한다.

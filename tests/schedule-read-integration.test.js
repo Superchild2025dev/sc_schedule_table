@@ -146,3 +146,22 @@ test('the legacy initial read still attaches a gated compatibility listener', ()
   assert.match(attach,/_attachLegacyFirebaseDataListeners\(\)/);
   assert.match(load,/\.finally\(_attachFirebaseDataListeners\)/);
 });
+
+test('live tab readiness delegates to selected active keys without changing the visible tab',()=>{
+  const source=read(path.join('js','core.js'));
+  const ensure=functionSource(source,'ensureScheduleTabLoaded','isScheduleTabDataReady');
+
+  assert.match(ensure,/SCScheduleKeySelection\.tabKeys/);
+  assert.match(ensure,/_scheduleSelectedController\.setActiveKeys/);
+  assert.match(ensure,/_validStudentPayload/);
+  assert.match(ensure,/_scheduleTabTransitioning=true/);
+  assert.doesNotMatch(ensure,/_activeTab\s*=/);
+});
+
+test('schedule writes are blocked while selected tab data is loading',()=>{
+  const source=read(path.join('js','core.js'));
+  const guard=functionSource(source,'canPersistScheduleData','dbGet');
+
+  assert.match(guard,/isScheduleDataTransitioning\(\)/);
+  assert.match(guard,/시간표 데이터를 불러오는 중입니다/);
+});

@@ -305,6 +305,14 @@ function canPersistScheduleData(key,label){
     console.warn('[v98 SAFETY] Firebase 로드 전 저장 차단:', key);
     return false;
   }
+  if(isScheduleDataTransitioning()){
+    const now=Date.now();
+    if(now-_writeBlockedWarnedAt>1500){
+      _writeBlockedWarnedAt=now;
+      if(typeof toast==='function') toast('시간표 데이터를 불러오는 중입니다. 잠시만 기다려주세요.','err');
+    }
+    return false;
+  }
   if(_firebaseUsingLocalFallback){
     _warnBlockedWrite(key,label||'로컬 fallback 읽기 전용');
     return false;
@@ -556,6 +564,11 @@ let _scheduleReadUsesSelectedKeys=false;
 let _scheduleReadInitialRemoteKeys=[];
 let _scheduleReadPendingBeforeCount=null;
 let _scheduleReadInitialInvalid=false;
+let _scheduleSelectedActiveTabId='';
+let _scheduleTabTransitionSeq=0;
+let _scheduleTabTransitioning=false;
+const _scheduleTabReadiness=new Map();
+const _scheduleReadInvalidKeys=new Set();
 
 function _activeStudentCount(){
   return Array.isArray(STUDENTS)?STUDENTS.length:0;
@@ -647,9 +660,11 @@ function _ensureScheduleReadCoordinator(){
     setRaw:_applyScheduleReadBatchValue,
     removeRaw:_removeScheduleReadBatchValue,
     validate:(key,raw)=>_validStudentPayload(key,raw),
-    isRenderBlocked:()=>typeof _popupOpen==='function'&&_popupOpen(),
+    isRenderBlocked:()=>isScheduleDataTransitioning()
+      ||(typeof _popupOpen==='function'&&_popupOpen()),
     onRender:(keys,meta)=>_renderRemoteScheduleBatch(keys,meta),
     onInvalid:(keys,meta)=>{
+      keys.forEach(key=>_scheduleReadInvalidKeys.add(String(key||'')));
       if(meta&&meta.initial) _scheduleReadInitialInvalid=true;
       else _firebaseUsingLocalFallback=true;
       console.error('[DATA SAFETY] 불완전한 원생 데이터 수신을 무시했습니다:',keys.join(','));
@@ -658,6 +673,73 @@ function _ensureScheduleReadCoordinator(){
     onError:_handleScheduleReadError,
   });
   return _scheduleReadCoordinator;
+}
+
+async function ensureScheduleTabLoaded(tabId,options){
+  const opts=options||{};
+  const id=String(tabId||'').trim();
+  const tab=(typeof _tabById==='function'?_tabById(id):null)
+    ||(_tabList||[]).find(item=>item&&item.id===id);
+  if(!tab) throw new Error('시간표를 찾을 수 없습니다');
+  if(tab.type==='snapshot') return {stale:false,tabId:id,snapshot:true};
+  if(!_scheduleSelectedController||typeof _scheduleSelectedController.setActiveKeys!=='function'){
+    return {stale:false,tabId:id,compatibility:true};
+  }
+
+  const keys=SCScheduleKeySelection.tabKeys(tab);
+  const studentKeys=keys.filter(_isStudentPayloadKey);
+  const seq=++_scheduleTabTransitionSeq;
+  const startedAt=Date.now();
+  _scheduleTabTransitioning=true;
+  keys.forEach(key=>_scheduleReadInvalidKeys.delete(key));
+  _recordDataSyncDiagnostic('tab-load-start',keys,_activeStudentCount(),_activeStudentCount());
+  try{
+    if(_scheduleSelectedController.ready) await _scheduleSelectedController.ready;
+    const result=await _scheduleSelectedController.setActiveKeys(keys);
+    if(seq!==_scheduleTabTransitionSeq||(result&&result.stale)){
+      _recordDataSyncDiagnostic('tab-load-stale',keys,_activeStudentCount(),_activeStudentCount());
+      return {stale:true,tabId:id};
+    }
+    const invalid=studentKeys.filter(key=>{
+      if(_scheduleReadInvalidKeys.has(key)) return true;
+      const raw=Object.prototype.hasOwnProperty.call(_dbCache,key)?_dbCache[key]:null;
+      return raw!==null&&!_validStudentPayload(key,raw);
+    });
+    if(invalid.length) throw new Error('원생 데이터가 올바르지 않아 시간표를 열 수 없습니다');
+    _scheduleSelectedActiveTabId=id;
+    _scheduleTabReadiness.set(id,{
+      keys:keys.slice(),
+      readyAt:Date.now(),
+      durationMs:Date.now()-startedAt,
+    });
+    _recordDataSyncDiagnostic('tab-load-ready',keys,_activeStudentCount(),_activeStudentCount());
+    return {stale:false,tabId:id,keys:keys.slice()};
+  }catch(error){
+    if(seq===_scheduleTabTransitionSeq){
+      _recordDataSyncDiagnostic('tab-load-failed',keys,_activeStudentCount(),_activeStudentCount());
+    }
+    if(opts.silent!==true) console.error('시간표 데이터 로드 실패:',id,error);
+    throw error;
+  }finally{
+    if(seq===_scheduleTabTransitionSeq) _scheduleTabTransitioning=false;
+  }
+}
+function isScheduleTabDataReady(tabId){
+  const id=String(tabId||'').trim();
+  return !!(id&&_scheduleSelectedActiveTabId===id&&_scheduleTabReadiness.has(id));
+}
+function isScheduleDataTransitioning(){
+  return !!_scheduleTabTransitioning;
+}
+function cancelScheduleTabLoad(){
+  ++_scheduleTabTransitionSeq;
+  _scheduleTabTransitioning=false;
+  const id=_scheduleSelectedActiveTabId;
+  const tab=id&&((typeof _tabById==='function'?_tabById(id):null)
+    ||(_tabList||[]).find(item=>item&&item.id===id));
+  if(tab&&_scheduleSelectedController&&typeof _scheduleSelectedController.setActiveKeys==='function'){
+    _scheduleSelectedController.setActiveKeys(SCScheduleKeySelection.tabKeys(tab)).catch(()=>{});
+  }
 }
 
 function _renderRemoteScheduleBatch(keys,meta){
@@ -782,6 +864,7 @@ function _attachFirebaseDataListeners(){
           baseValues,
           typeof _activeTab!=='undefined'?_activeTab:'regular'
         );
+        _scheduleSelectedActiveTabId=String(tab.id||'regular');
         return SCScheduleKeySelection.tabKeys(tab);
       },
       next:batch=>{
@@ -796,6 +879,17 @@ function _attachFirebaseDataListeners(){
       error:handlers.error,
     });
     _scheduleSelectedController=selected;
+    if(selected&&selected.ready&&typeof selected.ready.then==='function'){
+      selected.ready.then(()=>{
+        const id=_scheduleSelectedActiveTabId;
+        if(!id) return;
+        const tab=(typeof _tabById==='function'?_tabById(id):null)
+          ||(_tabList||[]).find(item=>item&&item.id===id);
+        const keys=tab?SCScheduleKeySelection.tabKeys(tab):[];
+        _scheduleTabReadiness.set(id,{keys,readyAt:Date.now(),durationMs:0});
+        _recordDataSyncDiagnostic('selected-initial',keys,_activeStudentCount(),_activeStudentCount());
+      }).catch(()=>{});
+    }
     return ()=>{
       if(selected&&typeof selected.stop==='function') selected.stop();
       if(_scheduleSelectedController===selected) _scheduleSelectedController=null;

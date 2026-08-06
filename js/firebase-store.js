@@ -1077,8 +1077,8 @@
 
     function beginActiveReplacement(target){
         if(state.stopped) return {stale:true};
-        if(sameKeySet(target,state.activeKeys)) return {stale:false};
         const generation=++state.activeGeneration;
+        if(sameKeySet(target,state.activeKeys)) return {stale:false};
         const token={type:'active',generation};
         const oldKeys=[...state.activeKeys];
         return waitForKeys([...target],token).then(()=>{
@@ -1106,9 +1106,9 @@
     function beginAuxiliaryReplacement(owner,target){
         if(state.stopped) return {stale:true};
         const current=state.auxiliaryKeys.get(owner)||new Set();
-        if(sameKeySet(target,current)) return {stale:false};
         const generation=(state.auxiliaryGenerations.get(owner)||0)+1;
         state.auxiliaryGenerations.set(owner,generation);
+        if(sameKeySet(target,current)) return {stale:false};
         const token={type:'auxiliary',owner,generation};
         const oldKeys=[...current];
         return waitForKeys([...target],token).then(()=>{

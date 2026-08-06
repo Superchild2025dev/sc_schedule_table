@@ -121,6 +121,8 @@ body.is-timemachine .tbl-wrap,body.is-timemachine .sched-tbl{outline:2px solid #
 .snap-banner{position:sticky;top:80px;z-index:48;background:#9333EA;color:#fff;text-align:center;padding:6px 12px;font-size:12px;font-weight:700;display:none}
 body.is-snapshot .snap-banner{display:block}
 .snapshot-loading{min-height:240px;display:flex;align-items:center;justify-content:center;background:#fff;color:#4B5563;font-size:15px;font-weight:700}
+.live-tab-loading{position:absolute;inset:0;z-index:47;display:flex;align-items:flex-start;justify-content:center;padding-top:72px;background:rgba(255,255,255,.78);color:#374151;font-size:15px;font-weight:700;backdrop-filter:blur(1px)}
+.live-tab-loading[hidden]{display:none}
 .tab-add{padding:8px 12px;font-size:16px;font-weight:700;border:none;background:none;cursor:pointer;color:#888;margin-bottom:-2px}
 .tab-add:hover{color:#0F9D58}
 .hbtn:hover{background:rgba(255,255,255,.22)}
@@ -129,7 +131,7 @@ body.is-snapshot .snap-banner{display:block}
 
 /* ── 테이블 ── */
 /* [v118] 시간표 컨테이너: 세로는 표 내부 스크롤, 가로는 하단 proxy가 담당 */
-.tbl-outer{overflow-x:auto;overflow-y:auto;border-radius:8px;border:2px solid #D1D5DB;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.1);max-height:calc(100vh - 95px);max-height:calc(100dvh - 95px);scrollbar-width:thin;max-width:100%;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;overflow-anchor:none}
+.tbl-outer{position:relative;overflow-x:auto;overflow-y:auto;border-radius:8px;border:2px solid #D1D5DB;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.1);max-height:calc(100vh - 95px);max-height:calc(100dvh - 95px);scrollbar-width:thin;max-width:100%;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;overflow-anchor:none}
 /* 세로 스크롤바는 보이고, 가로 스크롤바만 숨김 (proxy가 대체) */
 .tbl-outer::-webkit-scrollbar{width:8px;height:0}
 .tbl-outer::-webkit-scrollbar-track{background:#F3F4F6}
