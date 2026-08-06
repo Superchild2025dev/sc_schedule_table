@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f6c62">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="description" content="슈퍼차일드 수영장 고객의 소리 접수 페이지">
+  <title>슈퍼차일드 고객의 소리</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./voice.css?v=20260806-1">
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"
+          integrity="sha384-sEVIly94UBRLKWdkYoPpSG7GD/e79YHMrxVyZaOk712Ga7+EAw6w1EFi+xBzBdd+"
+          crossorigin="anonymous" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"
+          integrity="sha384-3IYu+dnH2y9gX1s6p9F4D55XbEmZBfJ3D1Ylh8J6bfdqnJCOmDVSRTq1yhJsBY1H"
+          crossorigin="anonymous" defer></script>
+  <script src="./voice.js?v=20260806-1" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#voice-main">접수 화면으로 이동</a>
+
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="슈퍼차일드 고객의 소리 처음으로">
+      <img src="/favicon.png" alt="" width="38" height="38">
+      <span><strong>슈퍼차일드</strong><small>고객의 소리</small></span>
+    </a>
+    <a id="back-link" class="header-link" href="/parent.html">학부모 페이지</a>
+  </header>
+
+  <main id="voice-main" class="page-shell">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">CUSTOMER VOICE</p>
+      <h1 id="page-title">편하게 말씀해주세요</h1>
+      <p>칭찬, 제안, 불편사항을 담당자가 확인합니다. 접수로 인해 회원이나 자녀에게 어떠한 불이익도 발생하지 않습니다.</p>
+    </section>
+
+    <div class="trust-notice">
+      <strong>접수 내용은 서비스 개선과 사실 확인에 필요한 담당자만 확인합니다.</strong>
+      <span>선생님 계정에는 이름·연락처와 접수 내용이 공개되지 않습니다.</span>
+    </div>
+
+    <form id="voice-form" class="voice-form" novalidate>
+      <input id="website" class="honeypot" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+      <section class="form-section" aria-labelledby="method-title">
+        <div class="section-title">
+          <span>1</span>
+          <div><h2 id="method-title">어떤 방식으로 남기시겠어요?</h2><p>개별 답변이 필요한 경우에만 회원 정보를 확인합니다.</p></div>
+        </div>
+        <div class="choice-grid mode-grid">
+          <label class="choice-card">
+            <input type="radio" name="mode" value="anonymous" checked>
+            <span class="choice-body">
+              <strong>익명으로 편하게 남기기</strong>
+              <small>이름과 전화번호를 받지 않습니다. 개별 답변은 어렵지만 담당자가 모두 확인합니다.</small>
+            </span>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="mode" value="reply">
+            <span class="choice-body">
+              <strong>회원 확인 후 답변받기</strong>
+              <small>처리 결과 확인이나 상담이 필요한 의견에 적합합니다.</small>
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section class="form-section" aria-labelledby="detail-title">
+        <div class="section-title">
+          <span>2</span>
+          <div><h2 id="detail-title">의견을 알려주세요</h2><p>정확한 확인에 필요한 최소한의 내용만 받습니다.</p></div>
+        </div>
+
+        <fieldset class="field-group">
+          <legend>이용 지점 <b>필수</b></legend>
+          <div class="segmented">
+            <label><input type="radio" name="branch" value="gagyeong" checked><span>가경점</span></label>
+            <label><input type="radio" name="branch" value="yongam"><span>용암점</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="field-group">
+          <legend>의견 유형 <b>필수</b></legend>
+          <div class="category-grid">
+            <label><input type="radio" name="category" value="praise"><span>칭찬해요</span></label>
+            <label><input type="radio" name="category" value="suggestion" checked><span>개선을 제안해요</span></label>
+            <label><input type="radio" name="category" value="inconvenience"><span>이용 중 불편했어요</span></label>
+            <label><input type="radio" name="category" value="staff"><span>직원 응대 의견</span></label>
+            <label class="safety-choice"><input type="radio" name="category" value="safety"><span>안전·사고 관련</span></label>
+          </div>
+        </fieldset>
+
+        <div class="field-grid">
+          <label class="field">
+            <span>이용 일자 <small>선택</small></span>
+            <input id="visit-date" type="date">
+          </label>
+          <label class="field">
+            <span>이용 시간대 <small>선택</small></span>
+            <select id="time-range">
+              <option value="">선택하지 않음</option>
+              <option>오전 9시 이전</option>
+              <option>오전 9시~12시</option>
+              <option>오후 12시~3시</option>
+              <option>오후 3시~6시</option>
+              <option>오후 6시 이후</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>이용 구분 <small>선택</small></span>
+            <select id="class-type">
+              <option value="regular">정규 수업</option>
+              <option value="special">방학특강</option>
+              <option value="vehicle">차량 이용</option>
+              <option value="facility">시설 이용</option>
+              <option value="other">기타</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>담당 선생님 <small>선택</small></span>
+            <input id="teacher-name" type="text" maxlength="40" placeholder="이름을 아는 경우에만 입력">
+          </label>
+        </div>
+
+        <label class="field message-field">
+          <span>의견 내용 <b>필수</b></span>
+          <textarea id="message" minlength="10" maxlength="2000" rows="7" placeholder="어떤 일이 있었는지, 무엇이 좋아지면 좋을지 편하게 적어주세요."></textarea>
+          <small class="field-help"><span id="message-count">0</span>/2000자 · 익명 접수에는 이름이나 전화번호를 적지 않는 것을 권장합니다.</small>
+        </label>
+      </section>
+
+      <section id="reply-section" class="form-section reply-section" aria-labelledby="reply-title" hidden>
+        <div class="section-title">
+          <span>3</span>
+          <div><h2 id="reply-title">회원 정보를 확인할게요</h2><p>수영장에 등록된 원생 이름과 보호자 전화번호를 입력해주세요.</p></div>
+        </div>
+        <div class="field-grid contact-grid">
+          <label class="field">
+            <span>원생 이름 <b>필수</b></span>
+            <input id="student-name" type="text" maxlength="40" autocomplete="name" placeholder="예: 홍길동">
+          </label>
+          <label class="field">
+            <span>보호자 전화번호 <b>필수</b></span>
+            <input id="phone" type="tel" inputmode="numeric" maxlength="13" autocomplete="tel" placeholder="010-1234-5678">
+          </label>
+        </div>
+
+        <div class="privacy-box">
+          <strong>개인정보 수집·이용 안내</strong>
+          <dl>
+            <div><dt>목적</dt><dd>회원 확인, 의견 처리, 결과 안내</dd></div>
+            <div><dt>항목</dt><dd>원생 이름, 보호자 전화번호, 접수 내용</dd></div>
+            <div><dt>보유기간</dt><dd>처리 완료 후 90일 이내 파기</dd></div>
+          </dl>
+          <p>동의를 거부할 수 있으며, 거부 시 개별 답변이 제한됩니다. 분쟁·사고 확인이 진행 중인 경우에는 종료 시까지 별도 보관될 수 있습니다.</p>
+          <label class="consent-check"><input id="privacy-consent" type="checkbox"><span>개인정보 수집·이용에 동의합니다.</span></label>
+        </div>
+      </section>
+
+      <div id="form-error" class="form-error" role="alert" hidden></div>
+      <button id="submit-button" class="submit-button" type="submit">의견 접수하기</button>
+    </form>
+
+    <section id="success-panel" class="result-panel" aria-live="polite" hidden>
+      <div class="result-mark" aria-hidden="true">완료</div>
+      <h2>의견이 정상적으로 접수되었습니다</h2>
+      <p>접수번호 <strong id="ticket-number"></strong></p>
+      <p id="success-copy">담당자가 확인하여 서비스 개선에 반영하겠습니다.</p>
+      <div class="result-actions">
+        <button id="new-ticket-button" type="button">새 의견 남기기</button>
+        <button id="check-status-button" type="button">처리 상태 확인</button>
+      </div>
+    </section>
+
+    <section id="status-panel" class="status-panel" aria-labelledby="status-title" hidden>
+      <div class="status-head">
+        <div><p class="eyebrow">MY REQUEST</p><h2 id="status-title">최근 접수 상태</h2></div>
+        <button id="refresh-status" type="button">새로고침</button>
+      </div>
+      <p class="status-ticket">접수번호 <strong id="status-ticket-number"></strong></p>
+      <ol id="status-steps" class="status-steps">
+        <li data-status="received">접수 완료</li>
+        <li data-status="acknowledged">담당자 확인</li>
+        <li data-status="investigating">사실 확인 중</li>
+        <li data-status="resolved">처리 완료</li>
+        <li data-status="answered">답변 완료</li>
+      </ol>
+      <div id="public-reply" class="public-reply" hidden>
+        <strong>담당자 답변</strong>
+        <p></p>
+      </div>
+    </section>
+
+    <section class="service-standard" aria-labelledby="standard-title">
+      <h2 id="standard-title">접수 후 이렇게 처리합니다</h2>
+      <div class="standard-grid">
+        <div><strong>접수 즉시</strong><span>접수번호 안내</span></div>
+        <div><strong>영업일 1일 이내</strong><span>담당자 확인</span></div>
+        <div><strong>영업일 3일 이내</strong><span>일반 의견 처리</span></div>
+        <div><strong>확인 필요 시</strong><span>7일 이내 진행 안내</span></div>
+      </div>
+      <p>안전·사고 관련 의견은 우선 확인 대상으로 분류됩니다.</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

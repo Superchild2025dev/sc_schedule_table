@@ -120,6 +120,15 @@ service cloud.firestore {
       allow read, write: if canManageReferrals(branch);
     }
 
+    match /customerVoice/{branch}/tickets/{ticketId} {
+      allow read, update: if canManageSchedule(branch);
+      allow create, delete: if false;
+    }
+
+    match /customerVoiceRateLimits/{document=**} {
+      allow read, write: if false;
+    }
+
     match /publicRegularAvailability/{branch} {
       allow get: if branch in ["gagyeong", "yongam"];
       allow list: if false;

@@ -14,6 +14,23 @@
   const MOVE_KEY='swim_move';
   const REQUESTS_KEY='swim_requests';
   const PUBLIC_BASE_URL='https://schedule.adminsuperchild.cloud';
+  const VOICE_STATUS_LABELS={
+    received:'접수 완료',
+    acknowledged:'담당자 확인',
+    investigating:'사실 확인 중',
+    resolved:'처리 완료',
+    answered:'답변 완료',
+  };
+  const VOICE_CATEGORY_LABELS={
+    praise:'칭찬',
+    suggestion:'개선 제안',
+    inconvenience:'이용 불편',
+    staff:'직원 응대',
+    safety:'안전·사고',
+  };
+  const VOICE_CLASS_LABELS={
+    regular:'정규 수업',special:'방학특강',vehicle:'차량 이용',facility:'시설 이용',other:'기타'
+  };
   const REG_BASE={
     days:['월','화','수','목','금','토'],
     times:['1시','2시','3시','4시','5시','6시','7시','8시'],
@@ -96,7 +113,7 @@
   ];
   const PANEL_META={
     menu:{title:'운영 도구',section:'운영'},
-    feedback:{title:'의견접수',section:'운영'},
+    feedback:{title:'고객의 소리',section:'운영'},
     students:{title:'원생목록',section:'원생'},
     recipients:{title:'수신번호',section:'메시지'},
     templates:{title:'알림톡 템플릿',section:'메시지'},
@@ -111,6 +128,9 @@
   let settingsByBranch={};
   let teacherNamesByBranch={};
   let feedbackByBranch={};
+  let voiceTicketsByBranch={};
+  let voiceTicketUnsubscribe=null;
+  let voiceTicketBranch='';
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
   let studentDirectoryByBranch={};
@@ -294,11 +314,23 @@
   function feedbackList(branchId){
     return feedbackByBranch[branchId]||[];
   }
+  function normalizeVoiceTicket(doc){
+    const data=doc&&typeof doc.data==='function'?doc.data():(doc||{});
+    return Object.assign({
+      id:doc&&doc.id||data.id||'',ticketNumber:'',mode:'anonymous',category:'suggestion',classType:'other',
+      visitDate:'',timeRange:'',teacherName:'',message:'',status:'received',priority:'normal',
+      contact:null,memberVerified:false,internalNote:'',publicReply:'',createdAt:null,updatedAt:null,
+    },data,{id:doc&&doc.id||data.id||''});
+  }
+  function voiceTicketList(branchId){return voiceTicketsByBranch[branchId]||[];}
+  function voiceReceivedCount(branchId){
+    return voiceTicketList(branchId).filter(item=>item.status==='received').length;
+  }
   function isNewFeedback(item){
     return String(item&&item.status||'new')!=='done';
   }
   function feedbackNewCount(branchId){
-    return feedbackList(branchId).filter(isNewFeedback).length;
+    return feedbackList(branchId).filter(isNewFeedback).length+voiceReceivedCount(branchId);
   }
   function formatFeedbackDate(iso){
     if(!iso) return '-';
@@ -349,6 +381,17 @@
       || key.startsWith('zz_swim_audit_entry__')
       || key.startsWith('zz_swim_restore_point__')
       || key.startsWith('zz_swim_student_delete__');
+  }
+  function formatVoiceDate(value){
+    if(!value) return '-';
+    const date=value&&typeof value.toDate==='function'?value.toDate():new Date(value||0);
+    if(Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+  }
+  function maskVoicePhone(phone){
+    const digits=String(phone||'').replace(/\D/g,'');
+    if(digits.length<8) return digits||'-';
+    return `${digits.slice(0,3)}-${digits.slice(3,5)}**-${digits.slice(-4)}`;
   }
   function backupStatus(message,type){
     const el=$('backup-status');
@@ -2111,6 +2154,7 @@
     }catch(e){}
     if(activePanel==='students') loadStudentDirectory(false);
     if(activePanel==='backup') updateSummerLayoutPanel();
+    if(activePanel==='feedback') subscribeVoiceTickets(false);
     if(activePanel==='dataV2') subscribeV2Monitor(false);
     else stopV2Monitor();
   }
@@ -2127,6 +2171,7 @@
     if(settingsByBranch[activeBranch]&&teacherNamesByBranch[activeBranch]) renderAll();
     else loadBranchBundle(activeBranch);
     if(activePanel==='students') loadStudentDirectory(false);
+    subscribeVoiceTickets(true);
     if(activePanel==='dataV2') subscribeV2Monitor(false);
   }
   function renderAll(){
@@ -2139,6 +2184,7 @@
     renderAligo(data);
     renderSms(data);
     renderFeedback();
+    renderVoiceTickets();
     renderStudentDirectory();
     renderVariableGuide();
     updateFeedbackBadges();
@@ -2666,6 +2712,142 @@
     }catch(e){
       window.prompt('링크 복사',link);
     }
+  }
+  function stopVoiceTickets(){
+    if(typeof voiceTicketUnsubscribe==='function') voiceTicketUnsubscribe();
+    voiceTicketUnsubscribe=null;
+    voiceTicketBranch='';
+  }
+  function subscribeVoiceTickets(force){
+    if(!can('manageSettings')) return;
+    if(!force&&voiceTicketUnsubscribe&&voiceTicketBranch===activeBranch) return;
+    stopVoiceTickets();
+    ensureFirebase();
+    const branchId=activeBranch;
+    voiceTicketBranch=branchId;
+    const wrap=$('voice-ticket-list');
+    if(wrap) wrap.innerHTML='<div class="feedback-empty">고객의 소리를 불러오는 중입니다...</div>';
+    const query=firebase.firestore()
+      .collection('customerVoice').doc(branchId).collection('tickets')
+      .orderBy('createdAt','desc').limit(100);
+    voiceTicketUnsubscribe=query.onSnapshot(snapshot=>{
+      if(voiceTicketBranch!==branchId) return;
+      voiceTicketsByBranch[branchId]=snapshot.docs.map(normalizeVoiceTicket);
+      renderVoiceTickets();
+      updateFeedbackBadges();
+    },error=>{
+      console.error('customer voice load failed',error);
+      if(wrap) wrap.innerHTML='<div class="feedback-empty">고객의 소리를 불러오지 못했습니다. 권한과 연결 상태를 확인해주세요.</div>';
+    });
+  }
+  function voiceFilteredList(){
+    const search=String($('voice-search')?.value||'').trim().toLowerCase();
+    const status=$('voice-status-filter')?.value||'';
+    const category=$('voice-category-filter')?.value||'';
+    return voiceTicketList(activeBranch).filter(item=>{
+      if(status&&item.status!==status) return false;
+      if(category&&item.category!==category) return false;
+      if(!search) return true;
+      const contact=item.contact||{};
+      const haystack=[item.ticketNumber,item.message,item.teacherName,contact.studentName,contact.phone].join(' ').toLowerCase();
+      return haystack.includes(search);
+    });
+  }
+  function voiceStatusOptions(ticket){
+    return Object.entries(VOICE_STATUS_LABELS)
+      .filter(([status])=>ticket.mode==='reply'||status!=='answered')
+      .map(([status,label])=>`<option value="${status}" ${ticket.status===status?'selected':''}>${label}</option>`)
+      .join('');
+  }
+  function renderVoiceTickets(){
+    const all=voiceTicketList(activeBranch);
+    const received=all.filter(item=>item.status==='received').length;
+    const progress=all.filter(item=>item.status==='acknowledged'||item.status==='investigating').length;
+    const resolved=all.filter(item=>item.status==='resolved'||item.status==='answered').length;
+    if($('voice-received-count')) $('voice-received-count').textContent=String(received);
+    if($('voice-progress-count')) $('voice-progress-count').textContent=String(progress);
+    if($('voice-resolved-count')) $('voice-resolved-count').textContent=String(resolved);
+    if($('voice-total-count')) $('voice-total-count').textContent=String(all.length);
+    const wrap=$('voice-ticket-list');
+    if(!wrap) return;
+    const list=voiceFilteredList();
+    if(!list.length){
+      wrap.innerHTML=`<div class="feedback-empty">${all.length?'조건에 맞는 접수가 없습니다.':'아직 접수된 고객의 소리가 없습니다.'}</div>`;
+      return;
+    }
+    wrap.innerHTML=list.map(item=>{
+      const contact=item.contact||{};
+      const isReply=item.mode==='reply';
+      const modeLabel=isReply?'답변 요청':'익명';
+      const categoryLabel=VOICE_CATEGORY_LABELS[item.category]||'의견';
+      const classLabel=VOICE_CLASS_LABELS[item.classType]||'기타';
+      const visit=[item.visitDate,item.timeRange].filter(Boolean).join(' ')||'이용일 미입력';
+      const teacher=item.teacherName?` · 담당 ${item.teacherName}`:'';
+      const contactHtml=isReply
+        ? `<div class="voice-ticket-contact"><span>회원 확인 완료</span><strong>${esc(contact.studentName||'-')}</strong><span data-voice-phone>${esc(maskVoicePhone(contact.phone))}</span><button type="button" class="mini-btn" data-voice-reveal data-phone="${escAttr(contact.phone||'')}">연락처 보기</button></div>`
+        : '';
+      const replyField=isReply
+        ? `<label>고객에게 보이는 답변<textarea data-voice-public-reply maxlength="1500" placeholder="처리 결과를 이해하기 쉽게 적어주세요.">${esc(item.publicReply||'')}</textarea></label>`
+        : `<label>개별 답변<textarea disabled>익명 접수는 개별 답변 없이 처리 완료 상태로 관리합니다.</textarea></label>`;
+      return `<article class="voice-ticket ${item.status==='received'?'is-new':''} ${item.priority==='urgent'?'is-urgent':''}" data-voice-ticket-id="${escAttr(item.id)}">
+        <div class="voice-ticket-summary">
+          <div class="voice-ticket-main">
+            <div class="voice-ticket-title">
+              <strong>${esc(item.ticketNumber||item.id)}</strong>
+              <span class="voice-chip ${isReply?'reply':'anonymous'}">${modeLabel}</span>
+              <span class="voice-chip ${item.category==='safety'?'safety':''}">${categoryLabel}</span>
+            </div>
+            <div class="voice-ticket-meta">${esc(formatVoiceDate(item.createdAt))} · ${esc(classLabel)} · ${esc(visit)}${esc(teacher)}</div>
+          </div>
+          <div class="voice-ticket-state"><select data-voice-status aria-label="처리 상태">${voiceStatusOptions(item)}</select></div>
+        </div>
+        <div class="voice-ticket-body">
+          ${contactHtml}
+          <p class="voice-ticket-message">${esc(item.message||'')}</p>
+          <div class="voice-ticket-fields">
+            <label>내부 메모 (고객 미공개)<textarea data-voice-internal-note maxlength="1500" placeholder="확인 내용, 담당자, 후속 조치를 기록하세요.">${esc(item.internalNote||'')}</textarea></label>
+            ${replyField}
+          </div>
+          <div class="voice-ticket-footer"><small>마지막 수정 ${esc(formatVoiceDate(item.updatedAt))}</small><button type="button" class="voice-save" data-voice-save>상태와 메모 저장</button></div>
+        </div>
+      </article>`;
+    }).join('');
+  }
+  async function saveVoiceTicket(card,button){
+    if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','고객의 소리 처리')) return;
+    const ticketId=card?.dataset.voiceTicketId||'';
+    if(!ticketId) return;
+    const status=card.querySelector('[data-voice-status]')?.value||'received';
+    const internalNote=String(card.querySelector('[data-voice-internal-note]')?.value||'').trim().slice(0,1500);
+    const publicReply=String(card.querySelector('[data-voice-public-reply]')?.value||'').trim().slice(0,1500);
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const original=button.textContent;
+    try{
+      if(status==='answered'&&!publicReply){
+        toast('답변 완료로 바꾸려면 고객 답변을 입력해주세요','err');
+        return;
+      }
+      button.disabled=true;button.textContent='저장 중';
+      const ref=firebase.firestore().collection('customerVoice').doc(activeBranch).collection('tickets').doc(ticketId);
+      const current=voiceTicketList(activeBranch).find(item=>item.id===ticketId);
+      const patch={
+        status,internalNote,publicReply,
+        handledBy:profile&&profile.name||profile&&profile.email||'',
+        updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
+      };
+      if(!current||current.status!==status){
+        patch.statusHistory=firebase.firestore.FieldValue.arrayUnion({status,at:new Date().toISOString(),by:patch.handledBy||'staff'});
+        if(current?.mode==='reply'&&(status==='resolved'||status==='answered')){
+          patch.contactDeleteAfter=firebase.firestore.Timestamp.fromMillis(Date.now()+1000*60*60*24*90);
+        }else if(current?.mode==='reply'){
+          patch.contactDeleteAfter=firebase.firestore.FieldValue.delete();
+        }
+      }
+      await ref.update(patch);
+      toast('고객의 소리 처리 내용을 저장했습니다','ok');
+    }catch(error){
+      console.error(error);toast('처리 내용 저장 실패','err');
+    }finally{button.disabled=false;button.textContent=original;}
   }
   function renderFeedback(){
     const list=feedbackList(activeBranch);
@@ -3197,8 +3379,27 @@ th{background:#D9EAD3;font-weight:700}
       e.preventDefault();
       saveStudentPhone(input.dataset.studentPhoneInput);
     });
-    $('feedback-refresh').addEventListener('click',()=>reloadFeedback(false));
+    $('feedback-open-page')?.addEventListener('click',()=>window.open(`voice/?branch=${activeBranch}`,'_blank','noopener'));
+    $('feedback-refresh').addEventListener('click',()=>{
+      reloadFeedback(false);
+      subscribeVoiceTickets(true);
+    });
     $('feedback-mark-all').addEventListener('click',markAllFeedbackDone);
+    $('voice-search')?.addEventListener('input',renderVoiceTickets);
+    $('voice-status-filter')?.addEventListener('change',renderVoiceTickets);
+    $('voice-category-filter')?.addEventListener('change',renderVoiceTickets);
+    $('voice-ticket-list')?.addEventListener('click',event=>{
+      const reveal=event.target.closest('[data-voice-reveal]');
+      if(reveal){
+        const card=reveal.closest('[data-voice-ticket-id]');
+        const phone=card?.querySelector('[data-voice-phone]');
+        if(phone) phone.textContent=reveal.dataset.phone||'-';
+        reveal.remove();
+        return;
+      }
+      const save=event.target.closest('[data-voice-save]');
+      if(save) saveVoiceTicket(save.closest('[data-voice-ticket-id]'),save);
+    });
     $('feedback-list').addEventListener('click',e=>{
       const btn=e.target.closest('[data-feedback-action]');
       if(!btn) return;

@@ -70,7 +70,7 @@
     <div class="settings-nav-group">
       <div class="settings-nav-label">운영</div>
       <button type="button" class="nav-btn active" data-panel="menu">운영 도구</button>
-      <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">의견접수 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
+      <button type="button" class="nav-btn" data-panel="feedback" data-perm="manageSettings">고객의 소리 <span class="nav-badge" id="feedback-nav-badge" hidden>0</span></button>
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">원생</div>
@@ -123,7 +123,7 @@
             <span>보강 요청</span><small>접수·승인 현황</small>
           </button>
           <button type="button" class="quick-btn" data-panel-jump="feedback" data-perm="manageSettings">
-            <span>의견접수 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>오류·불편사항</small>
+            <span>고객의 소리 <em class="quick-badge" id="feedback-quick-badge" hidden>0</em></span><small>접수·처리·답변 관리</small>
           </button>
           <button type="button" class="quick-btn" data-panel-jump="students" data-perm="manageSettings">
             <span>원생목록</span><small>검색·필터·엑셀</small>
@@ -301,23 +301,57 @@
     <section class="settings-panel" id="panel-feedback" data-perm="manageSettings">
       <div class="panel-head">
         <div>
-          <h1>의견접수</h1>
-          <p>학부모 페이지에서 남긴 오류 보고와 불편사항을 확인합니다.</p>
+          <h1>고객의 소리</h1>
+          <p>익명 의견과 답변 요청을 접수부터 처리 완료까지 관리합니다.</p>
         </div>
         <div class="panel-actions">
+          <button type="button" class="ghost-btn" id="feedback-open-page">공개 페이지 보기</button>
           <button type="button" class="ghost-btn" id="feedback-refresh">새로고침</button>
-          <button type="button" class="primary-btn" id="feedback-mark-all">전체 확인완료</button>
         </div>
       </div>
 
-      <div class="feedback-summary">
-        <div><strong id="feedback-new-count">0</strong><span>새 접수</span></div>
-        <div><strong id="feedback-total-count">0</strong><span>전체</span></div>
+      <div class="feedback-summary voice-summary">
+        <div><strong id="voice-received-count">0</strong><span>새 접수</span></div>
+        <div><strong id="voice-progress-count">0</strong><span>확인·처리 중</span></div>
+        <div><strong id="voice-resolved-count">0</strong><span>처리·답변 완료</span></div>
+        <div><strong id="voice-total-count">0</strong><span>최근 100건</span></div>
       </div>
 
-      <div class="feedback-list" id="feedback-list">
-        <div class="feedback-empty">의견을 불러오는 중입니다...</div>
+      <div class="voice-filter-bar">
+        <input id="voice-search" type="search" placeholder="접수번호, 내용, 원생 이름 검색" aria-label="고객의 소리 검색">
+        <select id="voice-status-filter" aria-label="처리 상태 필터">
+          <option value="">모든 처리 상태</option>
+          <option value="received">접수 완료</option>
+          <option value="acknowledged">담당자 확인</option>
+          <option value="investigating">사실 확인 중</option>
+          <option value="resolved">처리 완료</option>
+          <option value="answered">답변 완료</option>
+        </select>
+        <select id="voice-category-filter" aria-label="의견 유형 필터">
+          <option value="">모든 의견 유형</option>
+          <option value="praise">칭찬</option>
+          <option value="suggestion">개선 제안</option>
+          <option value="inconvenience">이용 불편</option>
+          <option value="staff">직원 응대</option>
+          <option value="safety">안전·사고</option>
+        </select>
       </div>
+
+      <div class="voice-ticket-list" id="voice-ticket-list">
+        <div class="feedback-empty">고객의 소리를 불러오는 중입니다...</div>
+      </div>
+
+      <details class="legacy-feedback">
+        <summary>기존 오류·의견 기록 <span id="feedback-total-count">0</span>건</summary>
+        <div class="legacy-feedback-head">
+          <span>기존 학부모 페이지에서 접수된 기록입니다.</span>
+          <button type="button" class="mini-btn" id="feedback-mark-all">새 접수 전체 확인</button>
+        </div>
+        <strong id="feedback-new-count" class="legacy-new-count" hidden>0</strong>
+        <div class="feedback-list" id="feedback-list">
+          <div class="feedback-empty">기존 의견을 불러오는 중입니다...</div>
+        </div>
+      </details>
     </section>
 
     <section class="settings-panel" id="panel-dataV2" data-perm="manageSettings">

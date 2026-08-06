@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const {onCall, onRequest, HttpsError} = require("firebase-functions/v2/https");
 const {onDocumentWritten} = require("firebase-functions/v2/firestore");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore");
@@ -20,6 +21,29 @@ const AUDIT_LOG_MAX = 200;
 const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
 const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
+const CUSTOMER_VOICE_COLLECTION = "customerVoice";
+const CUSTOMER_VOICE_RATE_COLLECTION = "customerVoiceRateLimits";
+const CUSTOMER_VOICE_STATUS = new Set([
+  "received",
+  "acknowledged",
+  "investigating",
+  "resolved",
+  "answered",
+]);
+const CUSTOMER_VOICE_CATEGORY = new Set([
+  "praise",
+  "suggestion",
+  "inconvenience",
+  "staff",
+  "safety",
+]);
+const CUSTOMER_VOICE_CLASS_TYPE = new Set([
+  "regular",
+  "special",
+  "vehicle",
+  "facility",
+  "other",
+]);
 const PUBLIC_AVAILABILITY_SOURCE_KEYS = new Set([
   "swim_students",
   "swim_inst",
@@ -185,6 +209,172 @@ function safeBranch(input) {
   const id = String(input || "").trim();
   if (!BRANCHES[id]) throw new HttpsError("invalid-argument", "지점 정보가 올바르지 않습니다");
   return BRANCHES[id];
+}
+
+function cleanVoiceText(value, maxLength) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function customerVoiceTicketCollection(branch) {
+  return db.collection(CUSTOMER_VOICE_COLLECTION).doc(branch.id).collection("tickets");
+}
+
+function customerVoiceRequestIp(request) {
+  const raw = request && request.rawRequest;
+  const forwarded = String(raw && raw.headers && raw.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || String(raw && raw.ip || "unknown");
+}
+
+function customerVoiceRateRef(request) {
+  const hour = new Date().toISOString().slice(0, 13);
+  const fingerprint = crypto.createHash("sha256")
+    .update(`sc-customer-voice|${customerVoiceRequestIp(request)}|${hour}`)
+    .digest("hex");
+  return db.collection(CUSTOMER_VOICE_RATE_COLLECTION).doc(fingerprint);
+}
+
+function customerVoiceTicketNumber(branch) {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10).replace(/-/g, "");
+  const branchCode = branch.id === "yongam" ? "YA" : "GG";
+  const random = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `${branchCode}-${date}-${random}`;
+}
+
+function customerVoiceTokenHash(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function customerVoiceTimestampToIso(value) {
+  if (value && typeof value.toDate === "function") return value.toDate().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  return String(value || "");
+}
+
+async function submitCustomerVoice(branch, data, request) {
+  if (cleanVoiceText(data.website, 200)) {
+    throw new HttpsError("invalid-argument", "요청을 처리할 수 없습니다");
+  }
+  const startedAt = Number(data.startedAt || 0);
+  if (startedAt && Date.now() - startedAt < 1500) {
+    throw new HttpsError("resource-exhausted", "잠시 후 다시 제출해주세요");
+  }
+
+  const mode = String(data.mode || "") === "reply" ? "reply" : "anonymous";
+  const category = CUSTOMER_VOICE_CATEGORY.has(String(data.category || ""))
+    ? String(data.category)
+    : "suggestion";
+  const classType = CUSTOMER_VOICE_CLASS_TYPE.has(String(data.classType || ""))
+    ? String(data.classType)
+    : "other";
+  const message = cleanVoiceText(data.message, 2000);
+  const teacherName = cleanVoiceText(data.teacherName, 40);
+  const visitDate = /^\d{4}-\d{2}-\d{2}$/.test(String(data.visitDate || ""))
+    ? String(data.visitDate)
+    : "";
+  const timeRange = cleanVoiceText(data.timeRange, 30);
+  const sourceContext = cleanVoiceText(data.context, 80);
+  if (message.length < 10) {
+    throw new HttpsError("invalid-argument", "의견 내용을 10자 이상 입력해주세요");
+  }
+
+  let contact = null;
+  let memberVerified = false;
+  if (mode === "reply") {
+    if (data.privacyConsent !== true) {
+      throw new HttpsError("failed-precondition", "개인정보 수집·이용 동의가 필요합니다");
+    }
+    const studentName = cleanVoiceText(data.studentName, 40);
+    const phone = normalizePhone(data.phone);
+    if (!studentName || phone.length < 10) {
+      throw new HttpsError("invalid-argument", "원생 이름과 휴대전화 번호를 확인해주세요");
+    }
+    const found = await findParentStudentSet(branch, studentName, phone);
+    if (!found) {
+      throw new HttpsError("not-found", "등록된 회원 정보를 확인할 수 없습니다");
+    }
+    contact = {studentName, phone};
+    memberVerified = true;
+  }
+
+  const ticketRef = customerVoiceTicketCollection(branch).doc();
+  const ticketNumber = customerVoiceTicketNumber(branch);
+  const lookupToken = crypto.randomBytes(24).toString("base64url");
+  const nowIso = new Date().toISOString();
+  const rateRef = customerVoiceRateRef(request);
+  await db.runTransaction(async tx => {
+    const rateSnap = await tx.get(rateRef);
+    const count = Number(rateSnap.exists && rateSnap.data().count || 0);
+    if (count >= 5) {
+      throw new HttpsError("resource-exhausted", "접수가 너무 많습니다. 잠시 후 다시 시도해주세요");
+    }
+    tx.set(rateRef, {
+      count: count + 1,
+      updatedAt: FieldValue.serverTimestamp(),
+      expiresAt: Timestamp.fromMillis(Date.now() + 1000 * 60 * 60 * 2),
+    }, {merge: true});
+    tx.create(ticketRef, {
+      ticketNumber,
+      branchId: branch.id,
+      branchName: branch.name,
+      mode,
+      category,
+      classType,
+      visitDate,
+      timeRange,
+      teacherName,
+      message,
+      sourceContext,
+      status: "received",
+      priority: category === "safety" ? "urgent" : "normal",
+      memberVerified,
+      contact,
+      lookupTokenHash: customerVoiceTokenHash(lookupToken),
+      internalNote: "",
+      publicReply: "",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      statusHistory: [{status: "received", at: nowIso, by: "customer"}],
+    });
+  });
+
+  return {
+    ok: true,
+    ticketId: ticketRef.id,
+    ticketNumber,
+    lookupToken,
+    status: "received",
+  };
+}
+
+async function getCustomerVoiceStatus(branch, data) {
+  const ticketId = cleanVoiceText(data.ticketId, 100);
+  const lookupToken = cleanVoiceText(data.lookupToken, 200);
+  if (!ticketId || !lookupToken) {
+    throw new HttpsError("invalid-argument", "접수 조회 정보가 올바르지 않습니다");
+  }
+  const snap = await customerVoiceTicketCollection(branch).doc(ticketId).get();
+  if (!snap.exists) throw new HttpsError("not-found", "접수 내역을 찾을 수 없습니다");
+  const ticket = snap.data() || {};
+  const expected = Buffer.from(String(ticket.lookupTokenHash || ""));
+  const actual = Buffer.from(customerVoiceTokenHash(lookupToken));
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    throw new HttpsError("permission-denied", "접수 조회 정보가 올바르지 않습니다");
+  }
+  const status = CUSTOMER_VOICE_STATUS.has(String(ticket.status || ""))
+    ? String(ticket.status)
+    : "received";
+  return {
+    ok: true,
+    ticketNumber: String(ticket.ticketNumber || ""),
+    status,
+    mode: ticket.mode === "reply" ? "reply" : "anonymous",
+    publicReply: cleanVoiceText(ticket.publicReply, 1500),
+    updatedAt: customerVoiceTimestampToIso(ticket.updatedAt),
+  };
 }
 
 function kvDoc(branch, key) {
@@ -1490,6 +1680,58 @@ exports.parentPortal = onCall({
   if (action === "cancelBogang") return cancelBogang(branch, data);
   if (action === "notifyStaffRequestProcessed") return notifyStaffRequestProcessed(branch, data, request);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
+});
+
+exports.customerVoice = onCall({
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  cors: [
+    "https://schedule.adminsuperchild.cloud",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+  ],
+}, async request => {
+  const data = request.data || {};
+  const branch = safeBranch(data.branch);
+  const action = String(data.action || "submit");
+  if (action === "submit") return submitCustomerVoice(branch, data, request);
+  if (action === "status") return getCustomerVoiceStatus(branch, data);
+  throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
+});
+
+exports.purgeCustomerVoiceContacts = onSchedule({
+  schedule: "every day 03:00",
+  timeZone: "Asia/Seoul",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async () => {
+  const snapshots = await Promise.all(Object.values(BRANCHES).map(branch =>
+    customerVoiceTicketCollection(branch)
+      .where("contactDeleteAfter", "<=", Timestamp.now())
+      .limit(150)
+      .get()
+  ));
+  const docs = snapshots.flatMap(snapshot => snapshot.docs);
+  if (docs.length) {
+    const batch = db.batch();
+    docs.forEach(doc => {
+      batch.update(doc.ref, {
+        contact: null,
+        contactPurgedAt: FieldValue.serverTimestamp(),
+        contactDeleteAfter: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+  }
+  const expiredRates = await db.collection(CUSTOMER_VOICE_RATE_COLLECTION)
+    .where("expiresAt", "<=", Timestamp.now())
+    .limit(400)
+    .get();
+  if (!expiredRates.empty) {
+    const rateBatch = db.batch();
+    expiredRates.docs.forEach(doc => rateBatch.delete(doc.ref));
+    await rateBatch.commit();
+  }
+  return null;
 });
 
 exports.refreshRegularAvailability = onDocumentWritten({

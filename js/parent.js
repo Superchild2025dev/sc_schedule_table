@@ -219,18 +219,11 @@ function currentFeedbackStudent(){
 
 function openFeedbackModal(context){
   _feedbackContext=context||'의견 제출';
-  const modal=document.getElementById('feedback-modal');
-  const ctx=document.getElementById('feedback-context');
-  const msg=document.getElementById('feedback-message');
-  const name=document.getElementById('feedback-name');
-  const phone=document.getElementById('feedback-phone');
-  const student=currentFeedbackStudent();
-  if(ctx) ctx.textContent=`${_feedbackContext}에 대한 오류나 의견을 남겨주세요.`;
-  if(msg) msg.value='';
-  if(name) name.value=student.name||'';
-  if(phone) phone.value=student.phone||'';
-  if(modal) modal.style.display='flex';
-  setTimeout(()=>msg&&msg.focus(),40);
+  const branch=getBranchInfo();
+  const params=new URLSearchParams();
+  if(branch&&branch.id) params.set('branch',branch.id);
+  params.set('context',_feedbackContext);
+  location.href='voice/?'+params.toString();
 }
 
 function closeFeedbackModal(){
