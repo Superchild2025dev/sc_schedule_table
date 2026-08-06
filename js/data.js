@@ -4092,8 +4092,9 @@ function clearMarkEntryTx(markKey){
   delete MARK_MAP[markKey];
   return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
 }
+const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
 function updateAttendanceMapTx(mutator){
-  return _txJSONMap(_attendanceStorageKey('attendance'),ATTENDANCE,next=>{ATTENDANCE=next;},mutator);
+  return _txJSONMap(_attendanceStorageKey('attendance'),ATTENDANCE,next=>{ATTENDANCE=next;},mutator,ATTENDANCE_TX_META);
 }
 function setAttendanceEntryTx(attKey,val){
   if(val===undefined||val===null) delete ATTENDANCE[attKey];
@@ -4105,7 +4106,7 @@ function setAttendanceEntryTx(attKey,val){
   });
 }
 function updateAttGuestsMapTx(mutator){
-  return _txJSONMap(_attendanceStorageKey('attGuests'),ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator);
+  return _txJSONMap(_attendanceStorageKey('attGuests'),ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator,ATTENDANCE_TX_META);
 }
 function setAttGuestsEntryTx(guestKey,list){
   if(list&&list.length) ATT_GUESTS[guestKey]=list;

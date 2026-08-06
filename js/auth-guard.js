@@ -256,6 +256,7 @@
 
     if(key === 'swim_mark' || key === 'swim_requests' || key === 'swim_attendance' ||
        key === 'swim_att_guests' || key === 'swim_day_snapshot' ||
+       /^swim_bt_(attendance|att_guests|day_snapshot)_.+/.test(key) ||
        /^zz_swim_day_snapshot__/.test(key)){
       return hasPermission('teacherRequests') || hasPermission('attendanceCheck');
     }

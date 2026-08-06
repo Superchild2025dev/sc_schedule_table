@@ -73,6 +73,9 @@ service cloud.firestore {
         || docId == "swim_attendance"
         || docId == "swim_att_guests"
         || docId == "swim_day_snapshot"
+        || docId.matches("^swim_bt_attendance_.*$")
+        || docId.matches("^swim_bt_att_guests_.*$")
+        || docId.matches("^swim_bt_day_snapshot_.*$")
         || docId == "zz_swim_audit_index"
         || docId.matches("^zz_swim_day_snapshot__.*$")
         || docId.matches("^zz_swim_audit_entry__.*$");
