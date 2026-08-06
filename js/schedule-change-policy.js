@@ -116,11 +116,19 @@
   }
 
   function reservationKind(entry,context){
+    const options=context&&typeof context==='object'?context:{};
+    if(options.forceMove){
+      if(entry&&typeof entry==='object'&&text(entry.excludeReason)==='reduce') return 'reduce';
+      return 'move';
+    }
     if(isActualRetirement(entry,context)) return 'retire';
     if(entry&&typeof entry==='object'){
       if(text(entry.excludeReason)==='reduce') return 'reduce';
       if(isMoveEntry(entry,context)) return 'move';
+      if(text(entry.retireType)==='exclude') return 'exclude';
     }
+    const defaultKind=text(options.defaultKind);
+    if(Object.prototype.hasOwnProperty.call(LABELS,defaultKind)) return defaultKind;
     return 'exclude';
   }
 

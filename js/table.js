@@ -2769,13 +2769,11 @@ function _retireReservationKindLabel(entry,slotKey,fallback){
   });
 }
 function _summaryRetireStatus(entry,isChange){
-  const source=entry&&typeof entry==='object'?entry:{};
-  const effective=isChange
-    ? {...source,retireType:'exclude',excludeReason:source.excludeReason==='reduce'?'reduce':'move'}
-    : entry;
-  if(!isChange&&entry&&typeof entry==='object'
-    &&!entry.retireType&&!entry.excludeReason&&!_summaryIsMoveEntry(entry)) return '퇴원예정';
-  return SCScheduleChangePolicy.reservationStatus(effective,{isMoveEntry:_summaryIsMoveEntry});
+  return SCScheduleChangePolicy.reservationStatus(entry,{
+    isMoveEntry:_summaryIsMoveEntry,
+    forceMove:!!isChange,
+    defaultKind:'retire',
+  });
 }
 function _summaryEnrollStatus(entry){
   return '등록예정';

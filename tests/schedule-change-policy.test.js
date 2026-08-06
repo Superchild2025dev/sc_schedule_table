@@ -76,6 +76,22 @@ test('reservation labels and statuses share the same classification', () => {
   assert.equal(policy.reservationStatus({retireType:'exclude'}), '제외예정');
 });
 
+test('paired enrollment forces move status without overriding reduced frequency', () => {
+  assert.equal(policy.reservationStatus({retireType:'retire'}, {forceMove:true}), '이동예정');
+  assert.equal(policy.reservationStatus(
+    {retireType:'exclude', excludeReason:'reduce'},
+    {forceMove:true}
+  ), '횟수줄임예정');
+});
+
+test('legacy summary can default to retirement without overriding explicit exclusion', () => {
+  assert.equal(policy.reservationStatus({ds:'2026-08-31'}, {defaultKind:'retire'}), '퇴원예정');
+  assert.equal(policy.reservationStatus(
+    {ds:'2026-08-31', retireType:'exclude'},
+    {defaultKind:'retire'}
+  ), '제외예정');
+});
+
 test('visible lower-record reason prioritizes retirement and movement', () => {
   const from = {dayToken:'월', time:'4시', lane:'1', row:'1'};
 
@@ -177,4 +193,28 @@ test('lower schedule records delegate classification to the shared policy', () =
   assert.match(visible,/SCScheduleChangePolicy\.visibleChangeReason/);
   assert.match(suppress,/SCScheduleChangePolicy\.shouldSuppressGenericDelete/);
   assert.doesNotMatch(suppress,/예약\\s\*|시간변경\|반변경\|일정변경/);
+});
+
+test('operational compatibility wrappers cannot reintroduce raw change-kind rules', () => {
+  const data=readRepoFile(path.join('js','data.js'));
+  const table=readRepoFile(path.join('js','table.js'));
+  const popup=readRepoFile(path.join('js','popup-stu.js'));
+  const wrappers=[
+    functionSource(data,'_scheduleAuditMovementReason','_scheduleAuditDisappearanceReason'),
+    functionSource(data,'_scheduleAuditIsActualRetire','_scheduleAuditVisibleReason'),
+    functionSource(data,'_scheduleAuditVisibleReason','_scheduleAuditDisplayTime'),
+    functionSource(data,'_deskNoteIsGenericDeleteFromSpecificOperation','_deskNotesWithoutGenericDeletesFromSpecificOperations'),
+    functionSource(table,'_retireReservationIsActual','_retireReservationSuffix'),
+    functionSource(table,'_retireReservationReason','_retireReservationKindLabel'),
+    functionSource(table,'_retireReservationKindLabel','_summaryRetireStatus'),
+    functionSource(table,'_summaryRetireStatus','_summaryEnrollStatus'),
+    functionSource(popup,'_retireChoiceKind','_popupRetireIsActual'),
+    functionSource(popup,'_popupRetireIsActual','_popupRetireDateLabel'),
+    functionSource(popup,'_popupRetireReasonText','_retireHistoryMatches'),
+  ];
+
+  wrappers.forEach(source=>{
+    assert.match(source,/SCScheduleChangePolicy/);
+    assert.doesNotMatch(source,/retireType\s*===|excludeReason\s*===/);
+  });
 });
