@@ -159,6 +159,11 @@
     this.firestoreInitialized = false;
     this.firestoreVersions = new Map();
     this.firestoreListenerQueue = Promise.resolve();
+    this.firestoreBatchUnsubscribe = null;
+    this.firestoreBatchSubscribers = new Set();
+    this.firestoreBatchInitialized = false;
+    this.firestoreBatchRevision = 0;
+    this.firestoreBatchListenerQueue = Promise.resolve();
   }
 
   FirestoreKVRoot.prototype._doc = function(key){
@@ -748,6 +753,129 @@
       this._stopFirestoreListenerIfIdle();
     };
   };
+  FirestoreKVRoot.prototype._emitFirestoreBatch = function(batch){
+    [...this.firestoreBatchSubscribers].forEach(handlers=>{
+      if(!handlers || typeof handlers.next !== 'function') return;
+      try{ handlers.next(batch); }
+      catch(error){ console.error('[SCFirebaseStore] Firestore batch callback failed:', error); }
+    });
+  };
+  FirestoreKVRoot.prototype._emitFirestoreBatchError = function(error){
+    [...this.firestoreBatchSubscribers].forEach(handlers=>{
+      if(!handlers || typeof handlers.error !== 'function') return;
+      try{ handlers.error(error); }
+      catch(callbackError){ console.error('[SCFirebaseStore] Firestore batch error callback failed:', callbackError); }
+    });
+  };
+  FirestoreKVRoot.prototype._ensureFirestoreBatchListener = function(){
+    if(this.firestoreBatchUnsubscribe) return;
+    this.firestoreBatchInitialized = false;
+    this.firestoreBatchListenerQueue = Promise.resolve();
+    this.firestoreBatchUnsubscribe = this.liveCol.onSnapshot(qs=>{
+      const initialSnapshot=!this.firestoreBatchInitialized;
+      this.firestoreBatchInitialized=true;
+      this.firestoreBatchListenerQueue=this.firestoreBatchListenerQueue.then(()=>{
+        const sourceChanges=[];
+        const currentKeys=new Set();
+        if(initialSnapshot){
+          qs.forEach(doc=>{
+            const item=doc.data()||{};
+            const key=item.key||decodeKey(doc.id);
+            if(deferredRootKey(key)) return;
+            currentKeys.add(key);
+            sourceChanges.push({type:'added',doc});
+          });
+        }else{
+          qs.docChanges().forEach(change=>sourceChanges.push(change));
+        }
+
+        const pendingVersions=[];
+        const removedKeys=[];
+        const readErrors=[];
+        const reads=sourceChanges.map(change=>{
+          const item=change.doc.data()||{};
+          const key=item.key||decodeKey(change.doc.id);
+          if(deferredRootKey(key)) return Promise.resolve(null);
+          if(change.type==='removed'){
+            removedKeys.push(key);
+            return Promise.resolve(null);
+          }
+          const version=storedItemVersion(item);
+          if(!initialSnapshot){
+            const previousVersion=this.firestoreVersions.get(key);
+            if(previousVersion&&version&&previousVersion===version) return Promise.resolve(null);
+          }
+          return this._readStoredValue(key,item).then(value=>{
+            pendingVersions.push([key,version]);
+            return {key,value};
+          }).catch(error=>{
+            readErrors.push({key,error});
+            return null;
+          });
+        });
+
+        if(initialSnapshot){
+          this.firestoreVersions.forEach((version,key)=>{
+            if(!currentKeys.has(key)&&!deferredRootKey(key)) removedKeys.push(key);
+          });
+        }
+
+        return Promise.all(reads).then(items=>{
+          const values={};
+          items.filter(Boolean).forEach(item=>{ values[item.key]=item.value; });
+          pendingVersions.forEach(([key,version])=>this.firestoreVersions.set(key,version));
+          removedKeys.forEach(key=>this.firestoreVersions.delete(key));
+          const changedKeys=[...new Set(Object.keys(values).concat(removedKeys))];
+          if(initialSnapshot||changedKeys.length){
+            const batch={
+              initial:initialSnapshot,
+              revision:++this.firestoreBatchRevision,
+              values,
+              removedKeys:[...new Set(removedKeys)],
+              changedKeys,
+            };
+            this._emitFirestoreBatch(batch);
+            const shadowChanges=Object.assign({},values);
+            batch.removedKeys.forEach(key=>{ shadowChanges[key]=null; });
+            this._scheduleV2Shadow(
+              shadowChanges,
+              initialSnapshot?'initial-batch-listener':'remote-batch-change',
+              initialSnapshot
+            );
+          }
+          readErrors.forEach(item=>{
+            const error=item.error instanceof Error?item.error:new Error(String(item.error||'read failed'));
+            error.scheduleKey=item.key;
+            this._emitFirestoreBatchError(error);
+          });
+        });
+      }).catch(error=>{
+        console.warn('[SCFirebaseStore] Firestore batch listener failed:',error);
+        this._emitFirestoreBatchError(error);
+      });
+    },error=>{
+      this.firestoreBatchUnsubscribe=null;
+      this.firestoreBatchInitialized=false;
+      if(recoverable(error)&&this.fallbackEnabled) this._disable(error);
+      this._emitFirestoreBatchError(error);
+    });
+  };
+  FirestoreKVRoot.prototype.subscribeBatches = function(handlers){
+    const subscriber=handlers&&typeof handlers==='object'?handlers:{};
+    if(typeof subscriber.next!=='function') throw new TypeError('batch next callback is required');
+    this.firestoreBatchSubscribers.add(subscriber);
+    this._ensureFirestoreBatchListener();
+    let active=true;
+    return ()=>{
+      if(!active) return;
+      active=false;
+      this.firestoreBatchSubscribers.delete(subscriber);
+      if(this.firestoreBatchSubscribers.size||!this.firestoreBatchUnsubscribe) return;
+      this.firestoreBatchUnsubscribe();
+      this.firestoreBatchUnsubscribe=null;
+      this.firestoreBatchInitialized=false;
+    };
+  };
   FirestoreKVRoot.prototype._listenFallbackMirror = function(event, cb){
     if(!this.fallbackEnabled || !this.mirrorRTDB) return null;
     const type = event === 'child_removed' ? 'child_removed' : 'child_changed';
@@ -817,6 +945,99 @@
     }
     return new FirestoreKVRoot(branch);
   }
+  function subscribeRootBatches(root,handlers){
+    if(!root) throw new Error('root is required');
+    handlers=handlers&&typeof handlers==='object'?handlers:{};
+    if(typeof handlers.next!=='function') throw new TypeError('batch next callback is required');
+    if(typeof root.subscribeBatches==='function') return root.subscribeBatches(handlers);
+
+    let active=true;
+    let initialPending=true;
+    let revision=0;
+    let flushScheduled=false;
+    const queued=[];
+    const pendingValues={};
+    const pendingRemovals=new Set();
+
+    function report(error){
+      if(active&&typeof handlers.error==='function') handlers.error(error);
+    }
+    function emit(initial,values,removedKeys){
+      if(!active) return;
+      const filtered=filterRootData(values||{},false);
+      const removed=[...new Set((removedKeys||[]).filter(key=>!deferredRootKey(key)))];
+      handlers.next({
+        initial:!!initial,
+        revision:++revision,
+        values:filtered,
+        removedKeys:removed,
+        changedKeys:[...new Set(Object.keys(filtered).concat(removed))],
+      });
+    }
+    function flush(){
+      flushScheduled=false;
+      if(!active||initialPending) return;
+      const keys=Object.keys(pendingValues);
+      const removed=[...pendingRemovals];
+      if(!keys.length&&!removed.length) return;
+      const values={};
+      keys.forEach(key=>{
+        values[key]=pendingValues[key];
+        delete pendingValues[key];
+      });
+      pendingRemovals.clear();
+      emit(false,values,removed);
+    }
+    function scheduleFlush(){
+      if(flushScheduled||initialPending||!active) return;
+      flushScheduled=true;
+      Promise.resolve().then(flush);
+    }
+    function applyEvent(event){
+      const key=String(event.key||'');
+      if(!key||deferredRootKey(key)) return;
+      if(event.type==='child_removed'){
+        delete pendingValues[key];
+        pendingRemovals.add(key);
+      }else{
+        pendingRemovals.delete(key);
+        pendingValues[key]=event.value;
+      }
+      scheduleFlush();
+    }
+    function onChanged(snap){
+      const event={type:'child_changed',key:snap&&snap.key,value:snap&&snap.val?snap.val():null};
+      if(initialPending) queued.push(event);
+      else applyEvent(event);
+    }
+    function onRemoved(snap){
+      const event={type:'child_removed',key:snap&&snap.key,value:null};
+      if(initialPending) queued.push(event);
+      else applyEvent(event);
+    }
+
+    root.on('child_changed',onChanged);
+    root.on('child_removed',onRemoved);
+    Promise.resolve(root.once('value')).then(snapshot=>{
+      if(!active) return;
+      emit(true,snapshot&&typeof snapshot.val==='function'?(snapshot.val()||{}):{},[]);
+      initialPending=false;
+      queued.splice(0).forEach(applyEvent);
+      scheduleFlush();
+    }).catch(report);
+
+    return ()=>{
+      if(!active) return;
+      active=false;
+      if(typeof root.off==='function'){
+        root.off('child_changed',onChanged);
+        root.off('child_removed',onRemoved);
+      }
+      queued.length=0;
+      pendingRemovals.clear();
+      Object.keys(pendingValues).forEach(key=>delete pendingValues[key]);
+    };
+  }
   function inspectBranch(branch){
     if(!branch) throw new Error('branch is required');
     const root = new FirestoreKVRoot(branch);
@@ -857,6 +1078,7 @@
     createBranchRef,
     inspectBranch,
     backfillBranch,
+    subscribeRootBatches,
     useFirestore,
     branchId,
   };

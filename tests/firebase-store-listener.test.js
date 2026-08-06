@@ -21,10 +21,14 @@ function makeSnapshot(docs, changes){
 function createHarness(){
   let currentSnapshot = makeSnapshot([]);
   let listener = null;
+  let listenerError = null;
+  let listenerCount = 0;
   const query = {
     get(){ return Promise.resolve(currentSnapshot); },
-    onSnapshot(next){
+    onSnapshot(next,error){
+      listenerCount += 1;
       listener = next;
+      listenerError = error;
       return ()=>{ listener = null; };
     },
   };
@@ -64,12 +68,18 @@ function createHarness(){
 
   return {
     root,
+    store:context.SCFirebaseStore,
     setSnapshot(snapshot){ currentSnapshot = snapshot; },
     emit(snapshot){
       assert.equal(typeof listener, 'function');
       listener(snapshot);
-      return root.firestoreListenerQueue;
+      return Promise.all([root.firestoreListenerQueue, root.firestoreBatchListenerQueue]);
     },
+    emitError(error){
+      assert.equal(typeof listenerError, 'function');
+      listenerError(error);
+    },
+    listenerCount(){ return listenerCount; },
   };
 }
 
@@ -215,4 +225,154 @@ test('invalid chunked JSON is rejected instead of becoming a null payload', asyn
     }),
     error=>error && error.code === 'invalid-chunked-value'
   );
+});
+
+test('batch subscription emits the initial live documents once', async () => {
+  const harness=createHarness();
+  const students=makeDoc('swim_students', {
+    key:'swim_students',
+    value:'[{"n":"홍길동"}]',
+    updatedAt:{seconds:1,nanoseconds:0},
+  });
+  const teachers=makeDoc('swim_inst', {
+    key:'swim_inst',
+    value:'{"1":"김선생"}',
+    updatedAt:{seconds:1,nanoseconds:1},
+  });
+  const batches=[];
+  harness.root._readStoredValue=async (key,item)=>item.value;
+
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+  await harness.emit(makeSnapshot([students,teachers]));
+
+  assert.equal(batches.length,1);
+  assert.equal(batches[0].initial,true);
+  assert.deepEqual(Object.keys(batches[0].values).sort(),['swim_inst','swim_students']);
+  assert.equal(batches[0].removedKeys.length,0);
+  assert.deepEqual(Array.from(batches[0].changedKeys).sort(),['swim_inst','swim_students']);
+});
+
+test('one Firestore snapshot emits modified documents as one later batch', async () => {
+  const harness=createHarness();
+  const oldStudents=makeDoc('swim_students', {
+    key:'swim_students',value:'[]',updatedAt:{seconds:1,nanoseconds:0},
+  });
+  const oldMarks=makeDoc('swim_mark', {
+    key:'swim_mark',value:'{}',updatedAt:{seconds:1,nanoseconds:0},
+  });
+  const batches=[];
+  harness.root._readStoredValue=async (key,item)=>item.value;
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+  await harness.emit(makeSnapshot([oldStudents,oldMarks]));
+
+  const newStudents=makeDoc('swim_students', {
+    key:'swim_students',value:'[{"n":"변경"}]',updatedAt:{seconds:2,nanoseconds:0},
+  });
+  const newMarks=makeDoc('swim_mark', {
+    key:'swim_mark',value:'{"a":1}',updatedAt:{seconds:2,nanoseconds:1},
+  });
+  await harness.emit(makeSnapshot(
+    [newStudents,newMarks],
+    [{type:'modified',doc:newStudents},{type:'modified',doc:newMarks}]
+  ));
+
+  assert.equal(batches.length,2);
+  assert.equal(batches[1].initial,false);
+  assert.deepEqual(Object.keys(batches[1].values).sort(),['swim_mark','swim_students']);
+  assert.equal(batches[1].values.swim_mark,'{"a":1}');
+});
+
+test('removed documents are delivered only as removed keys', async () => {
+  const harness=createHarness();
+  const doc=makeDoc('swim_mark', {
+    key:'swim_mark',value:'{}',updatedAt:{seconds:1,nanoseconds:0},
+  });
+  const batches=[];
+  harness.root._readStoredValue=async (key,item)=>item.value;
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+  await harness.emit(makeSnapshot([doc]));
+  await harness.emit(makeSnapshot([], [{type:'removed',doc}]));
+
+  assert.deepEqual(Object.keys(batches[1].values),[]);
+  assert.deepEqual(Array.from(batches[1].removedKeys),['swim_mark']);
+  assert.deepEqual(Array.from(batches[1].changedKeys),['swim_mark']);
+});
+
+test('unchanged stored versions are omitted from later batches', async () => {
+  const harness=createHarness();
+  const doc=makeDoc('swim_students', {
+    key:'swim_students',value:'[]',updatedAt:{seconds:3,nanoseconds:4},
+  });
+  const batches=[];
+  let reads=0;
+  harness.root._readStoredValue=async (key,item)=>{
+    reads += 1;
+    return item.value;
+  };
+  harness.root.subscribeBatches({next:batch=>batches.push(batch)});
+  await harness.emit(makeSnapshot([doc]));
+  await harness.emit(makeSnapshot([doc], [{type:'modified',doc}]));
+
+  assert.equal(reads,1);
+  assert.equal(batches.length,1);
+});
+
+test('batch subscriptions share one listener and stop after the last unsubscribe', async () => {
+  const harness=createHarness();
+  const batchesA=[];
+  const batchesB=[];
+  const unsubscribeA=harness.root.subscribeBatches({next:batch=>batchesA.push(batch)});
+  const unsubscribeB=harness.root.subscribeBatches({next:batch=>batchesB.push(batch)});
+
+  assert.equal(harness.listenerCount(),1);
+  await harness.emit(makeSnapshot([]));
+  assert.equal(batchesA.length,1);
+  assert.equal(batchesB.length,1);
+
+  unsubscribeA();
+  assert.equal(harness.listenerCount(),1);
+  unsubscribeB();
+  assert.throws(()=>harness.emit(makeSnapshot([])));
+});
+
+test('root batch adapter delegates to a Firestore batch root', () => {
+  const harness=createHarness();
+  const calls=[];
+  const handlers={next() {}};
+  harness.root.subscribeBatches=value=>{
+    calls.push(value);
+    return 'unsubscribe';
+  };
+
+  const result=harness.store.subscribeRootBatches(harness.root,handlers);
+
+  assert.equal(result,'unsubscribe');
+  assert.deepEqual(calls,[handlers]);
+});
+
+test('root batch adapter queues RTDB changes until its initial value is ready', async () => {
+  const harness=createHarness();
+  const listeners={};
+  let resolveInitial;
+  const root={
+    on(event,handler){ listeners[event]=handler; },
+    off(event,handler){ if(listeners[event]===handler) delete listeners[event]; },
+    once(){
+      return new Promise(resolve=>{ resolveInitial=resolve; });
+    },
+  };
+  const batches=[];
+  const unsubscribe=harness.store.subscribeRootBatches(root,{next:batch=>batches.push(batch)});
+
+  listeners.child_changed({key:'swim_mark',val:()=>'{"a":2}'});
+  resolveInitial({val:()=>({swim_students:'[]',swim_mark:'{"a":1}'})});
+  await new Promise(resolve=>setTimeout(resolve,0));
+
+  assert.equal(batches[0].initial,true);
+  assert.equal(batches[0].values.swim_mark,'{"a":1}');
+  assert.equal(batches[1].initial,false);
+  assert.equal(batches[1].values.swim_mark,'{"a":2}');
+  unsubscribe();
+  assert.equal(listeners.child_changed,undefined);
+  assert.equal(listeners.child_removed,undefined);
 });
