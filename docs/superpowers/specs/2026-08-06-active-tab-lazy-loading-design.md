@@ -88,7 +88,7 @@ Firestore 저장소에 선택 키 구독을 추가한다. 초기 구독은 두 �
 - 삭제된 문서는 removedKeys로 전달한다.
 - 큰 청크 문서는 지정된 키일 때만 청크를 조립한다.
 
-구독 컨트롤러는 setActiveKeys, waitForActive, stop, diagnostics 기능을 제공한다.
+구독 컨트롤러는 setActiveKeys, setAuxiliaryKeys, releaseAuxiliaryKeys, waitForActive, stop, diagnostics 기능을 제공한다. 출석부가 월 경계의 다른 기준 탭을 필요로 하면 attendance-basis 소유자의 보조 키로 구독한다. 보조 키는 화면의 활성 탭 구독을 바꾸지 않으며 출석부를 닫을 때 해제한다.
 
 ### js/schedule-read-coordinator.js
 
@@ -160,7 +160,7 @@ zz_swim_day_snapshot__{scope}__{date}는 현재처럼 날짜를 열 때만 조�
 ### 출석 날짜 전환
 
 1. 표시할 주의 날짜와 기준 탭을 계산한다.
-2. 필요한 기준 탭 데이터를 병렬로 준비한다.
+2. 필요한 기준 탭 데이터를 attendance-basis 보조 구독으로 병렬 준비한다.
 3. 필요한 과거 날짜 스냅샷을 병렬로 준비한다.
 4. 전환 번호가 최신일 때만 출석표를 그린다.
 
