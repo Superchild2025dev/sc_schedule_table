@@ -569,6 +569,8 @@ let _scheduleTabTransitionSeq=0;
 let _scheduleTabTransitioning=false;
 const _scheduleTabReadiness=new Map();
 const _scheduleReadInvalidKeys=new Set();
+const _scheduleAuxiliaryLoadingOwners=new Set();
+const _scheduleAuxiliaryLoadSeq=new Map();
 
 function _activeStudentCount(){
   return Array.isArray(STUDENTS)?STUDENTS.length:0;
@@ -661,6 +663,7 @@ function _ensureScheduleReadCoordinator(){
     removeRaw:_removeScheduleReadBatchValue,
     validate:(key,raw)=>_validStudentPayload(key,raw),
     isRenderBlocked:()=>isScheduleDataTransitioning()
+      ||_scheduleAuxiliaryLoadingOwners.size>0
       ||(typeof _popupOpen==='function'&&_popupOpen()),
     onRender:(keys,meta)=>_renderRemoteScheduleBatch(keys,meta),
     onInvalid:(keys,meta)=>{
@@ -739,6 +742,42 @@ function cancelScheduleTabLoad(){
     ||(_tabList||[]).find(item=>item&&item.id===id));
   if(tab&&_scheduleSelectedController&&typeof _scheduleSelectedController.setActiveKeys==='function'){
     _scheduleSelectedController.setActiveKeys(SCScheduleKeySelection.tabKeys(tab)).catch(()=>{});
+  }
+}
+async function ensureScheduleAuxiliaryKeysLoaded(owner,keys){
+  owner=String(owner||'').trim();
+  if(!owner) throw new Error('보조 데이터 소유자가 필요합니다');
+  const selected=[...new Set((keys||[]).map(key=>String(key||'').trim()).filter(Boolean))];
+  if(!_scheduleSelectedController||typeof _scheduleSelectedController.setAuxiliaryKeys!=='function'){
+    return {stale:false,keys:selected,compatibility:true};
+  }
+  const seq=(_scheduleAuxiliaryLoadSeq.get(owner)||0)+1;
+  _scheduleAuxiliaryLoadSeq.set(owner,seq);
+  _scheduleAuxiliaryLoadingOwners.add(owner);
+  selected.forEach(key=>_scheduleReadInvalidKeys.delete(key));
+  try{
+    if(_scheduleSelectedController.ready) await _scheduleSelectedController.ready;
+    const result=await _scheduleSelectedController.setAuxiliaryKeys(owner,selected);
+    if(_scheduleAuxiliaryLoadSeq.get(owner)!==seq||(result&&result.stale)) return {stale:true,keys:selected};
+    const invalid=selected.filter(key=>{
+      if(!_isStudentPayloadKey(key)) return false;
+      if(_scheduleReadInvalidKeys.has(key)) return true;
+      const raw=Object.prototype.hasOwnProperty.call(_dbCache,key)?_dbCache[key]:null;
+      return raw!==null&&!_validStudentPayload(key,raw);
+    });
+    if(invalid.length) throw new Error('출석부 원생 데이터가 올바르지 않습니다');
+    return {stale:false,keys:selected};
+  }finally{
+    if(_scheduleAuxiliaryLoadSeq.get(owner)===seq) _scheduleAuxiliaryLoadingOwners.delete(owner);
+  }
+}
+function releaseScheduleAuxiliaryKeys(owner){
+  owner=String(owner||'').trim();
+  if(!owner) return;
+  _scheduleAuxiliaryLoadSeq.set(owner,(_scheduleAuxiliaryLoadSeq.get(owner)||0)+1);
+  _scheduleAuxiliaryLoadingOwners.delete(owner);
+  if(_scheduleSelectedController&&typeof _scheduleSelectedController.releaseAuxiliaryKeys==='function'){
+    _scheduleSelectedController.releaseAuxiliaryKeys(owner);
   }
 }
 

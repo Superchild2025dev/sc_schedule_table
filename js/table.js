@@ -31,6 +31,7 @@ function _layoutStudentName(stu){
 }
 let _attendanceMode=false;
 let _attendanceDate=null;  // YYYY-MM-DD
+let _attendanceDataReady=false;
 let _attEditMode=false;     // true면 셀 클릭 시 출석체크 대신 편집
 let _attBatchMode=false;    // true면 여러 칸 선택 후 일괄 처리
 let _attBatchTargets=new Map();
@@ -109,6 +110,7 @@ function _toggleAttBatchTarget(target){
 }
 async function applyAttBatch(value){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 일괄 체크')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   const targets=[..._attBatchTargets.values()];
   if(!targets.length){toast('선택된 원생이 없습니다','err');return;}
   const regular=targets.filter(t=>!t.isGuest);
@@ -548,6 +550,7 @@ function _closeAttAddModal(){
 
 async function _saveAttAdd(status){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 원생 추가')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_addModalCtx) return;
   const cellDs=_addModalCtx.cellDs;
   const slotKey=_resolveAttAddSlot(status);
@@ -639,6 +642,7 @@ function _closeEditModal(){
 
 async function _saveEditModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 편집')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_editModalCtx) return;
   const {slotKey, usingSnapshot, snapshot, ds, tabId}=_editModalCtx;
   const [t,d,l,r]=slotKey.split('/');
@@ -665,6 +669,7 @@ async function _saveEditModal(){
 
 async function _deleteEditModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_editModalCtx) return;
   if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const {slotKey, usingSnapshot, snapshot, ds, tabId}=_editModalCtx;
@@ -687,6 +692,7 @@ async function _deleteEditModal(){
 
 function toggleAttendanceMode(){
   _attendanceMode=!_attendanceMode;
+  _attendanceDataReady=false;
   const bar=document.getElementById('attendance-bar');
   const buttons=[document.getElementById('attendance-toggle-btn'),document.getElementById('attendance-mobile-btn')].filter(Boolean);
   if(_attendanceMode){
@@ -699,10 +705,9 @@ function toggleAttendanceMode(){
       btn.setAttribute('aria-pressed','true');
       if(btn.id==='attendance-mobile-btn') btn.textContent='출석부 닫기';
     });
-    // 오늘 스냅샷 저장
-    _ensureTodaySnapshot();
   } else {
     _attSnapshotRefreshSeq++;
+    releaseAttendanceBasisTabs();
     bar.style.display='none';
     buttons.forEach(btn=>{
       btn.classList.remove('active');
@@ -717,17 +722,21 @@ function toggleAttendanceMode(){
   }
   _updateAttEditUi();
   _updateAttBatchUi();
-  buildTable();
-  _updateAttBarInfo();
-  if(_attendanceMode) _queueAttendanceSnapshotRefresh();
+  if(_attendanceMode){
+    const stats=document.getElementById('att-bar-stats');
+    if(stats) stats.textContent='출석부 불러오는 중...';
+    _queueAttendanceSnapshotRefresh();
+  }else{
+    buildTable();
+    _updateAttBarInfo();
+  }
 }
 
 function setAttendanceDate(ds){
   _attendanceDate=ds;
+  _attendanceDataReady=false;
   _attBatchTargets.clear();
   _updateAttBatchUi();
-  buildTable();
-  _updateAttBarInfo();
   _queueAttendanceSnapshotRefresh();
 }
 
@@ -735,11 +744,10 @@ function attDayShift(delta){
   const d=new Date(_attendanceDate);
   d.setDate(d.getDate()+delta);
   _attendanceDate=toDateStr(d);
+  _attendanceDataReady=false;
   document.getElementById('att-date-input').value=_attendanceDate;
   _attBatchTargets.clear();
   _updateAttBatchUi();
-  buildTable();
-  _updateAttBarInfo();
   _queueAttendanceSnapshotRefresh();
 }
 
@@ -747,21 +755,19 @@ function attWeekShift(delta){
   const d=new Date(_attendanceDate);
   d.setDate(d.getDate()+delta*7);
   _attendanceDate=toDateStr(d);
+  _attendanceDataReady=false;
   document.getElementById('att-date-input').value=_attendanceDate;
   _attBatchTargets.clear();
   _updateAttBatchUi();
-  buildTable();
-  _updateAttBarInfo();
   _queueAttendanceSnapshotRefresh();
 }
 
 function setAttToday(){
   _attendanceDate=toDateStr(getToday());
+  _attendanceDataReady=false;
   document.getElementById('att-date-input').value=_attendanceDate;
   _attBatchTargets.clear();
   _updateAttBatchUi();
-  buildTable();
-  _updateAttBarInfo();
   _queueAttendanceSnapshotRefresh();
 }
 
@@ -770,27 +776,41 @@ function _attendanceSnapshotDatesForView(){
   if(!_attendanceDate) return [];
   const mon=_getWeekMon(_attendanceDate);
   const count=(typeof isBangteuk==='function'&&isBangteuk())?5:6;
-  const today=toDateStr(getToday());
   const dates=[];
   for(let i=0;i<count;i++){
     const d=new Date(mon);
     d.setDate(d.getDate()+i);
     const ds=toDateStr(d);
-    if(ds<today) dates.push(ds);
+    dates.push(ds);
   }
   return dates;
 }
 function _queueAttendanceSnapshotRefresh(){
-  if(!_attendanceMode||typeof ensureAttendanceDaySnapshotsLoaded!=='function') return Promise.resolve();
+  if(!_attendanceMode||typeof ensureAttendanceBasisTabsLoaded!=='function') return Promise.resolve();
   const seq=++_attSnapshotRefreshSeq;
   const anchor=_attendanceDate;
   const dates=_attendanceSnapshotDatesForView();
   if(!dates.length) return Promise.resolve();
-  return ensureAttendanceDaySnapshotsLoaded(dates).then(()=>{
+  _attendanceDataReady=false;
+  const stats=document.getElementById('att-bar-stats');
+  if(stats) stats.textContent='출석부 불러오는 중...';
+  return ensureAttendanceBasisTabsLoaded(dates).then(result=>{
+    if(result&&result.stale) return;
     if(seq!==_attSnapshotRefreshSeq||!_attendanceMode||anchor!==_attendanceDate) return;
-    buildTable();
+    _attendanceDataReady=true;
+    const rendered=typeof flushPendingScheduleReads==='function'?flushPendingScheduleReads():false;
+    if(!rendered){
+      if(typeof reloadBadgeMaps==='function') reloadBadgeMaps();
+      buildTable();
+    }
     _updateAttBarInfo();
-  }).catch(error=>console.warn('attendance snapshot refresh failed',error));
+    if(anchor===toDateStr(getToday())) _ensureTodaySnapshot();
+  }).catch(error=>{
+    if(seq!==_attSnapshotRefreshSeq||anchor!==_attendanceDate) return;
+    _attendanceDataReady=false;
+    console.warn('attendance basis refresh failed',error);
+    toast('출석부 데이터를 불러오지 못했습니다. 다시 시도해주세요.','err');
+  });
 }
 
 function _updateAttBarInfo(){
@@ -864,6 +884,7 @@ function _dayToCellDs(day){
 // 출석 셀 클릭 (순환 토글)
 async function _cycleAttendance(slotKey){
   if(!_attendanceDate) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   const key=slotKey+'/'+_attendanceDate;
   try{
     await updateAttendanceMapTx(att=>{
@@ -888,6 +909,7 @@ async function _cycleAttendance(slotKey){
 // Sub(보강/샘플 대체) 출석 체크
 async function _cycleAttendanceSub(slotKey){
   if(!_attendanceDate) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   const key=slotKey+'/'+_attendanceDate+'#sub';
   try{
     await updateAttendanceMapTx(att=>{
@@ -932,6 +954,7 @@ function _closeAttModal(){
 }
 async function _setAttModal(value){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_attModalCtx) return;
   try{
     const {slotKey, isSub, ds, stu, isGuest}=_attModalCtx;
@@ -961,6 +984,7 @@ async function _setAttModal(value){
 // 출석 모달에서 학생 삭제
 async function _deleteFromAttModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_attModalCtx) return;
   const {slotKey, isSub, ds, stu, isGuest}=_attModalCtx;
   if(!confirm('이 학생을 출석부에서 삭제하시겠습니까?')) return;
@@ -992,6 +1016,7 @@ async function _deleteFromAttModal(){
 // 오늘 모두 출석
 async function markAllPresentForDate(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석 체크')) return;
+  if(!requireAttendanceDataReady('출석부')) return;
   if(!_attendanceDate) return;
   const dow=['일','월','화','수','목','금','토'][new Date(_attendanceDate).getDay()];
   const now=new Date().toISOString();

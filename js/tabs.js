@@ -447,6 +447,51 @@ async function ensureAttendanceDaySnapshotLoaded(ds,tabId,force){
 function ensureAttendanceDaySnapshotsLoaded(dates){
   return Promise.all([...new Set((dates||[]).filter(Boolean))].map(ds=>ensureAttendanceDaySnapshotLoaded(ds)));
 }
+async function ensureAttendanceBasisTabsLoaded(dates,options){
+  const opts=options||{};
+  const uniqueDates=[...new Set((dates||[]).map(ds=>String(ds||'')).filter(Boolean))];
+  const basisTabs=new Map();
+  uniqueDates.forEach(ds=>{
+    const tab=getAttendanceBasisTabForDate(ds);
+    if(tab&&tab.id&&!basisTabs.has(tab.id)) basisTabs.set(tab.id,tab);
+  });
+  const keys=[];
+  basisTabs.forEach(tab=>{
+    const cfg=_tabConfigFor(tab);
+    const tabKeys=window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.tabKeys==='function'
+      ?SCScheduleKeySelection.tabKeys(tab)
+      :[cfg.stuKey,cfg.instKey];
+    keys.push(...tabKeys);
+    const attendanceKeys=getAttendanceStorageKeys(tab.id);
+    keys.push(attendanceKeys.attendance,attendanceKeys.attGuests);
+  });
+  const selected=[...new Set(keys.filter(Boolean))];
+  const result=typeof ensureScheduleAuxiliaryKeysLoaded==='function'
+    ?await ensureScheduleAuxiliaryKeysLoaded('attendance-basis',selected)
+    :{stale:false};
+  if(result&&result.stale) return result;
+  const today=toDateStr(getToday());
+  const pastDates=uniqueDates.filter(ds=>ds<today);
+  if(pastDates.length) await ensureAttendanceDaySnapshotsLoaded(pastDates);
+  return {
+    stale:false,
+    dates:uniqueDates,
+    tabIds:[...basisTabs.keys()],
+    keys:selected,
+    silent:!!opts.silent,
+  };
+}
+function isAttendanceDataReady(){
+  return typeof _attendanceDataReady!=='undefined'&&!!_attendanceDataReady;
+}
+function requireAttendanceDataReady(label){
+  if(isAttendanceDataReady()) return true;
+  if(typeof toast==='function') toast((label||'출석부')+' 데이터를 불러오는 중입니다. 잠시만 기다려주세요.','err');
+  return false;
+}
+function releaseAttendanceBasisTabs(){
+  if(typeof releaseScheduleAuxiliaryKeys==='function') releaseScheduleAuxiliaryKeys('attendance-basis');
+}
 function removeAttendanceDaySnapshotsForTab(tab){
   if(!tab||tab.type!=='bangteuk') return;
   const dates=new Set();
@@ -1898,6 +1943,9 @@ async function requestTabSwitch(tabId){
     return true;
   }
 
+  if(typeof _attendanceMode!=='undefined'&&_attendanceMode&&typeof _attendanceDataReady!=='undefined'){
+    _attendanceDataReady=false;
+  }
   _showLiveTabLoading(tab);
   try{
     const result=typeof ensureScheduleTabLoaded==='function'
@@ -1910,7 +1958,12 @@ async function requestTabSwitch(tabId){
       ?flushPendingScheduleReads()
       :false;
     if(!rendered) await switchTabView();
-    else renderTabBar();
+    else{
+      renderTabBar();
+      if(typeof _attendanceMode!=='undefined'&&_attendanceMode&&typeof _queueAttendanceSnapshotRefresh==='function'){
+        _queueAttendanceSnapshotRefresh();
+      }
+    }
     return true;
   }catch(error){
     if(switchSeq!==_liveTabSwitchSeq) return false;
