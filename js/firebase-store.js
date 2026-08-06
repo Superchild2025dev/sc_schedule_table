@@ -887,6 +887,290 @@
       this._emitFirestoreBatchError(error);
     });
   };
+  FirestoreKVRoot.prototype.subscribeSelectedBatches = function(options){
+    options=options&&typeof options==='object'?options:{};
+    if(typeof options.next!=='function') throw new TypeError('batch next callback is required');
+    if(this.disabled) return subscribeSelectedRTDB(this.fallback,options);
+
+    const root=this;
+    const state={
+      stopped:false,
+      initialDone:false,
+      revision:0,
+      activeGeneration:0,
+      baseKeys:new Set(normalizeSelectedKeys(options.baseKeys)),
+      activeKeys:new Set(),
+      auxiliaryKeys:new Map(),
+      auxiliaryGenerations:new Map(),
+      listeners:new Map(),
+      pendingKeys:new Set(),
+      pendingTimer:null,
+    };
+
+    function normalizeSelectedKeys(keys){
+      return [...new Set((keys||[]).map(key=>String(key||'').trim()).filter(key=>key&&!deferredRootKey(key)))];
+    }
+    function sameKeySet(left,right){
+      if(left.size!==right.size) return false;
+      for(const key of left) if(!right.has(key)) return false;
+      return true;
+    }
+    function report(error){
+      if(state.stopped||typeof options.error!=='function') return;
+      try{ options.error(error); }
+      catch(callbackError){ console.error('[SCFirebaseStore] Selected listener error callback failed:',callbackError); }
+    }
+    function emit(initial,keys){
+      if(state.stopped) return;
+      const values={};
+      const removedKeys=[];
+      normalizeSelectedKeys(keys).forEach(key=>{
+        const entry=state.listeners.get(key);
+        if(!entry||!entry.hasFirst) return;
+        if(entry.present) values[key]=entry.value;
+        else removedKeys.push(key);
+      });
+      const changedKeys=[...new Set(Object.keys(values).concat(removedKeys))];
+      if(!initial&&!changedKeys.length) return;
+      options.next({
+        initial:!!initial,
+        revision:++state.revision,
+        values,
+        removedKeys,
+        changedKeys,
+      });
+    }
+    function flushPending(){
+      state.pendingTimer=null;
+      if(state.stopped||!state.initialDone) return;
+      const keys=[...state.pendingKeys];
+      state.pendingKeys.clear();
+      emit(false,keys);
+    }
+    function queueChanged(key){
+      if(state.stopped||!state.initialDone) return;
+      state.pendingKeys.add(key);
+      if(state.pendingTimer) return;
+      state.pendingTimer=setTimeout(flushPending,0);
+    }
+    function isReferenced(key){
+      if(state.baseKeys.has(key)||state.activeKeys.has(key)) return true;
+      for(const keys of state.auxiliaryKeys.values()) if(keys.has(key)) return true;
+      const entry=state.listeners.get(key);
+      return !!(entry&&entry.holds.size);
+    }
+    function cleanupKey(key){
+      if(isReferenced(key)) return;
+      const entry=state.listeners.get(key);
+      if(!entry) return;
+      entry.closed=true;
+      if(typeof entry.unsubscribe==='function') entry.unsubscribe();
+      state.listeners.delete(key);
+      state.pendingKeys.delete(key);
+    }
+    function releaseHold(keys,token){
+      normalizeSelectedKeys(keys).forEach(key=>{
+        const entry=state.listeners.get(key);
+        if(entry) entry.holds.delete(token);
+        cleanupKey(key);
+      });
+    }
+    function ensureListener(key,token){
+      let entry=state.listeners.get(key);
+      if(entry){
+        if(token) entry.holds.add(token);
+        return entry.ready;
+      }
+      let resolveReady;
+      let rejectReady;
+      entry={
+        key,
+        unsubscribe:null,
+        closed:false,
+        hasFirst:false,
+        present:false,
+        value:undefined,
+        version:'',
+        sequence:0,
+        holds:new Set(token?[token]:[]),
+        ready:null,
+      };
+      entry.ready=new Promise((resolve,reject)=>{
+        resolveReady=resolve;
+        rejectReady=reject;
+      });
+      state.listeners.set(key,entry);
+
+      function fail(error){
+        if(state.stopped||entry.closed) return;
+        const normalized=error instanceof Error?error:new Error(String(error||'selected listener failed'));
+        normalized.scheduleKey=key;
+        report(normalized);
+        if(!entry.hasFirst){
+          entry.closed=true;
+          if(typeof entry.unsubscribe==='function') entry.unsubscribe();
+          rejectReady(normalized);
+        }
+      }
+      function applyValue(sequence,present,value,version){
+        if(state.stopped||entry.closed||sequence!==entry.sequence) return;
+        const first=!entry.hasFirst;
+        const changed=first||entry.present!==present||(present&&!sameValue(entry.value,value));
+        entry.hasFirst=true;
+        entry.present=present;
+        entry.value=present?value:undefined;
+        entry.version=version||'';
+        if(first) resolveReady(entry);
+        if(!first&&changed&&!entry.holds.size) queueChanged(key);
+      }
+      entry.unsubscribe=root._doc(key).onSnapshot(snapshot=>{
+        const sequence=++entry.sequence;
+        if(!snapshot||!snapshot.exists){
+          applyValue(sequence,false,undefined,'');
+          return;
+        }
+        const item=snapshot.data()||{};
+        const version=storedItemVersion(item);
+        if(entry.hasFirst&&version&&entry.version===version) return;
+        Promise.resolve(root._readStoredValue(key,item)).then(value=>{
+          applyValue(sequence,true,value,version);
+        }).catch(fail);
+      },fail);
+      return entry.ready;
+    }
+    function waitForKeys(keys,token){
+      return Promise.all(normalizeSelectedKeys(keys).map(key=>ensureListener(key,token)));
+    }
+    function cleanupCandidates(keys){
+      normalizeSelectedKeys(keys).forEach(cleanupKey);
+    }
+
+    const initialBaseToken={type:'initial-base'};
+    const initialActiveToken={type:'initial-active'};
+    const initialPromise=waitForKeys([...state.baseKeys],initialBaseToken).then(()=>{
+      if(state.stopped) return {stale:true};
+      const baseValues={};
+      state.baseKeys.forEach(key=>{
+        const entry=state.listeners.get(key);
+        if(entry&&entry.hasFirst&&entry.present) baseValues[key]=entry.value;
+      });
+      const resolver=typeof options.resolveInitialActiveKeys==='function'
+        ?options.resolveInitialActiveKeys
+        :function(){ return []; };
+      const keys=normalizeSelectedKeys(resolver(baseValues)||[]);
+      state.activeKeys=new Set(keys);
+      return waitForKeys(keys,initialActiveToken).then(()=>{
+        if(state.stopped) return {stale:true};
+        emit(true,[...state.baseKeys,...state.activeKeys]);
+        state.initialDone=true;
+        releaseHold([...state.baseKeys],initialBaseToken);
+        releaseHold([...state.activeKeys],initialActiveToken);
+        return {stale:false};
+      });
+    }).catch(error=>{
+      releaseHold([...state.baseKeys],initialBaseToken);
+      releaseHold([...state.activeKeys],initialActiveToken);
+      throw error;
+    });
+    // The controller exposes readiness so callers can gate rendering and writes.
+    initialPromise.catch(()=>{});
+
+    function beginActiveReplacement(target){
+        if(state.stopped) return {stale:true};
+        if(sameKeySet(target,state.activeKeys)) return {stale:false};
+        const generation=++state.activeGeneration;
+        const token={type:'active',generation};
+        const oldKeys=[...state.activeKeys];
+        return waitForKeys([...target],token).then(()=>{
+          if(state.stopped||generation!==state.activeGeneration){
+            releaseHold([...target],token);
+            cleanupCandidates([...target]);
+            return {stale:true};
+          }
+          state.activeKeys=target;
+          emit(false,[...target]);
+          releaseHold([...target],token);
+          cleanupCandidates(oldKeys);
+          return {stale:false};
+        }).catch(error=>{
+          releaseHold([...target],token);
+          cleanupCandidates([...target]);
+          throw error;
+        });
+    }
+    function setActiveKeys(keys){
+      const target=new Set(normalizeSelectedKeys(keys));
+      if(state.initialDone) return Promise.resolve(beginActiveReplacement(target));
+      return initialPromise.then(()=>beginActiveReplacement(target));
+    }
+    function beginAuxiliaryReplacement(owner,target){
+        if(state.stopped) return {stale:true};
+        const current=state.auxiliaryKeys.get(owner)||new Set();
+        if(sameKeySet(target,current)) return {stale:false};
+        const generation=(state.auxiliaryGenerations.get(owner)||0)+1;
+        state.auxiliaryGenerations.set(owner,generation);
+        const token={type:'auxiliary',owner,generation};
+        const oldKeys=[...current];
+        return waitForKeys([...target],token).then(()=>{
+          if(state.stopped||state.auxiliaryGenerations.get(owner)!==generation){
+            releaseHold([...target],token);
+            cleanupCandidates([...target]);
+            return {stale:true};
+          }
+          state.auxiliaryKeys.set(owner,target);
+          emit(false,[...target]);
+          releaseHold([...target],token);
+          cleanupCandidates(oldKeys);
+          return {stale:false};
+        }).catch(error=>{
+          releaseHold([...target],token);
+          cleanupCandidates([...target]);
+          throw error;
+        });
+    }
+    function setAuxiliaryKeys(owner,keys){
+      owner=String(owner||'').trim();
+      if(!owner) return Promise.reject(new Error('auxiliary owner is required'));
+      const target=new Set(normalizeSelectedKeys(keys));
+      if(state.initialDone) return Promise.resolve(beginAuxiliaryReplacement(owner,target));
+      return initialPromise.then(()=>beginAuxiliaryReplacement(owner,target));
+    }
+    function releaseAuxiliaryKeys(owner){
+      owner=String(owner||'').trim();
+      if(!owner) return;
+      state.auxiliaryGenerations.set(owner,(state.auxiliaryGenerations.get(owner)||0)+1);
+      const oldKeys=[...(state.auxiliaryKeys.get(owner)||[])];
+      state.auxiliaryKeys.delete(owner);
+      cleanupCandidates(oldKeys);
+    }
+    function waitForActive(keys){
+      return initialPromise.then(()=>waitForKeys(normalizeSelectedKeys(keys),null)).then(()=>({stale:false}));
+    }
+    function stop(){
+      if(state.stopped) return;
+      state.stopped=true;
+      if(state.pendingTimer){
+        clearTimeout(state.pendingTimer);
+        state.pendingTimer=null;
+      }
+      state.listeners.forEach(entry=>{
+        entry.closed=true;
+        if(typeof entry.unsubscribe==='function') entry.unsubscribe();
+      });
+      state.listeners.clear();
+      state.pendingKeys.clear();
+      state.auxiliaryKeys.clear();
+    }
+
+    return {
+      ready:initialPromise,
+      setActiveKeys,
+      setAuxiliaryKeys,
+      releaseAuxiliaryKeys,
+      waitForActive,
+      stop,
+    };
+  };
   FirestoreKVRoot.prototype.subscribeBatches = function(handlers){
     const subscriber=handlers&&typeof handlers==='object'?handlers:{};
     if(typeof subscriber.next!=='function') throw new TypeError('batch next callback is required');
@@ -1068,6 +1352,42 @@
     }
     return new FirestoreKVRoot(branch);
   }
+  function subscribeSelectedRTDB(root,options){
+    if(!root||typeof root.child!=='function') throw new Error('selected root is required');
+    const bridge={
+      disabled:false,
+      _doc(key){
+        const child=root.child(key);
+        return {
+          onSnapshot(next,error){
+            const handler=snapshot=>{
+              const value=snapshot&&typeof snapshot.val==='function'?snapshot.val():null;
+              const exists=snapshot&&typeof snapshot.exists==='function'
+                ?snapshot.exists()
+                :value!==null&&value!==undefined;
+              next({
+                exists,
+                data(){ return exists?{key,value}:null; },
+              });
+            };
+            child.on('value',handler,error);
+            return ()=>{
+              if(typeof child.off==='function') child.off('value',handler);
+            };
+          },
+        };
+      },
+      _readStoredValue(key,item){
+        return Promise.resolve(item?item.value:null);
+      },
+    };
+    return FirestoreKVRoot.prototype.subscribeSelectedBatches.call(bridge,options);
+  }
+  function subscribeSelectedRootBatches(root,options){
+    if(!root) throw new Error('root is required');
+    if(typeof root.subscribeSelectedBatches==='function') return root.subscribeSelectedBatches(options);
+    return subscribeSelectedRTDB(root,options);
+  }
   function subscribeRootBatches(root,handlers){
     if(!root) throw new Error('root is required');
     handlers=handlers&&typeof handlers==='object'?handlers:{};
@@ -1201,6 +1521,7 @@
     createBranchRef,
     inspectBranch,
     backfillBranch,
+    subscribeSelectedRootBatches,
     subscribeRootBatches,
     useFirestore,
     branchId,
