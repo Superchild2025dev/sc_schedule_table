@@ -1,7 +1,7 @@
 :root{
-  --green:#0f6c62;
-  --green-dark:#0b514a;
-  --green-soft:#eaf7f3;
+  --green:#1769aa;
+  --green-dark:#104f82;
+  --green-soft:#eaf3fb;
   --ink:#172033;
   --muted:#64748b;
   --line:#dbe3e8;
@@ -9,7 +9,7 @@
   --subtle:#f5f8fa;
   --warning:#b45309;
   --danger:#b42318;
-  --focus:rgba(15,108,98,.24);
+  --focus:rgba(23,105,170,.24);
 }
 *{box-sizing:border-box}
 html{background:#eef3f5}
