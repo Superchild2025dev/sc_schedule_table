@@ -6,24 +6,159 @@
   let _currentProfile = null;
   let _loginReady = false;
 
-  const SUPER_ADMIN_EMAILS = ['2025superchild@gmail.com'];
+  // PERMISSION_POLICY_START
+  const SUPER_ADMIN_EMAILS = ["2025superchild@gmail.com"];
+  window.SC_DEVELOPER_EMAILS = Object.freeze(["developer@scswim.local"]);
   const STAFF_EMAIL_PROFILES = {
-    'developer@scswim.local': {name:'시간표 개발자', role:'developer', branchIds:['gagyeong','yongam'], teacherName:''},
-    'gagyeong.desk@scswim.local': {name:'가경점 데스크', role:'desk', branchIds:['gagyeong'], teacherName:''},
-    'gagyeong.son@scswim.local': {name:'손용곤', role:'teacher', branchIds:['gagyeong'], teacherName:'손용곤', permissions:['editMakeup']},
-    'gagyeong.park@scswim.local': {name:'박형진', role:'teacher', branchIds:['gagyeong'], teacherName:'박형진', permissions:['editMakeup']},
-    'gagyeong.lee1@scswim.local': {name:'이수성', role:'teacher', branchIds:['gagyeong'], teacherName:'이수성', permissions:['editMakeup']},
-    'gagyeong.kimjy@scswim.local': {name:'김재용', role:'teacher', branchIds:['gagyeong'], teacherName:'김재용', permissions:['editMakeup']},
-    'gagyeong.kimms@scswim.local': {name:'김민승', role:'teacher', branchIds:['gagyeong'], teacherName:'김민승', permissions:['editMakeup']},
-    'gagyeong.yoo@scswim.local': {name:'유정희', role:'teacher', branchIds:['gagyeong'], teacherName:'유정희', permissions:['editMakeup']},
-    'yongam.desk@scswim.local': {name:'용암점 데스크', role:'desk', branchIds:['yongam'], teacherName:''},
-    'yongam.lee1@scswim.local': {name:'이수재', role:'teacher', branchIds:['yongam'], teacherName:'이수재'},
-    'yongam.jung@scswim.local': {name:'정연재', role:'teacher', branchIds:['yongam'], teacherName:'정연재'},
-    'yongam.kimsh@scswim.local': {name:'김성현', role:'teacher', branchIds:['yongam'], teacherName:'김성현'},
-    'yongam.kimey@scswim.local': {name:'김은영', role:'teacher', branchIds:['yongam'], teacherName:'김은영'},
-    'yongam.kimjs@scswim.local': {name:'김지수', role:'teacher', branchIds:['yongam'], teacherName:'김지수'},
-    'yongam.lee2@scswim.local': {name:'이시종', role:'teacher', branchIds:['yongam'], teacherName:'이시종'},
+    "developer@scswim.local": {
+      "name": "시간표 개발자",
+      "role": "developer",
+      "branchIds": [
+        "gagyeong",
+        "yongam"
+      ],
+      "teacherName": ""
+    },
+    "gagyeong.desk@scswim.local": {
+      "name": "가경점 데스크",
+      "role": "desk",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": ""
+    },
+    "gagyeong.son@scswim.local": {
+      "name": "손용곤",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "손용곤",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "gagyeong.park@scswim.local": {
+      "name": "박형진",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "박형진",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "gagyeong.lee1@scswim.local": {
+      "name": "이수성",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "이수성",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "gagyeong.kimjy@scswim.local": {
+      "name": "김재용",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "김재용",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "gagyeong.kimms@scswim.local": {
+      "name": "김민승",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "김민승",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "gagyeong.yoo@scswim.local": {
+      "name": "유정희",
+      "role": "teacher",
+      "branchIds": [
+        "gagyeong"
+      ],
+      "teacherName": "유정희",
+      "permissions": [
+        "editMakeup"
+      ]
+    },
+    "yongam.desk@scswim.local": {
+      "name": "용암점 데스크",
+      "role": "desk",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": ""
+    },
+    "yongam.lee1@scswim.local": {
+      "name": "이수재",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "이수재"
+    },
+    "yongam.jung@scswim.local": {
+      "name": "정연재",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "정연재"
+    },
+    "yongam.kimsh@scswim.local": {
+      "name": "김성현",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "김성현"
+    },
+    "yongam.kimey@scswim.local": {
+      "name": "김은영",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "김은영"
+    },
+    "yongam.kimjs@scswim.local": {
+      "name": "김지수",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "김지수"
+    },
+    "yongam.lee2@scswim.local": {
+      "name": "이시종",
+      "role": "teacher",
+      "branchIds": [
+        "yongam"
+      ],
+      "teacherName": "이시종"
+    }
   };
+  const TEACHER_WRITABLE_EXACT_KEYS = new Set(["swim_mark","swim_requests","swim_attendance","swim_att_guests","swim_day_snapshot","zz_swim_audit_index"]);
+  const TEACHER_WRITABLE_PATTERNS = [
+    new RegExp("^swim_bt_attendance_.*$"),
+    new RegExp("^swim_bt_att_guests_.*$"),
+    new RegExp("^swim_bt_day_snapshot_.*$"),
+    new RegExp("^zz_swim_day_snapshot__.*$"),
+    new RegExp("^zz_swim_audit_entry__.*$")
+  ];
+  // PERMISSION_POLICY_END
   const ROLE_PERMISSIONS = {
     superAdmin: ['*'],
     developer: ['*'],
@@ -254,10 +389,8 @@
     key = String(key||'');
     if(!key) return true;
 
-    if(key === 'swim_mark' || key === 'swim_requests' || key === 'swim_attendance' ||
-       key === 'swim_att_guests' || key === 'swim_day_snapshot' ||
-       /^swim_bt_(attendance|att_guests|day_snapshot)_.+/.test(key) ||
-       /^zz_swim_day_snapshot__/.test(key)){
+    if(TEACHER_WRITABLE_EXACT_KEYS.has(key) ||
+       TEACHER_WRITABLE_PATTERNS.some(pattern=>pattern.test(key))){
       return hasPermission('teacherRequests') || hasPermission('attendanceCheck');
     }
     if(key === 'swim_closed' || key === 'swim_periods') return hasPermission('manageCalendar');

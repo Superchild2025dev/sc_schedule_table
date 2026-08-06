@@ -1,7 +1,6 @@
 (function(global){
   'use strict';
 
-  const DEVELOPER_EMAIL='developer@scswim.local';
   const SNAPSHOT_SCHEMA_VERSION=1;
   const DEBOUNCE_MS=700;
   const states=new Map();
@@ -30,7 +29,9 @@
   function developerSignedIn(){
     try{
       const user=global.firebase?.auth?.().currentUser;
-      return text(user?.email).toLowerCase()===text(global.SC_V2_SHADOW_EMAIL||DEVELOPER_EMAIL).toLowerCase();
+      const email=text(user?.email).toLowerCase();
+      const developers=Array.isArray(global.SC_DEVELOPER_EMAILS)?global.SC_DEVELOPER_EMAILS:[];
+      return developers.some(candidate=>text(candidate).toLowerCase()===email);
     }catch(error){return false;}
   }
   function isOperationalKey(key){

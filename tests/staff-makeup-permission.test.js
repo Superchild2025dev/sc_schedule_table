@@ -3,17 +3,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const authSource = fs.readFileSync(path.join(__dirname, '..', 'js', 'auth-guard.js'), 'utf8');
 const popupSource = fs.readFileSync(path.join(__dirname, '..', 'js', 'popup-stu.js'), 'utf8');
+const permissionPolicy = JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', 'config', 'schedule-permissions.json'),
+  'utf8'
+));
 
 test('all gagyeong teachers receive the makeup edit exception', () => {
-  const staffBlock = authSource.match(/const STAFF_EMAIL_PROFILES = \{([\s\S]*?)\n  \};/);
-  assert.ok(staffBlock);
-  const permissionRows = staffBlock[1]
-    .split('\n')
-    .filter(line => line.includes("permissions:['editMakeup']"));
-
-  assert.equal(permissionRows.length, 6);
+  const teachers = permissionPolicy.accounts.filter(account =>
+    account.role === 'teacher' && account.branchIds.includes('gagyeong')
+  );
+  assert.equal(teachers.length, 6);
   [
     'gagyeong.son@scswim.local',
     'gagyeong.park@scswim.local',
@@ -22,11 +22,11 @@ test('all gagyeong teachers receive the makeup edit exception', () => {
     'gagyeong.kimms@scswim.local',
     'gagyeong.yoo@scswim.local',
   ].forEach(email=>{
-    assert.ok(permissionRows.some(line=>line.includes(email)), email);
+    assert.ok(teachers.some(account=>account.email === email), email);
   });
-  assert.ok(permissionRows.every(line=>line.includes("branchIds:['gagyeong']")));
-  assert.ok(permissionRows.every(line=>line.includes("role:'teacher'")));
-  assert.ok(permissionRows.every(line=>!line.includes('yongam.')));
+  assert.ok(teachers.every(account=>account.permissions.includes('editMakeup')));
+  assert.ok(teachers.every(account=>account.branchIds.length === 1));
+  assert.ok(teachers.every(account=>!account.email.startsWith('yongam.')));
 });
 
 test('makeup-only popup exposes only makeup mutation handlers', () => {

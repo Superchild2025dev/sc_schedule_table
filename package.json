@@ -1,0 +1,13 @@
+{
+  "name": "sc-schedule-table",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:unit": "node --test tests/*.test.js",
+    "test:rules": "npm --prefix tools/firebase-test test",
+    "verify:policy": "node scripts/sync-permission-policy.js --check",
+    "verify:diff": "node scripts/check-release-diff.js --cached",
+    "verify": "npm run verify:diff && npm run verify:policy && npm run test:unit && npm run test:rules",
+    "release:rules": "node scripts/release-firestore-rules.js"
+  }
+}

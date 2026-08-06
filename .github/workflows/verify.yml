@@ -1,0 +1,55 @@
+name: Verify Firestore safety
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/firebase-test/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Firebase test tools
+        run: npm ci --prefix tools/firebase-test
+
+      - name: Determine complete change range
+        id: diff
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "range=$BASE_SHA...$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            echo "range=$BEFORE_SHA..$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=HEAD^..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Guard broad rollback
+        run: node scripts/check-release-diff.js --range "${{ steps.diff.outputs.range }}"
+
+      - name: Run complete verification
+        run: npm run verify

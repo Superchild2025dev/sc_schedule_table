@@ -3,9 +3,16 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
+const permissionPolicy=JSON.parse(fs.readFileSync(
+  path.join(__dirname,'..','config','schedule-permissions.json'),
+  'utf8'
+));
+const developerEmails=permissionPolicy.accounts
+  .filter(account=>account.role==='developer')
+  .map(account=>account.email);
 
 function loadShadow(email){
-  const window={};
+  const window={SC_DEVELOPER_EMAILS:developerEmails};
   if(email){
     window.firebase={auth:()=>({currentUser:{email}})};
   }

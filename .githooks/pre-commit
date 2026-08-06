@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+node scripts/check-release-diff.js --cached
+
 staged_hash="$(git diff --cached --binary | git hash-object --stdin | cut -c1-8)"
 version="$(date -u +%Y%m%dT%H%M%SZ)-${staged_hash}"
 

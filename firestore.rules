@@ -6,46 +6,57 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // PERMISSION_POLICY_START
     function isOwner() {
       return signedIn()
-        && request.auth.token.email == "2025superchild@gmail.com";
+        && request.auth.token.email in [
+          "2025superchild@gmail.com"
+        ];
     }
 
     function isDeveloper() {
       return signedIn()
-        && request.auth.token.email == "developer@scswim.local";
+        && request.auth.token.email in [
+          "developer@scswim.local"
+        ];
     }
 
     function isGagyeongDesk() {
       return signedIn()
-        && request.auth.token.email == "gagyeong.desk@scswim.local";
+        && request.auth.token.email in [
+          "gagyeong.desk@scswim.local"
+        ];
+    }
+
+    function isGagyeongTeacher() {
+      return signedIn()
+        && request.auth.token.email in [
+          "gagyeong.son@scswim.local",
+          "gagyeong.park@scswim.local",
+          "gagyeong.lee1@scswim.local",
+          "gagyeong.kimjy@scswim.local",
+          "gagyeong.kimms@scswim.local",
+          "gagyeong.yoo@scswim.local"
+        ];
     }
 
     function isYongamDesk() {
       return signedIn()
-        && request.auth.token.email == "yongam.desk@scswim.local";
-    }
-
-    function isGagyeongTeacher() {
-      return signedIn() && request.auth.token.email in [
-        "gagyeong.son@scswim.local",
-        "gagyeong.park@scswim.local",
-        "gagyeong.lee1@scswim.local",
-        "gagyeong.kimjy@scswim.local",
-        "gagyeong.kimms@scswim.local",
-        "gagyeong.yoo@scswim.local"
-      ];
+        && request.auth.token.email in [
+          "yongam.desk@scswim.local"
+        ];
     }
 
     function isYongamTeacher() {
-      return signedIn() && request.auth.token.email in [
-        "yongam.lee1@scswim.local",
-        "yongam.jung@scswim.local",
-        "yongam.kimsh@scswim.local",
-        "yongam.kimey@scswim.local",
-        "yongam.kimjs@scswim.local",
-        "yongam.lee2@scswim.local"
-      ];
+      return signedIn()
+        && request.auth.token.email in [
+          "yongam.lee1@scswim.local",
+          "yongam.jung@scswim.local",
+          "yongam.kimsh@scswim.local",
+          "yongam.kimey@scswim.local",
+          "yongam.kimjs@scswim.local",
+          "yongam.lee2@scswim.local"
+        ];
     }
 
     function canReadSchedule(branch) {
@@ -73,10 +84,10 @@ service cloud.firestore {
         || docId == "swim_attendance"
         || docId == "swim_att_guests"
         || docId == "swim_day_snapshot"
+        || docId == "zz_swim_audit_index"
         || docId.matches("^swim_bt_attendance_.*$")
         || docId.matches("^swim_bt_att_guests_.*$")
         || docId.matches("^swim_bt_day_snapshot_.*$")
-        || docId == "zz_swim_audit_index"
         || docId.matches("^zz_swim_day_snapshot__.*$")
         || docId.matches("^zz_swim_audit_entry__.*$");
     }
@@ -85,6 +96,7 @@ service cloud.firestore {
       return isTeacherForBranch(branch)
         && isTeacherWritableScheduleKey(docId);
     }
+    // PERMISSION_POLICY_END
 
     function canManageReferrals(branch) {
       return isOwner()

@@ -1,0 +1,39 @@
+{
+  "branches": [
+    {"id": "gagyeong", "ruleName": "Gagyeong"},
+    {"id": "yongam", "ruleName": "Yongam"}
+  ],
+  "accounts": [
+    {"email": "2025superchild@gmail.com", "name": "최고관리자", "role": "superAdmin", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},
+    {"email": "developer@scswim.local", "name": "시간표 개발자", "role": "developer", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},
+    {"email": "gagyeong.desk@scswim.local", "name": "가경점 데스크", "role": "desk", "branchIds": ["gagyeong"], "teacherName": ""},
+    {"email": "gagyeong.son@scswim.local", "name": "손용곤", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "손용곤", "permissions": ["editMakeup"]},
+    {"email": "gagyeong.park@scswim.local", "name": "박형진", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "박형진", "permissions": ["editMakeup"]},
+    {"email": "gagyeong.lee1@scswim.local", "name": "이수성", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "이수성", "permissions": ["editMakeup"]},
+    {"email": "gagyeong.kimjy@scswim.local", "name": "김재용", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "김재용", "permissions": ["editMakeup"]},
+    {"email": "gagyeong.kimms@scswim.local", "name": "김민승", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "김민승", "permissions": ["editMakeup"]},
+    {"email": "gagyeong.yoo@scswim.local", "name": "유정희", "role": "teacher", "branchIds": ["gagyeong"], "teacherName": "유정희", "permissions": ["editMakeup"]},
+    {"email": "yongam.desk@scswim.local", "name": "용암점 데스크", "role": "desk", "branchIds": ["yongam"], "teacherName": ""},
+    {"email": "yongam.lee1@scswim.local", "name": "이수재", "role": "teacher", "branchIds": ["yongam"], "teacherName": "이수재"},
+    {"email": "yongam.jung@scswim.local", "name": "정연재", "role": "teacher", "branchIds": ["yongam"], "teacherName": "정연재"},
+    {"email": "yongam.kimsh@scswim.local", "name": "김성현", "role": "teacher", "branchIds": ["yongam"], "teacherName": "김성현"},
+    {"email": "yongam.kimey@scswim.local", "name": "김은영", "role": "teacher", "branchIds": ["yongam"], "teacherName": "김은영"},
+    {"email": "yongam.kimjs@scswim.local", "name": "김지수", "role": "teacher", "branchIds": ["yongam"], "teacherName": "김지수"},
+    {"email": "yongam.lee2@scswim.local", "name": "이시종", "role": "teacher", "branchIds": ["yongam"], "teacherName": "이시종"}
+  ],
+  "teacherWritableExactKeys": [
+    "swim_mark",
+    "swim_requests",
+    "swim_attendance",
+    "swim_att_guests",
+    "swim_day_snapshot",
+    "zz_swim_audit_index"
+  ],
+  "teacherWritablePatterns": [
+    "^swim_bt_attendance_.*$",
+    "^swim_bt_att_guests_.*$",
+    "^swim_bt_day_snapshot_.*$",
+    "^zz_swim_day_snapshot__.*$",
+    "^zz_swim_audit_entry__.*$"
+  ]
+}

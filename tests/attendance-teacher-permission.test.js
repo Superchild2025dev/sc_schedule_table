@@ -9,9 +9,19 @@ const root = path.join(__dirname, "..");
 const auth = fs.readFileSync(path.join(root, "js", "auth-guard.js"), "utf8");
 const data = fs.readFileSync(path.join(root, "js", "data.js"), "utf8");
 const rules = fs.readFileSync(path.join(root, "firestore.rules"), "utf8");
+const policy = JSON.parse(fs.readFileSync(
+  path.join(root, "config", "schedule-permissions.json"),
+  "utf8"
+));
 
 test("teacher permissions include vacation attendance keys only", () => {
-  assert.match(auth, /\^swim_bt_\(attendance\|att_guests\|day_snapshot\)_\.\+/);
+  assert.deepEqual(policy.teacherWritablePatterns.slice(0, 3), [
+    "^swim_bt_attendance_.*$",
+    "^swim_bt_att_guests_.*$",
+    "^swim_bt_day_snapshot_.*$",
+  ]);
+  assert.match(auth, /TEACHER_WRITABLE_EXACT_KEYS\.has\(key\)/);
+  assert.match(auth, /TEACHER_WRITABLE_PATTERNS\.some\(pattern=>pattern\.test\(key\)\)/);
   assert.match(rules, /\^swim_bt_attendance_\.\*\$/);
   assert.match(rules, /\^swim_bt_att_guests_\.\*\$/);
   assert.match(rules, /\^swim_bt_day_snapshot_\.\*\$/);

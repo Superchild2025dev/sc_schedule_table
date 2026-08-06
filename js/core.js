@@ -60,6 +60,7 @@ let _fb=null;
 let _fbReady=false;
 let _fbConnected=true;
 let _offlineWarningShown=false;
+let _firebaseWriteWarnedAt=0;
 let _firebaseUsingLocalFallback=false;
 let _writeBlockedWarnedAt=0;
 const _dbCache={};
@@ -167,10 +168,49 @@ function dbSet(key,val){
     }
     _fb.child(sk).set(json).catch(e=>{
       console.error('[FB SAVE FAIL]',key,e);
-      _showOfflineWarning();
+      _reportFirebaseWriteFailure(e,key);
     });
   }
   return true;
+}
+
+function _firebaseErrorCode(error){
+  return String(error?.code||error?.name||'')
+    .toLowerCase()
+    .replace(/^firestore\//,'');
+}
+function _isFirebaseConnectivityError(error){
+  try{
+    if(typeof navigator!=='undefined'&&navigator.onLine===false) return true;
+  }catch(e){}
+  const code=_firebaseErrorCode(error);
+  return [
+    'unavailable',
+    'deadline-exceeded',
+    'network-request-failed',
+    'disconnected',
+    'timeout',
+  ].includes(code);
+}
+function _reportFirebaseWriteFailure(error,key){
+  if(_isFirebaseConnectivityError(error)){
+    _showOfflineWarning();
+    return;
+  }
+  const now=Date.now();
+  if(now-_firebaseWriteWarnedAt<3000) return;
+  _firebaseWriteWarnedAt=now;
+  const code=_firebaseErrorCode(error);
+  let message='서버 저장 중 오류가 발생했습니다. 새로고침 후 다시 시도해주세요.';
+  if(code==='failed-precondition'){
+    message='서버 저장 조건 오류가 발생했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.';
+  }else if(code==='resource-exhausted'){
+    message='저장 데이터 용량 제한에 도달했습니다. 관리자에게 알려주세요.';
+  }else if(code==='permission-denied'){
+    message='저장 권한이 없습니다. 로그인 계정을 확인해주세요.';
+  }
+  console.warn('[FIREBASE WRITE ERROR]',key||'',code||'unknown',error);
+  if(typeof toast==='function') toast(message,'err');
 }
 
 function _showOfflineWarning(){
