@@ -550,6 +550,9 @@ const _remoteSyncKeys=new Set();
 let _remoteSyncTimer=null;
 let _remoteSyncBeforeCount=0;
 let _firebaseDataListenersAttached=false;
+let _scheduleReadCoordinator=null;
+let _scheduleReadInitialRemoteKeys=[];
+let _scheduleReadPendingBeforeCount=null;
 
 function _activeStudentCount(){
   return Array.isArray(STUDENTS)?STUDENTS.length:0;
@@ -597,17 +600,63 @@ function _validStudentPayload(key,value){
   }
 }
 
-function _flushRemoteScheduleRefresh(){
-  _remoteSyncTimer=null;
-  const keys=[..._remoteSyncKeys];
-  _remoteSyncKeys.clear();
-  const beforeCount=_remoteSyncBeforeCount;
+function _applyScheduleReadBatchValue(key,raw){
+  const asStr=typeof raw==='string'?raw:JSON.stringify(raw);
+  _cacheScheduleRaw(String(key||''),asStr===undefined?'null':asStr);
+}
+function _removeScheduleReadBatchValue(key){
+  key=String(key||'');
+  _dropParsedSnapshotCache(key);
+  delete _dbCache[key];
+  try{localStorage.removeItem(_lsKey(key));}catch(e){}
+}
+function _consumeScheduleReadLocalEchoes(batch){
+  const values=batch&&batch.values&&typeof batch.values==='object'?batch.values:{};
+  Object.entries(values).forEach(([key,value])=>{
+    const raw=typeof value==='string'?value:JSON.stringify(value);
+    const queue=_localWriteQueue[key];
+    if(!queue||!queue.length||queue[0]!==raw) return;
+    queue.shift();
+    if(!queue.length) delete _localWriteQueue[key];
+  });
+}
+function _handleScheduleReadError(error){
+  console.warn('[FIREBASE READ ERROR]',_firebaseErrorCode(error)||'unknown',error);
+  if(_isFirebaseConnectivityError(error)) _showOfflineWarning();
+}
+function _canUseScheduleReadCoordinator(){
+  return !!(
+    window.SCScheduleReadCoordinator
+    &&typeof SCScheduleReadCoordinator.create==='function'
+    &&window.SCFirebaseStore
+    &&typeof SCFirebaseStore.subscribeRootBatches==='function'
+  );
+}
+function _ensureScheduleReadCoordinator(){
+  if(_scheduleReadCoordinator||!_canUseScheduleReadCoordinator()) return _scheduleReadCoordinator;
+  _scheduleReadCoordinator=SCScheduleReadCoordinator.create({
+    getRaw:key=>Object.prototype.hasOwnProperty.call(_dbCache,key)?_dbCache[key]:null,
+    setRaw:_applyScheduleReadBatchValue,
+    removeRaw:_removeScheduleReadBatchValue,
+    validate:(key,raw)=>_validStudentPayload(key,raw),
+    isRenderBlocked:()=>typeof _popupOpen==='function'&&_popupOpen(),
+    onRender:(keys,meta)=>_renderRemoteScheduleBatch(keys,meta),
+    onInvalid:(keys)=>{
+      console.error('[DATA SAFETY] 불완전한 원생 데이터 수신을 무시했습니다:',keys.join(','));
+      _recordDataSyncDiagnostic('ignored-invalid-students',keys,_activeStudentCount(),_activeStudentCount());
+    },
+    onError:_handleScheduleReadError,
+  });
+  return _scheduleReadCoordinator;
+}
+
+function _renderRemoteScheduleBatch(keys,meta){
+  keys=[...new Set((keys||[]).map(key=>String(key||'')).filter(Boolean))];
   if(!keys.length) return;
-  if(typeof _popupOpen==='function'&&_popupOpen()){
-    _pendingSync=true;
-    _recordDataSyncDiagnostic('deferred-popup',keys,beforeCount,_activeStudentCount());
-    return;
-  }
+  const beforeCount=_scheduleReadPendingBeforeCount==null
+    ?_activeStudentCount()
+    :_scheduleReadPendingBeforeCount;
+  _scheduleReadPendingBeforeCount=null;
   if(typeof isSnapshotTab==='function'&&isSnapshotTab()){
     const snapshotKey='swim_snap_'+String(_activeTab||'');
     if(keys.includes(snapshotKey)&&typeof switchTabView==='function') switchTabView();
@@ -619,14 +668,34 @@ function _flushRemoteScheduleRefresh(){
   reloadGlobalData();
   const cfgAfter=typeof getTabConfig==='function'?getTabConfig():null;
   const activeTabDataChanged=tabBefore!==String(_activeTab||'')
-    || keys.includes(cfgBefore?.stuKey)
-    || keys.includes(cfgBefore?.instKey)
-    || keys.includes(cfgAfter?.stuKey)
-    || keys.includes(cfgAfter?.instKey);
+    ||keys.includes(cfgBefore?.stuKey)
+    ||keys.includes(cfgBefore?.instKey)
+    ||keys.includes(cfgAfter?.stuKey)
+    ||keys.includes(cfgAfter?.instKey);
   if(activeTabDataChanged) loadTabData();
   reloadBadgeMaps();
   buildTable();
-  _recordDataSyncDiagnostic(activeTabDataChanged?'remote-tab-data':'remote-maps',keys,beforeCount,_activeStudentCount());
+  _recordDataSyncDiagnostic(
+    activeTabDataChanged?'remote-tab-data':'remote-maps',
+    keys,
+    beforeCount,
+    _activeStudentCount()
+  );
+}
+
+function _flushRemoteScheduleRefresh(){
+  _remoteSyncTimer=null;
+  const keys=[..._remoteSyncKeys];
+  _remoteSyncKeys.clear();
+  const beforeCount=_remoteSyncBeforeCount;
+  if(!keys.length) return;
+  if(typeof _popupOpen==='function'&&_popupOpen()){
+    _pendingSync=true;
+    _recordDataSyncDiagnostic('deferred-popup',keys,beforeCount,_activeStudentCount());
+    return;
+  }
+  _scheduleReadPendingBeforeCount=beforeCount;
+  _renderRemoteScheduleBatch(keys,{source:'compatibility-queue'});
 }
 function _queueRemoteScheduleRefresh(key){
   if(!_remoteSyncKeys.size) _remoteSyncBeforeCount=_activeStudentCount();
@@ -636,34 +705,21 @@ function _queueRemoteScheduleRefresh(key){
 }
 function _attachFirebaseDataListeners(){
   if(_firebaseDataListenersAttached||!_fbReady||!_fb) return;
+  if(!_canUseScheduleReadCoordinator()) return;
+  _ensureScheduleReadCoordinator();
   _firebaseDataListenersAttached=true;
-  _fb.on('child_changed',(snap)=>{
-    if(_isDeferredStorageKey(snap.key)) return;
-    const newVal=snap.val();
-    if(!_validStudentPayload(snap.key,newVal)){
-      console.error('[DATA SAFETY] 불완전한 원생 데이터 수신을 무시했습니다:',snap.key);
-      _recordDataSyncDiagnostic('ignored-invalid-students',[snap.key],_activeStudentCount(),_activeStudentCount());
-      return;
-    }
-    const asStr=typeof newVal==='string'?newVal:JSON.stringify(newVal);
-    const q=_localWriteQueue[snap.key];
-    if(q&&q.length&&q[0]===asStr){
-      q.shift();
-      if(!q.length) delete _localWriteQueue[snap.key];
-      return;
-    }
-    if(_dbCache[snap.key]===asStr) return;
-    _dbCache[snap.key]=asStr;
-    try{localStorage.setItem(_lsKey(snap.key),asStr);}catch(e){}
-    _queueRemoteScheduleRefresh(snap.key);
-  });
-  _fb.on('child_removed',(snap)=>{
-    if(_isDeferredStorageKey(snap.key)) return;
-    const existed=Object.prototype.hasOwnProperty.call(_dbCache,snap.key)||dbGet(snap.key)!==null;
-    delete _dbCache[snap.key];
-    try{localStorage.removeItem(_lsKey(snap.key));}catch(e){}
-    if(existed) _queueRemoteScheduleRefresh(snap.key);
-  });
+  _scheduleReadCoordinator.start(handlers=>SCFirebaseStore.subscribeRootBatches(_fb,{
+    next:batch=>{
+      _consumeScheduleReadLocalEchoes(batch);
+      if(batch&&batch.initial){
+        _scheduleReadInitialRemoteKeys=Object.keys(batch.values||{});
+      }else if(_scheduleReadPendingBeforeCount==null){
+        _scheduleReadPendingBeforeCount=_activeStudentCount();
+      }
+      handlers.next(batch);
+    },
+    error:handlers.error,
+  }));
 }
 
 function loadFromFirebase(callback){
@@ -676,6 +732,20 @@ function loadFromFirebase(callback){
   if(!_fbReady){
     _firebaseUsingLocalFallback=true;
     wrappedCallback();
+    return;
+  }
+  if(_canUseScheduleReadCoordinator()){
+    _attachFirebaseDataListeners();
+    _scheduleReadCoordinator.ready().then(()=>{
+      _firebaseUsingLocalFallback=false;
+      _pruneMissingRemoteLocalKeys(_scheduleReadInitialRemoteKeys);
+      wrappedCallback();
+    }).catch(err=>{
+      console.error('Firebase 데이터 로드 실패:',err);
+      _firebaseUsingLocalFallback=true;
+      toast('Firebase 데이터 로드 실패 — 로컬 데이터는 읽기 전용입니다','err');
+      wrappedCallback();
+    });
     return;
   }
   _fb.once('value').then(snap=>{
@@ -703,7 +773,7 @@ function loadFromFirebase(callback){
     _firebaseUsingLocalFallback=true;
     toast('Firebase 데이터 로드 실패 — 로컬 데이터는 읽기 전용입니다','err');
     wrappedCallback();
-  }).finally(_attachFirebaseDataListeners);
+  });
 }
 
 /* ════════════════════════════════════════════════════════════════
