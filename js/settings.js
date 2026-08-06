@@ -367,6 +367,16 @@
       : firebase.database().ref(branch.fbPath);
     return rootByBranch[branchId];
   }
+  const writeGatewayByBranch={};
+  function _settingsWrites(branchId){
+    const id=BRANCHES[branchId]?branchId:'gagyeong';
+    if(!writeGatewayByBranch[id]){
+      writeGatewayByBranch[id]=SCScheduleWriteGateway.create({getRoot:()=>branchRoot(id)});
+    }
+    return writeGatewayByBranch[id];
+  }
+  window.SCWriteDiagnostics=window.SCWriteDiagnostics||{};
+  window.SCWriteDiagnostics.settingsRecent=(branchId,limit)=>_settingsWrites(branchId||activeBranch).recent(limit);
   function backupDeferredKey(key){
     key=String(key||'');
     return key==='swim_audit_log'
@@ -1538,7 +1548,7 @@
       });
       let repairResult=null;
       let abortReason='';
-      const result=await branchRoot(branchId).transactionKeys(keys,root=>{
+      const result=await _settingsWrites(branchId).transaction(keys,root=>{
         try{
           repairResult=SCStudentIdentityRepair.applyRepair(root,{
             branchId,
@@ -1552,7 +1562,7 @@
           abortReason=error.message||String(error);
           return;
         }
-      });
+      },{label:'원생 정보 정리'});
       if(!result?.committed) throw new Error(abortReason||'원생 정보 정리가 취소되었습니다.');
       identityRepairConfirm=null;
       dataV2ReportByBranch[branchId]=null;
@@ -1950,7 +1960,7 @@
       downloadJsonFile('yongam-2026-summer-before-layout-'+backupFileStamp()+'.json',backup);
       const moves=summerMoveMap();
       let abortReason='';
-      const res=await state.root.transactionKeys(state.keys,root=>{
+      const res=await _settingsWrites('yongam').transaction(state.keys,root=>{
         const students=parseStored(root[state.stuKey])||[];
         const index=summerLayoutIndex(students);
         const canonical=summerLayoutCanonical(index,state.mode!=='source');
@@ -1969,7 +1979,7 @@
           });
         }
         return root;
-      });
+      },{label:'방학특강 배치 적용'});
       if(!res.committed) throw new Error(abortReason||'배치 적용이 취소되었습니다');
       summerLayoutState=await analyzeSummerLayout(await readSummerLayoutBundle());
       if(summerLayoutState.mode!=='applied') throw new Error('저장 후 검증이 완료되지 않았습니다');
@@ -2097,9 +2107,9 @@
     const updatedAt=new Date().toISOString();
     const updatedBy=user&&user.email||'';
     try{
-      const res=await branchRoot(activeBranch).child(SETTINGS_KEY).transaction(raw=>{
+      const res=await _settingsWrites(activeBranch).transaction([SETTINGS_KEY],root=>{
         const base=defaultSettings(activeBranch);
-        const current=mergeSettings(base,parseStored(raw));
+        const current=mergeSettings(base,parseStored(root[SETTINGS_KEY]));
         current.branchId=activeBranch;
         current.branchName=BRANCHES[activeBranch].name;
         current.pages=formData.pages;
@@ -2111,10 +2121,11 @@
         current.updatedBy=updatedBy;
         delete current.aligo.templates;
         delete current.sms.templates;
-        return JSON.stringify(current);
-      });
+        root[SETTINGS_KEY]=JSON.stringify(current);
+        return root;
+      },{label:'설정 저장'});
       if(!res.committed) throw new Error('설정 저장이 취소되었습니다');
-      settingsByBranch[activeBranch]=mergeSettings(defaultSettings(activeBranch),parseStored(res.snapshot.val()));
+      settingsByBranch[activeBranch]=mergeSettings(defaultSettings(activeBranch),parseStored((res.snapshot.val()||{})[SETTINGS_KEY]));
       renderAll();
       toast('설정 저장 완료','ok');
     }catch(e){
@@ -3049,7 +3060,7 @@
     }
     let changedCount=0;
     try{
-      const res=await branchRoot(activeBranch).transactionKeys(keys,root=>{
+      const res=await _settingsWrites(activeBranch).transaction(keys,root=>{
         root=root||{};
         let localChanged=0;
         targets.forEach(target=>{
@@ -3081,7 +3092,7 @@
         if(!localChanged) return;
         changedCount=localChanged;
         return root;
-      });
+      },{label:'원생 전화번호 저장'});
       if(!res||!res.committed||!changedCount){
         toast('이미 번호가 있거나 대상 원생을 찾지 못했습니다','err');
         return;
@@ -3282,15 +3293,16 @@ th{background:#D9EAD3;font-weight:700}
     if(!id) return;
     status=status==='done'?'done':'new';
     try{
-      const res=await branchRoot(activeBranch).child(FEEDBACK_KEY).transaction(raw=>{
-        const list=normalizeFeedbackList(parseStored(raw));
+      const res=await _settingsWrites(activeBranch).transaction([FEEDBACK_KEY],root=>{
+        const list=normalizeFeedbackList(parseStored(root[FEEDBACK_KEY]));
         const found=list.find(item=>String(item.id||'')===id);
-        if(!found) return raw;
+        if(!found) return root;
         found.status=status;
         found.checkedAt=status==='done' ? new Date().toISOString() : '';
-        return JSON.stringify(list);
-      });
-      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored(res.snapshot.val()));
+        root[FEEDBACK_KEY]=JSON.stringify(list);
+        return root;
+      },{label:'의견접수 상태 변경'});
+      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored((res.snapshot.val()||{})[FEEDBACK_KEY]));
       renderFeedback();
       updateFeedbackBadges();
       toast(status==='done'?'확인완료 처리했습니다':'새 접수로 되돌렸습니다','ok');
@@ -3309,17 +3321,18 @@ th{background:#D9EAD3;font-weight:700}
     if(!confirm(`새 접수 ${count}건을 모두 확인완료로 바꿀까요?`)) return;
     try{
       const checkedAt=new Date().toISOString();
-      const res=await branchRoot(activeBranch).child(FEEDBACK_KEY).transaction(raw=>{
-        const list=normalizeFeedbackList(parseStored(raw));
+      const res=await _settingsWrites(activeBranch).transaction([FEEDBACK_KEY],root=>{
+        const list=normalizeFeedbackList(parseStored(root[FEEDBACK_KEY]));
         list.forEach(item=>{
           if(isNewFeedback(item)){
             item.status='done';
             item.checkedAt=checkedAt;
           }
         });
-        return JSON.stringify(list);
-      });
-      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored(res.snapshot.val()));
+        root[FEEDBACK_KEY]=JSON.stringify(list);
+        return root;
+      },{label:'의견접수 전체 확인'});
+      feedbackByBranch[activeBranch]=normalizeFeedbackList(parseStored((res.snapshot.val()||{})[FEEDBACK_KEY]));
       renderFeedback();
       updateFeedbackBadges();
       toast('전체 확인완료 처리했습니다','ok');

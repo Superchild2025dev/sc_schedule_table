@@ -144,3 +144,29 @@ test('tab and snapshot writes use the shared write gateway', () => {
   assert.doesNotMatch(source, /_fb\.transaction\s*\(/);
   assert.match(source, /await dbSet\(SNAP_KEY_PREFIX\+newId/);
 });
+
+test('staff pages load the shared gateway before their runtime', () => {
+  for(const [htmlFile, runtime] of [
+    ['teacher.html', "scJs('js/teacher.js')"],
+    ['desk.html', "scJs('js/desk.js')"],
+    ['settings.html', "scJs('js/settings.js')"],
+  ]){
+    const html = read(htmlFile);
+    const gatewayIndex = html.indexOf("scJs('js/schedule-write-gateway.js')");
+    assert.notEqual(gatewayIndex, -1, `${htmlFile} must load the gateway`);
+    assert.ok(gatewayIndex < html.indexOf(runtime), `${htmlFile} must load the gateway first`);
+  }
+});
+
+test('staff transactions delegate to page gateways', () => {
+  const teacher = read('js/teacher.js');
+  const desk = read('js/desk.js');
+  const settings = read('js/settings.js');
+
+  assert.match(teacher, /_teacherWrites\.transaction\(/);
+  assert.doesNotMatch(teacher, /_fb\.transactionKeys\s*\(|_fb\.transaction\s*\(|_fb\.child\([^\r\n]*\)\.(?:set|remove|transaction)\s*\(/);
+  assert.match(desk, /_deskWrites\.transaction\(/);
+  assert.doesNotMatch(desk, /_fb\.transactionKeys\s*\(|_fb\.transaction\s*\(/);
+  assert.match(settings, /_settingsWrites\([^)]*\)\.transaction\(/);
+  assert.doesNotMatch(settings, /branchRoot\([^\r\n]*\)\.transactionKeys\s*\(|branchRoot\([^\r\n]*\)\.child\([^\r\n]*\)\.transaction\s*\(/);
+});

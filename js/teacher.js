@@ -16,6 +16,12 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
 };
 
 let _fb=null, _fbReady=false;
+const _teacherWrites=SCScheduleWriteGateway.create({
+  getRoot:()=>_fb,
+  canWrite:()=>_fbReady&&!!_fb,
+});
+window.SCWriteDiagnostics=window.SCWriteDiagnostics||{};
+window.SCWriteDiagnostics.teacherRecent=limit=>_teacherWrites.recent(limit);
 let STUDENTS=[], INST_MAP={}, MARK_MAP={}, REQUESTS={}, TEACHERS=[], ATTENDANCE={}, ATT_GUESTS={}, DAY_SNAPSHOT={};
 let _currentTeacher=null;
 let _activeTab='bogang';
@@ -358,10 +364,10 @@ function subscribeChanges(){
 function _canWriteTeacherKey(key,label){
   return !(window.SCAuth && !SCAuth.requireWriteKey(key,label||'저장'));
 }
-function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); MARK_MAP=normalizeStoredValue('swim_mark',MARK_MAP); return _fb.child('swim_mark').set(JSON.stringify(MARK_MAP)); }
-function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _fb.child('swim_requests').set(JSON.stringify(REQUESTS)); }
-function saveAttendance(){ if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue('swim_attendance',ATTENDANCE); return _fb.child('swim_attendance').set(JSON.stringify(ATTENDANCE)); }
-function saveAttGuests(){ if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue('swim_att_guests',ATT_GUESTS); return _fb.child('swim_att_guests').set(JSON.stringify(ATT_GUESTS)); }
+function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); MARK_MAP=normalizeStoredValue('swim_mark',MARK_MAP); return _teacherWrites.set('swim_mark',JSON.stringify(MARK_MAP),{label:'보강/결석 처리'}); }
+function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _teacherWrites.set('swim_requests',JSON.stringify(REQUESTS),{label:'요청 처리'}); }
+function saveAttendance(){ if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue('swim_attendance',ATTENDANCE); return _teacherWrites.set('swim_attendance',JSON.stringify(ATTENDANCE),{label:'출석 체크'}); }
+function saveAttGuests(){ if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue('swim_att_guests',ATT_GUESTS); return _teacherWrites.set('swim_att_guests',JSON.stringify(ATT_GUESTS),{label:'출석부 추가'}); }
 function saveDaySnapshot(ds){
   const date=String(ds||'');
   const snapshot=DAY_SNAPSHOT[date];
@@ -370,33 +376,37 @@ function saveDaySnapshot(ds){
   if(!_canWriteTeacherKey(key,'출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다'));
   const normalized=normalizeStoredValue(key,snapshot);
   cacheTeacherDaySnapshot(date,normalized);
-  return _fb.child(key).set(JSON.stringify(normalized));
+  return _teacherWrites.set(key,JSON.stringify(normalized),{label:'출석부 스냅샷'});
 }
 function updateAttendanceMapTx(mutator){
   if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_attendance').transaction(raw=>{
-    const att=parseStoredJSON('swim_attendance',raw,{});
+  const key='swim_attendance';
+  return _teacherWrites.transaction([key],root=>{
+    const att=parseStoredJSON(key,root[key],{});
     const next=mutator(att);
     if(next===undefined) return;
-    return JSON.stringify(normalizeStoredValue('swim_attendance',next||{}));
+    root[key]=JSON.stringify(normalizeStoredValue(key,next||{}));
+    return root;
   }).then(res=>{
     if(!res.committed) throw new Error('attendance transaction aborted');
-    ATTENDANCE=parseStoredJSON('swim_attendance',res.snapshot.val(),{});
+    ATTENDANCE=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
     return ATTENDANCE;
   });
 }
 function updateAttGuestsMapTx(mutator){
   if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
-  return _fb.child('swim_att_guests').transaction(raw=>{
-    const guests=parseStoredJSON('swim_att_guests',raw,{});
+  const key='swim_att_guests';
+  return _teacherWrites.transaction([key],root=>{
+    const guests=parseStoredJSON(key,root[key],{});
     const next=mutator(guests);
     if(next===undefined) return;
-    return JSON.stringify(normalizeStoredValue('swim_att_guests',next||{}));
+    root[key]=JSON.stringify(normalizeStoredValue(key,next||{}));
+    return root;
   }).then(res=>{
     if(!res.committed) throw new Error('guest transaction aborted');
-    ATT_GUESTS=parseStoredJSON('swim_att_guests',res.snapshot.val(),{});
+    ATT_GUESTS=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
     return ATT_GUESTS;
   });
 }
@@ -404,14 +414,16 @@ function updateMarkTx(mutator){
   if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
-  return _fb.child('swim_mark').transaction(raw=>{
-    const marks=parseStoredJSON('swim_mark',raw,{});
+  const key='swim_mark';
+  return _teacherWrites.transaction([key],root=>{
+    const marks=parseStoredJSON(key,root[key],{});
     const next=mutator(marks, reason=>{abortReason=reason||'';});
     if(next===undefined) return;
-    return JSON.stringify(normalizeStoredValue('swim_mark',next));
+    root[key]=JSON.stringify(normalizeStoredValue(key,next));
+    return root;
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'mark transaction aborted');
-    MARK_MAP=parseStoredJSON('swim_mark',res.snapshot.val(),{});
+    MARK_MAP=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
     return MARK_MAP;
   });
 }
@@ -419,14 +431,16 @@ function updateRequestsTx(mutator){
   if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
-  return _fb.child('swim_requests').transaction(raw=>{
-    const reqs=parseStoredJSON('swim_requests',raw,{});
+  const key='swim_requests';
+  return _teacherWrites.transaction([key],root=>{
+    const reqs=parseStoredJSON(key,root[key],{});
     const next=mutator(reqs, reason=>{abortReason=reason||'';});
     if(next===undefined) return;
-    return JSON.stringify(normalizeStoredValue('swim_requests',next));
+    root[key]=JSON.stringify(normalizeStoredValue(key,next));
+    return root;
   }).then(res=>{
     if(!res.committed) throw new Error(abortReason||'request transaction aborted');
-    REQUESTS=parseStoredJSON('swim_requests',res.snapshot.val(),{});
+    REQUESTS=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
     return REQUESTS;
   });
 }
@@ -456,15 +470,12 @@ function updateTeacherKeysTx(keys,mutator){
     },
     abort(reason){ abortReason=reason||''; },
   });
-  const runTx=typeof _fb.transactionKeys==='function'
-    ? updateFn=>_fb.transactionKeys(txKeys, updateFn)
-    : updateFn=>_fb.transaction(updateFn);
-  return runTx(root=>{
+  return _teacherWrites.transaction(txKeys,root=>{
     root=root||{};
     const result=mutator(makeCtx(root));
     if(result===undefined) return;
     return root;
-  }).then(res=>{
+  },{label:'선생님 데이터 저장'}).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
     const root=res.snapshot.val()||{};
     txKeys.forEach(key=>{
@@ -534,7 +545,7 @@ function _teacherAuditAppendIndex(raw,item){
 }
 function _teacherAuditCleanup(keys){
   const unique=[...new Set((keys||[]).filter(key=>String(key||'').startsWith('zz_swim_audit_entry__')))];
-  return Promise.all(unique.map(key=>_fb.child(key).remove().catch(e=>{
+  return Promise.all(unique.map(key=>_teacherWrites.remove(key,{label:'선생님 기록 정리'}).catch(e=>{
     console.warn('teacher audit cleanup failed',key,e);
   })));
 }
@@ -556,23 +567,15 @@ function recordTeacherAudit(entry){
   const entryKey=_teacherAuditEntryKey(item.id);
   item.entryKey=entryKey;
   let removedKeys=[];
-  const save=typeof _fb.transactionKeys==='function'&&!_fb.disabled
-    ? _fb.transactionKeys([TEACHER_AUDIT_INDEX_KEY,entryKey],root=>{
-        root=root||{};
-        removedKeys=[];
-        const next=_teacherAuditAppendIndex(root[TEACHER_AUDIT_INDEX_KEY],item);
-        root[TEACHER_AUDIT_INDEX_KEY]=JSON.stringify(next.list);
-        root[entryKey]=JSON.stringify(item);
-        removedKeys.push(...next.removed.map(row=>row.entryKey));
-        return root;
-      }).then(()=>_teacherAuditCleanup(removedKeys))
-    : _fb.child(entryKey).set(JSON.stringify(item)).then(()=>{
-        return _fb.child(TEACHER_AUDIT_INDEX_KEY).transaction(raw=>{
-          const next=_teacherAuditAppendIndex(raw,item);
-          removedKeys.push(...next.removed.map(row=>row.entryKey));
-          return JSON.stringify(next.list);
-        });
-      }).then(()=>_teacherAuditCleanup(removedKeys));
+  const save=_teacherWrites.transaction([TEACHER_AUDIT_INDEX_KEY,entryKey],root=>{
+    root=root||{};
+    removedKeys=[];
+    const next=_teacherAuditAppendIndex(root[TEACHER_AUDIT_INDEX_KEY],item);
+    root[TEACHER_AUDIT_INDEX_KEY]=JSON.stringify(next.list);
+    root[entryKey]=JSON.stringify(item);
+    removedKeys.push(...next.removed.map(row=>row.entryKey));
+    return root;
+  },{label:'선생님 처리 기록'}).then(()=>_teacherAuditCleanup(removedKeys));
   return save.catch(e=>{
     console.warn('teacher audit save failed',e);
   });

@@ -13,6 +13,12 @@
   let _selectedBranch=null;
   let _fb=null;
   let _fbReady=false;
+  const _deskWrites=SCScheduleWriteGateway.create({
+    getRoot:()=>_fb,
+    canWrite:()=>_fbReady&&!!_fb,
+  });
+  window.SCWriteDiagnostics=window.SCWriteDiagnostics||{};
+  window.SCWriteDiagnostics.deskRecent=limit=>_deskWrites.recent(limit);
   let _stuKey='swim_students';
   let _instKey='swim_inst';
   let STUDENTS=[];
@@ -183,6 +189,7 @@
   }
   function updateDeskKeysTx(keys,mutator){
     if(!_fbReady) return Promise.reject(new Error('not ready'));
+    keys=[...new Set((keys||[]).filter(Boolean))];
     let abortReason='';
     const makeCtx=root=>({
       get(key,fallback){
@@ -194,15 +201,12 @@
       },
       abort(reason){ abortReason=reason||''; },
     });
-    const runTx=typeof _fb.transactionKeys==='function'
-      ? updateFn=>_fb.transactionKeys(keys,updateFn)
-      : updateFn=>_fb.transaction(updateFn);
-    return runTx(root=>{
+    return _deskWrites.transaction(keys,root=>{
       root=root||{};
       const result=mutator(makeCtx(root));
       if(result===undefined) return;
       return root;
-    }).then(res=>{
+    },{label:'데스크 요청 처리'}).then(res=>{
       if(!res.committed) throw new Error(abortReason||'transaction aborted');
       const root=res.snapshot.val()||{};
       keys.forEach(key=>applyChangedKey(key,root[key]));
