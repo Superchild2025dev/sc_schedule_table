@@ -26,7 +26,7 @@ test('past timetable deletion archives an old regular basis and preserves attend
   assert.match(section,/if\(state\.main\?\.tabId===id\) state\.main=/);
   assert.match(section,/if\(state\.parent\?\.tabId===id\) state\.parent=/);
   assert.match(section,/const dataKeys=isSnapshot\?\[SNAP_KEY_PREFIX\+id\]:\[\]/);
-  assert.match(section,/transactionKeys\(txKeys/);
+  assert.match(section,/_scheduleWrites\.transaction\(txKeys/);
   assert.match(section,/dataKeys\.forEach\(key=>\{delete root\[key\];\}\)/);
   assert.doesNotMatch(section,/swim_bt_attendance_/);
   assert.doesNotMatch(section,/ATTENDANCE_DAY_SNAPSHOT_PREFIX/);

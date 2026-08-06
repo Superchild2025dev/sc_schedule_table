@@ -85,17 +85,33 @@ function startScheduleApp(){
   });
 }
 
-function resetAllScheduleData(){
+async function resetAllScheduleData(){
   if(window.SC_READ_ONLY_PREVIEW){
     toast('안전 미리보기에서는 초기화할 수 없습니다','err');
     return;
   }
   if(window.SCAuth && !SCAuth.requirePermission('resetData','초기화')) return;
   if(!confirm('모든 데이터를 초기 상태로 되돌립니다. 계속?')) return;
-  Object.keys(_dbCache).forEach(k=>dbRemove(k));
-  try{localStorage.clear();}catch(e){}
-  if(_fbReady)_fb.remove();
-  location.reload();
+  if(!_fbReady||!_fb){
+    toast('서버 연결 후에만 초기화할 수 있습니다','err');
+    return;
+  }
+  try{
+    const keys=new Set(Object.keys(_dbCache));
+    if(typeof _fb._list==='function'){
+      const remote=await _fb._list({includeDeferred:true});
+      Object.keys(remote||{}).forEach(key=>keys.add(key));
+    }else{
+      const snapshot=await _fb.once('value');
+      Object.keys(snapshot.val()||{}).forEach(key=>keys.add(key));
+    }
+    await Promise.all([...keys].map(key=>dbRemove(key)));
+    try{localStorage.clear();}catch(e){}
+    location.reload();
+  }catch(error){
+    console.error('전체 초기화 실패',error);
+    toast('전체 초기화에 실패했습니다. 새로고침 후 다시 시도해주세요','err');
+  }
 }
 
 function runSettingsActionFromUrl(){
