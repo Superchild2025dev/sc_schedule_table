@@ -1219,7 +1219,7 @@ function closeInstPopup(){
   document.getElementById('inst-popup').classList.remove('show');
   _instPopup.key=null;
   _instReserveEditIdx=null;
-  if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
+  flushPendingScheduleReads();
 }
 
 document.addEventListener('click',e=>{

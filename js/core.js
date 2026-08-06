@@ -686,7 +686,6 @@ function _renderRemoteScheduleBatch(keys,meta){
 function _flushRemoteScheduleRefresh(){
   _remoteSyncTimer=null;
   const keys=[..._remoteSyncKeys];
-  _remoteSyncKeys.clear();
   const beforeCount=_remoteSyncBeforeCount;
   if(!keys.length) return;
   if(typeof _popupOpen==='function'&&_popupOpen()){
@@ -694,8 +693,33 @@ function _flushRemoteScheduleRefresh(){
     _recordDataSyncDiagnostic('deferred-popup',keys,beforeCount,_activeStudentCount());
     return;
   }
+  _remoteSyncKeys.clear();
   _scheduleReadPendingBeforeCount=beforeCount;
   _renderRemoteScheduleBatch(keys,{source:'compatibility-queue'});
+}
+function flushPendingScheduleReads(){
+  let flushed=false;
+  const hadLegacyPending=!!_pendingSync;
+  if(_scheduleReadCoordinator&&typeof _scheduleReadCoordinator.flush==='function'){
+    flushed=_scheduleReadCoordinator.flush()||flushed;
+  }
+  if(_remoteSyncKeys.size){
+    if(_remoteSyncTimer){
+      clearTimeout(_remoteSyncTimer);
+      _remoteSyncTimer=null;
+    }
+    _flushRemoteScheduleRefresh();
+    flushed=true;
+  }
+  if(!flushed&&hadLegacyPending){
+    reloadGlobalData();
+    loadTabData();
+    reloadBadgeMaps();
+    buildTable();
+    flushed=true;
+  }
+  if(flushed||hadLegacyPending) _pendingSync=false;
+  return flushed;
 }
 function _queueRemoteScheduleRefresh(key){
   if(!_remoteSyncKeys.size) _remoteSyncBeforeCount=_activeStudentCount();

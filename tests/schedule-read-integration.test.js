@@ -68,3 +68,36 @@ test('one remote batch owns one global reload and one table build', () => {
   assert.equal((render.match(/buildTable\(\)/g)||[]).length,1);
   assert.match(render,/activeTabDataChanged/);
 });
+
+test('both popup close paths flush pending schedule reads through one helper', () => {
+  const studentSource=read(path.join('js','popup-stu.js'));
+  const teacherSource=read(path.join('js','teachers.js'));
+  const studentClose=studentSource.match(/function closeStuPopup\(\)\{[\s\S]*?\n\}/)?.[0]||'';
+  const teacherClose=teacherSource.match(/function closeInstPopup\(\)\{[\s\S]*?\n\}/)?.[0]||'';
+
+  assert.match(studentClose,/flushPendingScheduleReads\(\)/);
+  assert.match(teacherClose,/flushPendingScheduleReads\(\)/);
+  assert.doesNotMatch(studentClose,/reloadGlobalData|loadTabData|reloadBadgeMaps|buildTable/);
+  assert.doesNotMatch(teacherClose,/reloadGlobalData|loadTabData|reloadBadgeMaps|buildTable/);
+});
+
+test('pending read flush uses the coordinator before its compatibility fallback', () => {
+  const source=read(path.join('js','core.js'));
+  const flush=functionSource(source,'flushPendingScheduleReads','_queueRemoteScheduleRefresh');
+  const coordinatorIndex=flush.indexOf('_scheduleReadCoordinator.flush()');
+  const fallbackIndex=flush.indexOf('reloadGlobalData()');
+
+  assert.ok(coordinatorIndex>=0,'coordinator flush is missing');
+  assert.ok(fallbackIndex>coordinatorIndex,'compatibility fallback must run after coordinator flush');
+  assert.match(flush,/if\(!flushed&&hadLegacyPending\)/);
+});
+
+test('compatibility refresh keeps pending keys while a popup is open', () => {
+  const source=read(path.join('js','core.js'));
+  const flush=functionSource(source,'_flushRemoteScheduleRefresh','flushPendingScheduleReads');
+  const popupIndex=flush.indexOf('_popupOpen()');
+  const clearIndex=flush.indexOf('_remoteSyncKeys.clear()');
+
+  assert.ok(popupIndex>=0,'popup guard is missing');
+  assert.ok(clearIndex>popupIndex,'pending keys must be cleared only after the popup guard');
+});

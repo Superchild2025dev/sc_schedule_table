@@ -2989,7 +2989,7 @@ function closeStuPopup(){
   _stuPopup.key=null;_stuPopup.selDate=null;_stuPopup.showEnroll=false;_stuPopup.showBogang=false;_stuPopup.showSample=false;_stuPopup.showHyuwon=false;_stuPopup.showRetire=false;
   _stuPopup.replaceMode=false;_stuPopup.identityConfirm=false;_stuPopup.identityEditConfirmed=false;
   _resetReplacementIdentityState();
-  if(_pendingSync){_pendingSync=false;reloadGlobalData();loadTabData();reloadBadgeMaps();buildTable();}
+  flushPendingScheduleReads();
 }
 
 /* ════════════════════════════════════════════════════════════════
