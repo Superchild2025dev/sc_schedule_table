@@ -1690,7 +1690,7 @@ function _loadAuditStorage(force){
 function _cleanupIncrementalRecordKeys(keys){
   if(!_fbReady||!_fb) return Promise.resolve();
   const unique=[...new Set((keys||[]).filter(key=>/^zz_swim_(audit_entry|restore_point|student_delete)__/.test(String(key||''))))];
-  return Promise.all(unique.map(key=>_fb.child(key).remove().catch(err=>{
+  return Promise.all(unique.map(key=>_scheduleWrites.remove(key,{internal:true,label:'이전 기록 정리'}).catch(err=>{
     console.warn('이전 개별 기록 정리 실패:',key,err);
   })));
 }
@@ -1711,45 +1711,24 @@ function _persistIncrementalRecord(entry,restorePoint){
 
   const persist=()=>{
     let cleanupKeys=[];
-    if(typeof _fb.transactionKeys==='function'&&!_fb.disabled){
-      return _fb.transactionKeys(txKeys,root=>{
-        root=root||{};
-        cleanupKeys=[];
-        const auditNext=_appendStorageIndex(root[STORAGE_KEYS.AUDIT_INDEX],auditSummary,AUDIT_LOG_MAX);
-        root[STORAGE_KEYS.AUDIT_INDEX]=JSON.stringify(auditNext.list);
-        root[auditEntryKey]=JSON.stringify(auditSummary);
-        cleanupKeys.push(...auditNext.removed.map(row=>row.entryKey));
-        if(restorePoint){
-          const restoreNext=_appendStorageIndex(root[STORAGE_KEYS.RESTORE_INDEX],restoreSummary,RESTORE_POINT_MAX);
-          root[STORAGE_KEYS.RESTORE_INDEX]=JSON.stringify(restoreNext.list);
-          root[restoreEntryKey]=JSON.stringify(restorePoint);
-          cleanupKeys.push(...restoreNext.removed.map(row=>row.entryKey));
-        }
-        return root;
-      }).then(res=>{
-        _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
-        return _cleanupIncrementalRecordKeys(cleanupKeys);
-      });
-    }
-
-    const writes=[_fb.child(auditEntryKey).set(JSON.stringify(auditSummary))];
-    if(restorePoint) writes.push(_fb.child(restoreEntryKey).set(JSON.stringify(restorePoint)));
-    return Promise.all(writes).then(()=>{
-      const indexJobs=[];
-      indexJobs.push(_fb.child(STORAGE_KEYS.AUDIT_INDEX).transaction(raw=>{
-        const next=_appendStorageIndex(raw,auditSummary,AUDIT_LOG_MAX);
-        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
-        return JSON.stringify(next.list);
-      }).then(res=>_cacheAuditRaw(STORAGE_KEYS.AUDIT_INDEX,res.snapshot.val())));
+    return _scheduleWrites.transaction(txKeys,root=>{
+      root=root||{};
+      cleanupKeys=[];
+      const auditNext=_appendStorageIndex(root[STORAGE_KEYS.AUDIT_INDEX],auditSummary,AUDIT_LOG_MAX);
+      root[STORAGE_KEYS.AUDIT_INDEX]=JSON.stringify(auditNext.list);
+      root[auditEntryKey]=JSON.stringify(auditSummary);
+      cleanupKeys.push(...auditNext.removed.map(row=>row.entryKey));
       if(restorePoint){
-        indexJobs.push(_fb.child(STORAGE_KEYS.RESTORE_INDEX).transaction(raw=>{
-          const next=_appendStorageIndex(raw,restoreSummary,RESTORE_POINT_MAX);
-          cleanupKeys.push(...next.removed.map(row=>row.entryKey));
-          return JSON.stringify(next.list);
-        }).then(res=>_cacheAuditRaw(STORAGE_KEYS.RESTORE_INDEX,res.snapshot.val())));
+        const restoreNext=_appendStorageIndex(root[STORAGE_KEYS.RESTORE_INDEX],restoreSummary,RESTORE_POINT_MAX);
+        root[STORAGE_KEYS.RESTORE_INDEX]=JSON.stringify(restoreNext.list);
+        root[restoreEntryKey]=JSON.stringify(restorePoint);
+        cleanupKeys.push(...restoreNext.removed.map(row=>row.entryKey));
       }
-      return Promise.all(indexJobs);
-    }).then(()=>_cleanupIncrementalRecordKeys(cleanupKeys));
+      return root;
+    },{internal:true,label:'편집 기록 저장'}).then(res=>{
+      _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
+      return _cleanupIncrementalRecordKeys(cleanupKeys);
+    });
   };
 
   const run=_auditPersistQueue.then(persist,persist);
@@ -1762,28 +1741,16 @@ function _persistStudentDeleteEntry(entry){
   const summary=_studentDeleteIndexEntry(entry,entryKey);
   const persist=()=>{
     let cleanupKeys=[];
-    if(typeof _fb.transactionKeys==='function'&&!_fb.disabled){
-      return _fb.transactionKeys([STORAGE_KEYS.STUDENT_DELETE_INDEX,entryKey],root=>{
-        root=root||{};
-        cleanupKeys=[];
-        const next=_appendStorageIndex(root[STORAGE_KEYS.STUDENT_DELETE_INDEX],summary,STUDENT_DELETE_LOG_MAX);
-        root[STORAGE_KEYS.STUDENT_DELETE_INDEX]=JSON.stringify(next.list);
-        root[entryKey]=JSON.stringify(entry);
-        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
-        return root;
-      }).then(res=>{
-        _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
-        return _cleanupIncrementalRecordKeys(cleanupKeys);
-      });
-    }
-    return _fb.child(entryKey).set(JSON.stringify(entry)).then(()=>{
-      return _fb.child(STORAGE_KEYS.STUDENT_DELETE_INDEX).transaction(raw=>{
-        const next=_appendStorageIndex(raw,summary,STUDENT_DELETE_LOG_MAX);
-        cleanupKeys.push(...next.removed.map(row=>row.entryKey));
-        return JSON.stringify(next.list);
-      });
-    }).then(res=>{
-      _cacheAuditRaw(STORAGE_KEYS.STUDENT_DELETE_INDEX,res.snapshot.val());
+    return _scheduleWrites.transaction([STORAGE_KEYS.STUDENT_DELETE_INDEX,entryKey],root=>{
+      root=root||{};
+      cleanupKeys=[];
+      const next=_appendStorageIndex(root[STORAGE_KEYS.STUDENT_DELETE_INDEX],summary,STUDENT_DELETE_LOG_MAX);
+      root[STORAGE_KEYS.STUDENT_DELETE_INDEX]=JSON.stringify(next.list);
+      root[entryKey]=JSON.stringify(entry);
+      cleanupKeys.push(...next.removed.map(row=>row.entryKey));
+      return root;
+    },{internal:true,label:'원생 삭제 안전기록 저장'}).then(res=>{
+      _cacheCommittedRecordIndexes(res?.snapshot?.val?.()||{});
       return _cleanupIncrementalRecordKeys(cleanupKeys);
     });
   };
@@ -3905,7 +3872,9 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback,meta)
   }
   const sk=storageKey.replace(/[.#$/\[\]]/g,'_');
   let deletionEvents=[];
-  return _fb.child(sk).transaction(raw=>{
+  return _scheduleWrites.transaction([sk],root=>{
+    root=root||{};
+    const raw=root[sk];
     if(!meta.skipAudit){
       auditPoint=createAuditPointFromRoot([storageKey],{[sk]:raw},auditMeta);
     }
@@ -3915,10 +3884,12 @@ function _txJSONValue(storageKey,currentValue,applyResult,mutator,fallback,meta)
     if(next===undefined) return;
     const normalizedNext=normalizeStoredScheduleValue(storageKey,next);
     deletionEvents=_studentDeletionEvents(storageKey,before,normalizedNext,meta);
-    return JSON.stringify(normalizedNext);
-  }).then(res=>{
+    root[sk]=JSON.stringify(normalizedNext);
+    return root;
+  },{...meta,label:meta.label||auditMeta.label,originalKey:storageKey}).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
-    const next=_parseJSONValue(res.snapshot.val(),fallback,storageKey);
+    const root=res.snapshot.val()||{};
+    const next=_parseJSONValue(root[sk],fallback,storageKey);
     applyResult(next);
     _cacheJSONOnly(storageKey,next);
     if(auditPoint) recordAuditPoint(auditPoint,[storageKey],meta);
@@ -4025,10 +3996,7 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     });
     return recordStudentDeletionSafety(deletionEvents,meta);
   }
-  const runTx=typeof _fb.transactionKeys==='function'
-    ? updateFn=>_fb.transactionKeys(txSafeKeys, updateFn)
-    : updateFn=>_fb.transaction(updateFn);
-  return runTx(root=>{
+  return _scheduleWrites.transaction(txSafeKeys,root=>{
     root=root||{};
     if(!meta.skipAudit) auditPoint=createAuditPointFromRoot(txKeys,root,meta||{type:'edit',label:'시간표 편집'});
     touched.clear();
@@ -4038,7 +4006,7 @@ function updateScheduleTx(keysOrMutator,mutatorOrMeta,metaArg){
     if(result===undefined) return;
     deletionEvents=collectStudentDeletions(beforeStudents,root);
     return root;
-  }).then(res=>{
+  },meta).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
     const root=res.snapshot.val()||{};
     touched.forEach(key=>{

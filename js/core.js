@@ -66,6 +66,19 @@ let _writeBlockedWarnedAt=0;
 const _dbCache={};
 const _snapshotParsedCache=new Map();
 const SNAPSHOT_PARSED_CACHE_LIMIT=3;
+const _scheduleWrites=window.SCScheduleWriteGateway
+  ? window.SCScheduleWriteGateway.create({
+      getRoot:()=>_fb,
+      reportFailure:(error,meta)=>{
+        const label=meta?.label||meta?.originalKey||meta?.keys?.[0]||'시간표 저장';
+        _reportFirebaseWriteFailure(error,label);
+      },
+      refreshAfterFailure:(keys,meta,error)=>_refreshFailedScheduleWrites(keys,meta,error),
+    })
+  : null;
+window.SCWriteDiagnostics={
+  recent(limit){ return _scheduleWrites?_scheduleWrites.recent(limit):[]; },
+};
 
 function _isSnapshotStorageKey(key){
   return String(key||'').startsWith('swim_snap_');
@@ -147,29 +160,66 @@ if(!window.SCAuth){
   initFirebaseStore();
 }
 
-function dbSet(key,val){
-  if(_firebaseUsingLocalFallback){
-    _warnBlockedWrite(key,'서버 데이터 로드 실패 상태');
-    return false;
-  }
+function _trackWritePromise(promise){
+  if(promise&&typeof promise.catch==='function') promise.catch(()=>{});
+  return promise;
+}
+function _cacheScheduleRaw(key,json){
   _dropParsedSnapshotCache(key);
-  const json=typeof val==='string'?val:JSON.stringify(val);
   _dbCache[key]=json;
   try{
     if(_isEphemeralDeferredStorageKey(key)) localStorage.removeItem(_lsKey(key));
     else localStorage.setItem(_lsKey(key),json);
   }catch(e){}
-  if(_fbReady){
+}
+function _removeQueuedLocalEcho(key,json){
+  const queue=_localWriteQueue[key];
+  if(!queue||!queue.length) return;
+  const index=queue.indexOf(json);
+  if(index>=0) queue.splice(index,1);
+  if(!queue.length) delete _localWriteQueue[key];
+}
+async function _refreshFailedScheduleWrites(keys,meta){
+  if(!_fbReady||!_fb) return;
+  await Promise.all((keys||[]).map(async key=>{
+    const originalKey=meta?.originalKey||key;
+    try{
+      const snap=await _fb.child(key).once('value');
+      const raw=snap?snap.val():null;
+      if(raw===null||raw===undefined){
+        delete _dbCache[originalKey];
+        try{localStorage.removeItem(_lsKey(originalKey));}catch(e){}
+      }else{
+        const asStr=typeof raw==='string'?raw:JSON.stringify(raw);
+        _cacheScheduleRaw(originalKey,asStr);
+      }
+      if(typeof _queueRemoteScheduleRefresh==='function') _queueRemoteScheduleRefresh(originalKey);
+    }catch(refreshError){
+      delete _dbCache[originalKey];
+      try{localStorage.removeItem(_lsKey(originalKey));}catch(e){}
+    }
+  }));
+}
+function dbSet(key,val,meta){
+  if(_firebaseUsingLocalFallback){
+    _warnBlockedWrite(key,'서버 데이터 로드 실패 상태');
+    return false;
+  }
+  const json=typeof val==='string'?val:JSON.stringify(val);
+  _cacheScheduleRaw(key,json);
+  if(_fbReady&&_scheduleWrites){
     // Firebase SDK가 자체 큐잉을 지원 — _fbConnected 무관하게 시도
     // (오프라인이면 SDK가 큐에 쌓아뒀다가 재연결시 자동 push)
     const sk=key.replace(/[.#$/\[\]]/g,'_');
     if(typeof _isDeferredStorageKey!=='function'||!_isDeferredStorageKey(sk)){
       (_localWriteQueue[sk]=_localWriteQueue[sk]||[]).push(json);
     }
-    _fb.child(sk).set(json).catch(e=>{
+    const write=_scheduleWrites.set(sk,json,{...(meta||{}),originalKey:key,label:meta?.label||key});
+    write.catch(e=>{
+      _removeQueuedLocalEcho(sk,json);
       console.error('[FB SAVE FAIL]',key,e);
-      _reportFirebaseWriteFailure(e,key);
     });
+    return _trackWritePromise(write);
   }
   return true;
 }
@@ -269,7 +319,11 @@ function dbRemove(key){
   _dropParsedSnapshotCache(key);
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
-  if(_fbReady) _fb.child(key.replace(/[.#$/\[\]]/g,'_')).remove();
+  if(_fbReady&&_scheduleWrites){
+    const sk=key.replace(/[.#$/\[\]]/g,'_');
+    return _trackWritePromise(_scheduleWrites.remove(sk,{originalKey:key,label:key}));
+  }
+  return true;
 }
 
 // [FIX] 자기 echo 식별용 큐. key별로 보낸 순서대로 쌓고, echo가 head와 일치하면 shift.
@@ -474,10 +528,15 @@ function saveJSON(key, val, skipUndo){
     });
   }
   if(!skipUndo) pushUndo();
-  if(dbSet(key, JSON.stringify(val))===false) return;
-  if(auditPoint && typeof recordAuditPoint==='function'){
-    recordAuditPoint(auditPoint, [key]);
-  }
+  const write=dbSet(key, JSON.stringify(val),{label:key});
+  if(write===false) return false;
+  const completed=Promise.resolve(write).then(()=>{
+    if(auditPoint && typeof recordAuditPoint==='function'){
+      return recordAuditPoint(auditPoint, [key]);
+    }
+    return true;
+  });
+  return _trackWritePromise(completed);
 }
 
 const DATA_SYNC_DIAGNOSTIC_KEY='sc_data_sync_diagnostics';

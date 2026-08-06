@@ -589,10 +589,7 @@ function updateTabSettingsTx(keys,mutator,meta){
   if(!_fbReady||!_fb){
     return Promise.resolve(applyLocal());
   }
-  const runTx=typeof _fb.transactionKeys==='function'
-    ? fn=>_fb.transactionKeys(keys,fn)
-    : fn=>_fb.transaction(fn);
-  return runTx(root=>{
+  return _scheduleWrites.transaction(keys,root=>{
     root=root||{};
     if(typeof createAuditPointFromRoot==='function') auditPoint=createAuditPointFromRoot(keys,root,auditMeta);
     else if(typeof createAuditPoint==='function') auditPoint=createAuditPoint(keys,auditMeta);
@@ -611,7 +608,7 @@ function updateTabSettingsTx(keys,mutator,meta){
     _applyTabState(state,keys);
     if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,keys,meta);
     return true;
-  });
+  },{label:meta?.label||'시간표 탭 설정'});
 }
 function saveTabList(){
   return updateTabSettingsTx([STORAGE_KEYS.TAB_LIST],state=>{
@@ -1149,10 +1146,7 @@ async function deleteTab(tabId){
     const dataKeys=isSnapshot?[SNAP_KEY_PREFIX+id]:[];
     const txKeys=[...new Set([...metadataKeys,...dataKeys])];
     let auditPoint=null;
-    const runTx=typeof _fb.transactionKeys==='function'
-      ?updateFn=>_fb.transactionKeys(txKeys,updateFn)
-      :updateFn=>_fb.transaction(updateFn);
-    const result=await runTx(root=>{
+    const result=await _scheduleWrites.transaction(txKeys,root=>{
       root=root||{};
       const state=_tabStateFromRoot(root);
       const target=state.tabs.find(item=>item.id===id);
@@ -1184,7 +1178,7 @@ async function deleteTab(tabId){
       root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
       dataKeys.forEach(key=>{delete root[key];});
       return root;
-    });
+    },{label:'과거 시간표 삭제'});
     if(!result?.committed) throw new Error('시간표 삭제가 취소되었습니다');
     const state=_tabStateFromRoot(result.snapshot.val()||{});
     _applyTabState(state,metadataKeys);
@@ -1363,7 +1357,7 @@ async function _performScheduleRollover(srcId,nextMonth,nextName){
   const today=toDateStr(getToday());
   const newId='snap_'+Date.now();
   const snapData=_snapshotDataForTab(srcTab,today);
-  dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
+  await dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData), {label:'시간표 이월 스냅샷 저장'});
   const snapTab={
     id:newId,name:snapshotName,type:'snapshot',capturedAt:today,periodMonth:currentMonth,
     sourceTabId:srcTab.id,
@@ -1391,7 +1385,7 @@ async function _performScheduleRollover(srcId,nextMonth,nextName){
     toast('시간표 이월 완료: '+nextName,'ok');
   }catch(e){
     console.error(e);
-    dbRemove(SNAP_KEY_PREFIX+newId);
+    await dbRemove(SNAP_KEY_PREFIX+newId,{label:'시간표 이월 스냅샷 정리'});
     throw new Error(e.message||'시간표 이월 실패');
   }
 }
@@ -1438,7 +1432,7 @@ async function autoRolloverRegularScheduleIfNeeded(options){
     const snapKey=SNAP_KEY_PREFIX+snapId;
     const hasSnapshotTab=_tabList.some(t=>t&&t.id===snapId&&t.type==='snapshot');
     if(!hasSnapshotTab){
-      dbSet(snapKey, JSON.stringify(_snapshotDataForTab(srcTab,today)));
+      await dbSet(snapKey, JSON.stringify(_snapshotDataForTab(srcTab,today)), {label:'자동 이월 스냅샷 저장'});
       wroteSnapshot=true;
     }
   }
@@ -1480,7 +1474,7 @@ async function autoRolloverRegularScheduleIfNeeded(options){
     _activeTab=options.preserveActiveTab&&_tabById(activeBefore)?activeBefore:srcTab.id;
     return true;
   }catch(e){
-    if(wroteSnapshot) dbRemove(SNAP_KEY_PREFIX+snapId);
+    if(wroteSnapshot) await dbRemove(SNAP_KEY_PREFIX+snapId,{label:'자동 이월 스냅샷 정리'});
     throw e;
   }finally{
     _autoRolloverRunning=false;
@@ -1550,7 +1544,7 @@ async function _performCreateSnapshot(srcId,name){
   const newId='snap_'+Date.now();
   const snapData=_snapshotDataForTab(srcTab,today);
   // 직접 dbSet (saveJSON 가드 통과 위해)
-  dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData));
+  await dbSet(SNAP_KEY_PREFIX+newId, JSON.stringify(snapData), {label:'스냅샷 저장'});
   const snapMonth=_tabPeriodMonth(srcTab);
   const newTab={
     id:newId,name,type:'snapshot',capturedAt:today,
@@ -1572,7 +1566,7 @@ async function _performCreateSnapshot(srcId,name){
     toast('📷 스냅샷 생성: '+name,'ok');
   }catch(e){
     console.error(e);
-    dbRemove(SNAP_KEY_PREFIX+newId);
+    await dbRemove(SNAP_KEY_PREFIX+newId,{label:'스냅샷 정리'});
     throw new Error(e.message||'스냅샷 생성 실패');
   }
 }
@@ -1608,8 +1602,10 @@ async function copyTab(srcId){
   // 데이터 복사
   const stuData=loadJSON(srcStuKey, []);
   const instData=loadJSON(srcInstKey, {});
-  saveJSON(newStuKey, JSON.parse(JSON.stringify(stuData)), true);
-  saveJSON(newInstKey, JSON.parse(JSON.stringify(instData)), true);
+  await Promise.all([
+    saveJSON(newStuKey, JSON.parse(JSON.stringify(stuData)), true),
+    saveJSON(newInstKey, JSON.parse(JSON.stringify(instData)), true)
+  ]);
 
   // 탭 목록에 추가 (원본 바로 뒤에 삽입)
   const newTab={id:newId, name, type:srcTab.type};
@@ -1630,8 +1626,10 @@ async function copyTab(srcId){
     toast(srcTab.name+' 복사 완료','ok');
   }catch(e){
     console.error(e);
-    dbRemove(newStuKey);
-    dbRemove(newInstKey);
+    await Promise.all([
+      dbRemove(newStuKey,{label:'시간표 복사 원생 정리'}),
+      dbRemove(newInstKey,{label:'시간표 복사 선생님 정리'})
+    ]);
     toast(e.message||'시간표 복사 실패','err');
   }
 }

@@ -1,8 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const gatewayPath = path.join(__dirname, '..', 'js', 'schedule-write-gateway.js');
+
+function read(relativePath){
+  return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+}
 
 function deferred(){
   let resolve;
@@ -111,3 +116,31 @@ test('blocked writes never call the storage root', async () => {
   assert.equal(rootCalls, 0);
 });
 
+test('main runtime loads the gateway before core', () => {
+  const html = read('index.html');
+  const gatewayIndex = html.indexOf("scJs('js/schedule-write-gateway.js')");
+  const coreIndex = html.indexOf("scJs('js/core.js')");
+
+  assert.notEqual(gatewayIndex, -1);
+  assert.ok(gatewayIndex < coreIndex);
+});
+
+test('main multi-key schedule transactions delegate to the gateway', () => {
+  const source = read('js/data.js');
+
+  assert.match(source, /_scheduleWrites\.transaction\(txSafeKeys,/);
+  assert.doesNotMatch(
+    source.slice(source.indexOf('function updateScheduleTx('), source.indexOf('function updateStudentsTx(')),
+    /_fb\.transactionKeys|_fb\.transaction\(/
+  );
+});
+
+test('tab and snapshot writes use the shared write gateway', () => {
+  const source = read('js/tabs.js');
+
+  assert.match(source, /_scheduleWrites\.transaction\(keys,/);
+  assert.match(source, /_scheduleWrites\.transaction\(txKeys,/);
+  assert.doesNotMatch(source, /_fb\.transactionKeys\s*\(/);
+  assert.doesNotMatch(source, /_fb\.transaction\s*\(/);
+  assert.match(source, /await dbSet\(SNAP_KEY_PREFIX\+newId/);
+});
