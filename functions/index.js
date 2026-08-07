@@ -5,9 +5,12 @@ const {onCall, onRequest, HttpsError} = require("firebase-functions/v2/https");
 const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {setGlobalOptions} = require("firebase-functions/v2");
+const logger = require("firebase-functions/logger");
 const {initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore");
 const {buildRegularAvailability} = require("./regular-availability");
+const scheduleV2ShadowPolicy = require("./schedule-v2-shadow-policy.js");
+const {runShadowSync} = require("./schedule-v2-shadow-runner.js");
 
 initializeApp({projectId: "scswimming-schedule"});
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
@@ -21,6 +24,7 @@ const AUDIT_LOG_MAX = 200;
 const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
 const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
+const SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT = 10;
 const CUSTOMER_VOICE_COLLECTION = "customerVoice";
 const CUSTOMER_VOICE_RATE_COLLECTION = "customerVoiceRateLimits";
 const CUSTOMER_VOICE_CATEGORY = new Set([
@@ -334,6 +338,27 @@ function kvDoc(branch, key) {
 
 function chunkDoc(branch, key, index) {
   return kvDoc(branch, key).collection("chunks").doc(String(index).padStart(4, "0"));
+}
+
+function scheduleV2RuntimeRef(branchId, documentId) {
+  return db.collection("scheduleV2").doc(branchId).collection("runtime").doc(documentId);
+}
+
+function scheduleV2ShadowCollections(keys) {
+  return [...new Set((Array.isArray(keys) ? keys : [])
+    .flatMap(key => scheduleV2ShadowPolicy.collectionsForKey(key)))];
+}
+
+function scheduleV2ShadowAlertRef(branchId, diagnostic) {
+  const scope = [diagnostic.messageClass, ...diagnostic.collections.slice().sort()].join("|");
+  const digest = crypto.createHash("sha256").update(scope).digest("hex").slice(0, 24);
+  return db.collection("scheduleV2").doc(branchId).collection("alerts")
+    .doc(`shadow_${diagnostic.messageClass}_${digest}`);
+}
+
+function scheduleV2ShadowRetryCount(value) {
+  const count = Math.max(0, Number(value || 0) || 0);
+  return Math.min(SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT, count + 1);
 }
 
 function parseJSON(value, fallback) {
@@ -1680,6 +1705,139 @@ exports.purgeCustomerVoiceContacts = onSchedule({
     const rateBatch = db.batch();
     expiredRates.docs.forEach(doc => rateBatch.delete(doc.ref));
     await rateBatch.commit();
+  }
+  return null;
+});
+
+exports.queueScheduleV2Shadow = onDocumentWritten({
+  document: "scheduleStores/{branchId}/kv/{docId}",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async event => {
+  const branchId = String(event.params.branchId || "");
+  if (!BRANCHES[branchId]) return null;
+  const key = scheduleV2ShadowPolicy.decodeLegacyKey(event.params.docId);
+  if (!scheduleV2ShadowPolicy.isTrackedKey(key)) return null;
+
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  await db.runTransaction(async tx => {
+    const config = await tx.get(configRef);
+    if (!["shadow", "verify"].includes(config.get("mode"))) return;
+    const snapshot = await tx.get(syncRef);
+    const queued = scheduleV2ShadowPolicy.mergePending(snapshot.data(), key, new Date());
+    queued.retryCount = 0;
+    tx.set(syncRef, queued, {merge: true});
+  });
+  return null;
+});
+
+exports.processScheduleV2Shadow = onDocumentWritten({
+  document: "scheduleV2/{branchId}/runtime/scheduleSync",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async event => {
+  const branchId = String(event.params.branchId || "");
+  const branch = BRANCHES[branchId];
+  if (!branch) return null;
+
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const claim = await db.runTransaction(async tx => {
+    const config = await tx.get(configRef);
+    if (!["shadow", "verify"].includes(config.get("mode"))) return null;
+    const generationId = String(config.get("generationId") || "").trim();
+    if (!generationId) return null;
+    const snapshot = await tx.get(syncRef);
+    if (Number(snapshot.data()?.retryCount || 0) >= SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT) return null;
+    const nextClaim = scheduleV2ShadowPolicy.claimPending(
+      snapshot.data(),
+      crypto.randomUUID(),
+      new Date()
+    );
+    if (!nextClaim) return null;
+    tx.set(syncRef, nextClaim.next, {merge: false});
+    return {...nextClaim, generationId};
+  });
+  if (!claim) return null;
+
+  try {
+    const result = await runShadowSync({
+      db,
+      branchId,
+      generationId: claim.generationId,
+      keys: claim.keys,
+      readLegacyKey: key => readStoredValue(branch, key),
+      fence: {ref: syncRef, leaseId: claim.leaseId},
+    });
+    await db.runTransaction(async tx => {
+      const snapshot = await tx.get(syncRef);
+      const current = snapshot.data() || {};
+      const finished = scheduleV2ShadowPolicy.finishPending(current, claim, {
+        collections: result.collections,
+        writes: result.writes,
+        deletes: result.deletes,
+        counts: result.counts,
+        digests: result.digests,
+        retryCount: 0,
+      }, new Date());
+      if (finished !== current) tx.set(syncRef, finished, {merge: false});
+    });
+  } catch (error) {
+    const now = new Date();
+    const redactedDiagnostic = scheduleV2ShadowPolicy.redactedError(error, {
+      branchId,
+      keys: claim.keys,
+      collections: scheduleV2ShadowCollections(claim.keys),
+      now,
+    });
+    const alertRef = scheduleV2ShadowAlertRef(branchId, redactedDiagnostic);
+    const recorded = await db.runTransaction(async tx => {
+      const config = await tx.get(configRef);
+      const syncSnapshot = await tx.get(syncRef);
+      const current = syncSnapshot.data() || {};
+      if (String(current.leaseId || "") !== claim.leaseId) return false;
+      if (!["shadow", "verify"].includes(config.get("mode"))) {
+        const pendingKeys = (Array.isArray(current.pendingKeys) ? current.pendingKeys : [])
+          .filter(scheduleV2ShadowPolicy.isTrackedKey);
+        const stopped = {
+          ...current,
+          pendingKeys,
+          status: pendingKeys.length ? "pending" : "idle",
+        };
+        delete stopped.leaseId;
+        delete stopped.leaseUntil;
+        delete stopped.processingStartedAt;
+        tx.set(syncRef, stopped, {merge: false});
+        return false;
+      }
+      const alertSnapshot = await tx.get(alertRef);
+      const pendingKeys = [...new Set([
+        ...(Array.isArray(current.pendingKeys) ? current.pendingKeys : []),
+        ...claim.keys,
+      ].filter(scheduleV2ShadowPolicy.isTrackedKey))];
+      const failed = {
+        ...current,
+        pendingKeys,
+        status: "pending",
+        retryCount: scheduleV2ShadowRetryCount(current.retryCount),
+        lastFailedAt: redactedDiagnostic.detectedAt,
+      };
+      delete failed.leaseId;
+      delete failed.leaseUntil;
+      delete failed.processingStartedAt;
+      const priorCount = Math.max(0, Number(alertSnapshot.data()?.count || 0) || 0);
+      tx.set(syncRef, failed, {merge: false});
+      tx.set(alertRef, {
+        ...redactedDiagnostic,
+        id: alertRef.id,
+        type: "schedule-v2-shadow",
+        message: `Schedule V2 shadow ${redactedDiagnostic.messageClass} failure`,
+        status: "open",
+        lastDetectedAt: redactedDiagnostic.detectedAt,
+        count: Math.min(Number.MAX_SAFE_INTEGER, priorCount + 1),
+      }, {merge: false});
+      return true;
+    });
+    if (recorded) logger.error('schedule-v2-shadow-failed',redactedDiagnostic);
   }
   return null;
 });
