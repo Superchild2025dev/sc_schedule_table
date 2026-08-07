@@ -24,6 +24,8 @@ class FakeFirestore{
     this.commits=[];
     this.failCommitAt=0;
     this.commitError=null;
+    this.failTransactionAt=0;
+    this.transactionError=null;
     this.afterCommit=null;
     this.beforeTransaction=null;
     this.transactionAttempts=[];
@@ -50,6 +52,7 @@ class FakeFirestore{
   }
   async runTransaction(visitor){
     if(typeof this.beforeTransaction==="function") await this.beforeTransaction(this);
+    const number=this.transactionAttempts.length+1;
     const attempt={reads:[],operations:[],committed:false};
     this.transactionAttempts.push(attempt);
     const transaction={
@@ -61,11 +64,15 @@ class FakeFirestore{
       delete:ref=>attempt.operations.push({type:"delete",path:ref.path}),
     };
     const result=await visitor(transaction);
+    if(this.failTransactionAt===number){
+      throw this.transactionError||Object.assign(new Error("transaction failed"),{code:"unavailable"});
+    }
     attempt.operations.forEach(operation=>{
       if(operation.type==="delete") this.docs.delete(operation.path);
       else this.docs.set(operation.path,clone(operation.value));
     });
     attempt.committed=true;
+    if(typeof this.afterCommit==="function") this.afterCommit(number,attempt.operations,this);
     return result;
   }
 }
@@ -146,6 +153,13 @@ function fenceFor(db,leaseId){
   return {ref,leaseId};
 }
 
+function runFenced(input){
+  if(input?.fence) return runner.runShadowSync(input);
+  return runner.runShadowSync({
+    ...input,fence:fenceFor(input.db,`test-${input.generationId}`),
+  });
+}
+
 test("loads the exact tab context needed by an instructor change",()=>{
   assert.deepEqual(requiredLegacyKeys(["swim_inst"],META).sort(),[
     "swim_inst","swim_main_tab","swim_tab_list",
@@ -207,7 +221,7 @@ test("shares people across regular and vacation while retaining course-scoped re
     ],
   };
 
-  const result=await runner.runShadowSync({
+  const result=await runFenced({
     db,branchId:"yongam",generationId:"gen_identity",
     keys:["swim_students","swim_bt_summer_stu"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
@@ -243,7 +257,7 @@ test("keeps students with the same phone and different names as separate people"
     ],
   };
 
-  await runner.runShadowSync({
+  await runFenced({
     db,branchId:"yongam",generationId:"gen_siblings",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   });
@@ -265,20 +279,21 @@ test("moves a student by deleting the old placement and creating the new one ato
     db,branchId:"yongam",generationId:"gen_move",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   };
-  await runner.runShadowSync(input);
+  await runFenced(input);
   const oldPlacement=generationRows(db,"gen_move","placements")[0].id;
   root.swim_students[0]={...root.swim_students[0],t:"18:00",d:"wed",l:2,r:3};
-  db.commits=[];
+  db.transactionAttempts=[];
 
-  const result=await runner.runShadowSync(input);
+  const result=await runFenced(input);
 
   const placements=generationRows(db,"gen_move","placements");
   assert.equal(placements.length,1);
   assert.notEqual(placements[0].id,oldPlacement);
   assert.equal(result.writes,1);
   assert.equal(result.deletes,1);
-  assert.equal(db.commits.length,1);
-  assert.deepEqual(new Set(db.commits[0].map(operation=>operation.type)),new Set(["set","delete"]));
+  const writeAttempts=db.transactionAttempts.filter(attempt=>attempt.operations.length>0);
+  assert.equal(writeAttempts.length,1);
+  assert.deepEqual(new Set(writeAttempts[0].operations.map(operation=>operation.type)),new Set(["set","delete"]));
 });
 
 test("updates instructor and student collection scopes in one request",async()=>{
@@ -291,7 +306,7 @@ test("updates instructor and student collection scopes in one request",async()=>
     swim_inst:{"16:00/mon/1/1":"Teacher One"},
   };
 
-  const result=await runner.runShadowSync({
+  const result=await runFenced({
     db,branchId:"yongam",generationId:"gen_both",keys:["swim_inst","swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   });
@@ -320,7 +335,7 @@ test("keeps student and instructor scopes isolated when changed tabs differ",asy
     db,branchId:"yongam",generationId:"gen_split_scope",readLegacyKey:legacyReader(root),
     now:new Date("2026-08-07T02:00:00.000Z"),
   };
-  await runner.runShadowSync({
+  await runFenced({
     ...base,
     keys:["swim_students","swim_inst","swim_bt_summer_stu","swim_bt_summer_inst"],
   });
@@ -329,7 +344,7 @@ test("keeps student and instructor scopes isolated when changed tabs differ",asy
     {...root.swim_bt_summer_stu[0],t:"11:00",d:"thu",l:3,r:2},
   ];
 
-  await runner.runShadowSync({
+  await runFenced({
     ...base,keys:["swim_inst","swim_bt_summer_stu"],readLegacyKey:legacyReader(root),
   });
 
@@ -354,19 +369,19 @@ test("does not delete an unreferenced person during incremental sync",async()=>{
     db,branchId:"yongam",generationId:"gen_orphan",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   };
-  await runner.runShadowSync(input);
+  await runFenced(input);
   root.swim_students=root.swim_students.slice(0,1);
 
-  await runner.runShadowSync(input);
+  await runFenced(input);
 
   assert.equal(generationRows(db,"gen_orphan","people").length,2);
   assert.equal(generationRows(db,"gen_orphan","enrollments").length,1);
   assert.equal(generationRows(db,"gen_orphan","placements").length,1);
 });
 
-test("a failed second batch does not produce an applied result",async()=>{
+test("a failed second fenced transaction does not produce an applied result",async()=>{
   const db=new FakeFirestore();
-  db.failCommitAt=2;
+  db.failTransactionAt=2;
   const students=Array.from({length:351},(_,index)=>({
     sid:`stu_${index}`,n:`Student ${index}`,p:`010${String(index).padStart(8,"0")}`,
     t:`time-${index}`,d:"mon",l:1,r:1,
@@ -375,7 +390,7 @@ test("a failed second batch does not produce an applied result",async()=>{
   let applied=false;
 
   await assert.rejects(async()=>{
-    await runner.runShadowSync({
+    await runFenced({
       db,branchId:"yongam",generationId:"gen_batch",keys:["swim_students"],
       readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
     });
@@ -383,7 +398,8 @@ test("a failed second batch does not produce an applied result",async()=>{
   },error=>error.code==="unavailable");
 
   assert.equal(applied,false);
-  assert.deepEqual(db.commits.map(operations=>operations.length),[350,1]);
+  assert.deepEqual(db.transactionAttempts.map(attempt=>attempt.operations.length),[350,1]);
+  assert.deepEqual(db.transactionAttempts.map(attempt=>attempt.committed),[true,false]);
 });
 
 test("post-write verification rejects a mismatched scope",async()=>{
@@ -398,7 +414,7 @@ test("post-write verification rejects a mismatched scope",async()=>{
     ],
   };
 
-  await assert.rejects(()=>runner.runShadowSync({
+  await assert.rejects(()=>runFenced({
     db,branchId:"yongam",generationId:"gen_tamper",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   }),error=>error.code==="verification-mismatch");
@@ -416,7 +432,7 @@ test("conversion diagnostics never include source student fields",async()=>{
     ],
   };
 
-  await assert.rejects(()=>runner.runShadowSync({
+  await assert.rejects(()=>runFenced({
     db,branchId:"yongam",generationId:"gen_private",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   }),error=>{
@@ -434,7 +450,7 @@ test("legacy read failures are sanitized at the runner boundary",async()=>{
     code:"unavailable",details:{student:{name,phone}},sourceValue:{n:name,p:phone},
   });
 
-  await assert.rejects(()=>runner.runShadowSync({
+  await assert.rejects(()=>runFenced({
     db:new FakeFirestore(),branchId:"yongam",generationId:"gen_read_error",
     keys:["swim_students"],readLegacyKey:async()=>{throw dependencyError;},
     now:new Date("2026-08-07T02:00:00.000Z"),
@@ -450,8 +466,8 @@ test("commit failures are sanitized at the runner boundary",async()=>{
   const name="Commit Failure Private Name";
   const phone="01056565656";
   const db=new FakeFirestore();
-  db.failCommitAt=1;
-  db.commitError=Object.assign(new Error(`commit failed for ${name} ${phone}`),{
+  db.failTransactionAt=1;
+  db.transactionError=Object.assign(new Error(`commit failed for ${name} ${phone}`),{
     code:"aborted",details:{student:{name,phone}},metadata:{sourceName:name},
   });
   const root={
@@ -461,12 +477,12 @@ test("commit failures are sanitized at the runner boundary",async()=>{
     ],
   };
 
-  await assert.rejects(()=>runner.runShadowSync({
+  await assert.rejects(()=>runFenced({
     db,branchId:"yongam",generationId:"gen_commit_error",keys:["swim_students"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   }),error=>{
     const serialized=JSON.stringify(error);
-    return error!==db.commitError&&error.code==="aborted"&&error.message==="aborted"
+    return error!==db.transactionError&&error.code==="aborted"&&error.message==="aborted"
       &&assert.deepEqual(Object.keys(error),["code"])===undefined
       &&!serialized.includes(name)&&!serialized.includes(phone);
   });
@@ -485,6 +501,24 @@ test("excluded source keys do not trigger legacy reads or V2 writes",async()=>{
   assert.equal(db.commits.length,0);
 });
 
+test("a mutating run without a fence fails closed before reads or writes",async()=>{
+  const db=new FakeFirestore();
+  const calls=[];
+
+  await assert.rejects(()=>runner.runShadowSync({
+    db,branchId:"yongam",generationId:"gen_missing_fence",keys:["swim_students"],
+    readLegacyKey:legacyReader({
+      swim_tab_list:[META[0]],swim_main_tab:{tabId:"regular"},swim_students:[],
+    },calls),
+    now:new Date("2026-08-07T02:00:00.000Z"),
+  }),error=>error.code==="invalid-argument"&&error.message==="invalid-argument");
+
+  assert.deepEqual(calls,[]);
+  assert.equal(db.commits.length,0);
+  assert.equal(db.transactionAttempts.length,0);
+  assert.equal(generationRows(db,"gen_missing_fence","placements").length,0);
+});
+
 test("an unknown dynamic tab key cannot widen into a full collection delete",async()=>{
   const existingPath="scheduleV2/yongam/generations/gen_unknown/placements/existing";
   const db=new FakeFirestore({
@@ -497,7 +531,7 @@ test("an unknown dynamic tab key cannot widen into a full collection delete",asy
     swim_tab_list:[META[0]],swim_main_tab:{tabId:"regular"},swim_stu_missing:[],
   };
 
-  await assert.rejects(()=>runner.runShadowSync({
+  await assert.rejects(()=>runFenced({
     db,branchId:"yongam",generationId:"gen_unknown",keys:["swim_stu_missing"],
     readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
   }),error=>error.code==="conversion-mismatch");
@@ -516,7 +550,7 @@ test("incremental metadata updates preserve sibling documents",async()=>{
     db,branchId:"yongam",generationId:"gen_metadata",readLegacyKey:legacyReader(root),
     now:new Date("2026-08-07T02:00:00.000Z"),
   };
-  await runner.runShadowSync({
+  await runFenced({
     ...base,keys:["swim_age_year","swim_student_id_version","swim_ver"],
   });
 
@@ -526,7 +560,7 @@ test("incremental metadata updates preserve sibling documents",async()=>{
     ["swim_ver","legacy-v2","legacy_data_version"],
   ]){
     root[key]=value;
-    await runner.runShadowSync({...base,keys:[key],readLegacyKey:legacyReader(root)});
+    await runFenced({...base,keys:[key],readLegacyKey:legacyReader(root)});
     const rows=generationRows(db,"gen_metadata","systemMetadata");
     assert.equal(rows.length,3,key);
     assert.equal(rows.find(row=>row.id===id).value,value,key);

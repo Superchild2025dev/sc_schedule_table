@@ -226,7 +226,6 @@ function sameIds(left,right){
 }
 
 function normalizedFence(db,value){
-  if(value==null) return null;
   const leaseId=text(value?.leaseId);
   if(!value?.ref||typeof value.ref.path!=="string"||!leaseId||typeof db.runTransaction!=="function"){
     throw coded("invalid-argument");
@@ -240,28 +239,17 @@ async function assertFence(transaction,fence){
 }
 
 async function commitOperations(db,collectionRef,operations,fence){
-  if(fence){
-    await db.runTransaction(async transaction=>{
-      await assertFence(transaction,fence);
-      operations.forEach(operation=>{
-        const ref=collectionRef.doc(operation.id);
-        if(operation.type==="delete") transaction.delete(ref);
-        else transaction.set(ref,operation.value,{merge:false});
-      });
+  await db.runTransaction(async transaction=>{
+    await assertFence(transaction,fence);
+    operations.forEach(operation=>{
+      const ref=collectionRef.doc(operation.id);
+      if(operation.type==="delete") transaction.delete(ref);
+      else transaction.set(ref,operation.value,{merge:false});
     });
-    return;
-  }
-  const batch=db.batch();
-  operations.forEach(operation=>{
-    const ref=collectionRef.doc(operation.id);
-    if(operation.type==="delete") batch.delete(ref);
-    else batch.set(ref,operation.value,{merge:false});
   });
-  await batch.commit();
 }
 
 async function verifyFence(db,fence){
-  if(!fence) return;
   await db.runTransaction(transaction=>assertFence(transaction,fence));
 }
 
@@ -271,7 +259,7 @@ async function runShadowSyncUnsafe(input){
   const branchId=text(source.branchId);
   const generationId=text(source.generationId);
   const keys=(Array.isArray(source.keys)?source.keys:[]).map(text).filter(policy.isTrackedKey);
-  if(!db||typeof db.collection!=="function"||typeof db.batch!=="function") throw coded("invalid-firestore");
+  if(!db||typeof db.collection!=="function") throw coded("invalid-firestore");
   if(!branchId||!generationId||typeof readLegacyKey!=="function") throw coded("invalid-argument");
 
   if(!keys.length) return {collections:[],writes:0,deletes:0,counts:{},digests:{}};
