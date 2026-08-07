@@ -39,6 +39,20 @@ test("coalesces keys, leases one revision, and leaves newer work pending",()=>{
   assert.equal(finished.writes,4);
 });
 
+test("does not let a stale finisher clear a replacement lease",()=>{
+  const first=policy.mergePending({},"swim_students",NOW);
+  const claimA=policy.claimPending(first,"lease-a",NOW);
+  const queuedForB=policy.mergePending(claimA.next,"swim_mark",new Date("2026-08-07T02:00:01.000Z"));
+  const claimB=policy.claimPending(queuedForB,"lease-b",new Date("2026-08-07T02:01:01.000Z"));
+
+  assert.equal(claimB.next.status,"processing");
+  assert.equal(claimB.next.leaseId,"lease-b");
+  assert.deepEqual(claimB.next.pendingKeys,[]);
+
+  const staleFinish=policy.finishPending(claimB.next,claimA,{writes:99},new Date("2026-08-07T02:01:02.000Z"));
+  assert.deepEqual(staleFinish,claimB.next);
+});
+
 test("redacts nested personal data from diagnostics",()=>{
   const name="PrivacyLeakName_Task2_20260807";
   const phone="01098765432";

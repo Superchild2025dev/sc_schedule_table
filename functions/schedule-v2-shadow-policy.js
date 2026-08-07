@@ -97,10 +97,11 @@ function claimPending(current,leaseId,now){
     leaseUntil:new Date(nowMs+LEASE_MS).toISOString(),
     processingStartedAt:timestamp(now),
   });
-  return {keys,requestedRevision:revision(current?.requestedRevision),next};
+  return {keys,leaseId:next.leaseId,requestedRevision:revision(current?.requestedRevision),next};
 }
 
 function finishPending(current,claim,result,now){
+  if(!text(claim?.leaseId)||text(current?.leaseId)!==text(claim.leaseId)) return current;
   const next=Object.assign({},current,result&&typeof result==="object"?result:{});
   const claimedRevision=revision(claim?.requestedRevision);
   const hasNewerWork=pendingKeys(current).length>0||revision(current?.requestedRevision)>claimedRevision;
