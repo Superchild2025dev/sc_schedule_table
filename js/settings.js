@@ -143,6 +143,12 @@
   let v2MonitorBranch='';
   let v2MonitorDataByBranch={};
   let v2MonitorAlertsByBranch={};
+  let attendanceControlStore=null;
+  let attendanceControlUnsubscribe=null;
+  let attendanceControlBranch='';
+  let attendanceControlConfig={mode:'v1',generationId:'',valid:false};
+  let attendanceControlReadyGeneration=null;
+  let attendanceControlBusy=false;
   let summerLayoutState=null;
 
   function $(id){return document.getElementById(id);}
@@ -1120,6 +1126,138 @@
       return !Number.isFinite(detectedAt)||detectedAt>syncedAt;
     });
   }
+  function attendanceModeLabel(mode){
+    return ({
+      v1:'V1 운영',shadow:'V1 운영 + V2 복사',verify:'V1 운영 + V2 검증',
+      'v2-read':'V2 읽기 + V1 백업',v2:'V2 운영',
+    })[mode]||'V1 운영';
+  }
+  function attendanceParityMeta(){
+    const data=v2MonitorDataByBranch[activeBranch]||{};
+    const alerts=visibleV2MonitorAlerts(data,v2MonitorAlertsByBranch[activeBranch]||[]);
+    const status=String(data.shadowStatus||'idle');
+    const mismatchCount=status==='mismatch'?Math.max(1,alerts.length):alerts.length;
+    return {status,mismatchCount,lastSyncedAt:data.shadowLastSyncedAt||''};
+  }
+  function attendanceControlDeveloper(){
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    return !!(window.SCAttendanceV2SettingsPolicy&&SCAttendanceV2SettingsPolicy.canView(profile));
+  }
+  function attendanceControlStatus(message,type){
+    const el=$('v2-attendance-control-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='data-v2-status '+(type||'');
+  }
+  function renderAttendanceCutover(){
+    const section=$('v2-attendance-cutover');
+    if(!section) return;
+    const developer=attendanceControlDeveloper();
+    section.hidden=!developer;
+    if(!developer) return;
+    const parity=attendanceParityMeta();
+    const config=attendanceControlConfig||{mode:'v1',generationId:''};
+    const readyId=String(attendanceControlReadyGeneration?.id||'');
+    const mode=$('v2-attendance-mode');
+    if($('v2-attendance-current-mode')) $('v2-attendance-current-mode').textContent=attendanceModeLabel(config.mode);
+    if($('v2-attendance-current-generation')) $('v2-attendance-current-generation').textContent=config.generationId||'-';
+    if($('v2-attendance-verified-generation')) $('v2-attendance-verified-generation').textContent=readyId||'-';
+    if($('v2-attendance-parity')) $('v2-attendance-parity').textContent=v2MonitorStateMeta(parity.status).label;
+    if($('v2-attendance-mismatch')) $('v2-attendance-mismatch').textContent=`${parity.mismatchCount}건`;
+    if(mode&&!attendanceControlBusy) mode.value=config.mode||'v1';
+    const disabled=attendanceControlBusy||attendanceControlBranch!==activeBranch||!attendanceControlStore;
+    if(mode) mode.disabled=disabled;
+    if($('v2-attendance-apply')) $('v2-attendance-apply').disabled=disabled;
+    if($('v2-attendance-rollback')) $('v2-attendance-rollback').disabled=disabled;
+    if(attendanceControlBusy){
+      attendanceControlStatus('출석 운영 모드를 저장하고 있습니다.');
+    }else if(!readyId){
+      attendanceControlStatus('검증 완료된 V2 세대가 없습니다. V1 운영은 그대로 유지됩니다.','err');
+    }else{
+      attendanceControlStatus(`마지막 동기화 ${v2MonitorDate(parity.lastSyncedAt)} · 자동 전환 없음`,'ok');
+    }
+  }
+  function stopAttendanceCutover(){
+    if(typeof attendanceControlUnsubscribe==='function'){
+      try{attendanceControlUnsubscribe();}catch(error){}
+    }
+    attendanceControlUnsubscribe=null;
+    attendanceControlStore=null;
+    attendanceControlBranch='';
+    attendanceControlConfig={mode:'v1',generationId:'',valid:false};
+    attendanceControlReadyGeneration=null;
+    attendanceControlBusy=false;
+    renderAttendanceCutover();
+  }
+  async function subscribeAttendanceCutover(branchId){
+    if(!attendanceControlDeveloper()){
+      stopAttendanceCutover();
+      return;
+    }
+    if(attendanceControlBranch===branchId&&attendanceControlStore){
+      renderAttendanceCutover();
+      return;
+    }
+    stopAttendanceCutover();
+    try{
+      const root=branchRoot(branchId);
+      if(!root?.db||!window.SCV2AttendanceStore||!window.SCScheduleV2Store){
+        throw new Error('V2 출석 전환 모듈을 불러오지 못했습니다.');
+      }
+      attendanceControlBranch=branchId;
+      attendanceControlStore=SCV2AttendanceStore.create({db:root.db,branchId});
+      attendanceControlReadyGeneration=await SCScheduleV2Store.latestReadyGeneration(root.db,branchId);
+      if(attendanceControlBranch!==branchId) return;
+      attendanceControlUnsubscribe=attendanceControlStore.subscribeConfig(config=>{
+        if(attendanceControlBranch!==branchId) return;
+        attendanceControlConfig=config;
+        renderAttendanceCutover();
+      },error=>{
+        if(attendanceControlBranch!==branchId) return;
+        attendanceControlStatus('출석 전환 설정 조회 실패 · '+(error.message||String(error)),'err');
+      });
+      renderAttendanceCutover();
+    }catch(error){
+      if(attendanceControlBranch===branchId||!attendanceControlBranch){
+        attendanceControlStatus('출석 전환 준비 실패 · '+(error.message||String(error)),'err');
+      }
+      renderAttendanceCutover();
+    }
+  }
+  async function applyAttendanceCutover(targetMode){
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const policy=window.SCAttendanceV2SettingsPolicy;
+    if(!policy||!attendanceControlStore||attendanceControlBranch!==activeBranch) return;
+    const mode=targetMode||$('v2-attendance-mode')?.value||'v1';
+    const readyId=String(attendanceControlReadyGeneration?.id||'');
+    const parity=attendanceParityMeta();
+    const decision=SCAttendanceV2SettingsPolicy.evaluate({
+      profile,
+      currentMode:attendanceControlConfig?.mode||'v1',
+      targetMode:mode,
+      generationId:mode==='v1'?'':readyId,
+      verifiedGenerationId:readyId,
+      parityStatus:parity.status,
+      mismatchCount:parity.mismatchCount,
+    });
+    if(!decision.allowed){
+      attendanceControlStatus(decision.reason,'err');
+      return;
+    }
+    const label=attendanceModeLabel(mode);
+    if(!window.confirm(`출석 데이터 운영 모드를 "${label}"(으)로 변경할까요?`)) return;
+    attendanceControlBusy=true;
+    renderAttendanceCutover();
+    try{
+      await attendanceControlStore.setConfig({mode,generationId:mode==='v1'?'':readyId});
+      attendanceControlStatus(`${label} 모드로 변경했습니다.`,'ok');
+    }catch(error){
+      attendanceControlStatus('출석 운영 모드 저장 실패 · '+(error.message||String(error)),'err');
+    }finally{
+      attendanceControlBusy=false;
+      renderAttendanceCutover();
+    }
+  }
   function renderV2Monitor(){
     const data=v2MonitorDataByBranch[activeBranch]||{};
     const alerts=visibleV2MonitorAlerts(data,v2MonitorAlertsByBranch[activeBranch]||[]);
@@ -1157,17 +1295,23 @@
       }
     }
     updateV2MonitorBadges(state);
+    renderAttendanceCutover();
   }
   function stopV2Monitor(){
     v2MonitorUnsubscribes.forEach(unsubscribe=>{try{unsubscribe();}catch(error){}});
     v2MonitorUnsubscribes=[];
     v2MonitorBranch='';
+    stopAttendanceCutover();
   }
   function subscribeV2Monitor(forceRefresh){
     const branchId=activeBranch;
     if(v2MonitorBranch===branchId&&v2MonitorUnsubscribes.length){
       if(forceRefresh&&window.SCV2Shadow) SCV2Shadow.refresh(branchRoot(branchId));
       renderV2Monitor();
+      if(forceRefresh){
+        stopAttendanceCutover();
+        subscribeAttendanceCutover(branchId);
+      }
       return;
     }
     stopV2Monitor();
@@ -1195,6 +1339,7 @@
         console.warn('[settings] V2 alerts load failed:',error);
       }));
       if(window.SCV2Shadow) SCV2Shadow.refresh(root);
+      subscribeAttendanceCutover(branchId);
     }catch(error){
       v2MonitorDataByBranch[branchId]={shadowStatus:'error',shadowMessage:error.message||String(error)};
       renderV2Monitor();
@@ -3373,6 +3518,8 @@ th{background:#D9EAD3;font-weight:700}
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
     $('v2-monitor-refresh')?.addEventListener('click',()=>subscribeV2Monitor(true));
+    $('v2-attendance-apply')?.addEventListener('click',()=>applyAttendanceCutover());
+    $('v2-attendance-rollback')?.addEventListener('click',()=>applyAttendanceCutover('v1'));
     $('summer-layout-check')?.addEventListener('click',e=>checkSummerLayout(e.currentTarget));
     $('summer-layout-apply')?.addEventListener('click',e=>applySummerLayout(e.currentTarget));
     $('students-refresh')?.addEventListener('click',()=>loadStudentDirectory(true));

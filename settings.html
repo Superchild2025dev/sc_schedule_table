@@ -384,6 +384,36 @@
         동시운영 상태를 불러오는 중입니다.
       </div>
 
+      <section class="v2-attendance-cutover" id="v2-attendance-cutover" hidden aria-labelledby="v2-attendance-cutover-title">
+        <div class="subsection-head">
+          <div>
+            <h2 id="v2-attendance-cutover-title">출석 데이터 전환</h2>
+            <span>개발자 전용입니다. 검증된 세대만 수동으로 전환할 수 있으며 자동 전환은 하지 않습니다.</span>
+          </div>
+          <span class="v2-developer-badge">개발자 전용</span>
+        </div>
+        <div class="v2-attendance-summary">
+          <div><span>현재 모드</span><strong id="v2-attendance-current-mode">V1 운영</strong></div>
+          <div><span>현재 세대</span><strong id="v2-attendance-current-generation">-</strong></div>
+          <div><span>검증 완료 세대</span><strong id="v2-attendance-verified-generation">-</strong></div>
+          <div><span>마지막 검증</span><strong id="v2-attendance-parity">확인 전</strong></div>
+          <div><span>불일치</span><strong id="v2-attendance-mismatch">0건</strong></div>
+        </div>
+        <div class="v2-attendance-controls">
+          <label for="v2-attendance-mode">변경할 모드</label>
+          <select id="v2-attendance-mode">
+            <option value="v1">V1 운영</option>
+            <option value="shadow">V1 운영 + V2 복사</option>
+            <option value="verify">V1 운영 + V2 검증</option>
+            <option value="v2-read">V2 읽기 + V1 백업</option>
+            <option value="v2">V2 운영</option>
+          </select>
+          <button type="button" class="primary-btn" id="v2-attendance-apply">선택 모드 적용</button>
+          <button type="button" class="ghost-btn" id="v2-attendance-rollback">V1으로 복귀</button>
+        </div>
+        <div class="data-v2-status" id="v2-attendance-control-status">출석 전환 상태를 확인하고 있습니다.</div>
+      </section>
+
       <section class="v2-monitor-alerts" aria-labelledby="v2-monitor-alerts-title">
         <div class="subsection-head">
           <div>
@@ -598,6 +628,7 @@
 <script>scJs('js/schedule-v2-store.js')</script>
 <script>scJs('js/attendance-v2-store.js')</script>
 <script>scJs('js/attendance-operational-gateway.js')</script>
+<script>scJs('js/attendance-v2-settings-policy.js')</script>
 <script>scJs('js/schedule-v2-shadow.js')</script>
 <script>scJs('js/auth-guard.js')</script>
 <script>scJs('js/settings.js')</script>

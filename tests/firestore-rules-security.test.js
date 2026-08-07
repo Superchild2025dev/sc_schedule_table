@@ -5,6 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "firestore.rules"), "utf8");
+const firebaseConfig = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "firebase.json"), "utf8"));
+const indexesPath = path.join(__dirname, "..", "firestore.indexes.json");
 
 assert.doesNotMatch(
   source,
@@ -81,3 +83,31 @@ assert.match(
   /allow create, update, delete: if false/,
   "public summary writes must stay blocked"
 );
+
+assert.match(
+  source,
+  /match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if isDeveloper\(\);[\s\S]*?\}/,
+  "staff may read only their branch attendance runtime config while developers control writes"
+);
+assert.match(
+  source,
+  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?collection in \["attendanceRecords", "attendanceGuests"\][\s\S]*?canManageSchedule\(branch\) \|\| isTeacherForBranch\(branch\)[\s\S]*?\}/,
+  "only branch staff may access V2 attendance record collections"
+);
+
+assert.equal(firebaseConfig.firestore.rules, "firestore.rules");
+assert.equal(firebaseConfig.firestore.indexes, "firestore.indexes.json");
+assert.ok(fs.existsSync(indexesPath), "Firestore attendance index file must exist");
+if(fs.existsSync(indexesPath)){
+  const indexes = JSON.parse(fs.readFileSync(indexesPath, "utf8"));
+  ["attendanceRecords", "attendanceGuests"].forEach(collectionGroup=>{
+    assert.ok(indexes.indexes.some(index=>
+      index.collectionGroup === collectionGroup &&
+      index.queryScope === "COLLECTION" &&
+      JSON.stringify(index.fields) === JSON.stringify([
+        {fieldPath:"tabId", order:"ASCENDING"},
+        {fieldPath:"date", order:"ASCENDING"},
+      ])
+    ), `${collectionGroup} must have an exact tabId/date composite index`);
+  });
+}

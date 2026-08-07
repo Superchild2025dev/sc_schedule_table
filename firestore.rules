@@ -114,6 +114,16 @@ service cloud.firestore {
       allow write: if isDeveloper();
     }
 
+    match /scheduleV2/{branch}/runtime/attendance {
+      allow read: if canReadSchedule(branch);
+      allow write: if isDeveloper();
+    }
+
+    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
+      allow read, write: if collection in ["attendanceRecords", "attendanceGuests"]
+        && (canManageSchedule(branch) || isTeacherForBranch(branch));
+    }
+
     match /scheduleStores/{branch}/{document=**} {
       allow read: if canReadSchedule(branch);
       allow write: if canManageSchedule(branch);
