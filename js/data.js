@@ -4045,24 +4045,91 @@ function clearMarkEntryTx(markKey){
   return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
 }
 const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
+function _attendanceLegacyEntryDate(key){
+  const match=String(key||'').match(/\/(\d{4}-\d{2}-\d{2})(?:#sub)?$/);
+  return match?match[1]:'';
+}
+function _attendanceRangeMap(source,dates){
+  const selected=new Set((dates||[]).map(ds=>String(ds||'')).filter(Boolean));
+  const out={};
+  Object.entries(source&&typeof source==='object'?source:{}).forEach(([key,value])=>{
+    if(selected.has(_attendanceLegacyEntryDate(key))) out[key]=_cloneJSON(value);
+  });
+  return out;
+}
+function getLegacyAttendanceRangeMaps(input){
+  const keys=_attendanceStorageKeys(input?.tabId);
+  return {
+    attendance:_attendanceRangeMap(loadJSON(keys.attendance,{}),input?.dates),
+    guests:_attendanceRangeMap(loadJSON(keys.attGuests,{}),input?.dates),
+  };
+}
+function getOperationalAttendanceMaps(){
+  return {attendance:_cloneJSON(ATTENDANCE||{}),guests:_cloneJSON(ATT_GUESTS||{})};
+}
+function setOperationalAttendanceMaps(next){
+  ATTENDANCE=_cloneJSON(next?.attendance||{});
+  ATT_GUESTS=_cloneJSON(next?.guests||{});
+}
+function _attendanceOperationContext(){
+  const ds=typeof _attendanceDate!=='undefined'?String(_attendanceDate||''):'';
+  const tab=ds&&typeof getAttendanceBasisTabForDate==='function'
+    ?getAttendanceBasisTabForDate(ds)
+    :((typeof _tabById==='function'&&_tabById(_activeTab))||{id:_activeTab,type:'regular'});
+  const dates=typeof _attendanceSnapshotDatesForView==='function'
+    ?_attendanceSnapshotDatesForView()
+    :(ds?[ds]:[]);
+  return {
+    tabId:String(tab?.id||_activeTab||'regular'),
+    courseType:tab?.type==='bangteuk'?'bangteuk':'regular',
+    dates:[...new Set((dates||[]).filter(Boolean))],
+    recordMeta(legacyKey){
+      if(!window.SCV2AttendanceModel||typeof SCV2AttendanceModel.parseRecordKey!=='function') return {};
+      const parsed=SCV2AttendanceModel.parseRecordKey(legacyKey);
+      if(!parsed?.ok) return {};
+      const basis=typeof getAttendanceBasisDataForDate==='function'
+        ?getAttendanceBasisDataForDate(parsed.value.date)
+        :null;
+      const student=basis?.stuIdx?.[parsed.value.slotKey];
+      if(!student) return {};
+      const personId=String(student.sid||'');
+      return {
+        personId,
+        enrollmentId:personId&&window.SCScheduleSchemaV2
+          ?SCScheduleSchemaV2.enrollmentIdFor(personId,String(tab?.id||_activeTab||'regular'))
+          :'',
+      };
+    },
+  };
+}
+function _updateLegacyAttendanceMapTx(mutator,input){
+  const key=_attendanceStorageKey('attendance',input?.tabId);
+  const current=loadJSON(key,ATTENDANCE||{});
+  return _txJSONMap(key,current,next=>{ATTENDANCE=next;},mutator,ATTENDANCE_TX_META);
+}
 function updateAttendanceMapTx(mutator){
-  return _txJSONMap(_attendanceStorageKey('attendance'),ATTENDANCE,next=>{ATTENDANCE=next;},mutator,ATTENDANCE_TX_META);
+  const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
+  if(!runtime) return _updateLegacyAttendanceMapTx(mutator,_attendanceOperationContext());
+  return runtime.updateAttendance(mutator,_attendanceOperationContext());
 }
 function setAttendanceEntryTx(attKey,val){
-  if(val===undefined||val===null) delete ATTENDANCE[attKey];
-  else ATTENDANCE[attKey]=val;
   return updateAttendanceMapTx(att=>{
     if(val===undefined||val===null) delete att[attKey];
     else att[attKey]=val;
     return att;
   });
 }
+function _updateLegacyAttGuestsMapTx(mutator,input){
+  const key=_attendanceStorageKey('attGuests',input?.tabId);
+  const current=loadJSON(key,ATT_GUESTS||{});
+  return _txJSONMap(key,current,next=>{ATT_GUESTS=next;},mutator,ATTENDANCE_TX_META);
+}
 function updateAttGuestsMapTx(mutator){
-  return _txJSONMap(_attendanceStorageKey('attGuests'),ATT_GUESTS,next=>{ATT_GUESTS=next;},mutator,ATTENDANCE_TX_META);
+  const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
+  if(!runtime) return _updateLegacyAttGuestsMapTx(mutator,_attendanceOperationContext());
+  return runtime.updateGuests(mutator,_attendanceOperationContext());
 }
 function setAttGuestsEntryTx(guestKey,list){
-  if(list&&list.length) ATT_GUESTS[guestKey]=list;
-  else delete ATT_GUESTS[guestKey];
   return updateAttGuestsMapTx(guests=>{
     if(list&&list.length) guests[guestKey]=list;
     else delete guests[guestKey];
@@ -4098,8 +4165,12 @@ function reloadBadgeMaps(){
   HYUWON_MAP   = loadJSON(STORAGE_KEYS.休원,     {});
   MOVE_MAP     = loadJSON(STORAGE_KEYS.MOVE,     {});
   REQUESTS     = loadJSON(STORAGE_KEYS.REQUESTS, {});
-  ATTENDANCE   = loadJSON(_attendanceStorageKey('attendance'), {});
-  ATT_GUESTS   = loadJSON(_attendanceStorageKey('attGuests'), {});
+  const keepOperationalAttendance=typeof isOperationalAttendanceV2Authority==='function'
+    &&isOperationalAttendanceV2Authority();
+  if(!keepOperationalAttendance){
+    ATTENDANCE = loadJSON(_attendanceStorageKey('attendance'), {});
+    ATT_GUESTS = loadJSON(_attendanceStorageKey('attGuests'), {});
+  }
   DAY_SNAPSHOT = typeof getLoadedAttendanceDaySnapshotMap==='function'
     ? getLoadedAttendanceDaySnapshotMap(_activeTab)
     : {};

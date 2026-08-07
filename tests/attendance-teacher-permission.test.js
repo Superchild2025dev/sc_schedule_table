@@ -35,7 +35,9 @@ test("attendance transactions do not create schedule restore records", () => {
   assert.match(data,
     /const ATTENDANCE_TX_META=\{skipAudit:true,skipUndo:true,skipDeleteSafety:true\}/);
   assert.match(data,
-    /function updateAttendanceMapTx[\s\S]*?mutator,ATTENDANCE_TX_META\)/);
+    /function _updateLegacyAttendanceMapTx[\s\S]*?mutator,ATTENDANCE_TX_META\)/);
   assert.match(data,
-    /function updateAttGuestsMapTx[\s\S]*?mutator,ATTENDANCE_TX_META\)/);
+    /function _updateLegacyAttGuestsMapTx[\s\S]*?mutator,ATTENDANCE_TX_META\)/);
+  assert.match(data,/function updateAttendanceMapTx[\s\S]*?runtime\.updateAttendance/);
+  assert.match(data,/function updateAttGuestsMapTx[\s\S]*?runtime\.updateGuests/);
 });

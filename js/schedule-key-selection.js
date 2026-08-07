@@ -22,8 +22,6 @@
     'swim_hyuwon',
     'swim_move',
     'swim_requests',
-    'swim_attendance',
-    'swim_att_guests',
     'swim_closed',
     'swim_teachers',
     'swim_periods',
@@ -80,12 +78,19 @@
         ?'swim_bt_'+source.id+'_inst'
         :(isDefault?'swim_inst':'swim_inst_'+source.id)
     ));
-    const keys=[stuKey,instKey];
-    if(isBangteuk){
-      keys.push('swim_bt_attendance_'+source.id);
-      keys.push('swim_bt_att_guests_'+source.id);
+    return unique([stuKey,instKey]);
+  }
+
+  function attendanceKeys(tab){
+    const source=normalizeTab(tab,'regular');
+    if(source.type==='snapshot') return [];
+    if(source.type==='bangteuk'){
+      return [
+        'swim_bt_attendance_'+source.id,
+        'swim_bt_att_guests_'+source.id,
+      ];
     }
-    return unique(keys);
+    return ['swim_attendance','swim_att_guests'];
   }
 
   function isTabOwnedKey(key){
@@ -118,6 +123,7 @@
     commonKeys,
     initialBaseKeys,
     tabKeys,
+    attendanceKeys,
     isTabOwnedKey,
     resolveMainTab,
   });

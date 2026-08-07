@@ -453,22 +453,31 @@ async function ensureAttendanceBasisTabsLoaded(dates,options){
   const basisTabs=new Map();
   uniqueDates.forEach(ds=>{
     const tab=getAttendanceBasisTabForDate(ds);
-    if(tab&&tab.id&&!basisTabs.has(tab.id)) basisTabs.set(tab.id,tab);
+    if(!tab||!tab.id) return;
+    if(!basisTabs.has(tab.id)) basisTabs.set(tab.id,{tab,dates:[]});
+    basisTabs.get(tab.id).dates.push(ds);
   });
-  const keys=[];
-  basisTabs.forEach(tab=>{
+  const ranges=[];
+  basisTabs.forEach(item=>{
+    const tab=item.tab;
     const cfg=_tabConfigFor(tab);
     const tabKeys=window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.tabKeys==='function'
       ?SCScheduleKeySelection.tabKeys(tab)
       :[cfg.stuKey,cfg.instKey];
-    keys.push(...tabKeys);
-    const attendanceKeys=getAttendanceStorageKeys(tab.id);
-    keys.push(attendanceKeys.attendance,attendanceKeys.attGuests);
+    const attendanceKeys=window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.attendanceKeys==='function'
+      ?SCScheduleKeySelection.attendanceKeys(tab)
+      :Object.values(getAttendanceStorageKeys(tab.id)).slice(0,2);
+    ranges.push({
+      tabId:tab.id,
+      courseType:tab.type==='bangteuk'?'bangteuk':'regular',
+      dates:[...new Set(item.dates)],
+      baseKeys:tabKeys,
+      attendanceKeys,
+    });
   });
-  const selected=[...new Set(keys.filter(Boolean))];
-  const result=typeof ensureScheduleAuxiliaryKeysLoaded==='function'
-    ?await ensureScheduleAuxiliaryKeysLoaded('attendance-basis',selected)
-    :{stale:false};
+  const result=typeof ensureOperationalAttendanceRangeLoaded==='function'
+    ?await ensureOperationalAttendanceRangeLoaded({owner:'attendance-main',ranges})
+    :{stale:false,mode:'v1',ranges:[]};
   if(result&&result.stale) return result;
   const today=toDateStr(getToday());
   const pastDates=uniqueDates.filter(ds=>ds<today);
@@ -477,7 +486,9 @@ async function ensureAttendanceBasisTabsLoaded(dates,options){
     stale:false,
     dates:uniqueDates,
     tabIds:[...basisTabs.keys()],
-    keys:selected,
+    keys:[...new Set(ranges.flatMap(range=>range.baseKeys.concat(range.attendanceKeys)).filter(Boolean))],
+    mode:result?.mode||'v1',
+    primary:result?.primary||'v1',
     silent:!!opts.silent,
   };
 }
@@ -490,6 +501,7 @@ function requireAttendanceDataReady(label){
   return false;
 }
 function releaseAttendanceBasisTabs(){
+  if(typeof releaseOperationalAttendanceRange==='function') releaseOperationalAttendanceRange('attendance-main');
   if(typeof releaseScheduleAuxiliaryKeys==='function') releaseScheduleAuxiliaryKeys('attendance-basis');
 }
 function removeAttendanceDaySnapshotsForTab(tab){

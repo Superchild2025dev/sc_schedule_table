@@ -27,16 +27,17 @@ function body(source,name){
   throw new Error(`${name} body is incomplete`);
 }
 
-test('attendance basis loading deduplicates tabs and prepares keys before snapshots',()=>{
+test('attendance basis loading deduplicates tabs and prepares operational ranges before snapshots',()=>{
   const ensure=fn(tabs,'ensureAttendanceBasisTabsLoaded','isAttendanceDataReady');
-  const auxiliaryIndex=ensure.indexOf("ensureScheduleAuxiliaryKeysLoaded('attendance-basis'");
+  const rangeIndex=ensure.indexOf('ensureOperationalAttendanceRangeLoaded');
   const snapshotIndex=ensure.indexOf('ensureAttendanceDaySnapshotsLoaded');
 
   assert.match(ensure,/new Map\(\)/);
   assert.match(ensure,/getAttendanceBasisTabForDate/);
   assert.match(ensure,/SCScheduleKeySelection\.tabKeys/);
-  assert.ok(auxiliaryIndex>=0,'attendance basis keys must use the auxiliary subscription');
-  assert.ok(snapshotIndex>auxiliaryIndex,'past day snapshots load only after basis tabs');
+  assert.match(ensure,/SCScheduleKeySelection\.attendanceKeys/);
+  assert.ok(rangeIndex>=0,'attendance basis must use the operational range loader');
+  assert.ok(snapshotIndex>rangeIndex,'past day snapshots load only after operational attendance');
 });
 
 test('attendance date refresh renders only after basis readiness',()=>{

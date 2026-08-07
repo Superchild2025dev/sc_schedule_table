@@ -63,6 +63,8 @@ let _offlineWarningShown=false;
 let _firebaseWriteWarnedAt=0;
 let _firebaseUsingLocalFallback=false;
 let _writeBlockedWarnedAt=0;
+let _operationalAttendanceRuntime=null;
+let _operationalAttendanceBranchId='';
 const _dbCache={};
 const _snapshotParsedCache=new Map();
 const SNAPSHOT_PARSED_CACHE_LIMIT=3;
@@ -79,6 +81,61 @@ const _scheduleWrites=window.SCScheduleWriteGateway
 window.SCWriteDiagnostics={
   recent(limit){ return _scheduleWrites?_scheduleWrites.recent(limit):[]; },
 };
+
+function getOperationalAttendanceRuntime(){
+  const branch=getBranchInfo();
+  if(!branch) return null;
+  if(_operationalAttendanceRuntime&&_operationalAttendanceBranchId===branch.id){
+    return _operationalAttendanceRuntime;
+  }
+  if(!window.SCV2AttendanceStore||!window.SCOperationalAttendance||!window.SCMainAttendanceRuntime){
+    return null;
+  }
+  if(typeof firebase==='undefined'||typeof firebase.firestore!=='function') return null;
+  const db=firebase.firestore();
+  const v2Store=SCV2AttendanceStore.create({db,branchId:branch.id});
+  const legacy={
+    loadRange(input){
+      if(typeof getLegacyAttendanceRangeMaps!=='function') throw new Error('V1 출석 데이터를 읽을 수 없습니다.');
+      return Promise.resolve(getLegacyAttendanceRangeMaps(input));
+    },
+    updateAttendance(mutator,input){
+      if(typeof _updateLegacyAttendanceMapTx!=='function') throw new Error('V1 출석 데이터를 저장할 수 없습니다.');
+      return _updateLegacyAttendanceMapTx(mutator,input);
+    },
+    updateGuests(mutator,input){
+      if(typeof _updateLegacyAttGuestsMapTx!=='function') throw new Error('V1 추가 원생 출석을 저장할 수 없습니다.');
+      return _updateLegacyAttGuestsMapTx(mutator,input);
+    },
+  };
+  const gateway=SCOperationalAttendance.create({branchId:branch.id,legacy,v2Store});
+  _operationalAttendanceRuntime=SCMainAttendanceRuntime.create({
+    branchId:branch.id,
+    gateway,
+    prepareKeys(keys){ return ensureScheduleAuxiliaryKeysLoaded('attendance-basis',keys); },
+    getMaps(){
+      return typeof getOperationalAttendanceMaps==='function'
+        ?getOperationalAttendanceMaps()
+        :{attendance:{},guests:{}};
+    },
+    setMaps(next){
+      if(typeof setOperationalAttendanceMaps==='function') setOperationalAttendanceMaps(next);
+    },
+  });
+  _operationalAttendanceBranchId=branch.id;
+  return _operationalAttendanceRuntime;
+}
+async function ensureOperationalAttendanceRangeLoaded(input){
+  const runtime=getOperationalAttendanceRuntime();
+  if(!runtime) throw new Error('출석 데이터 연결을 준비하지 못했습니다.');
+  return runtime.loadRanges(input);
+}
+function releaseOperationalAttendanceRange(owner){
+  if(_operationalAttendanceRuntime) _operationalAttendanceRuntime.release(owner||'attendance-main');
+}
+function isOperationalAttendanceV2Authority(){
+  return !!(_operationalAttendanceRuntime&&_operationalAttendanceRuntime.isV2Authority());
+}
 
 function _isSnapshotStorageKey(key){
   return String(key||'').startsWith('swim_snap_');

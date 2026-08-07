@@ -27,10 +27,21 @@ test('regular and vacation tabs resolve only their own payload keys',()=>{
   }),[
     'custom_students',
     'custom_inst',
+  ]);
+  assert.deepEqual(policy.tabKeys({id:'snap1',type:'snapshot'}),[]);
+});
+
+test('attendance payload keys are selected only when the attendance view opens',()=>{
+  const policy=require(policyPath);
+  assert.deepEqual(policy.attendanceKeys({id:'regular',type:'regular'}),[
+    'swim_attendance',
+    'swim_att_guests',
+  ]);
+  assert.deepEqual(policy.attendanceKeys({id:'summer',type:'bangteuk'}),[
     'swim_bt_attendance_summer',
     'swim_bt_att_guests_summer',
   ]);
-  assert.deepEqual(policy.tabKeys({id:'snap1',type:'snapshot'}),[]);
+  assert.deepEqual(policy.attendanceKeys({id:'snap1',type:'snapshot'}),[]);
 });
 
 test('initial base keys contain only explicit bootstrap and common keys',()=>{
@@ -40,8 +51,8 @@ test('initial base keys contain only explicit bootstrap and common keys',()=>{
   const initial=policy.initialBaseKeys();
 
   assert.deepEqual(initial,[...new Set([...bootstrap,...common])]);
-  assert.equal(initial.includes('swim_attendance'),true);
-  assert.equal(initial.includes('swim_att_guests'),true);
+  assert.equal(initial.includes('swim_attendance'),false);
+  assert.equal(initial.includes('swim_att_guests'),false);
   [
     'swim_students',
     'swim_inst',
