@@ -510,30 +510,37 @@ button.time-row.expandable.expanded {
   text-align: center;
 }
 
-.notice-band {
-  border-top: 1px solid var(--line);
-  background: #fff;
+.availability-notice {
+  border-bottom: 1px solid #bfdbfe;
+  background: var(--blue-soft);
 }
 
-.notice-inner {
-  min-height: 76px;
+.availability-notice-inner {
+  min-height: 64px;
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--muted);
+  padding-top: 12px;
+  padding-bottom: 12px;
+  color: #334155;
 }
 
-.notice-inner svg {
+.availability-notice-inner svg {
   flex: 0 0 auto;
   width: 19px;
   height: 19px;
   color: var(--blue);
 }
 
-.notice-inner p {
+.availability-notice-inner p {
   margin: 0;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.65;
+}
+
+.availability-notice-inner strong {
+  font-weight: 900;
 }
 
 footer {

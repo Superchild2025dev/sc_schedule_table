@@ -32,3 +32,13 @@ assert.match(app, /detailNames\.textContent = teachers\.join/,
 assert.doesNotMatch(app, /detailNames\.innerHTML/,
   "teacher names must not reach an HTML parser");
 
+assert.match(html, /정규반 자리 안내/);
+assert.match(html, /요일별 자리 현황/);
+assert.match(html, /정규반 등록 가능 시간을 확인하세요\./);
+assert.match(html, /본 페이지의 빈자리 현황은 참고용이며, 등록 및 반 이동 상황에 따라 변동될 수 있습니다\./);
+assert.match(html, /정확한 등록 가능 여부는 해당 지점으로 문의해 주세요\./);
+assert.equal((html.match(/본 페이지의 빈자리 현황은 참고용이며/g) || []).length, 1);
+assert.ok(html.indexOf('class="availability-notice"') < html.indexOf('class="schedule-band"'));
+assert.doesNotMatch(html, /2026년 9월 정규반 등록 가능 시간을 확인하세요/);
+assert.doesNotMatch(html, /정규반 전환 안내|>등록 가능한 시간</);
+
