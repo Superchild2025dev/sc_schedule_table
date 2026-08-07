@@ -26,17 +26,73 @@ test("coalesces keys, leases one revision, and leaves newer work pending",()=>{
   assert.equal(queued.requestedRevision,3);
 
   const claim=policy.claimPending(queued,"lease-a",NOW);
+  assert.equal(claim.recovered,false);
   assert.deepEqual(claim.keys.sort(),["swim_inst","swim_students"]);
   assert.deepEqual(claim.next.pendingKeys,[]);
+  assert.deepEqual(claim.next.inFlightKeys.sort(),["swim_inst","swim_students"]);
   assert.equal(claim.next.status,"processing");
   assert.equal(policy.claimPending(claim.next,"lease-b",NOW),null);
 
   const newer=policy.mergePending(claim.next,"swim_mark",new Date("2026-08-07T02:00:01.000Z"));
+  assert.deepEqual(newer.inFlightKeys.sort(),["swim_inst","swim_students"]);
   const finished=policy.finishPending(newer,claim,{writes:4},new Date("2026-08-07T02:00:02.000Z"));
   assert.equal(finished.status,"pending");
   assert.deepEqual(finished.pendingKeys,["swim_mark"]);
+  assert.equal(finished.inFlightKeys,undefined);
   assert.equal(finished.appliedRevision,3);
   assert.equal(finished.writes,4);
+});
+
+test("worker termination leaves durable in-flight keys that an expired lease can reclaim",()=>{
+  const queued=policy.mergePending({pendingKeys:["swim_inst"],requestedRevision:4},"swim_students",NOW);
+  const abandoned=policy.claimPending(queued,"lease-dead",NOW);
+
+  assert.deepEqual(abandoned.next.pendingKeys,[]);
+  assert.deepEqual(abandoned.next.inFlightKeys.sort(),["swim_inst","swim_students"]);
+  assert.equal(
+    policy.claimPending(abandoned.next,"lease-early",new Date("2026-08-07T02:00:59.000Z")),
+    null,
+  );
+
+  const reclaimed=policy.claimPending(
+    abandoned.next,"lease-replacement",new Date("2026-08-07T02:01:01.000Z"),
+  );
+  assert.equal(reclaimed.recovered,true);
+  assert.deepEqual(reclaimed.keys.sort(),["swim_inst","swim_students"]);
+  assert.deepEqual(reclaimed.next.pendingKeys,[]);
+  assert.deepEqual(reclaimed.next.inFlightKeys.sort(),["swim_inst","swim_students"]);
+  assert.equal(reclaimed.next.leaseId,"lease-replacement");
+});
+
+test("expired recovery returns in-flight keys to pending without touching an active lease",()=>{
+  const queued=policy.mergePending({},"swim_students",NOW);
+  const claim=policy.claimPending(queued,"lease-a",NOW);
+  const newer=policy.mergePending(claim.next,"swim_mark",new Date("2026-08-07T02:00:01.000Z"));
+
+  assert.equal(
+    policy.recoverExpired(newer,new Date("2026-08-07T02:00:59.000Z")),
+    null,
+  );
+  const recovered=policy.recoverExpired(newer,new Date("2026-08-07T02:01:01.000Z"));
+  assert.deepEqual(recovered.pendingKeys.sort(),["swim_mark","swim_students"]);
+  assert.equal(recovered.inFlightKeys,undefined);
+  assert.equal(recovered.leaseId,undefined);
+  assert.equal(recovered.status,"pending");
+});
+
+test("catch recovery merges durable in-flight keys and protects a replacement lease",()=>{
+  const queued=policy.mergePending({},"swim_students",NOW);
+  const claimA=policy.claimPending(queued,"lease-a",NOW);
+  const newer=policy.mergePending(claimA.next,"swim_mark",new Date("2026-08-07T02:00:01.000Z"));
+  const recovered=policy.requeueClaim(newer,claimA);
+
+  assert.deepEqual(recovered.pendingKeys.sort(),["swim_mark","swim_students"]);
+  assert.equal(recovered.inFlightKeys,undefined);
+  assert.equal(recovered.leaseId,undefined);
+  assert.equal(recovered.status,"pending");
+
+  const claimB=policy.claimPending(newer,"lease-b",new Date("2026-08-07T02:01:01.000Z"));
+  assert.deepEqual(policy.requeueClaim(claimB.next,claimA),claimB.next);
 });
 
 test("does not let a stale finisher clear a replacement lease",()=>{
@@ -48,6 +104,7 @@ test("does not let a stale finisher clear a replacement lease",()=>{
   assert.equal(claimB.next.status,"processing");
   assert.equal(claimB.next.leaseId,"lease-b");
   assert.deepEqual(claimB.next.pendingKeys,[]);
+  assert.deepEqual(claimB.next.inFlightKeys.sort(),["swim_mark","swim_students"]);
 
   const staleFinish=policy.finishPending(claimB.next,claimA,{writes:99},new Date("2026-08-07T02:01:02.000Z"));
   assert.deepEqual(staleFinish,claimB.next);

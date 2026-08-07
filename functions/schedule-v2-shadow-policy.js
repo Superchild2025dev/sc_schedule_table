@@ -72,6 +72,16 @@ function pendingKeys(current){
     .filter(isTrackedKey))];
 }
 
+function inFlightKeys(current){
+  return [...new Set((Array.isArray(current?.inFlightKeys)?current.inFlightKeys:[])
+    .map(text)
+    .filter(isTrackedKey))];
+}
+
+function combinedKeys(...groups){
+  return [...new Set(groups.flat().map(text).filter(isTrackedKey))];
+}
+
 function mergePending(current,key,now){
   const next=Object.assign({},current);
   const keys=pendingKeys(current);
@@ -88,16 +98,22 @@ function claimPending(current,leaseId,now){
   const nowDate=now instanceof Date ? now : new Date(now);
   const nowMs=nowDate.getTime();
   const leaseUntil=Date.parse(current?.leaseUntil||"");
-  const keys=pendingKeys(current);
-  if(!keys.length||(Number.isFinite(leaseUntil)&&leaseUntil>nowMs)) return null;
+  if(Number.isFinite(leaseUntil)&&leaseUntil>nowMs) return null;
+  const flight=inFlightKeys(current);
+  const keys=combinedKeys(flight,pendingKeys(current));
+  if(!keys.length) return null;
   const next=Object.assign({},current,{
     pendingKeys:[],
+    inFlightKeys:keys,
     status:"processing",
     leaseId:text(leaseId),
     leaseUntil:new Date(nowMs+LEASE_MS).toISOString(),
     processingStartedAt:timestamp(now),
   });
-  return {keys,leaseId:next.leaseId,requestedRevision:revision(current?.requestedRevision),next};
+  return {
+    keys,leaseId:next.leaseId,recovered:flight.length>0,
+    requestedRevision:revision(current?.requestedRevision),next,
+  };
 }
 
 function finishPending(current,claim,result,now){
@@ -109,6 +125,35 @@ function finishPending(current,claim,result,now){
   next.appliedRevision=Math.max(revision(current?.appliedRevision),claimedRevision);
   next.status=hasNewerWork?"pending":"idle";
   next.lastSyncedAt=timestamp(now);
+  delete next.inFlightKeys;
+  delete next.leaseId;
+  delete next.leaseUntil;
+  delete next.processingStartedAt;
+  return next;
+}
+
+function requeueClaim(current,claim){
+  if(!text(claim?.leaseId)||text(current?.leaseId)!==text(claim.leaseId)) return current;
+  const keys=combinedKeys(pendingKeys(current),inFlightKeys(current),Array.isArray(claim?.keys)?claim.keys:[]);
+  const next=Object.assign({},current,{pendingKeys:keys,status:keys.length?"pending":"idle"});
+  delete next.inFlightKeys;
+  delete next.leaseId;
+  delete next.leaseUntil;
+  delete next.processingStartedAt;
+  return next;
+}
+
+function recoverExpired(current,now){
+  const nowDate=now instanceof Date ? now : new Date(now);
+  const leaseUntil=Date.parse(current?.leaseUntil||"");
+  if(Number.isFinite(leaseUntil)&&leaseUntil>nowDate.getTime()) return null;
+  const flight=inFlightKeys(current);
+  if(!flight.length) return null;
+  const next=Object.assign({},current,{
+    pendingKeys:combinedKeys(pendingKeys(current),flight),
+    status:"pending",
+  });
+  delete next.inFlightKeys;
   delete next.leaseId;
   delete next.leaseUntil;
   delete next.processingStartedAt;
@@ -143,5 +188,5 @@ function redactedError(error,input){
 
 module.exports={
   decodeLegacyKey,collectionsForKey,isTrackedKey,
-  mergePending,claimPending,finishPending,redactedError,
+  mergePending,claimPending,finishPending,requeueClaim,recoverExpired,redactedError,
 };

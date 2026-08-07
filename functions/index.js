@@ -361,6 +361,21 @@ function scheduleV2ShadowRetryCount(value) {
   return Math.min(SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT, count + 1);
 }
 
+async function recoverScheduleV2ShadowBranch(branchId, now) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  return db.runTransaction(async tx => {
+    const config = await tx.get(configRef);
+    if (!["shadow", "verify"].includes(config.get("mode"))) return false;
+    const snapshot = await tx.get(syncRef);
+    const recovered = scheduleV2ShadowPolicy.recoverExpired(snapshot.data(), now);
+    if (!recovered) return false;
+    recovered.retryCount = scheduleV2ShadowRetryCount(snapshot.data()?.retryCount);
+    tx.set(syncRef, recovered, {merge: false});
+    return true;
+  });
+}
+
 function parseJSON(value, fallback) {
   if (!value) return clone(fallback);
   try {
@@ -1754,6 +1769,9 @@ exports.processScheduleV2Shadow = onDocumentWritten({
       new Date()
     );
     if (!nextClaim) return null;
+    if (nextClaim.recovered) {
+      nextClaim.next.retryCount = scheduleV2ShadowRetryCount(snapshot.data()?.retryCount);
+    }
     tx.set(syncRef, nextClaim.next, {merge: false});
     return {...nextClaim, generationId};
   });
@@ -1810,20 +1828,12 @@ exports.processScheduleV2Shadow = onDocumentWritten({
         return false;
       }
       const alertSnapshot = await tx.get(alertRef);
-      const pendingKeys = [...new Set([
-        ...(Array.isArray(current.pendingKeys) ? current.pendingKeys : []),
-        ...claim.keys,
-      ].filter(scheduleV2ShadowPolicy.isTrackedKey))];
+      const requeued = scheduleV2ShadowPolicy.requeueClaim(current, claim);
       const failed = {
-        ...current,
-        pendingKeys,
-        status: "pending",
+        ...requeued,
         retryCount: scheduleV2ShadowRetryCount(current.retryCount),
         lastFailedAt: redactedDiagnostic.detectedAt,
       };
-      delete failed.leaseId;
-      delete failed.leaseUntil;
-      delete failed.processingStartedAt;
       const priorCount = Math.max(0, Number(alertSnapshot.data()?.count || 0) || 0);
       tx.set(syncRef, failed, {merge: false});
       tx.set(alertRef, {
@@ -1839,6 +1849,18 @@ exports.processScheduleV2Shadow = onDocumentWritten({
     });
     if (recorded) logger.error('schedule-v2-shadow-failed',redactedDiagnostic);
   }
+  return null;
+});
+
+exports.recoverScheduleV2ShadowLeases = onSchedule({
+  schedule: "every 1 minutes",
+  timeZone: "Asia/Seoul",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async () => {
+  const now = new Date();
+  await Promise.all(Object.keys(BRANCHES).map(branchId =>
+    recoverScheduleV2ShadowBranch(branchId, now)
+  ));
   return null;
 });
 
