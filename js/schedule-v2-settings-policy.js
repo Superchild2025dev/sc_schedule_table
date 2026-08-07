@@ -30,12 +30,16 @@
     if(text(status.generationStatus)!=='ready'){
       return result(false,'준비가 완료된 Schedule V2 세대가 필요합니다.');
     }
-    if(action==='set-shadow') return result(true,'그림자 복사를 시작할 수 있습니다.');
     if(count(status.pendingCount)>0||count(status.inFlightCount)>0){
       return result(false,'대기 중이거나 처리 중인 Schedule V2 변경이 남아 있습니다.');
     }
     if(count(status.unresolvedMismatchCount)>0){
       return result(false,'해결되지 않은 Schedule V2 불일치가 남아 있습니다.');
+    }
+    if(action==='set-shadow'){
+      return text(status.mode)==='ready'
+        ?result(true,'그림자 복사를 시작할 수 있습니다.')
+        :result(false,'새 기준점 준비를 완료한 뒤 그림자 복사를 시작할 수 있습니다.');
     }
     return result(true,'Schedule V2 검증 모드로 변경할 수 있습니다.');
   }

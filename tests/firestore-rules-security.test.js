@@ -89,6 +89,11 @@ assert.match(
 
 assert.match(
   source,
+  /match \/scheduleV2\/\{document=\*\*\} \{[\s\S]*?allow read: if isOwner\(\) \|\| isDeveloper\(\);[\s\S]*?allow write: if false;[\s\S]*?\}/,
+  "generic Schedule V2 documents must be server-written only"
+);
+assert.match(
+  source,
   /match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if isDeveloper\(\);[\s\S]*?\}/,
   "staff may read an allowed attendance runtime config while developers control writes"
 );

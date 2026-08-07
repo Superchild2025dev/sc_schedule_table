@@ -65,14 +65,34 @@ function requiredLegacyKeys(keys,tabMetadata){
     tabKeys.students.forEach(key=>required.add(key));
     required.add("swim_periods");
   }
+  if(hasTabKey(changed,"student")){
+    tabKeys.students.forEach(key=>required.add(key));
+  }
+  if(selected.has("waitlistEntries")){
+    required.add("swim_reserve");
+    required.add("swim_periods");
+  }
   if(selected.has("scheduleSettings")){
     required.add("swim_parent_tab");
   }
   if(selected.has("systemMetadata")){
     METADATA_KEYS.forEach(key=>required.add(key));
   }
-  if(selected.has("classMarks")||selected.has("disabledSlots")){
-    [...tabKeys.students,...tabKeys.teachers,"swim_periods"].forEach(key=>required.add(key));
+  if(selected.has("classMarks")){
+    [...tabKeys.students,...tabKeys.teachers,"swim_mark","swim_periods"]
+      .forEach(key=>required.add(key));
+  }
+  if(selected.has("disabledSlots")){
+    [...tabKeys.students,...tabKeys.teachers,"swim_disabled"]
+      .forEach(key=>required.add(key));
+  }
+  if(selected.has("retirementRecords")){
+    required.add("swim_retire_history");
+    required.add("swim_periods");
+  }
+  if(selected.has("deskStudentRecords")){
+    required.add("swim_desk_notes");
+    required.add("swim_periods");
   }
   return [...required];
 }
@@ -254,6 +274,46 @@ async function verifyFence(db,fence){
   await db.runTransaction(transaction=>assertFence(transaction,fence));
 }
 
+async function collectionRows(generationRef,name,heartbeat){
+  await heartbeat();
+  return snapshotRows(await generationRef.collection(name).get());
+}
+
+async function verifyReferences(generationRef,heartbeat){
+  const tabs=await collectionRows(generationRef,"tabs",heartbeat);
+  const people=await collectionRows(generationRef,"people",heartbeat);
+  const enrollments=await collectionRows(generationRef,"enrollments",heartbeat);
+  const placements=await collectionRows(generationRef,"placements",heartbeat);
+  const assignments=await collectionRows(generationRef,"teacherAssignments",heartbeat);
+  const tabIds=new Set(tabs.map(row=>text(row.value?.id||row.id)));
+  const personIds=new Set(people.map(row=>text(row.value?.id||row.id)));
+  const enrollmentById=new Map(enrollments.map(row=>[
+    text(row.value?.id||row.id),row.value,
+  ]));
+
+  for(const row of enrollments){
+    const value=row.value||{};
+    if(!personIds.has(text(value.personId))||!tabIds.has(text(value.tabId))){
+      throw coded("verification-mismatch");
+    }
+  }
+  for(const row of placements){
+    const value=row.value||{};
+    const enrollment=enrollmentById.get(text(value.enrollmentId));
+    if(!personIds.has(text(value.personId))||!enrollment||!tabIds.has(text(value.tabId))){
+      throw coded("verification-mismatch");
+    }
+    if(text(enrollment.personId)!==text(value.personId)||text(enrollment.tabId)!==text(value.tabId)){
+      throw coded("verification-mismatch");
+    }
+  }
+  for(const row of assignments){
+    if(!tabIds.has(text(row.value?.tabId))||!text(row.value?.teacherName)){
+      throw coded("verification-mismatch");
+    }
+  }
+}
+
 async function runShadowSyncUnsafe(input){
   const source=input&&typeof input==="object"?input:{};
   const {db,readLegacyKey}=source;
@@ -261,6 +321,7 @@ async function runShadowSyncUnsafe(input){
   const generationId=text(source.generationId);
   const keys=(Array.isArray(source.keys)?source.keys:[]).map(text).filter(policy.isTrackedKey);
   const fullGeneration=source.fullGeneration===true;
+  const heartbeat=typeof source.heartbeat==="function"?source.heartbeat:async()=>{};
   if(!db||typeof db.collection!=="function") throw coded("invalid-firestore");
   if(!branchId||!generationId||typeof readLegacyKey!=="function") throw coded("invalid-argument");
 
@@ -268,11 +329,14 @@ async function runShadowSyncUnsafe(input){
   const fence=normalizedFence(db,source.fence);
 
   const legacyRoot={};
+  await heartbeat();
   legacyRoot.swim_tab_list=await readLegacyKey("swim_tab_list");
   const tabs=parsedTabs(legacyRoot.swim_tab_list);
   for(const key of requiredLegacyKeys(keys,tabs)){
     if(key==="swim_tab_list") continue;
-    legacyRoot[key]=await readLegacyKey(key);
+    await heartbeat();
+    const value=await readLegacyKey(key);
+    if(value!==null&&value!==undefined) legacyRoot[key]=value;
   }
 
   const schema=globalThis.SCScheduleSchemaV2;
@@ -306,6 +370,7 @@ async function runShadowSyncUnsafe(input){
     const expectedById=new Map(expectedRows.map(row=>[row.id,row.value]));
     const personIds=collection==="people"?desired.map(row=>text(row.id)):[];
     const collectionRef=generationRef.collection(collection);
+    await heartbeat();
     const existingRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
     const existingById=new Map(existingRows.map(row=>[row.id,row.value]));
     const operations=[];
@@ -320,11 +385,13 @@ async function runShadowSyncUnsafe(input){
 
     for(let offset=0;offset<operations.length;offset+=WRITE_BATCH_SIZE){
       const chunk=operations.slice(offset,offset+WRITE_BATCH_SIZE);
+      await heartbeat();
       await commitOperations(db,collectionRef,chunk,fence);
       writes+=chunk.filter(operation=>operation.type==="set").length;
       deletes+=chunk.filter(operation=>operation.type==="delete").length;
     }
 
+    await heartbeat();
     const actualRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
     const actualById=new Map(actualRows.map(row=>[row.id,row.value]));
     const expectedDigest=collectionDigest(expectedRows);
@@ -336,6 +403,8 @@ async function runShadowSyncUnsafe(input){
     digests[collection]=actualDigest;
   }
 
+  await verifyReferences(generationRef,heartbeat);
+  await heartbeat();
   await verifyFence(db,fence);
   return {collections,writes,deletes,counts,digests};
 }

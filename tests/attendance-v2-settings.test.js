@@ -111,5 +111,5 @@ test("settings runtime gates visibility and writes through the attendance policy
   assert.match(settingsSource, /SCAttendanceV2SettingsPolicy\.evaluate\(/);
   assert.match(settingsSource, /SCV2AttendanceStore\.create\(/);
   assert.match(settingsSource, /attendanceControlStore\.setConfig\(/);
-  assert.match(settingsSource, /latestReadyGeneration\(/);
+  assert.match(settingsSource, /latestAttendanceReadyGeneration\(/);
 });

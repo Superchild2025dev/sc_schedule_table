@@ -47,10 +47,11 @@ class FakeCollection{
 }
 
 class FakeFirestore{
-  constructor(initial={}){
+  constructor(initial={},options={}){
     this.docs=new Map(Object.entries(initial).map(([key,value])=>[key,clone(value)]));
     this.transactions=[];
     this.transactionTail=Promise.resolve();
+    this.failBeforeTransactions=Math.max(0,Number(options.failBeforeTransactions)||0);
   }
   collection(name){ return new FakeCollection(this,String(name)); }
   value(documentPath){ return clone(this.docs.get(documentPath)); }
@@ -59,6 +60,11 @@ class FakeFirestore{
     let release;
     this.transactionTail=new Promise(resolve=>{release=resolve;});
     await prior;
+    if(this.failBeforeTransactions>0){
+      this.failBeforeTransactions-=1;
+      release();
+      throw Object.assign(new Error("transient-before-transaction"),{code:"unavailable"});
+    }
     if(typeof this.beforeTransaction==="function") await this.beforeTransaction(this);
     const operations=[];
     const attempt={reads:[],operations};
@@ -96,8 +102,8 @@ function triggerWrapper(options,handler){
   return handler;
 }
 
-function loadFunctions({initial={},runShadowSync=async()=>({}),now}={}){
-  const db=new FakeFirestore(initial);
+function loadFunctions({initial={},runShadowSync=async()=>({}),clock,failBeforeTransactions=0}={}){
+  const db=new FakeFirestore(initial,{failBeforeTransactions});
   const logs=[];
   const runnerCalls=[];
   const runner=async input=>{
@@ -128,25 +134,37 @@ function loadFunctions({initial={},runShadowSync=async()=>({}),now}={}){
   };
   const source=fs.readFileSync(INDEX_PATH,"utf8");
   const module={exports:{}};
-  const evaluate=new Function("exports","require","module","__filename","__dirname",source);
-  if(now){
-    const OriginalDate=global.Date;
-    global.Date=class extends OriginalDate{
-      constructor(...args){ super(...(args.length?args:[now])); }
-      static now(){ return new OriginalDate(now).getTime(); }
-    };
-    try{ evaluate(module.exports,localRequire,module,INDEX_PATH,FUNCTIONS_DIR); }
-    finally{ global.Date=OriginalDate; }
-  }else{
-    evaluate(module.exports,localRequire,module,INDEX_PATH,FUNCTIONS_DIR);
-  }
+  const OriginalDate=global.Date;
+  const ScopedDate=clock?class extends OriginalDate{
+    constructor(...args){super(...(args.length?args:[clock.now]));}
+    static now(){return new OriginalDate(clock.now).getTime();}
+  }:OriginalDate;
+  const evaluate=new Function(
+    "exports","require","module","__filename","__dirname","Date",source,
+  );
+  evaluate(module.exports,localRequire,module,INDEX_PATH,FUNCTIONS_DIR,ScopedDate);
   return {db,exports:module.exports,logs,runnerCalls};
 }
 
 function schedulePath(branchId){ return `scheduleV2/${branchId}/runtime/schedule`; }
 function syncPath(branchId){ return `scheduleV2/${branchId}/runtime/scheduleSync`; }
-function sourceEvent(branchId,docId,updatedAt){
+function generationPath(branchId,generationId){
+  return `scheduleV2/${branchId}/generations/${generationId}`;
+}
+function readyGeneration(branchId,generationId,revision=0){
+  return {
+    branchId,generationId,status:"ready",
+    capabilities:{
+      schedule:{
+        status:"ready",appliedRevision:revision,requestedRevision:revision,
+        verifiedAt:"2026-08-07T02:00:00.000Z",
+      },
+    },
+  };
+}
+function sourceEvent(branchId,docId,updatedAt,id){
   const event={params:{branchId,docId}};
+  if(id) event.id=id;
   if(updatedAt){
     event.data={after:{updateTime:{toDate:()=>new Date(updatedAt)}}};
   }
@@ -159,6 +177,7 @@ function alertEntries(db,branchId){
 
 test("exports both shadow triggers on the exact source and queue paths",()=>{
   const source=fs.readFileSync(INDEX_PATH,"utf8");
+  const fixture=loadFunctions();
 
   assert.match(source,/require\("\.\/schedule-v2-shadow-policy\.js"\)/);
   assert.match(source,/require\("\.\/schedule-v2-shadow-runner\.js"\)/);
@@ -169,18 +188,25 @@ test("exports both shadow triggers on the exact source and queue paths",()=>{
   assert.match(source,/exports\.recoverScheduleV2ShadowLeases\s*=\s*onSchedule\(\{/);
   assert.match(source,/schedule:\s*"every 1 minutes"/);
   assert.match(source,/exports\.refreshRegularAvailability\s*=\s*onDocumentWritten\(\{/);
+  assert.equal(fixture.exports.queueScheduleV2Shadow.__options.retry,true);
+  assert.equal(fixture.exports.processScheduleV2Shadow.__options.retry,true);
+  assert.equal(fixture.exports.processScheduleV2Shadow.__options.timeoutSeconds,540);
+  assert.equal(fixture.exports.processScheduleV2Shadow.__options.memory,"1GiB");
 });
 
-test("source writes queue tracked keys only for known branches in preparing shadow or verify mode",async()=>{
+test("source writes queue tracked keys only for known branches in preparing ready shadow or verify mode",async()=>{
   for(const branchId of ["gagyeong","yongam"]){
-    for(const mode of ["preparing","shadow","verify"]){
-      const fixture=loadFunctions({initial:{[schedulePath(branchId)]:{mode,generationId:"gen_1"}}});
+    for(const mode of ["preparing","ready","shadow","verify"]){
+      const fixture=loadFunctions({initial:{
+        [schedulePath(branchId)]:{mode,generationId:"gen_1"},
+        [generationPath(branchId,"gen_1")]:readyGeneration(branchId,"gen_1"),
+      }});
       await fixture.exports.queueScheduleV2Shadow(sourceEvent(branchId,"swim_students"));
       assert.deepEqual(fixture.db.value(syncPath(branchId)).pendingKeys,["swim_students"]);
     }
   }
 
-  for(const mode of ["v1","ready"]){
+  for(const mode of ["v1"]){
     const fixture=loadFunctions({initial:{[schedulePath("gagyeong")]:{mode,generationId:"gen_1"}}});
     await fixture.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_students"));
     assert.equal(fixture.db.value(syncPath("gagyeong")),undefined,mode);
@@ -220,7 +246,7 @@ test("concurrent source writes transactionally merge both tracked keys",async()=
   assert.equal(queued.status,"pending");
 });
 
-test("a source event written during preparation is recovered when delivery occurs after readiness",async()=>{
+test("a post-ready source write invalidates the ready revision without auto-activating a replacement",async()=>{
   const branchId="gagyeong";
   const config=schedulePath(branchId);
   const sync=syncPath(branchId);
@@ -231,62 +257,46 @@ test("a source event written during preparation is recovered when delivery occur
       readyAt:"2026-08-07T02:00:10.000Z",
     },
     [sync]:{pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
-    "scheduleV2/gagyeong/generations/gen_ready":{status:"ready",generationId:"gen_ready",branchId},
-    "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
-    "scheduleStores/gagyeong/kv/swim_students":{value:[]},
-    "scheduleStores/gagyeong/kv/swim_mark":{value:{changed:true}},
+    [generationPath(branchId,"gen_ready")]:readyGeneration(branchId,"gen_ready",3),
   };
-  const fixture=loadFunctions({initial,runShadowSync:async input=>({
-    collections:scheduleV2ShadowPolicy.collectionsForKey(input.keys[0]),
-    writes:0,deletes:0,counts:{},digests:{},
-  })});
+  const fixture=loadFunctions({initial});
 
   await fixture.exports.queueScheduleV2Shadow(
-    sourceEvent(branchId,"swim_mark","2026-08-07T02:00:05.000Z")
+    sourceEvent(branchId,"swim_mark","2026-08-07T02:00:20.000Z","ready-write-1")
   );
 
-  const completed=fixture.db.value(config);
-  const completedSync=fixture.db.value(sync);
-  assert.equal(completed.mode,"ready");
-  assert.notEqual(completed.generationId,"gen_ready");
-  assert.ok(fixture.runnerCalls.some(call=>call.keys.includes("swim_mark")));
-  assert.equal(completedSync.requestedRevision,4);
-  assert.equal(completedSync.appliedRevision,4);
-  assert.deepEqual(completedSync.pendingKeys,[]);
+  const invalidated=fixture.db.value(config);
+  const invalidatedSync=fixture.db.value(sync);
+  const generation=fixture.db.value(generationPath(branchId,"gen_ready"));
+  assert.equal(invalidated.mode,"ready");
+  assert.equal(invalidated.generationId,"gen_ready");
+  assert.equal(fixture.runnerCalls.length,0);
+  assert.equal(invalidatedSync.requestedRevision,4);
+  assert.equal(invalidatedSync.appliedRevision,3);
+  assert.deepEqual(invalidatedSync.pendingKeys,["swim_mark"]);
+  assert.equal(generation.capabilities.schedule.status,"syncing");
+  assert.equal(generation.capabilities.schedule.requestedRevision,4);
 });
 
-test("a delayed delete uses the event occurrence time when after.updateTime is absent",async()=>{
+test("a transient failure before the queue transaction retries once and the event id is idempotent",async()=>{
   const branchId="yongam";
-  const config=schedulePath(branchId);
   const sync=syncPath(branchId);
   const fixture=loadFunctions({
     initial:{
-      [config]:{
-        mode:"ready",generationId:"gen_before_delete",branchId,
-        preparationStartedAt:"2026-08-07T03:00:00.000Z",
-        readyAt:"2026-08-07T03:00:10.000Z",
-      },
+      [schedulePath(branchId)]:{mode:"shadow",generationId:"gen_retry",branchId},
       [sync]:{pendingKeys:[],requestedRevision:8,appliedRevision:8,status:"idle"},
-      "scheduleV2/yongam/generations/gen_before_delete":{status:"ready",generationId:"gen_before_delete",branchId},
-      "scheduleStores/yongam/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
-      "scheduleStores/yongam/kv/swim_students":{value:[]},
+      [generationPath(branchId,"gen_retry")]:readyGeneration(branchId,"gen_retry",8),
     },
-    runShadowSync:async()=>({collections:[],writes:0,deletes:0,counts:{},digests:{}}),
+    failBeforeTransactions:1,
   });
-  const event={
-    params:{branchId,docId:"swim_mark"},
-    time:"2026-08-07T03:00:05.000Z",
-    data:{
-      after:{exists:false},
-      before:{exists:true,updateTime:{toDate:()=>new Date("2026-08-01T00:00:00.000Z")}},
-    },
-  };
+  const event=sourceEvent(branchId,"swim_mark","2026-08-07T03:00:05.000Z","queue-retry-1");
 
+  await assert.rejects(()=>fixture.exports.queueScheduleV2Shadow(event),error=>error.code==="unavailable");
+  await fixture.exports.queueScheduleV2Shadow(event);
   await fixture.exports.queueScheduleV2Shadow(event);
 
-  assert.notEqual(fixture.db.value(config).generationId,"gen_before_delete");
   assert.equal(fixture.db.value(sync).requestedRevision,9);
-  assert.equal(fixture.db.value(sync).appliedRevision,9);
+  assert.deepEqual(fixture.db.value(sync).pendingKeys,["swim_mark"]);
 });
 
 test("processor passes the claimed scheduleSync fence and chunk-safe legacy reader",async()=>{
@@ -332,6 +342,42 @@ test("processor passes the claimed scheduleSync fence and chunk-safe legacy read
   assert.equal(completed.leaseId,undefined);
 });
 
+test("processor heartbeat renews ownership across a deterministic long operation",async()=>{
+  const branchId="gagyeong";
+  const sync=syncPath(branchId);
+  const clock={now:"2026-08-07T02:00:00.000Z"};
+  let firstLeaseUntil="";
+  const fixture=loadFunctions({
+    clock,
+    initial:{
+      [schedulePath(branchId)]:{mode:"shadow",generationId:"gen_long"},
+      [generationPath(branchId,"gen_long")]:readyGeneration(branchId,"gen_long",0),
+      [sync]:{pendingKeys:["swim_students"],requestedRevision:1,appliedRevision:0,status:"pending"},
+    },
+    runShadowSync:async input=>{
+      firstLeaseUntil=fixture.db.value(sync).leaseUntil;
+      clock.now="2026-08-07T02:00:45.000Z";
+      await input.heartbeat();
+      const firstRenewal=fixture.db.value(sync);
+      assert.equal(firstRenewal.leaseId,input.fence.leaseId);
+      assert.ok(Date.parse(firstRenewal.leaseUntil)>Date.parse(firstLeaseUntil));
+      clock.now="2026-08-07T02:01:30.000Z";
+      await input.heartbeat();
+      assert.ok(Date.parse(fixture.db.value(sync).leaseUntil)>Date.parse(firstRenewal.leaseUntil));
+      return {collections:["people"],writes:701,deletes:0,counts:{people:701},digests:{people:"scale"}};
+    },
+  });
+
+  await fixture.exports.processScheduleV2Shadow({params:{branchId}});
+
+  const completed=fixture.db.value(sync);
+  assert.equal(completed.status,"idle");
+  assert.equal(completed.appliedRevision,1);
+  assert.equal(completed.writes,701);
+  assert.equal(completed.leaseId,undefined);
+  assert.equal(fixture.db.value(generationPath(branchId,"gen_long")).capabilities.schedule.status,"ready");
+});
+
 test("an active lease and an unchanged runtime write do not run twice",async()=>{
   const sync=syncPath("gagyeong");
   let startRunner;
@@ -372,6 +418,7 @@ test("a tracked key arriving during processing remains pending",async()=>{
   const fixture=loadFunctions({
     initial:{
       [schedulePath("yongam")]:{mode:"shadow",generationId:"gen_1"},
+      [generationPath("yongam","gen_1")]:readyGeneration("yongam","gen_1",0),
       [sync]:{pendingKeys:["swim_students"],requestedRevision:1,status:"pending"},
     },
     runShadowSync:async()=>{
@@ -384,6 +431,10 @@ test("a tracked key arriving during processing remains pending",async()=>{
   const processing=fixture.exports.processScheduleV2Shadow({params:{branchId:"yongam"}});
   await Promise.race([started,processing]);
   assert.equal(fixture.runnerCalls.length,1);
+  assert.equal(
+    fixture.db.value(generationPath("yongam","gen_1")).capabilities.schedule.status,
+    "syncing",
+  );
   await fixture.exports.queueScheduleV2Shadow(sourceEvent("yongam","swim_mark"));
   assert.deepEqual(fixture.db.value(sync).inFlightKeys,["swim_students"]);
   assert.deepEqual(fixture.db.value(sync).pendingKeys,["swim_mark"]);
@@ -395,6 +446,10 @@ test("a tracked key arriving during processing remains pending",async()=>{
   assert.deepEqual(queued.pendingKeys,["swim_mark"]);
   assert.equal(queued.appliedRevision,1);
   assert.equal(queued.requestedRevision,2);
+  assert.equal(
+    fixture.db.value(generationPath("yongam","gen_1")).capabilities.schedule.status,
+    "syncing",
+  );
 });
 
 test("processor ignores unknown branches disallowed modes and excluded pending keys",async()=>{
@@ -436,6 +491,7 @@ test("failure requeues safely and merges redacted alerts by error class and scop
   const fixture=loadFunctions({
     initial:{
       [schedulePath("yongam")]:{mode:"shadow",generationId:"gen_1"},
+      [generationPath("yongam","gen_1")]:readyGeneration("yongam","gen_1",0),
       [sync]:{pendingKeys:["swim_students"],requestedRevision:1,status:"pending"},
     },
     runShadowSync:async()=>{
@@ -469,8 +525,14 @@ test("failure requeues safely and merges redacted alerts by error class and scop
   assert.deepEqual(Object.keys(diagnostic).sort(),[
     "branchId","code","collections","detectedAt","keys","messageClass",
   ]);
-  assert.deepEqual(diagnostic.keys,["swim_students"]);
-  assert.deepEqual(diagnostic.collections,["people","enrollments","placements"]);
+  assert.deepEqual(diagnostic.keys,["students-regular"]);
+  assert.deepEqual(diagnostic.collections,[
+    "people","enrollments","placements","classMarks","disabledSlots",
+  ]);
+  assert.equal(
+    fixture.db.value(generationPath("yongam","gen_1")).capabilities.schedule.status,
+    "error",
+  );
 
   let alerts=alertEntries(fixture.db,"yongam");
   assert.equal(alerts.length,1);
@@ -489,15 +551,15 @@ test("failure requeues safely and merges redacted alerts by error class and scop
   queued=fixture.db.value(sync);
   assert.equal(queued.retryCount,2);
   alerts=alertEntries(fixture.db,"yongam");
-  assert.equal(alerts.length,2);
-  assert.deepEqual(alerts.map(([,alert])=>alert.count).sort(),[1,1]);
+  assert.equal(alerts.length,1);
+  assert.equal(alerts[0][1].count,2);
 
   await fixture.exports.processScheduleV2Shadow({params:{branchId:"yongam"}});
   queued=fixture.db.value(sync);
   assert.equal(queued.retryCount,3);
   alerts=alertEntries(fixture.db,"yongam");
-  assert.equal(alerts.length,2);
-  assert.deepEqual(alerts.map(([,alert])=>alert.count).sort(),[1,2]);
+  assert.equal(alerts.length,1);
+  assert.equal(alerts[0][1].count,3);
 });
 
 test("retry count is bounded and a new source write restores the retry budget",async()=>{
@@ -641,6 +703,45 @@ test("scheduled recovery requeues expired partial work for both branches without
   assert.equal(fixture.db.value(gagyeongSync).inFlightKeys,undefined);
   assert.equal(fixture.db.value(yongamSync).status,"idle");
   assert.equal(fixture.db.value(yongamSync).inFlightKeys,undefined);
+});
+
+test("scheduled recovery wakes stranded pending work without consuming its retry budget",async()=>{
+  const branchId="yongam";
+  const sync=syncPath(branchId);
+  const fixture=loadFunctions({
+    initial:{
+      [schedulePath(branchId)]:{mode:"shadow",generationId:"gen_pending"},
+      [generationPath(branchId,"gen_pending")]:{
+        ...readyGeneration(branchId,"gen_pending",4),
+        capabilities:{schedule:{
+          status:"syncing",appliedRevision:4,requestedRevision:5,
+          verifiedAt:"2026-08-07T01:00:00.000Z",
+        }},
+      },
+      [sync]:{
+        pendingKeys:["swim_mark"],requestedRevision:5,appliedRevision:4,
+        status:"pending",retryCount:2,
+      },
+    },
+    runShadowSync:async()=>({
+      collections:["classMarks"],writes:1,deletes:0,
+      counts:{classMarks:1},digests:{classMarks:"mark-digest"},
+    }),
+  });
+
+  await fixture.exports.recoverScheduleV2ShadowLeases();
+  const recovered=fixture.db.value(sync);
+  assert.equal(recovered.status,"pending");
+  assert.equal(recovered.retryCount,2);
+  assert.equal(typeof recovered.recoveryWakeAt,"string");
+
+  await fixture.exports.processScheduleV2Shadow({params:{branchId}});
+  const completed=fixture.db.value(sync);
+  const generation=fixture.db.value(generationPath(branchId,"gen_pending"));
+  assert.equal(completed.status,"idle");
+  assert.equal(completed.appliedRevision,5);
+  assert.equal(generation.capabilities.schedule.status,"ready");
+  assert.equal(generation.capabilities.schedule.appliedRevision,5);
 });
 
 test("scheduled recovery skips disabled and active leases and respects the retry bound",async()=>{

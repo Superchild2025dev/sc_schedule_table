@@ -1,224 +1,116 @@
-const test=require('node:test');
-const assert=require('node:assert/strict');
-const fs=require('node:fs');
-const path=require('node:path');
-const vm=require('node:vm');
+"use strict";
+
+const test=require("node:test");
+const assert=require("node:assert/strict");
+const fs=require("node:fs");
+const path=require("node:path");
+const vm=require("node:vm");
 
 function loadStore(){
-  const context={window:{},console,Date};
+  const context={window:{},console};
   vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'..','js','schedule-v2-store.js'),'utf8'),context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"..","js","schedule-v2-store.js"),"utf8"),context);
   return context.window.SCScheduleV2Store;
 }
 
-test('generation documents are separated by maintenance responsibility',()=>{
+function capability(status,appliedRevision,verifiedAt){
+  return {status,appliedRevision,verifiedAt};
+}
+
+test("unsafe document ids are encoded deterministically",()=>{
   const store=loadStore();
-  const docs=store.generationDocuments({conversion:{
-    tabs:[{id:'regular'}],
-    people:[{id:'stu_1',name:'홍길동'}],
-    enrollments:[{id:'enr_1',personId:'stu_1'}],
-    placements:[{id:'plc_1',personId:'stu_1',transport:{location:'학교'}}],
-    teacherAssignments:[{id:'asg_1',teacherName:'선생님'}],
-  }});
-  assert.deepEqual(JSON.parse(JSON.stringify(docs.map(item=>item.collection))),[
-    'tabs','people','enrollments','placements','teacherAssignments'
-  ]);
-  const person=docs.find(item=>item.collection==='people').value;
-  assert.equal(person.transport,undefined);
+  assert.equal(store.safeDocId("regular.2026"),"regular%2E2026");
+  assert.equal(store.safeDocId("regular.2026"),store.safeDocId("regular.2026"));
 });
 
-test('unsafe document ids are encoded deterministically',()=>{
+test("schedule preview selects only a schedule-ready capability",()=>{
   const store=loadStore();
-  assert.equal(store.safeDocId('월/4시/1'),encodeURIComponent('월/4시/1'));
-  assert.equal(store.safeDocId('월/4시/1'),store.safeDocId('월/4시/1'));
-});
-
-test('verification counts include reservations, marks, and attendance documents',()=>{
-  const store=loadStore();
-  const counts=store.expectedCounts({conversion:{
-    reservations:[{id:'res_1'},{id:'res_2'}],
-    waitlistEntries:[{id:'wait_1'}],
-    classMarks:[{id:'mark_1'},{id:'mark_2'}],
-    attendanceRecords:[{id:'att_1'}],
-    attendanceGuests:[{id:'guest_1'},{id:'guest_2'}],
-    attendanceSnapshots:[{id:'ats_1'}],
-    attendanceSnapshotStudents:[{id:'atstu_1'}],
-    attendanceSnapshotTeachers:[{id:'atinst_1'}],
-    disabledSlots:[{id:'disabled_1'}],
-    calendarClosures:[{id:'closed_1'}],
-    schedulePeriods:[{id:'period_1'}],
-    scheduleSettings:[{id:'branch_schedule_settings'}],
-    retirementRecords:[{id:'retrec_1'},{id:'retrec_2'}],
-    deskStudentRecords:[{id:'deskrec_1'}],
-  }});
-  assert.equal(counts.reservations,2);
-  assert.equal(counts.waitlistEntries,1);
-  assert.equal(counts.classMarks,2);
-  assert.equal(counts.attendanceRecords,1);
-  assert.equal(counts.attendanceGuests,2);
-  assert.equal(counts.attendanceSnapshots,1);
-  assert.equal(counts.attendanceSnapshotStudents,1);
-  assert.equal(counts.attendanceSnapshotTeachers,1);
-  assert.equal(counts.disabledSlots,1);
-  assert.equal(counts.calendarClosures,1);
-  assert.equal(counts.schedulePeriods,1);
-  assert.equal(counts.scheduleSettings,1);
-  assert.equal(counts.retirementRecords,2);
-  assert.equal(counts.deskStudentRecords,1);
-  assert.equal(counts.teacherProfiles,0);
-  assert.equal(counts.tabFolders,0);
-  assert.equal(counts.archivedTabs,0);
-  assert.equal(counts.systemMetadata,0);
-  assert.deepEqual(Object.keys(counts).sort(),Array.from(store.COLLECTIONS).sort());
-});
-
-test('preview selects only the newest verified generation',()=>{
-  const store=loadStore();
-  const selected=store.latestReadyFromRows([
-    {id:'gen_3',status:'failed',createdAt:'2026-08-01T03:00:00.000Z'},
-    {id:'gen_1',status:'ready',createdAt:'2026-08-01T01:00:00.000Z'},
-    {id:'gen_2',status:'ready',createdAt:'2026-08-01T02:00:00.000Z'},
-  ]);
-  assert.equal(selected.id,'gen_2');
-});
-
-test('shadow operation keeps using the newest ready or shadow generation',()=>{
-  const store=loadStore();
-  const selected=store.latestUsableFromRows([
-    {id:'gen_1',status:'ready',createdAt:'2026-08-01T01:00:00.000Z'},
-    {id:'gen_2',status:'shadow',createdAt:'2026-08-01T02:00:00.000Z'},
-    {id:'gen_3',status:'failed',createdAt:'2026-08-01T03:00:00.000Z'},
-  ]);
-  assert.equal(selected.id,'gen_2');
-});
-
-test('shadow comparison ignores object key order but detects field changes',()=>{
-  const store=loadStore();
-  assert.equal(store.sameDocument({name:'홍길동',transport:{use:true,loc:'학교'}},{transport:{loc:'학교',use:true},name:'홍길동'}),true);
-  assert.equal(store.sameDocument({name:'홍길동'},{name:'김길동'}),false);
-});
-
-test('shadow sync can compare against the previous in-memory report without a collection read',async()=>{
-  const store=loadStore();
-  let collectionReads=0;
-  const commits=[];
-  const generationRef={
-    collection(){return {
-      get(){collectionReads+=1;return Promise.resolve({forEach(){}});},
-      doc(id){return {id};},
-    };},
-    set(){return Promise.resolve();},
-  };
-  const db={
-    collection(){return {doc(){return {collection(){return {doc(){return generationRef;}};}};}};},
-    batch(){
-      const ops=[];
-      return {set(ref,value){ops.push(['set',ref.id,value]);},delete(ref){ops.push(['delete',ref.id]);},commit(){commits.push(ops);return Promise.resolve();}};
+  const selected=store.latestScheduleReadyFromRows([
+    {id:"generic",status:"ready",createdAt:"2026-08-07T04:00:00.000Z"},
+    {
+      id:"attendance-only",status:"ready",createdAt:"2026-08-07T03:00:00.000Z",
+      capabilities:{attendance:capability("ready",7,"2026-08-07T03:00:00.000Z")},
     },
-  };
-  const previous={checks:{ready:true},conversion:{people:[{id:'stu_1',name:'가'}]}};
-  const next={checks:{ready:true},conversion:{people:[{id:'stu_1',name:'나'}]}};
-  const result=await store.syncShadowGeneration(db,'yongam','gen_1',next,{collections:['people'],previousReport:previous});
-  assert.equal(collectionReads,0);
-  assert.equal(result.writes,1);
-  assert.equal(commits.length,1);
-});
-
-test('one changed attendance date updates only that snapshot scope',async()=>{
-  const store=loadStore();
-  const existing={
-    attendanceSnapshots:{ats_1:{id:'ats_1',snapshotId:'ats_1',studentCount:2}},
-    attendanceSnapshotStudents:{
-      stale:{id:'stale',snapshotId:'ats_1',name:'삭제대상'},
-      other:{id:'other',snapshotId:'ats_other',name:'다른날짜'},
+    {
+      id:"schedule-old",status:"ready",createdAt:"2026-08-07T01:00:00.000Z",
+      capabilities:{schedule:capability("ready",4,"2026-08-07T01:00:00.000Z")},
     },
-    attendanceSnapshotTeachers:{},
-  };
-  const operations=[];
-  const generationRef={
-    collection(name){
-      return {
-        doc(id){return {
-          id,
-          get(){
-            const value=existing[name]?.[id];
-            return Promise.resolve({id,exists:!!value,data(){return value;}});
-          },
-        };},
-        where(field,op,value){return {get(){
-          const rows=Object.entries(existing[name]||{}).filter(([,row])=>row[field]===value);
-          return Promise.resolve({forEach(fn){rows.forEach(([id,row])=>fn({id,data(){return row;}}));}});
-        }};},
-      };
+    {
+      id:"schedule-new",status:"ready",createdAt:"2026-08-07T02:00:00.000Z",
+      capabilities:{schedule:capability("ready",5,"2026-08-07T02:00:00.000Z")},
     },
-    set(){return Promise.resolve();},
-  };
-  const db={
-    collection(){return {doc(){return {collection(){return {doc(){return generationRef;}};}};}};},
-    batch(){return {
-      set(ref,value){operations.push(['set',ref.id,value]);},
-      delete(ref){operations.push(['delete',ref.id]);},
-      commit(){return Promise.resolve();},
-    };},
-  };
-  const report={checks:{ready:true},conversion:{
-    attendanceSnapshots:[{id:'ats_1',tabId:'regular',date:'2026-08-01',studentCount:1}],
-    attendanceSnapshotStudents:[{id:'student_new',snapshotId:'ats_1',tabId:'regular',date:'2026-08-01',name:'현재명단'}],
-    attendanceSnapshotTeachers:[],
-  }};
-  const result=await store.syncShadowSnapshotScopes(db,'yongam','gen_1',report,[
-    {snapshotId:'ats_1',tabId:'regular',date:'2026-08-01'},
   ]);
-  assert.equal(result.scopes,1);
-  assert.ok(operations.some(row=>row[0]==='delete'&&row[1]==='stale'));
-  assert.ok(operations.some(row=>row[0]==='set'&&row[1]==='student_new'));
-  assert.equal(operations.some(row=>row[1]==='other'),false);
+  assert.equal(selected.id,"schedule-new");
 });
 
-test('preview reader source contains no write operation',()=>{
-  const source=fs.readFileSync(path.join(__dirname,'..','js','schedule-v2-store.js'),'utf8');
-  const start=source.indexOf('async function readGenerationTab(');
-  const end=source.indexOf('function canonicalValue',start);
-  const section=source.slice(start,end);
-  assert.ok(start>=0,'preview reader missing');
-  assert.doesNotMatch(section,/\.set\s*\(/);
-  assert.doesNotMatch(section,/\.update\s*\(/);
-  assert.doesNotMatch(section,/\.delete\s*\(/);
-  assert.doesNotMatch(section,/\.commit\s*\(/);
-});
-
-test('a blocking diagnostic is rejected before Firestore access',async()=>{
+test("attendance controls select only an attendance-verified capability",()=>{
   const store=loadStore();
-  let accessed=false;
-  const db={collection(){accessed=true;throw new Error('must not access');}};
-  await assert.rejects(()=>store.writeGeneration(db,'yongam',{checks:{ready:false}}),/진단을 통과/);
-  assert.equal(accessed,false);
+  const selected=store.latestAttendanceReadyFromRows([
+    {id:"generic",status:"ready",createdAt:"2026-08-07T05:00:00.000Z"},
+    {
+      id:"schedule-only",status:"ready",createdAt:"2026-08-07T04:00:00.000Z",
+      capabilities:{schedule:capability("ready",9,"2026-08-07T04:00:00.000Z")},
+    },
+    {
+      id:"attendance-invalid",status:"ready",createdAt:"2026-08-07T03:00:00.000Z",
+      capabilities:{attendance:capability("ready",3,"")},
+    },
+    {
+      id:"attendance-ready",status:"ready",createdAt:"2026-08-07T02:00:00.000Z",
+      capabilities:{attendance:capability("ready",2,"2026-08-07T02:00:00.000Z")},
+    },
+  ]);
+  assert.equal(selected.id,"attendance-ready");
 });
 
-test('generation verification detects changed content even when document counts match',async()=>{
+test("legacy full-generation verification remains attendance-compatible without blessing schedule-only generations",()=>{
   const store=loadStore();
-  const generationId='gen_content';
-  const branchId='yongam';
-  const report={conversion:{people:[{id:'stu_1',name:'홍길동'}]}};
-  const docs=store.generationDocuments(report);
-  const expected=store.expectedCounts(report);
-  const rows={people:{stu_1:{id:'stu_1',name:'다른이름',generationId,branchId}}};
-  const generationRef={collection(name){return {get(){
-    const entries=Object.entries(rows[name]||{});
-    return Promise.resolve({size:entries.length,forEach(fn){
-      entries.forEach(([id,value])=>fn({id,data(){return value;}}));
-    }});
-  }};}};
-  const db={
-    collection(){return {
-      doc(){return {
-        collection(){return {doc(){return generationRef;}};},
-      };},
-    };},
-  };
-  const verification=await store.verifyGeneration(db,branchId,generationId,expected,docs);
-  assert.equal(verification.countMatches,true);
-  assert.equal(verification.contentMatches,false);
-  assert.equal(verification.matches,false);
-  assert.deepEqual(Array.from(verification.mismatchedCollections),['people']);
+  const selected=store.latestAttendanceReadyFromRows([{
+    id:"legacy-attendance",status:"ready",createdAt:"2026-08-06T02:00:00.000Z",
+    verifiedAt:"2026-08-06T02:00:00.000Z",
+    verification:{
+      matches:true,countMatches:true,contentMatches:true,
+      expected:{
+        attendanceRecords:1,attendanceGuests:0,attendanceSnapshots:1,
+        attendanceSnapshotStudents:1,attendanceSnapshotTeachers:1,
+      },
+    },
+  },{
+    id:"schedule-only",status:"ready",createdAt:"2026-08-07T02:00:00.000Z",
+    capabilities:{schedule:capability("ready",9,"2026-08-07T02:00:00.000Z")},
+  }]);
+  assert.equal(selected.id,"legacy-attendance");
+});
+
+test("non-ready domain capabilities are never selected",()=>{
+  const store=loadStore();
+  const rows=[{
+    id:"syncing",createdAt:"2026-08-07T02:00:00.000Z",
+    capabilities:{
+      schedule:capability("syncing",4,"2026-08-07T01:00:00.000Z"),
+      attendance:capability("error",8,"2026-08-07T01:00:00.000Z"),
+    },
+  }];
+  assert.equal(store.latestScheduleReadyFromRows(rows),null);
+  assert.equal(store.latestAttendanceReadyFromRows(rows),null);
+});
+
+test("the schedule store has no generic browser mutation surface",()=>{
+  const store=loadStore();
+  for(const name of [
+    "generationDocuments","expectedCounts","expectedCollectionDocuments","writeGeneration",
+    "syncShadowGeneration","syncShadowSnapshotScopes","verifyGeneration","latestReadyGeneration",
+    "latestUsableGeneration",
+  ]) assert.equal(store[name],undefined,name);
+  assert.equal(typeof store.readGenerationTabs,"function");
+  assert.equal(typeof store.readGenerationTab,"function");
+});
+
+test("collection digests ignore key order and detect content changes",()=>{
+  const store=loadStore();
+  const left=store.collectionDigest([{id:"row",value:{a:1,b:{c:2,d:3}}}]);
+  const reordered=store.collectionDigest([{id:"row",value:{b:{d:3,c:2},a:1}}]);
+  const changed=store.collectionDigest([{id:"row",value:{a:1,b:{c:2,d:4}}}]);
+  assert.equal(left,reordered);
+  assert.notEqual(left,changed);
 });

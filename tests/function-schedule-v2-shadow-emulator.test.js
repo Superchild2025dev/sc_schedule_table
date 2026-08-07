@@ -19,6 +19,7 @@ if(emulatorEnabled){
   const {getFirestore}=requireFunctions("firebase-admin/firestore");
   const db=getFirestore();
   const developerAuth={uid:"schedule-v2-emulator",token:{email:"developer@scswim.local"}};
+  let eventSequence=0;
 
   function kvRef(branchId,key){
     const docId=encodeURIComponent(key).replace(/\./g,"%2E");
@@ -118,6 +119,7 @@ if(emulatorEnabled){
 
   async function queueWrite(branchId,write){
     await functions.queueScheduleV2Shadow.run({
+      id:`schedule-v2-emulator-${branchId}-${++eventSequence}`,
       params:{branchId,docId:write.ref.id},
       data:{before:write.before,after:write.after},
       time:new Date().toISOString(),
@@ -139,10 +141,23 @@ if(emulatorEnabled){
     for(const branchId of ["gagyeong","yongam"]){
       await seedBranch(branchId);
       const baselineV1=await snapshotLegacyDocuments(branchId);
-      const prepared=await control(branchId,"prepare");
+      let prepared=await control(branchId,"prepare");
       assertLegacySnapshotUnchanged(baselineV1,await snapshotLegacyDocuments(branchId));
       assert.equal(prepared.mode,"ready");
       assert.equal(prepared.generationStatus,"ready");
+      const firstGenerationId=prepared.generationId;
+      const readyChange=await writeLegacyValue(branchId,"swim_mark",{});
+      await queueWrite(branchId,readyChange);
+      const invalidated=await control(branchId,"status");
+      assert.equal(invalidated.generationStatus,"syncing");
+      await assert.rejects(
+        control(branchId,"set-shadow"),
+        error=>error&&error.code==="failed-precondition",
+      );
+      prepared=await control(branchId,"prepare");
+      assert.notEqual(prepared.generationId,firstGenerationId);
+      assert.equal(prepared.generationStatus,"ready");
+      assert.equal((await generationRef(branchId,firstGenerationId).get()).exists,true);
       assert.equal((await kvRef(branchId,"swim_students").get()).get("chunked"),true);
       assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"people"),1);
       const activated=await control(branchId,"set-shadow");
@@ -191,6 +206,21 @@ if(emulatorEnabled){
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_inst")).length,2);
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_retire")).length,1);
       assert.equal((await generationRef(branchId,prepared.generationId).get()).get("status"),"ready");
+
+      const rolledBack=await control(branchId,"rollback");
+      assert.equal(rolledBack.mode,"v1");
+      const preservedCount=await collectionSize(generationRef(branchId,prepared.generationId),"placements");
+      const afterRollback=await writeLegacyValue(branchId,"swim_inst",{
+        "7시/금/1/1":"Post Rollback Fixture",
+      });
+      const beforeRevision=(await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision");
+      await queueWrite(branchId,afterRollback);
+      assert.equal((await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision"),beforeRevision);
+      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"placements"),preservedCount);
+      await assert.rejects(
+        control(branchId,"set-shadow"),
+        error=>error&&error.code==="failed-precondition",
+      );
     }
   });
 

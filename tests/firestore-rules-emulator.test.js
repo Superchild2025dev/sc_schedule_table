@@ -115,12 +115,16 @@ if(emulatorEnabled){
     await assertFails(setDoc(chunk(db, "gagyeong", "swim_students", "0000"), {text:"{}"}));
   });
 
-  test("V2 writes are developer-only while the owner keeps read access", async () => {
+  test("generic V2 documents are server-write-only while owner and developer keep monitor reads", async () => {
     const developerDb = staffDb("developer", "developer@scswim.local");
     const ownerDb = staffDb("owner", "2025superchild@gmail.com");
     const teacherDb = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
 
-    await assertSucceeds(setDoc(v2Monitor(developerDb, "gagyeong"), {state:"ok"}));
+    await env.withSecurityRulesDisabled(async context=>{
+      await setDoc(v2Monitor(context.firestore(), "gagyeong"), {state:"ok"});
+    });
+    await assertSucceeds(getDoc(v2Monitor(developerDb, "gagyeong")));
+    await assertFails(setDoc(v2Monitor(developerDb, "gagyeong"), {state:"developer-write"}));
     await assertSucceeds(getDoc(v2Monitor(ownerDb, "gagyeong")));
     await assertFails(setDoc(v2Monitor(ownerDb, "gagyeong"), {state:"owner-write"}));
     await assertFails(getDoc(v2Monitor(teacherDb, "gagyeong")));

@@ -116,7 +116,7 @@ service cloud.firestore {
 
     match /scheduleV2/{document=**} {
       allow read: if isOwner() || isDeveloper();
-      allow write: if isDeveloper();
+      allow write: if false;
     }
 
     match /scheduleV2/{branch}/runtime/attendance {

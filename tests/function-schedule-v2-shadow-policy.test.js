@@ -9,10 +9,21 @@ const NOW = new Date("2026-08-07T02:00:00.000Z");
 test("decodes stored legacy keys and classifies only timetable-owned keys",()=>{
   assert.equal(policy.decodeLegacyKey("swim_students%2E2026"),"swim_students.2026");
   assert.equal(policy.decodeLegacyKey("%E3%85%87%EA%B0%80"),"\u3147\uac00");
-  assert.deepEqual(policy.collectionsForKey("swim_students"),["people","enrollments","placements"]);
-  assert.deepEqual(policy.collectionsForKey("swim_inst"),["teacherAssignments"]);
+  assert.deepEqual(policy.collectionsForKey("swim_students"),[
+    "people","enrollments","placements","classMarks","disabledSlots",
+  ]);
+  assert.deepEqual(policy.collectionsForKey("swim_inst"),[
+    "teacherAssignments","classMarks","disabledSlots",
+  ]);
   assert.deepEqual(policy.collectionsForKey("swim_retire"),["reservations"]);
   assert.deepEqual(policy.collectionsForKey("swim_mark"),["classMarks"]);
+  assert.deepEqual(policy.collectionsForKey("swim_main_tab"),[
+    "reservations","waitlistEntries","classMarks","scheduleSettings",
+  ]);
+  assert.deepEqual(policy.collectionsForKey("swim_periods"),[
+    "reservations","waitlistEntries","classMarks","schedulePeriods",
+    "retirementRecords","deskStudentRecords",
+  ]);
   assert.equal(policy.isTrackedKey("swim_attendance"),false);
   assert.equal(policy.isTrackedKey("swim_day_snapshot"),false);
   assert.equal(policy.isTrackedKey("swim_audit_log"),false);
@@ -80,6 +91,32 @@ test("expired recovery returns in-flight keys to pending without touching an act
   assert.equal(recovered.status,"pending");
 });
 
+test("scheduled recovery also wakes pending work stranded without a lease",()=>{
+  const pending={pendingKeys:["swim_students"],requestedRevision:4,status:"pending"};
+  const recovered=policy.recoverExpired(pending,new Date("2026-08-07T02:01:01.000Z"));
+  assert.deepEqual(recovered.pendingKeys,["swim_students"]);
+  assert.equal(recovered.status,"pending");
+  assert.equal(recovered.recoveryWakeAt,"2026-08-07T02:01:01.000Z");
+});
+
+test("lease heartbeats preserve ownership across a long operation and fail closed after expiry",()=>{
+  let state=policy.claimPending(
+    policy.mergePending({},"swim_students",NOW),"lease-long",NOW,
+  ).next;
+  for(let minute=1;minute<=20;minute++){
+    const pulse=new Date(NOW.getTime()+minute*50_000);
+    state=policy.renewLease(state,"lease-long",pulse);
+    assert.ok(state,`heartbeat ${minute} must retain ownership`);
+    assert.equal(policy.claimPending(state,"lease-rival",new Date(pulse.getTime()+59_000)),null);
+  }
+  assert.equal(
+    policy.renewLease(state,"lease-long",new Date(state.leaseUntil)),
+    null,
+  );
+  const expiredAt=new Date(Date.parse(state.leaseUntil)+1);
+  assert.equal(policy.renewLease(state,"lease-long",expiredAt),null);
+});
+
 test("catch recovery merges durable in-flight keys and protects a replacement lease",()=>{
   const queued=policy.mergePending({},"swim_students",NOW);
   const claimA=policy.claimPending(queued,"lease-a",NOW);
@@ -126,11 +163,29 @@ test("redacts nested personal data from diagnostics",()=>{
   assert.deepEqual(Object.keys(diagnostic).sort(),[
     "branchId","code","collections","detectedAt","keys","messageClass",
   ]);
-  assert.deepEqual(diagnostic.keys,["swim_students"]);
+  assert.deepEqual(diagnostic.keys,["students-regular"]);
   assert.deepEqual(diagnostic.collections,["people","enrollments"]);
   assert.equal(diagnostic.code,"internal");
   assert.equal(diagnostic.messageClass,"internal");
   const serialized=JSON.stringify(diagnostic);
   assert.equal(serialized.includes(name),false);
   assert.equal(serialized.includes(phone),false);
+});
+
+test("diagnostics normalize dynamic keys and preserve safe mismatch classes",()=>{
+  const privateTab="Private_Tab_20260807";
+  const input={
+    branchId:"yongam",
+    keys:[`swim_stu_${privateTab}`,`swim_bt_${privateTab}_inst`,"swim_periods"],
+    collections:["people","classMarks"],
+    now:NOW,
+  };
+  const conversion=policy.redactedError({code:"conversion-mismatch"},input);
+  const verification=policy.redactedError({code:"verification-mismatch"},input);
+  assert.deepEqual(conversion.keys,["students-tab","instructors-tab","schedule-periods"]);
+  assert.equal(conversion.code,"conversion-mismatch");
+  assert.equal(conversion.messageClass,"conversion");
+  assert.equal(verification.code,"verification-mismatch");
+  assert.equal(verification.messageClass,"verification");
+  assert.equal(JSON.stringify({conversion,verification}).includes(privateTab),false);
 });

@@ -9,13 +9,12 @@ function source(file){
 
 const permissionPolicy=JSON.parse(source('config/schedule-permissions.json'));
 
-test('only the dedicated developer account starts V2 shadow synchronization',()=>{
-  const shadow=source('js/schedule-v2-shadow.js');
-  assert.match(shadow,/SC_DEVELOPER_EMAILS/);
-  assert.match(shadow,/if\(!developerSignedIn\(\)\) return/);
-  assert.match(shadow,/isDeveloperSession:developerSignedIn/);
-  assert.doesNotMatch(shadow,/const OWNER_EMAIL=/);
-  assert.doesNotMatch(shadow,/const DEVELOPER_EMAIL=/);
+test('no staff browser starts timetable V2 shadow synchronization',()=>{
+  assert.equal(fs.existsSync(path.join(__dirname,'..','js','schedule-v2-shadow.js')),false);
+  for(const file of ['index.html','desk.html','teacher.html','settings.html']){
+    assert.doesNotMatch(source(file),/schedule-v2-shadow\.js/,file);
+  }
+  assert.doesNotMatch(source('js/firebase-store.js'),/SCV2Shadow|_scheduleV2Shadow/);
 });
 
 test('the developer account has a separate full-access staff profile',()=>{
@@ -28,10 +27,12 @@ test('the developer account has a separate full-access staff profile',()=>{
   assert.match(auth,/if\(role === 'developer'\) return '개발자'/);
 });
 
-test('Firestore permits V2 writes only to the developer account',()=>{
+test('Firestore blocks generic client V2 writes while retaining attendance paths',()=>{
   const rules=source('firestore.rules');
   assert.match(rules,/function isDeveloper\(\)/);
   assert.match(rules,/"developer@scswim\.local"/);
   assert.match(rules,/allow read: if isOwner\(\) \|\| isDeveloper\(\)/);
-  assert.match(rules,/allow write: if isDeveloper\(\)/);
+  assert.match(rules,/match \/scheduleV2\/\{document=\*\*\} \{[\s\S]*?allow write: if false;/);
+  assert.match(rules,/match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow write: if isDeveloper\(\);/);
+  assert.match(rules,/collection in \["attendanceRecords", "attendanceGuests"\]/);
 });

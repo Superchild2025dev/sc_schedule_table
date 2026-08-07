@@ -155,7 +155,16 @@ function request(action,branchId,email="developer@scswim.local"){
 function schedulePath(branchId){return `scheduleV2/${branchId}/runtime/schedule`;}
 function syncPath(branchId){return `scheduleV2/${branchId}/runtime/scheduleSync`;}
 function generationPath(branchId,generationId){return `scheduleV2/${branchId}/generations/${generationId}`;}
-function sourceEvent(branchId,docId){return {params:{branchId,docId}};}
+function sourceEvent(branchId,docId,id){return {id,params:{branchId,docId}};}
+function readyGeneration(branchId,generationId,revision=0){
+  return {
+    branchId,generationId,status:"ready",
+    capabilities:{schedule:{
+      status:"ready",appliedRevision:revision,requestedRevision:revision,
+      verifiedAt:"2026-08-07T02:00:00.000Z",
+    }},
+  };
+}
 
 function loadPolicy(){
   if(!fs.existsSync(POLICY_PATH)) return null;
@@ -176,8 +185,16 @@ test("browser policy gates controls and refuses unsafe transitions",()=>{
   assert.equal(policy.evaluate({profile:{role:"superAdmin"},action:"rollback",status:{}}).allowed,false);
   assert.equal(policy.evaluate({profile:{role:"developer"},action:"set-shadow",status:{generationStatus:"failed"}}).allowed,false);
   assert.equal(policy.evaluate({
+    profile:{role:"developer"},action:"set-shadow",
+    status:{mode:"v1",generationStatus:"ready",pendingCount:0,inFlightCount:0,unresolvedMismatchCount:0},
+  }).allowed,false);
+  assert.equal(policy.evaluate({
+    profile:{role:"developer"},action:"set-shadow",
+    status:{mode:"ready",generationStatus:"ready",pendingCount:0,inFlightCount:0,unresolvedMismatchCount:0},
+  }).allowed,true);
+  assert.equal(policy.evaluate({
     profile:{role:"developer"},action:"set-verify",
-    status:{generationStatus:"ready",pendingCount:1,inFlightCount:0,unresolvedMismatchCount:0},
+    status:{mode:"shadow",generationStatus:"ready",pendingCount:1,inFlightCount:0,unresolvedMismatchCount:0},
   }).allowed,false);
   assert.equal(policy.evaluate({
     profile:{role:"developer"},action:"set-verify",
@@ -264,6 +281,10 @@ test("prepare owns a valid fence, catches queued changes, verifies again, and ma
   assert.equal(config.mode,"ready");
   assert.equal(config.generationId,result.generationId);
   assert.equal(generation.status,"ready");
+  assert.equal(generation.capabilities.schedule.status,"ready");
+  assert.equal(generation.capabilities.schedule.appliedRevision,8);
+  assert.equal(generation.capabilities.schedule.requestedRevision,8);
+  assert.equal(generation.capabilities.attendance,undefined);
   assert.equal(sync.startingRevision,7);
   assert.equal(sync.requestedRevision,8);
   assert.equal(sync.appliedRevision,8);
@@ -283,8 +304,10 @@ test("mode transitions refuse unsafe state and rollback revokes work without del
 
   const blockedVerify=loadFunctions({initial:{
     [schedulePath("gagyeong")]:{mode:"ready",generationId:"gen_ready",branchId:"gagyeong"},
-    [generationPath("gagyeong","gen_ready")]:{status:"ready"},
-    [syncPath("gagyeong")]:{pendingKeys:["swim_inst"],inFlightKeys:[],mismatchCount:0},
+    [generationPath("gagyeong","gen_ready")]:readyGeneration("gagyeong","gen_ready",1),
+    [syncPath("gagyeong")]:{
+      pendingKeys:["swim_inst"],inFlightKeys:[],requestedRevision:2,appliedRevision:1,mismatchCount:0,
+    },
   }});
   await assert.rejects(
     ()=>blockedVerify.exports.manageScheduleV2Shadow(request("set-verify","gagyeong")),
@@ -293,7 +316,9 @@ test("mode transitions refuse unsafe state and rollback revokes work without del
 
   const rollback=loadFunctions({initial:{
     [schedulePath("gagyeong")]:{mode:"shadow",generationId:"gen_keep",branchId:"gagyeong"},
-    [generationPath("gagyeong","gen_keep")]:{status:"ready",sentinel:"preserve"},
+    [generationPath("gagyeong","gen_keep")]:{
+      ...readyGeneration("gagyeong","gen_keep",3),sentinel:"preserve",
+    },
     [syncPath("gagyeong")]:{
       pendingKeys:["swim_mark"],inFlightKeys:["swim_students"],requestedRevision:4,
       status:"processing",leaseId:"active",leaseUntil:"2999-01-01T00:00:00.000Z",
@@ -305,17 +330,60 @@ test("mode transitions refuse unsafe state and rollback revokes work without del
   assert.equal(rollback.db.value(generationPath("gagyeong","gen_keep")).sentinel,"preserve");
   assert.deepEqual(rollback.db.value(syncPath("gagyeong")).pendingKeys.sort(),["swim_mark","swim_students"]);
   assert.equal(rollback.db.value(syncPath("gagyeong")).leaseId,undefined);
-  await rollback.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_inst"));
+  await rollback.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_inst","after-rollback-1"));
   await rollback.exports.processScheduleV2Shadow({params:{branchId:"gagyeong"}});
   assert.equal(rollback.runnerCalls.length,0);
+  await assert.rejects(
+    ()=>rollback.exports.manageScheduleV2Shadow(request("set-shadow","gagyeong")),
+    error=>error.code==="failed-precondition",
+  );
 });
 
-test("shadow activation wakes preserved work and verify refuses every unsafe queue state",async()=>{
-  const readyGeneration={status:"ready"};
+test("a ready-mode source write makes schedule status syncing and blocks activation until prepare",async()=>{
+  const branchId="yongam";
+  const generationId="gen_ready_change";
+  const fixture=loadFunctions({initial:{
+    [schedulePath(branchId)]:{mode:"ready",generationId,branchId},
+    [generationPath(branchId,generationId)]:readyGeneration(branchId,generationId,6),
+    [syncPath(branchId)]:{
+      pendingKeys:[],requestedRevision:6,appliedRevision:6,status:"idle",mismatchCount:0,
+    },
+  }});
+
+  await fixture.exports.queueScheduleV2Shadow(
+    sourceEvent(branchId,"swim_students","ready-change-1"),
+  );
+  const status=await fixture.exports.manageScheduleV2Shadow(request("status",branchId));
+
+  assert.equal(status.generationStatus,"syncing");
+  assert.equal(status.requestedRevision,7);
+  assert.equal(status.appliedRevision,6);
+  assert.equal(status.pendingCount,1);
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(request("set-shadow",branchId)),
+    error=>error.code==="failed-precondition",
+  );
+});
+
+test("shadow activation requires a fresh ready revision and verify refuses every unsafe queue state",async()=>{
+  const stale=loadFunctions({initial:{
+    [schedulePath("yongam")]:{mode:"ready",generationId:"gen_ready",branchId:"yongam"},
+    [generationPath("yongam","gen_ready")]:readyGeneration("yongam","gen_ready",2),
+    [syncPath("yongam")]:{
+      pendingKeys:["swim_mark"],requestedRevision:3,appliedRevision:2,status:"pending",mismatchCount:0,
+    },
+  }});
+  await assert.rejects(
+    ()=>stale.exports.manageScheduleV2Shadow(request("set-shadow","yongam")),
+    error=>error.code==="failed-precondition",
+  );
+
   const shadow=loadFunctions({initial:{
     [schedulePath("yongam")]:{mode:"ready",generationId:"gen_ready",branchId:"yongam"},
-    [generationPath("yongam","gen_ready")]:readyGeneration,
-    [syncPath("yongam")]:{pendingKeys:["swim_mark"],requestedRevision:3,status:"pending",mismatchCount:4},
+    [generationPath("yongam","gen_ready")]:readyGeneration("yongam","gen_ready",3),
+    [syncPath("yongam")]:{
+      pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle",mismatchCount:0,
+    },
   }});
   const shadowStatus=await shadow.exports.manageScheduleV2Shadow(request("set-shadow","yongam"));
   assert.equal(shadowStatus.mode,"shadow");
@@ -327,9 +395,9 @@ test("shadow activation wakes preserved work and verify refuses every unsafe que
     {pendingKeys:[],inFlightKeys:[],mismatchCount:1},
   ]){
     const fixture=loadFunctions({initial:{
-      [schedulePath("gagyeong")]:{mode:"ready",generationId:"gen_ready",branchId:"gagyeong"},
-      [generationPath("gagyeong","gen_ready")]:readyGeneration,
-      [syncPath("gagyeong")]:unsafe,
+      [schedulePath("gagyeong")]:{mode:"shadow",generationId:"gen_ready",branchId:"gagyeong"},
+      [generationPath("gagyeong","gen_ready")]:readyGeneration("gagyeong","gen_ready",1),
+      [syncPath("gagyeong")]:{requestedRevision:1,appliedRevision:1,...unsafe},
     }});
     await assert.rejects(
       ()=>fixture.exports.manageScheduleV2Shadow(request("set-verify","gagyeong")),
@@ -338,9 +406,11 @@ test("shadow activation wakes preserved work and verify refuses every unsafe que
   }
 
   const verify=loadFunctions({initial:{
-    [schedulePath("gagyeong")]:{mode:"ready",generationId:"gen_ready",branchId:"gagyeong"},
-    [generationPath("gagyeong","gen_ready")]:readyGeneration,
-    [syncPath("gagyeong")]:{pendingKeys:[],inFlightKeys:[],mismatchCount:0,status:"idle"},
+    [schedulePath("gagyeong")]:{mode:"shadow",generationId:"gen_ready",branchId:"gagyeong"},
+    [generationPath("gagyeong","gen_ready")]:readyGeneration("gagyeong","gen_ready",1),
+    [syncPath("gagyeong")]:{
+      pendingKeys:[],inFlightKeys:[],requestedRevision:1,appliedRevision:1,mismatchCount:0,status:"idle",
+    },
   }});
   assert.equal((await verify.exports.manageScheduleV2Shadow(request("set-verify","gagyeong"))).mode,"verify");
 });
@@ -364,6 +434,8 @@ test("runner failure cannot publish a prepared generation as ready",async()=>{
   const generation=fixture.db.value(generationPath("gagyeong",config.generationId));
   assert.equal(config.mode,"v1");
   assert.equal(generation.status,"failed");
+  assert.equal(generation.capabilities.schedule.status,"error");
+  assert.equal(generation.capabilities.attendance,undefined);
   assert.notEqual(generation.status,"ready");
   const alertPrefix="scheduleV2/gagyeong/alerts/";
   const alerts=[...fixture.db.docs.keys()].filter(documentPath=>documentPath.startsWith(alertPrefix));

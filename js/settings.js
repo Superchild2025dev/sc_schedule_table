@@ -1323,7 +1323,7 @@
       }
       attendanceControlBranch=branchId;
       attendanceControlStore=SCV2AttendanceStore.create({db:root.db,branchId});
-      attendanceControlReadyGeneration=await SCScheduleV2Store.latestReadyGeneration(root.db,branchId);
+      attendanceControlReadyGeneration=await SCScheduleV2Store.latestAttendanceReadyGeneration(root.db,branchId);
       if(attendanceControlBranch!==branchId) return;
       attendanceControlUnsubscribe=attendanceControlStore.subscribeConfig(config=>{
         if(attendanceControlBranch!==branchId) return;
@@ -1424,7 +1424,6 @@
   function subscribeV2Monitor(forceRefresh){
     const branchId=activeBranch;
     if(v2MonitorBranch===branchId&&v2MonitorUnsubscribes.length){
-      if(forceRefresh&&window.SCV2Shadow) SCV2Shadow.refresh(branchRoot(branchId));
       renderV2Monitor();
       loadScheduleV2Status(branchId,!forceRefresh);
       if(forceRefresh){
@@ -1457,7 +1456,6 @@
       },error=>{
         console.warn('[settings] V2 alerts load failed:',error);
       }));
-      if(window.SCV2Shadow) SCV2Shadow.refresh(root);
       loadScheduleV2Status(branchId,true);
       subscribeAttendanceCutover(branchId);
     }catch(error){
@@ -1638,7 +1636,7 @@
     if(button){button.disabled=true;button.textContent='불러오는 중...';}
     v2PreviewStatus(`${BRANCHES[branchId].name} 최신 검증 완료 복사본을 찾고 있습니다.`);
     try{
-      const generation=await SCScheduleV2Store.latestReadyGeneration(firebase.firestore(),branchId);
+      const generation=await SCScheduleV2Store.latestScheduleReadyGeneration(firebase.firestore(),branchId);
       if(!generation) throw new Error('검증 완료된 V2 복사본이 없습니다. 먼저 V2 복사본을 만들어주세요.');
       const tabs=(await SCScheduleV2Store.readGenerationTabs(firebase.firestore(),branchId,generation.id)).filter(tab=>tab.type!=='snapshot');
       if(!tabs.length) throw new Error('V2 복사본에 표시할 시간표가 없습니다.');
@@ -1886,65 +1884,6 @@
       if(activeBranch===branchId) dataV2Status('진단 실패 · '+(e.message||String(e)),'err');
     }finally{
       if(button){button.disabled=false;button.textContent=originalLabel;}
-    }
-  }
-  async function runDataV2Build(button){
-    if(window.SCAuth && !SCAuth.requirePermission('manageSettings','V2 안전 복사본 생성')) return;
-    const branchId=activeBranch;
-    const previousReport=dataV2ReportByBranch[branchId];
-    if(!previousReport?.checks?.ready){
-      v2CopyStatus('먼저 현재 지점 진단을 통과해야 합니다.','err');
-      return;
-    }
-    if(!window.SCScheduleV2Store){
-      v2CopyStatus('V2 복사 모듈을 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.','err');
-      return;
-    }
-    const originalLabel=button?.textContent||'';
-    if(button){button.disabled=true;button.textContent='백업 중...';}
-    try{
-      v2CopyStatus('기록을 포함한 현재 V1 전체 데이터를 다시 읽고 복구점을 만들고 있습니다.');
-      const root=await readBranchBackupData(branchId,true);
-      const report=SCScheduleSchemaV2.diagnoseLegacyRoot(branchId,root);
-      if(!report.checks?.ready) throw new Error('진단 후 데이터가 변경되었습니다. 다시 진단해주세요.');
-      const baselineCreatedAt=new Date().toISOString();
-      const sourceBuildVersion=String(window.SC_BUILD_VERSION||window.SC_ASSET_VERSION||'');
-      downloadJsonFile(`${branchId}-before-v2-${backupFileStamp()}.json`,{
-        kind:'sc-schedule-before-v2',version:1,branchId,
-        createdAt:baselineCreatedAt,
-        sourceBuildVersion,
-        includeHistory:true,
-        safety:'V2 전환 전 V1 전체 복구점',
-        rollbackPolicy:'V2 이후 변경분을 버리고 이 V1 상태 전체로 복원',
-        data:root,
-      });
-      if(button) button.textContent='복사본 생성 중...';
-      const result=await SCScheduleV2Store.writeGeneration(firebase.firestore(),branchId,report,{
-        baselineCreatedAt,
-        sourceBuildVersion,
-        rollbackPolicy:'return-to-v1-baseline',
-        onProgress:progress=>{
-          if(activeBranch!==branchId) return;
-          v2CopyStatus(`${BRANCHES[branchId].name} V2 복사본 생성 중 · ${progress.written}/${progress.total} · 운영은 계속 V1`);
-        },
-      });
-      report.generation=result;
-      dataV2ReportByBranch[branchId]=report;
-      delete dataV2PreviewByBranch[branchId];
-      if(activeBranch===branchId){
-        v2CopyStatus(`안전 복사 완료 · ${result.generationId} · ${result.written}개 문서 검증 통과 · V1 전체 복구점과 원본은 그대로 보관됩니다.`,'ok');
-      }
-    }catch(error){
-      console.error(error);
-      const denied=error?.code==='permission-denied'||/Missing or insufficient permissions/i.test(String(error?.message||error));
-      if(activeBranch===branchId){
-        v2CopyStatus(denied
-          ? 'V2 복사 경로 권한이 아직 설정되지 않았습니다. V1 백업과 운영 시간표에는 영향이 없습니다.'
-          : 'V2 안전 복사 실패 · '+(error.message||String(error)),'err');
-      }
-    }finally{
-      const report=dataV2ReportByBranch[branchId]||previousReport;
-      if(button){button.disabled=!report?.checks?.ready;button.textContent=originalLabel;}
     }
   }
   function updateSummerLayoutPanel(){

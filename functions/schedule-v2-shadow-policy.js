@@ -12,7 +12,7 @@ const ERROR_CODES=new Set([
   "aborted","already-exists","cancelled","data-loss","deadline-exceeded",
   "failed-precondition","internal","invalid-argument","not-found","out-of-range",
   "permission-denied","resource-exhausted","unauthenticated","unavailable",
-  "unimplemented","unknown",
+  "unimplemented","unknown","conversion-mismatch","verification-mismatch","stale-run",
 ]);
 
 function text(value){
@@ -32,11 +32,13 @@ function collectionsForKey(key){
   key=text(key);
   if(key==="swim_tab_list") return ALL_COLLECTIONS.slice();
   if(key==="swim_students"||/^swim_stu_/.test(key)||/^swim_bt_.+_stu$/.test(key)){
-    return ["people","enrollments","placements"];
+    return ["people","enrollments","placements","classMarks","disabledSlots"];
   }
-  if(key==="swim_inst"||/^swim_inst_/.test(key)||/^swim_bt_.+_inst$/.test(key)) return ["teacherAssignments"];
+  if(key==="swim_inst"||/^swim_inst_/.test(key)||/^swim_bt_.+_inst$/.test(key)){
+    return ["teacherAssignments","classMarks","disabledSlots"];
+  }
   if(["swim_retire","swim_enroll","swim_hyuwon","swim_move"].includes(key)) return ["reservations"];
-  if(key==="swim_main_tab") return ["reservations","scheduleSettings"];
+  if(key==="swim_main_tab") return ["reservations","waitlistEntries","classMarks","scheduleSettings"];
   if(key==="swim_parent_tab") return ["scheduleSettings"];
   if(key==="swim_teachers") return ["teacherProfiles"];
   if(key==="swim_tab_folders") return ["tabFolders"];
@@ -46,7 +48,12 @@ function collectionsForKey(key){
   if(key==="swim_mark") return ["classMarks"];
   if(key==="swim_disabled") return ["disabledSlots"];
   if(key==="swim_closed") return ["calendarClosures"];
-  if(key==="swim_periods") return ["schedulePeriods"];
+  if(key==="swim_periods"){
+    return [
+      "reservations","waitlistEntries","classMarks","schedulePeriods",
+      "retirementRecords","deskStudentRecords",
+    ];
+  }
   if(key==="swim_retire_history") return ["retirementRecords"];
   if(key==="swim_desk_notes") return ["deskStudentRecords"];
   return [];
@@ -110,10 +117,25 @@ function claimPending(current,leaseId,now){
     leaseUntil:new Date(nowMs+LEASE_MS).toISOString(),
     processingStartedAt:timestamp(now),
   });
+  delete next.recoveryWakeAt;
   return {
     keys,leaseId:next.leaseId,recovered:flight.length>0,
     requestedRevision:revision(current?.requestedRevision),next,
   };
+}
+
+function renewLease(current,leaseId,now){
+  const normalizedLeaseId=text(leaseId);
+  const nowDate=now instanceof Date?now:new Date(now);
+  const nowMs=nowDate.getTime();
+  const leaseUntil=Date.parse(current?.leaseUntil||"");
+  if(!normalizedLeaseId||text(current?.leaseId)!==normalizedLeaseId) return null;
+  if(!Number.isFinite(nowMs)||!Number.isFinite(leaseUntil)||leaseUntil<=nowMs) return null;
+  if(current?.status!=="processing"||!inFlightKeys(current).length) return null;
+  return Object.assign({},current,{
+    leaseUntil:new Date(nowMs+LEASE_MS).toISOString(),
+    leaseHeartbeatAt:timestamp(nowDate),
+  });
 }
 
 function finishPending(current,claim,result,now){
@@ -129,6 +151,8 @@ function finishPending(current,claim,result,now){
   delete next.leaseId;
   delete next.leaseUntil;
   delete next.processingStartedAt;
+  delete next.leaseHeartbeatAt;
+  delete next.recoveryWakeAt;
   return next;
 }
 
@@ -140,6 +164,7 @@ function requeueClaim(current,claim){
   delete next.leaseId;
   delete next.leaseUntil;
   delete next.processingStartedAt;
+  delete next.leaseHeartbeatAt;
   return next;
 }
 
@@ -148,15 +173,18 @@ function recoverExpired(current,now){
   const leaseUntil=Date.parse(current?.leaseUntil||"");
   if(Number.isFinite(leaseUntil)&&leaseUntil>nowDate.getTime()) return null;
   const flight=inFlightKeys(current);
-  if(!flight.length) return null;
+  const pending=pendingKeys(current);
+  if(!flight.length&&!pending.length) return null;
   const next=Object.assign({},current,{
-    pendingKeys:combinedKeys(pendingKeys(current),flight),
+    pendingKeys:combinedKeys(pending,flight),
     status:"pending",
+    recoveryWakeAt:timestamp(nowDate),
   });
   delete next.inFlightKeys;
   delete next.leaseId;
   delete next.leaseUntil;
   delete next.processingStartedAt;
+  delete next.leaseHeartbeatAt;
   return next;
 }
 
@@ -167,11 +195,33 @@ function errorCode(error){
 }
 
 function messageClass(code){
+  if(code==="conversion-mismatch") return "conversion";
+  if(code==="verification-mismatch") return "verification";
+  if(code==="stale-run") return "stale";
   if(["aborted","deadline-exceeded","resource-exhausted","unavailable"].includes(code)) return "transient";
   if(["permission-denied","unauthenticated"].includes(code)) return "authorization";
   if(["invalid-argument","failed-precondition","not-found","out-of-range"].includes(code)) return "input";
   if(["internal","data-loss"].includes(code)) return "internal";
   return "unknown";
+}
+
+function diagnosticKeyFamily(key){
+  key=text(key);
+  if(key==="swim_students") return "students-regular";
+  if(/^swim_stu_/.test(key)||/^swim_bt_.+_stu$/.test(key)) return "students-tab";
+  if(key==="swim_inst") return "instructors-regular";
+  if(/^swim_inst_/.test(key)||/^swim_bt_.+_inst$/.test(key)) return "instructors-tab";
+  if(["swim_retire","swim_enroll","swim_hyuwon","swim_move"].includes(key)) return "reservations";
+  const fixed={
+    swim_tab_list:"tabs",swim_main_tab:"main-tab",swim_parent_tab:"parent-tab",
+    swim_teachers:"teacher-profiles",swim_tab_folders:"tab-folders",
+    swim_archived_tabs:"archived-tabs",swim_age_year:"system-metadata",
+    swim_student_id_version:"system-metadata",swim_ver:"system-metadata",
+    swim_reserve:"waitlist",swim_mark:"class-marks",swim_disabled:"disabled-slots",
+    swim_closed:"calendar-closures",swim_periods:"schedule-periods",
+    swim_retire_history:"retirement-history",swim_desk_notes:"desk-history",
+  };
+  return fixed[key]||"schedule-key";
 }
 
 function redactedError(error,input){
@@ -180,7 +230,7 @@ function redactedError(error,input){
   const branchId=["gagyeong","yongam"].includes(text(safeInput.branchId))?text(safeInput.branchId):"";
   const keys=[...new Set((Array.isArray(safeInput.keys)?safeInput.keys:[])
     .filter(key=>typeof key==="string"&&isTrackedKey(key))
-    .map(text))];
+    .map(diagnosticKeyFamily))];
   const collections=[...new Set((Array.isArray(safeInput.collections)?safeInput.collections:[])
     .filter(collection=>typeof collection==="string"&&COLLECTIONS.has(collection)))];
   return {branchId,keys,collections,code,messageClass:messageClass(code),detectedAt:timestamp(safeInput.now)};
@@ -188,5 +238,5 @@ function redactedError(error,input){
 
 module.exports={
   decodeLegacyKey,collectionsForKey,isTrackedKey,
-  mergePending,claimPending,finishPending,requeueClaim,recoverExpired,redactedError,
+  mergePending,claimPending,renewLease,finishPending,requeueClaim,recoverExpired,redactedError,
 };
