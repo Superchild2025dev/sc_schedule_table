@@ -24,6 +24,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>scJs('js/firebase-config.js')</script>
 <script>scJs('js/firebase-store.js')</script>
@@ -368,7 +369,7 @@
 
       <div class="v2-monitor-notice">
         <strong>운영 안전장치</strong>
-        <span>V2 오류가 발생해도 V1 저장은 정상 처리됩니다. 불일치가 발견되면 이 화면과 시간표 상단에 즉시 표시됩니다.</span>
+        <span>V2 오류가 발생해도 V1 저장은 정상 처리됩니다. 불일치와 준비 오류는 이 설정 화면에서 확인합니다.</span>
       </div>
 
       <div class="v2-monitor-summary">
@@ -383,6 +384,30 @@
       <div class="data-v2-status" id="v2-monitor-message">
         동시운영 상태를 불러오는 중입니다.
       </div>
+
+      <section class="v2-schedule-runtime" id="v2-schedule-runtime" aria-labelledby="v2-schedule-runtime-title">
+        <div class="subsection-head">
+          <div>
+            <h2 id="v2-schedule-runtime-title">시간표 서버 동기화</h2>
+            <span>활성 지점의 준비 상태와 서버 처리 대기열입니다.</span>
+          </div>
+          <span class="v2-developer-badge" id="v2-schedule-developer-badge" hidden>개발자 전용</span>
+        </div>
+        <div class="v2-schedule-summary">
+          <div><span>현재 모드</span><strong id="v2-schedule-mode">확인 중</strong></div>
+          <div><span>현재 세대</span><strong id="v2-schedule-generation">-</strong></div>
+          <div><span>대기 키</span><strong id="v2-schedule-pending">0개</strong></div>
+          <div><span>마지막 성공</span><strong id="v2-schedule-last-sync">-</strong></div>
+          <div><span>미해결 불일치</span><strong id="v2-schedule-mismatch">0건</strong></div>
+        </div>
+        <div class="v2-schedule-controls" id="v2-schedule-controls" hidden>
+          <button type="button" class="ghost-btn" id="v2-schedule-prepare">기준점 새로 만들기</button>
+          <button type="button" class="primary-btn" id="v2-schedule-shadow">그림자 복사 시작</button>
+          <button type="button" class="ghost-btn" id="v2-schedule-verify">검증 모드</button>
+          <button type="button" class="ghost-btn" id="v2-schedule-rollback">V1으로 복귀</button>
+        </div>
+        <div class="data-v2-status" id="v2-schedule-control-status">시간표 서버 상태를 확인하고 있습니다.</div>
+      </section>
 
       <section class="v2-attendance-cutover" id="v2-attendance-cutover" hidden aria-labelledby="v2-attendance-cutover-title">
         <div class="subsection-head">
@@ -629,6 +654,7 @@
 <script>scJs('js/attendance-v2-store.js')</script>
 <script>scJs('js/attendance-operational-gateway.js')</script>
 <script>scJs('js/attendance-v2-settings-policy.js')</script>
+<script>scJs('js/schedule-v2-settings-policy.js')</script>
 <script>scJs('js/schedule-v2-shadow.js')</script>
 <script>scJs('js/auth-guard.js')</script>
 <script>scJs('js/settings.js')</script>

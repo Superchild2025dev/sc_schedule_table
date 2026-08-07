@@ -152,16 +152,16 @@ test("exports both shadow triggers on the exact source and queue paths",()=>{
   assert.match(source,/exports\.refreshRegularAvailability\s*=\s*onDocumentWritten\(\{/);
 });
 
-test("source writes queue tracked keys only for known branches in shadow or verify mode",async()=>{
+test("source writes queue tracked keys only for known branches in preparing shadow or verify mode",async()=>{
   for(const branchId of ["gagyeong","yongam"]){
-    for(const mode of ["shadow","verify"]){
+    for(const mode of ["preparing","shadow","verify"]){
       const fixture=loadFunctions({initial:{[schedulePath(branchId)]:{mode,generationId:"gen_1"}}});
       await fixture.exports.queueScheduleV2Shadow(sourceEvent(branchId,"swim_students"));
       assert.deepEqual(fixture.db.value(syncPath(branchId)).pendingKeys,["swim_students"]);
     }
   }
 
-  for(const mode of ["v1","preparing","ready"]){
+  for(const mode of ["v1","ready"]){
     const fixture=loadFunctions({initial:{[schedulePath("gagyeong")]:{mode,generationId:"gen_1"}}});
     await fixture.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_students"));
     assert.equal(fixture.db.value(syncPath("gagyeong")),undefined,mode);

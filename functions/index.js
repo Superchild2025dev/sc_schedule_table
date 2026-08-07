@@ -25,6 +25,10 @@ const PUBLIC_AVAILABILITY_COLLECTION = "publicRegularAvailability";
 const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 const PUBLIC_AVAILABILITY_BASIS_MONTH = "2026-09";
 const SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT = 10;
+const SCHEDULE_V2_PREPARATION_LEASE_MS = 15 * 60 * 1000;
+const SCHEDULE_V2_DEVELOPER_EMAIL = "developer@scswim.local";
+const SCHEDULE_V2_OWNER_EMAIL = "2025superchild@gmail.com";
+const SCHEDULE_V2_ACTIONS = new Set(["prepare", "set-shadow", "set-verify", "rollback", "status"]);
 const CUSTOMER_VOICE_COLLECTION = "customerVoice";
 const CUSTOMER_VOICE_RATE_COLLECTION = "customerVoiceRateLimits";
 const CUSTOMER_VOICE_CATEGORY = new Set([
@@ -359,6 +363,378 @@ function scheduleV2ShadowAlertRef(branchId, diagnostic) {
 function scheduleV2ShadowRetryCount(value) {
   const count = Math.max(0, Number(value || 0) || 0);
   return Math.min(SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT, count + 1);
+}
+
+function scheduleV2GenerationRef(branchId, generationId) {
+  return db.collection("scheduleV2").doc(branchId).collection("generations").doc(generationId);
+}
+
+function scheduleV2AuthEmail(request) {
+  if (!request?.auth?.uid) throw new HttpsError("unauthenticated", "직원 로그인이 필요합니다");
+  return String(request.auth.token?.email || "").trim().toLowerCase();
+}
+
+function authorizeScheduleV2Action(request, action) {
+  const email = scheduleV2AuthEmail(request);
+  if (action === "status") {
+    if ([SCHEDULE_V2_DEVELOPER_EMAIL, SCHEDULE_V2_OWNER_EMAIL].includes(email)) return email;
+  } else if (email === SCHEDULE_V2_DEVELOPER_EMAIL) {
+    return email;
+  }
+  throw new HttpsError("permission-denied", "Schedule V2 작업 권한이 없습니다");
+}
+
+function scheduleV2Keys(value, field) {
+  return [...new Set((Array.isArray(value?.[field]) ? value[field] : [])
+    .filter(scheduleV2ShadowPolicy.isTrackedKey))];
+}
+
+function scheduleV2Count(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function scheduleV2StatusFrom(branchId, config, sync, generation) {
+  const pending = scheduleV2Keys(sync, "pendingKeys");
+  const inFlight = scheduleV2Keys(sync, "inFlightKeys");
+  return {
+    branchId,
+    mode: String(config?.mode || "v1"),
+    generationId: String(config?.generationId || ""),
+    generationStatus: String(generation?.status || ""),
+    pendingCount: pending.length,
+    inFlightCount: inFlight.length,
+    lastSuccessfulSync: String(sync?.lastSyncedAt || generation?.verifiedAt || ""),
+    unresolvedMismatchCount: scheduleV2Count(sync?.mismatchCount),
+  };
+}
+
+async function readScheduleV2Status(branchId) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const [configSnapshot, syncSnapshot] = await Promise.all([configRef.get(), syncRef.get()]);
+  const config = configSnapshot.data() || {};
+  const generationId = String(config.generationId || "");
+  const generationSnapshot = generationId ? await scheduleV2GenerationRef(branchId, generationId).get() : null;
+  return scheduleV2StatusFrom(branchId, config, syncSnapshot.data() || {}, generationSnapshot?.data() || {});
+}
+
+function preparationGenerationId() {
+  return `gen_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+async function acquireScheduleV2Preparation(branchId) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const generationId = preparationGenerationId();
+  const generationRef = scheduleV2GenerationRef(branchId, generationId);
+  const leaseId = `prepare_${crypto.randomUUID()}`;
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const leaseUntil = new Date(now.getTime() + SCHEDULE_V2_PREPARATION_LEASE_MS).toISOString();
+  return db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(configRef);
+    const syncSnapshot = await tx.get(syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const activeLeaseUntil = Date.parse(sync.leaseUntil || "");
+    if (String(config.mode || "") === "preparing" ||
+        (String(sync.leaseId || "") && Number.isFinite(activeLeaseUntil) && activeLeaseUntil > now.getTime())) {
+      throw new HttpsError("already-exists", "Schedule V2 준비 작업이 이미 진행 중입니다");
+    }
+    const startingRevision = scheduleV2Count(sync.requestedRevision);
+    const nextSync = {
+      ...sync,
+      pendingKeys: [],
+      requestedRevision: startingRevision,
+      appliedRevision: startingRevision,
+      startingRevision,
+      status: "processing",
+      leaseId,
+      leaseUntil,
+      processingStartedAt: nowIso,
+      preparationGenerationId: generationId,
+      mismatchCount: 0,
+      retryCount: 0,
+    };
+    delete nextSync.inFlightKeys;
+    tx.set(syncRef, nextSync, {merge: false});
+    tx.set(configRef, {
+      ...config,
+      branchId,
+      mode: "preparing",
+      generationId,
+      preparationStartedAt: nowIso,
+      updatedAt: nowIso,
+    }, {merge: false});
+    tx.set(generationRef, {
+      branchId,
+      generationId,
+      status: "preparing",
+      createdAt: nowIso,
+      startingRevision,
+    }, {merge: false});
+    return {branchId, generationId, leaseId, startingRevision, syncRef, configRef, generationRef};
+  });
+}
+
+async function listScheduleV2BaselineKeys(branch) {
+  const snapshot = await db.collection("scheduleStores").doc(branch.id).collection("kv").get();
+  const keys = new Set(["swim_tab_list"]);
+  snapshot.forEach(doc => {
+    const key = scheduleV2ShadowPolicy.decodeLegacyKey(doc.id);
+    if (scheduleV2ShadowPolicy.isTrackedKey(key)) keys.add(key);
+  });
+  return [...keys];
+}
+
+async function claimScheduleV2PreparationCatchup(preparation) {
+  const now = new Date();
+  return db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(preparation.configRef);
+    const syncSnapshot = await tx.get(preparation.syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+        sync.leaseId !== preparation.leaseId) {
+      throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
+    }
+    const keys = scheduleV2Keys(sync, "pendingKeys");
+    if (!keys.length) return null;
+    const requestedRevision = scheduleV2Count(sync.requestedRevision);
+    const next = {
+      ...sync,
+      pendingKeys: [],
+      inFlightKeys: keys,
+      status: "processing",
+      leaseUntil: new Date(now.getTime() + SCHEDULE_V2_PREPARATION_LEASE_MS).toISOString(),
+    };
+    tx.set(preparation.syncRef, next, {merge: false});
+    return {keys, requestedRevision};
+  });
+}
+
+async function finishScheduleV2PreparationCatchup(preparation, claim, result) {
+  const nowIso = new Date().toISOString();
+  return db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(preparation.configRef);
+    const syncSnapshot = await tx.get(preparation.syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+        sync.leaseId !== preparation.leaseId) {
+      throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
+    }
+    const next = {
+      ...sync,
+      status: "processing",
+      appliedRevision: Math.max(scheduleV2Count(sync.appliedRevision), claim.requestedRevision),
+      lastSyncedAt: nowIso,
+      mismatchCount: 0,
+      collections: result.collections,
+      counts: result.counts,
+      digests: result.digests,
+      writes: result.writes,
+      deletes: result.deletes,
+    };
+    delete next.inFlightKeys;
+    tx.set(preparation.syncRef, next, {merge: false});
+  });
+}
+
+async function tryCompleteScheduleV2Preparation(preparation, result) {
+  const nowIso = new Date().toISOString();
+  return db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(preparation.configRef);
+    const syncSnapshot = await tx.get(preparation.syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+        sync.leaseId !== preparation.leaseId) {
+      throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
+    }
+    if (scheduleV2Keys(sync, "pendingKeys").length || scheduleV2Keys(sync, "inFlightKeys").length) return false;
+    const completedSync = {
+      ...sync,
+      pendingKeys: [],
+      appliedRevision: scheduleV2Count(sync.requestedRevision),
+      status: "idle",
+      lastSyncedAt: nowIso,
+      mismatchCount: 0,
+      collections: result.collections,
+      counts: result.counts,
+      digests: result.digests,
+      writes: result.writes,
+      deletes: result.deletes,
+    };
+    delete completedSync.inFlightKeys;
+    delete completedSync.leaseId;
+    delete completedSync.leaseUntil;
+    delete completedSync.processingStartedAt;
+    delete completedSync.preparationGenerationId;
+    tx.set(preparation.syncRef, completedSync, {merge: false});
+    tx.set(preparation.configRef, {
+      ...config,
+      mode: "ready",
+      branchId: preparation.branchId,
+      generationId: preparation.generationId,
+      readyAt: nowIso,
+      updatedAt: nowIso,
+    }, {merge: false});
+    tx.set(preparation.generationRef, {
+      branchId: preparation.branchId,
+      generationId: preparation.generationId,
+      status: "ready",
+      createdAt: config.preparationStartedAt || nowIso,
+      verifiedAt: nowIso,
+      startingRevision: preparation.startingRevision,
+      appliedRevision: completedSync.appliedRevision,
+      collections: result.collections,
+      counts: result.counts,
+      digests: result.digests,
+    }, {merge: true});
+    return true;
+  });
+}
+
+async function failScheduleV2Preparation(preparation) {
+  const nowIso = new Date().toISOString();
+  await db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(preparation.configRef);
+    const syncSnapshot = await tx.get(preparation.syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    if (sync.leaseId !== preparation.leaseId) return;
+    const pendingKeys = [...new Set([
+      ...scheduleV2Keys(sync, "pendingKeys"),
+      ...scheduleV2Keys(sync, "inFlightKeys"),
+    ])];
+    const failedSync = {
+      ...sync,
+      pendingKeys,
+      status: pendingKeys.length ? "pending" : "idle",
+      mismatchCount: Math.max(1, scheduleV2Count(sync.mismatchCount)),
+      lastFailedAt: nowIso,
+    };
+    delete failedSync.inFlightKeys;
+    delete failedSync.leaseId;
+    delete failedSync.leaseUntil;
+    delete failedSync.processingStartedAt;
+    delete failedSync.preparationGenerationId;
+    tx.set(preparation.syncRef, failedSync, {merge: false});
+    tx.set(preparation.configRef, {
+      ...config,
+      branchId: preparation.branchId,
+      mode: "v1",
+      generationId: preparation.generationId,
+      updatedAt: nowIso,
+    }, {merge: false});
+    tx.set(preparation.generationRef, {
+      branchId: preparation.branchId,
+      generationId: preparation.generationId,
+      status: "failed",
+      failedAt: nowIso,
+    }, {merge: true});
+  });
+}
+
+async function prepareScheduleV2(branch) {
+  const preparation = await acquireScheduleV2Preparation(branch.id);
+  const fence = {ref: preparation.syncRef, leaseId: preparation.leaseId};
+  try {
+    const baselineKeys = await listScheduleV2BaselineKeys(branch);
+    await runShadowSync({
+      db,
+      branchId: branch.id,
+      generationId: preparation.generationId,
+      keys: baselineKeys,
+      readLegacyKey: key => readStoredValue(branch, key),
+      fence,
+    });
+    for (let pass = 0; pass < 100; pass++) {
+      let claim;
+      while ((claim = await claimScheduleV2PreparationCatchup(preparation))) {
+        const catchup = await runShadowSync({
+          db,
+          branchId: branch.id,
+          generationId: preparation.generationId,
+          keys: claim.keys,
+          readLegacyKey: key => readStoredValue(branch, key),
+          fence,
+        });
+        await finishScheduleV2PreparationCatchup(preparation, claim, catchup);
+      }
+      const parity = await runShadowSync({
+        db,
+        branchId: branch.id,
+        generationId: preparation.generationId,
+        keys: baselineKeys,
+        readLegacyKey: key => readStoredValue(branch, key),
+        fence,
+      });
+      if (await tryCompleteScheduleV2Preparation(preparation, parity)) {
+        return readScheduleV2Status(branch.id);
+      }
+    }
+    throw new HttpsError("resource-exhausted", "Schedule V2 변경이 계속 발생해 준비를 마치지 못했습니다");
+  } catch (error) {
+    await failScheduleV2Preparation(preparation);
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("failed-precondition", "Schedule V2 기준점 준비에 실패했습니다");
+  }
+}
+
+async function setScheduleV2Mode(branchId, targetMode) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  await db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(configRef);
+    const syncSnapshot = await tx.get(syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const generationId = String(config.generationId || "");
+    const generationRef = generationId ? scheduleV2GenerationRef(branchId, generationId) : null;
+    const generationSnapshot = generationRef ? await tx.get(generationRef) : null;
+    if (!generationId || generationSnapshot?.get("status") !== "ready") {
+      throw new HttpsError("failed-precondition", "준비가 완료된 Schedule V2 세대가 없습니다");
+    }
+    if (targetMode === "verify" && (
+      scheduleV2Keys(sync, "pendingKeys").length ||
+      scheduleV2Keys(sync, "inFlightKeys").length ||
+      scheduleV2Count(sync.mismatchCount)
+    )) {
+      throw new HttpsError("failed-precondition", "대기 작업 또는 불일치를 먼저 해결해야 합니다");
+    }
+    const nowIso = new Date().toISOString();
+    tx.set(configRef, {...config, branchId, mode: targetMode, generationId, updatedAt: nowIso}, {merge: false});
+    tx.set(syncRef, {...sync, activationRequestedAt: nowIso}, {merge: false});
+  });
+  return readScheduleV2Status(branchId);
+}
+
+async function rollbackScheduleV2(branchId) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  await db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(configRef);
+    const syncSnapshot = await tx.get(syncRef);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const pendingKeys = [...new Set([
+      ...scheduleV2Keys(sync, "pendingKeys"),
+      ...scheduleV2Keys(sync, "inFlightKeys"),
+    ])];
+    const stopped = {...sync, pendingKeys, status: pendingKeys.length ? "pending" : "idle"};
+    delete stopped.inFlightKeys;
+    delete stopped.leaseId;
+    delete stopped.leaseUntil;
+    delete stopped.processingStartedAt;
+    delete stopped.preparationGenerationId;
+    const nowIso = new Date().toISOString();
+    tx.set(syncRef, stopped, {merge: false});
+    tx.set(configRef, {...config, branchId, mode: "v1", updatedAt: nowIso}, {merge: false});
+  });
+  return readScheduleV2Status(branchId);
 }
 
 async function recoverScheduleV2ShadowBranch(branchId, now) {
@@ -1724,6 +2100,25 @@ exports.purgeCustomerVoiceContacts = onSchedule({
   return null;
 });
 
+exports.manageScheduleV2Shadow = onCall({
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+}, async request => {
+  const data = request.data || {};
+  const action = String(data.action || "").trim();
+  const branchId = String(data.branchId || "").trim();
+  if (!SCHEDULE_V2_ACTIONS.has(action)) {
+    throw new HttpsError("invalid-argument", "지원하지 않는 Schedule V2 작업입니다");
+  }
+  authorizeScheduleV2Action(request, action);
+  const branch = BRANCHES[branchId];
+  if (!branch) throw new HttpsError("invalid-argument", "알 수 없는 지점입니다");
+  if (action === "status") return readScheduleV2Status(branchId);
+  if (action === "prepare") return prepareScheduleV2(branch);
+  if (action === "set-shadow") return setScheduleV2Mode(branchId, "shadow");
+  if (action === "set-verify") return setScheduleV2Mode(branchId, "verify");
+  return rollbackScheduleV2(branchId);
+});
+
 exports.queueScheduleV2Shadow = onDocumentWritten({
   document: "scheduleStores/{branchId}/kv/{docId}",
   serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
@@ -1737,7 +2132,7 @@ exports.queueScheduleV2Shadow = onDocumentWritten({
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
   await db.runTransaction(async tx => {
     const config = await tx.get(configRef);
-    if (!["shadow", "verify"].includes(config.get("mode"))) return;
+    if (!["preparing", "shadow", "verify"].includes(config.get("mode"))) return;
     const snapshot = await tx.get(syncRef);
     const queued = scheduleV2ShadowPolicy.mergePending(snapshot.data(), key, new Date());
     queued.retryCount = 0;
@@ -1796,6 +2191,7 @@ exports.processScheduleV2Shadow = onDocumentWritten({
         counts: result.counts,
         digests: result.digests,
         retryCount: 0,
+        mismatchCount: 0,
       }, new Date());
       if (finished !== current) tx.set(syncRef, finished, {merge: false});
     });
@@ -1832,6 +2228,7 @@ exports.processScheduleV2Shadow = onDocumentWritten({
       const failed = {
         ...requeued,
         retryCount: scheduleV2ShadowRetryCount(current.retryCount),
+        mismatchCount: Math.max(1, scheduleV2Count(current.mismatchCount)),
         lastFailedAt: redactedDiagnostic.detectedAt,
       };
       const priorCount = Math.max(0, Number(alertSnapshot.data()?.count || 0) || 0);

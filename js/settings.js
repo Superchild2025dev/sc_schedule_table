@@ -143,6 +143,10 @@
   let v2MonitorBranch='';
   let v2MonitorDataByBranch={};
   let v2MonitorAlertsByBranch={};
+  let scheduleV2StatusByBranch={};
+  let scheduleV2Callable=null;
+  let scheduleV2BusyByBranch={};
+  let scheduleV2ActionSeqByBranch={};
   let attendanceControlStore=null;
   let attendanceControlUnsubscribe=null;
   let attendanceControlBranch='';
@@ -1132,6 +1136,119 @@
       'v2-read':'V2 읽기 + V1 백업',v2:'V2 운영',
     })[mode]||'V1 운영';
   }
+  function scheduleV2ModeLabel(mode){
+    return ({v1:'V1 운영',preparing:'준비 중',ready:'준비 완료',shadow:'그림자 복사',verify:'검증 모드'})[mode]||String(mode||'V1 운영');
+  }
+  function scheduleV2Developer(){
+    const developer=!!(window.SCAuth&&typeof SCAuth.profile==='function'&&SCAuth.profile().role==='developer');
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    return developer&&!!(window.SCScheduleV2SettingsPolicy&&SCScheduleV2SettingsPolicy.canView(profile));
+  }
+  function scheduleV2StatusAllowed(){
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    return !!(policy&&policy.evaluate({profile,action:'status',status:{}}).allowed);
+  }
+  function scheduleV2ControlStatus(message,type){
+    const el=$('v2-schedule-control-status');
+    if(!el) return;
+    el.textContent=message;
+    el.className='data-v2-status '+(type||'');
+  }
+  function renderScheduleV2Status(){
+    const section=$('v2-schedule-runtime');
+    if(!section) return;
+    const allowed=scheduleV2StatusAllowed();
+    section.hidden=!allowed;
+    if(!allowed) return;
+    const status=scheduleV2StatusByBranch[activeBranch]||{};
+    const developer=scheduleV2Developer();
+    const controls=$('v2-schedule-controls');
+    const badge=$('v2-schedule-developer-badge');
+    if(controls) controls.hidden=!developer;
+    if(badge) badge.hidden=!developer;
+    if($('v2-schedule-mode')) $('v2-schedule-mode').textContent=scheduleV2ModeLabel(status.mode);
+    if($('v2-schedule-generation')) $('v2-schedule-generation').textContent=status.generationId||'-';
+    if($('v2-schedule-pending')) $('v2-schedule-pending').textContent=`${Number(status.pendingCount||0)+Number(status.inFlightCount||0)}개`;
+    if($('v2-schedule-last-sync')) $('v2-schedule-last-sync').textContent=v2MonitorDate(status.lastSuccessfulSync);
+    if($('v2-schedule-mismatch')) $('v2-schedule-mismatch').textContent=`${Number(status.unresolvedMismatchCount||0)}건`;
+    const busyAction=scheduleV2BusyByBranch[activeBranch]||'';
+    const busy=!!busyAction;
+    ['v2-schedule-prepare','v2-schedule-shadow','v2-schedule-verify'].forEach(id=>{
+      if($(id)) $(id).disabled=busy;
+    });
+    if($('v2-schedule-rollback')) $('v2-schedule-rollback').disabled=!developer;
+    if(busy){
+      scheduleV2ControlStatus(busyAction==='prepare'?'새 기준점을 만들고 변경분을 따라잡는 중입니다.':'시간표 서버 모드를 변경하고 있습니다.');
+    }else if(status.generationStatus!=='ready'){
+      scheduleV2ControlStatus('준비 완료된 시간표 V2 세대가 없습니다. V1 운영은 그대로 유지됩니다.','err');
+    }else{
+      scheduleV2ControlStatus(`세대 ${status.generationId} · 대기 ${Number(status.pendingCount||0)}개 · 처리 중 ${Number(status.inFlightCount||0)}개`,'ok');
+    }
+  }
+  function getScheduleV2Callable(){
+    if(scheduleV2Callable) return scheduleV2Callable;
+    const app=ensureFirebase();
+    if(!firebase.functions) throw new Error('Firebase Functions SDK가 로드되지 않았습니다.');
+    const service=app.functions?app.functions('asia-northeast3'):firebase.functions('asia-northeast3');
+    scheduleV2Callable=service.httpsCallable('manageScheduleV2Shadow');
+    return scheduleV2Callable;
+  }
+  async function loadScheduleV2Status(branchId,silent){
+    if(!scheduleV2StatusAllowed()){
+      renderScheduleV2Status();
+      return;
+    }
+    try{
+      const response=await getScheduleV2Callable()({action:'status',branchId});
+      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      if(activeBranch===branchId){
+        renderScheduleV2Status();
+        if(!silent) scheduleV2ControlStatus('시간표 서버 상태를 새로 확인했습니다.','ok');
+      }
+    }catch(error){
+      if(activeBranch===branchId) scheduleV2ControlStatus('시간표 서버 상태 조회 실패 · '+(error.message||String(error)),'err');
+    }
+  }
+  async function runScheduleV2Action(action){
+    const branchId=activeBranch;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const current=scheduleV2StatusByBranch[branchId]||{};
+    const decision=policy&&policy.evaluate({profile,action,status:current});
+    if(!decision?.allowed){
+      scheduleV2ControlStatus(decision?.reason||'실행할 수 없는 작업입니다.','err');
+      return;
+    }
+    const labels={
+      prepare:'새 시간표 V2 기준점을 만들까요?',
+      'set-shadow':'그림자 복사를 시작할까요?',
+      'set-verify':'검증 모드로 변경할까요?',
+      rollback:'V1으로 즉시 복귀할까요?',
+    };
+    if(!window.confirm(labels[action]||'시간표 서버 설정을 변경할까요?')) return;
+    const sequence=(scheduleV2ActionSeqByBranch[branchId]||0)+1;
+    scheduleV2ActionSeqByBranch[branchId]=sequence;
+    scheduleV2BusyByBranch[branchId]=action;
+    renderScheduleV2Status();
+    try{
+      const response=await getScheduleV2Callable()({action,branchId});
+      if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
+      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      delete scheduleV2BusyByBranch[branchId];
+      if(activeBranch===branchId){
+        renderScheduleV2Status();
+        scheduleV2ControlStatus(action==='rollback'?'V1으로 복귀했습니다.':'시간표 서버 설정을 적용했습니다.','ok');
+      }
+    }catch(error){
+      if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
+      delete scheduleV2BusyByBranch[branchId];
+      if(activeBranch===branchId){
+        renderScheduleV2Status();
+        scheduleV2ControlStatus('시간표 서버 작업 실패 · '+(error.message||String(error)),'err');
+      }
+    }
+  }
   function attendanceParityMeta(){
     const data=v2MonitorDataByBranch[activeBranch]||{};
     const alerts=visibleV2MonitorAlerts(data,v2MonitorAlertsByBranch[activeBranch]||[]);
@@ -1295,6 +1412,7 @@
       }
     }
     updateV2MonitorBadges(state);
+    renderScheduleV2Status();
     renderAttendanceCutover();
   }
   function stopV2Monitor(){
@@ -1308,6 +1426,7 @@
     if(v2MonitorBranch===branchId&&v2MonitorUnsubscribes.length){
       if(forceRefresh&&window.SCV2Shadow) SCV2Shadow.refresh(branchRoot(branchId));
       renderV2Monitor();
+      loadScheduleV2Status(branchId,!forceRefresh);
       if(forceRefresh){
         stopAttendanceCutover();
         subscribeAttendanceCutover(branchId);
@@ -1339,6 +1458,7 @@
         console.warn('[settings] V2 alerts load failed:',error);
       }));
       if(window.SCV2Shadow) SCV2Shadow.refresh(root);
+      loadScheduleV2Status(branchId,true);
       subscribeAttendanceCutover(branchId);
     }catch(error){
       v2MonitorDataByBranch[branchId]={shadowStatus:'error',shadowMessage:error.message||String(error)};
@@ -3518,6 +3638,10 @@ th{background:#D9EAD3;font-weight:700}
     $('backup-current')?.addEventListener('click',e=>runBackup('current',e.currentTarget));
     $('backup-all')?.addEventListener('click',e=>runBackup('all',e.currentTarget));
     $('v2-monitor-refresh')?.addEventListener('click',()=>subscribeV2Monitor(true));
+    $('v2-schedule-prepare')?.addEventListener('click',()=>runScheduleV2Action('prepare'));
+    $('v2-schedule-shadow')?.addEventListener('click',()=>runScheduleV2Action('set-shadow'));
+    $('v2-schedule-verify')?.addEventListener('click',()=>runScheduleV2Action('set-verify'));
+    $('v2-schedule-rollback')?.addEventListener('click',()=>runScheduleV2Action('rollback'));
     $('v2-attendance-apply')?.addEventListener('click',()=>applyAttendanceCutover());
     $('v2-attendance-rollback')?.addEventListener('click',()=>applyAttendanceCutover('v1'));
     $('summer-layout-check')?.addEventListener('click',e=>checkSummerLayout(e.currentTarget));
