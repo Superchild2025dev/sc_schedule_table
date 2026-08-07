@@ -205,7 +205,7 @@
     }
     function compareRange(input){
       const comparison=model().compareLegacyRows({
-        attendance:input?.attendance,
+        attendance:input?.legacyAttendance||input?.attendance,
         guests:input?.legacyGuests||input?.guestMap||input?.guestsMap||input?.guests,
         records:input?.records,
         guestRows:input?.guestRows||input?.v2Guests||(
