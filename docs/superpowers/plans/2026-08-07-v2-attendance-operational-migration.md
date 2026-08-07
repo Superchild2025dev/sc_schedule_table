@@ -422,15 +422,15 @@ git commit -m "Route teacher attendance through V2 gateway"
 
 **Interfaces:**
 - Consumes: generated `canReadSchedule(branch)`, `canManageSchedule(branch)`, `isTeacherForBranch(branch)`, and `isDeveloper()` rule helpers.
-- Produces: branch-scoped V2 attendance permissions, required queries, and developer-only mode controls.
+- Produces: desk branch boundaries, cross-branch teacher attendance permissions, required queries, and developer-only mode controls.
 
-- [ ] **Step 1: Write failing rule and settings tests**
+- [x] **Step 1: Write failing rule and settings tests**
 
 Rules tests must prove:
 
 ```text
 teacher: own branch attendanceRecords/attendanceGuests read+write = allow
-teacher: other branch = deny
+teacher: other branch attendance read+write = allow, schedule roster write = deny
 teacher: runtime attendance config read = allow, write = deny
 desk: own branch attendance data read+write = allow
 developer: config write = allow
@@ -439,7 +439,7 @@ unauthenticated: all V2 runtime attendance paths = deny
 
 Settings tests must prove only a developer sees controls and invalid parity prevents `v2-read` or `v2` selection.
 
-- [ ] **Step 2: Run the rule/settings tests and verify RED**
+- [x] **Step 2: Run the rule/settings tests and verify RED**
 
 ```powershell
 node --test --test-isolation=none tests/firestore-rules-security.test.js tests/attendance-v2-settings.test.js
@@ -447,7 +447,7 @@ node --test --test-isolation=none tests/firestore-rules-security.test.js tests/a
 
 Expected: FAIL because V2 attendance is developer-only and no index/control exists.
 
-- [ ] **Step 3: Add specific nested V2 attendance rules**
+- [x] **Step 3: Add specific nested V2 attendance rules**
 
 Keep the existing developer-wide V2 rule and add narrower branch-specific matches:
 
@@ -464,15 +464,15 @@ match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
 
 No other V2 collection becomes writable to teachers.
 
-- [ ] **Step 4: Add exact composite indexes**
+- [x] **Step 4: Add exact composite indexes**
 
 Create indexes for both `attendanceRecords` and `attendanceGuests` collection groups with ascending `tabId` and ascending `date`. Point `firebase.json` at both rules and indexes.
 
-- [ ] **Step 5: Add developer-only settings controls**
+- [x] **Step 5: Add developer-only settings controls**
 
 The control displays branch, current mode, generation ID, last parity outcome, last sync time, and mismatch count. Mode advancement requires a verified generation and zero attendance mismatches. Moving back to `v1` is always available to the developer. No automatic mode advancement occurs.
 
-- [ ] **Step 6: Synchronize permission artifacts and run tests**
+- [x] **Step 6: Synchronize permission artifacts and run tests**
 
 ```powershell
 node scripts/sync-permission-policy.js
@@ -488,7 +488,7 @@ npx.cmd firebase-tools emulators:exec --only firestore "node --test tests/firest
 
 Expected: all available tests PASS.
 
-- [ ] **Step 7: Commit Task 6**
+- [x] **Step 7: Commit Task 6**
 
 ```powershell
 git add firestore.rules firestore.indexes.json firebase.json js/settings.js settings.html tests/firestore-rules-emulator.test.js tests/firestore-rules-security.test.js tests/attendance-v2-settings.test.js
@@ -508,7 +508,7 @@ git commit -m "Secure V2 attendance operations"
 - Consumes: completed Tasks 1-6.
 - Produces: repeatable migration verification and rollback evidence.
 
-- [ ] **Step 1: Write end-to-end operational scenario tests**
+- [x] **Step 1: Write end-to-end operational scenario tests**
 
 Build stateful scenarios for:
 
@@ -521,9 +521,9 @@ Build stateful scenarios for:
 7. Historical snapshot read.
 8. V2 read failure blocking writes without clearing the visible table.
 9. Rollback from v2-read to v1 with V1 backup intact.
-10. Other branch access rejection.
+10. Branch storage isolation without data mixing.
 
-- [ ] **Step 2: Run operational scenarios and fix only demonstrated failures**
+- [x] **Step 2: Run operational scenarios and fix only demonstrated failures**
 
 ```powershell
 node --test --test-isolation=none tests/attendance-v2-operational-scenarios.test.js
@@ -531,7 +531,7 @@ node --test --test-isolation=none tests/attendance-v2-operational-scenarios.test
 
 Expected: PASS after Tasks 1-6. Any failure must receive its own regression test before a code fix.
 
-- [ ] **Step 3: Run syntax, permission, focused, and complete verification**
+- [x] **Step 3: Run syntax, permission, focused, and complete verification**
 
 ```powershell
 node --check js/attendance-v2-model.js
@@ -550,20 +550,47 @@ git diff --check
 
 Expected: zero failures; only the explicitly configured Firestore emulator availability test may skip.
 
-- [ ] **Step 4: Perform a local read-only browser check**
+- [x] **Step 4: Perform a local read-only browser check**
 
 Open the main and teacher pages in preview/read-only mode. Verify no console errors, the current table remains visible while attendance loads, and no operating write occurs. Do not activate v2-read against production during local verification.
 
-- [ ] **Step 5: Record rollback evidence**
+검증 메모: 인증되지 않은 로컬 환경에서는 로그인 화면까지만 확인했다. 메인 화면의 안전 미리보기 안내, 강사 화면의 출석 모듈 로드, 설정 화면에서 개발자 전환 제어판이 숨겨지는 상태를 확인했으며 운영 쓰기와 모드 전환은 수행하지 않았다. 인증 후 실제 표 본문 확인은 배포 전 수동 점검 항목으로 남긴다.
+
+- [x] **Step 5: Record rollback evidence**
 
 Update the design document with the exact tested sequence: developer sets mode to `v1`, reloads, V1 attendance range loads, and the pre-transition V1 map remains intact. Do not include account secrets or student data.
 
-- [ ] **Step 6: Commit Task 7**
+- [x] **Step 6: Commit Task 7**
 
 ```powershell
 git add tests/attendance-v2-operational-scenarios.test.js docs/superpowers/specs/2026-08-07-v2-operational-migration-design.md docs/superpowers/plans/2026-08-07-v2-attendance-operational-migration.md
 git commit -m "Verify V2 attendance migration safety"
 ```
+
+---
+
+### Task 8: Cross-Branch Teacher Operations
+
+**Files:**
+- Modify: `config/schedule-permissions.json`
+- Modify: `scripts/sync-permission-policy.js`
+- Modify: `firestore.rules`
+- Modify: `js/auth-guard.js`
+- Modify: `tests/permission-policy-sync.test.js`
+- Modify: `tests/firestore-rules-security.test.js`
+- Modify: `tests/firestore-rules-emulator.test.js`
+
+**Interfaces:**
+- Consumes: the single permission manifest and generated Firestore/client permission blocks.
+- Produces: cross-branch teacher access to existing attendance, absence, and makeup operations without expanding desk-only schedule editing.
+
+- [x] **Step 1: Write failing cross-branch permission tests**
+- [x] **Step 2: Verify the tests fail under branch-scoped teacher rules**
+- [x] **Step 3: Add the explicit `teacherCrossBranchAccess` policy**
+- [x] **Step 4: Regenerate Firestore and client permission artifacts**
+- [x] **Step 5: Verify static permission tests**
+- [x] **Step 6: Verify Firestore emulator allow/deny behavior**
+- [x] **Step 7: Run the full regression suite and commit**
 
 ## Deployment Gate
 
