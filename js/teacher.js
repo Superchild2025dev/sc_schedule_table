@@ -28,6 +28,10 @@ let _activeTab='bogang';
 let _attWeekStart=null;
 let _teacherStuKey='swim_students';
 let _teacherInstKey='swim_inst';
+let _teacherAttendanceRuntime=null;
+let _teacherAttendanceBranchId='';
+const _teacherAttendanceRootValues={};
+const _teacherLegacyAttendanceHydratedKeys=new Set();
 let _staffNotifyFn=null;
 const TEACHER_DAY_SNAPSHOT_PREFIX='zz_swim_day_snapshot__';
 const TEACHER_DAY_SNAPSHOT_CACHE_LIMIT=18;
@@ -142,6 +146,63 @@ function applyTeacherDataKeys(data){
   const keys=teacherDataKeys(data||{});
   _teacherStuKey=keys.stuKey;
   _teacherInstKey=keys.instKey;
+}
+
+function teacherAttendanceStorageKeys(){
+  const bangteuk=String(_teacherStuKey||'').match(/^swim_bt_(.+)_stu$/);
+  if(bangteuk){
+    return {
+      tabId:bangteuk[1],courseType:'bangteuk',
+      attendance:'swim_bt_attendance_'+bangteuk[1],
+      attGuests:'swim_bt_att_guests_'+bangteuk[1],
+    };
+  }
+  const regular=String(_teacherStuKey||'').match(/^swim_stu_(.+)$/);
+  return {
+    tabId:regular?regular[1]:'regular',courseType:'regular',
+    attendance:'swim_attendance',attGuests:'swim_att_guests',
+  };
+}
+function getTeacherOperationalAttendanceRuntime(){
+  const branch=getBranchInfo();
+  if(!branch||!_fbReady) return null;
+  if(_teacherAttendanceRuntime&&_teacherAttendanceBranchId===branch.id){
+    return _teacherAttendanceRuntime;
+  }
+  if(!window.SCV2AttendanceStore||!window.SCOperationalAttendance||!window.SCMainAttendanceRuntime){
+    return null;
+  }
+  if(typeof firebase.firestore!=='function') return null;
+  const v2Store=SCV2AttendanceStore.create({db:firebase.firestore(),branchId:branch.id});
+  const legacy={
+    loadRange(input){ return Promise.resolve(getTeacherLegacyAttendanceRangeMaps(input)); },
+    updateAttendance(mutator,input){ return _updateLegacyTeacherAttendanceMapTx(mutator,input); },
+    updateGuests(mutator,input){ return _updateLegacyTeacherAttGuestsMapTx(mutator,input); },
+  };
+  const gateway=SCOperationalAttendance.create({branchId:branch.id,legacy,v2Store});
+  _teacherAttendanceRuntime=SCMainAttendanceRuntime.create({
+    branchId:branch.id,
+    gateway,
+    prepareKeys(keys){
+      if((keys||[]).length) hydrateTeacherLegacyAttendance();
+      return Promise.resolve({stale:false,keys:keys||[]});
+    },
+    getMaps(){
+      return {
+        attendance:JSON.parse(JSON.stringify(ATTENDANCE||{})),
+        guests:JSON.parse(JSON.stringify(ATT_GUESTS||{})),
+      };
+    },
+    setMaps(next){
+      ATTENDANCE=JSON.parse(JSON.stringify(next?.attendance||{}));
+      ATT_GUESTS=JSON.parse(JSON.stringify(next?.guests||{}));
+    },
+  });
+  _teacherAttendanceBranchId=branch.id;
+  return _teacherAttendanceRuntime;
+}
+function isTeacherAttendanceV2Authority(){
+  return !!(_teacherAttendanceRuntime&&_teacherAttendanceRuntime.isV2Authority());
 }
 
 function teacherDaySnapshotScope(){
@@ -313,6 +374,19 @@ function initFirebase(){
   }catch(e){ console.error('Firebase 실패:',e); }
 }
 
+function hydrateTeacherLegacyAttendance(){
+  if(isTeacherAttendanceV2Authority()) return false;
+  const keys=teacherAttendanceStorageKeys();
+  if(!_teacherLegacyAttendanceHydratedKeys.has(keys.attendance)){
+    ATTENDANCE=parseStoredJSON(keys.attendance,_teacherAttendanceRootValues[keys.attendance],{});
+    _teacherLegacyAttendanceHydratedKeys.add(keys.attendance);
+  }
+  if(!_teacherLegacyAttendanceHydratedKeys.has(keys.attGuests)){
+    ATT_GUESTS=parseStoredJSON(keys.attGuests,_teacherAttendanceRootValues[keys.attGuests],{});
+    _teacherLegacyAttendanceHydratedKeys.add(keys.attGuests);
+  }
+  return true;
+}
 function loadAllData(){
   return new Promise((resolve,reject)=>{
     if(!_fbReady){reject('not ready');return;}
@@ -324,8 +398,11 @@ function loadAllData(){
       MARK_MAP=parseStoredJSON('swim_mark',data.swim_mark,{});
       REQUESTS=parseStoredJSON('swim_requests',data.swim_requests,{});
       TEACHERS=parseJSON(data.swim_teachers,[]);
-      ATTENDANCE=parseStoredJSON('swim_attendance',data.swim_attendance,{});
-      ATT_GUESTS=parseStoredJSON('swim_att_guests',data.swim_att_guests,{});
+      const attendanceKeys=teacherAttendanceStorageKeys();
+      _teacherAttendanceRootValues[attendanceKeys.attendance]=data[attendanceKeys.attendance];
+      _teacherAttendanceRootValues[attendanceKeys.attGuests]=data[attendanceKeys.attGuests];
+      _teacherLegacyAttendanceHydratedKeys.delete(attendanceKeys.attendance);
+      _teacherLegacyAttendanceHydratedKeys.delete(attendanceKeys.attGuests);
       DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
       resolve();
     }).catch(reject);
@@ -336,6 +413,7 @@ function subscribeChanges(){
   if(!_fbReady) return;
   _fb.on('child_changed',snap=>{
     const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
+    const attendanceKeys=teacherAttendanceStorageKeys();
     if(snap.key==='swim_parent_tab'){
       loadAllData().then(()=>{
         if(_currentTeacher!==null) render();
@@ -349,8 +427,24 @@ function subscribeChanges(){
     else if(snap.key===_teacherStuKey) STUDENTS=parseStoredJSON(_teacherStuKey,asStr,[]);
     else if(snap.key===_teacherInstKey) INST_MAP=parseStoredJSON(_teacherInstKey,asStr,{});
     else if(snap.key==='swim_teachers') TEACHERS=parseJSON(asStr,[]);
-    else if(snap.key==='swim_attendance') ATTENDANCE=parseStoredJSON('swim_attendance',asStr,{});
-    else if(snap.key==='swim_att_guests') ATT_GUESTS=parseStoredJSON('swim_att_guests',asStr,{});
+    else if(snap.key===attendanceKeys.attendance){
+      _teacherAttendanceRootValues[snap.key]=asStr;
+      if(_teacherAttendanceRuntime&&!isTeacherAttendanceV2Authority()){
+        ATTENDANCE=parseStoredJSON(snap.key,asStr,{});
+        _teacherLegacyAttendanceHydratedKeys.add(snap.key);
+      }else{
+        _teacherLegacyAttendanceHydratedKeys.delete(snap.key);
+      }
+    }
+    else if(snap.key===attendanceKeys.attGuests){
+      _teacherAttendanceRootValues[snap.key]=asStr;
+      if(_teacherAttendanceRuntime&&!isTeacherAttendanceV2Authority()){
+        ATT_GUESTS=parseStoredJSON(snap.key,asStr,{});
+        _teacherLegacyAttendanceHydratedKeys.add(snap.key);
+      }else{
+        _teacherLegacyAttendanceHydratedKeys.delete(snap.key);
+      }
+    }
     else if(snap.key==='swim_day_snapshot') DAY_SNAPSHOT=parseStoredJSON('swim_day_snapshot',asStr,{});
     if(_currentTeacher!==null) render();
     // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신
@@ -366,8 +460,8 @@ function _canWriteTeacherKey(key,label){
 }
 function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); MARK_MAP=normalizeStoredValue('swim_mark',MARK_MAP); return _teacherWrites.set('swim_mark',JSON.stringify(MARK_MAP),{label:'보강/결석 처리'}); }
 function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _teacherWrites.set('swim_requests',JSON.stringify(REQUESTS),{label:'요청 처리'}); }
-function saveAttendance(){ if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue('swim_attendance',ATTENDANCE); return _teacherWrites.set('swim_attendance',JSON.stringify(ATTENDANCE),{label:'출석 체크'}); }
-function saveAttGuests(){ if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue('swim_att_guests',ATT_GUESTS); return _teacherWrites.set('swim_att_guests',JSON.stringify(ATT_GUESTS),{label:'출석부 추가'}); }
+function saveAttendance(){ const key=teacherAttendanceStorageKeys().attendance; if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue(key,ATTENDANCE); return _teacherWrites.set(key,JSON.stringify(ATTENDANCE),{label:'출석 체크'}); }
+function saveAttGuests(){ const key=teacherAttendanceStorageKeys().attGuests; if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue(key,ATT_GUESTS); return _teacherWrites.set(key,JSON.stringify(ATT_GUESTS),{label:'출석부 추가'}); }
 function saveDaySnapshot(ds){
   const date=String(ds||'');
   const snapshot=DAY_SNAPSHOT[date];
@@ -378,10 +472,10 @@ function saveDaySnapshot(ds){
   cacheTeacherDaySnapshot(date,normalized);
   return _teacherWrites.set(key,JSON.stringify(normalized),{label:'출석부 스냅샷'});
 }
-function updateAttendanceMapTx(mutator){
-  if(!_canWriteTeacherKey('swim_attendance','출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
+function _updateLegacyTeacherAttendanceMapTx(mutator,input){
+  const key=teacherAttendanceStorageKeys().attendance;
+  if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
-  const key='swim_attendance';
   return _teacherWrites.transaction([key],root=>{
     const att=parseStoredJSON(key,root[key],{});
     const next=mutator(att);
@@ -391,13 +485,21 @@ function updateAttendanceMapTx(mutator){
   }).then(res=>{
     if(!res.committed) throw new Error('attendance transaction aborted');
     ATTENDANCE=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
+    _teacherLegacyAttendanceHydratedKeys.add(key);
     return ATTENDANCE;
   });
 }
-function updateAttGuestsMapTx(mutator){
-  if(!_canWriteTeacherKey('swim_att_guests','출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
+function updateAttendanceMapTx(mutator){
+  const key=teacherAttendanceStorageKeys().attendance;
+  if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
+  const runtime=getTeacherOperationalAttendanceRuntime();
+  if(!runtime) return _updateLegacyTeacherAttendanceMapTx(mutator,teacherAttendanceOperationContext());
+  return runtime.updateAttendance(mutator,teacherAttendanceOperationContext());
+}
+function _updateLegacyTeacherAttGuestsMapTx(mutator,input){
+  const key=teacherAttendanceStorageKeys().attGuests;
+  if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
-  const key='swim_att_guests';
   return _teacherWrites.transaction([key],root=>{
     const guests=parseStoredJSON(key,root[key],{});
     const next=mutator(guests);
@@ -407,8 +509,16 @@ function updateAttGuestsMapTx(mutator){
   }).then(res=>{
     if(!res.committed) throw new Error('guest transaction aborted');
     ATT_GUESTS=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
+    _teacherLegacyAttendanceHydratedKeys.add(key);
     return ATT_GUESTS;
   });
+}
+function updateAttGuestsMapTx(mutator){
+  const key=teacherAttendanceStorageKeys().attGuests;
+  if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
+  const runtime=getTeacherOperationalAttendanceRuntime();
+  if(!runtime) return _updateLegacyTeacherAttGuestsMapTx(mutator,teacherAttendanceOperationContext());
+  return runtime.updateGuests(mutator,teacherAttendanceOperationContext());
 }
 function updateMarkTx(mutator){
   if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
@@ -445,10 +555,11 @@ function updateRequestsTx(mutator){
   });
 }
 function _teacherTxApplyKey(key,raw){
+  const attendanceKeys=teacherAttendanceStorageKeys();
   if(key==='swim_requests') REQUESTS=parseStoredJSON('swim_requests',raw,{});
   else if(key==='swim_mark') MARK_MAP=parseStoredJSON('swim_mark',raw,{});
-  else if(key==='swim_attendance') ATTENDANCE=parseStoredJSON('swim_attendance',raw,{});
-  else if(key==='swim_att_guests') ATT_GUESTS=parseStoredJSON('swim_att_guests',raw,{});
+  else if(key===attendanceKeys.attendance) ATTENDANCE=parseStoredJSON(key,raw,{});
+  else if(key===attendanceKeys.attGuests) ATT_GUESTS=parseStoredJSON(key,raw,{});
   else if(key==='swim_day_snapshot') DAY_SNAPSHOT=parseStoredJSON('swim_day_snapshot',raw,{});
   else if(key===_teacherStuKey) STUDENTS=parseStoredJSON(_teacherStuKey,raw,[]);
   else if(key===_teacherInstKey) INST_MAP=parseStoredJSON(_teacherInstKey,raw,{});
@@ -1389,6 +1500,65 @@ function attendanceGuestSlotDetail(sgk, ds){
 function attendanceStateLabel(state){
   return state==='present'?'출석':state==='absent'?'결석':'체크 해제';
 }
+function teacherAttendanceEntryDate(key){
+  const match=String(key||'').match(/\/(\d{4}-\d{2}-\d{2})(?:#sub)?$/);
+  return match?match[1]:'';
+}
+function teacherAttendanceRangeMap(source,dates){
+  const selected=new Set((dates||[]).map(ds=>String(ds||'')).filter(Boolean));
+  const out={};
+  Object.entries(source&&typeof source==='object'?source:{}).forEach(([key,value])=>{
+    if(selected.has(teacherAttendanceEntryDate(key))) out[key]=JSON.parse(JSON.stringify(value));
+  });
+  return out;
+}
+function getTeacherLegacyAttendanceRangeMaps(input){
+  return {
+    attendance:teacherAttendanceRangeMap(ATTENDANCE,input?.dates),
+    guests:teacherAttendanceRangeMap(ATT_GUESTS,input?.dates),
+  };
+}
+function teacherAttendanceOperationContext(){
+  const storage=teacherAttendanceStorageKeys();
+  const weekDates=getWeekDates(_attWeekStart||getMondayOf(new Date()));
+  return {
+    tabId:storage.tabId,
+    courseType:storage.courseType,
+    dates:weekDates.map(item=>item.ds),
+    recordMeta(legacyKey){
+      if(!window.SCV2AttendanceModel||typeof SCV2AttendanceModel.parseRecordKey!=='function') return {};
+      const parsed=SCV2AttendanceModel.parseRecordKey(legacyKey);
+      if(!parsed?.ok) return {};
+      const [t,d,l,r]=parsed.value.slotKey.split('/');
+      const {students}=getDataForDate(parsed.value.date);
+      const student=(students||[]).find(item=>item&&item.t===t&&item.d===d
+        &&Number(item.l)===Number(l)&&Number(item.r)===Number(r));
+      if(!student) return {};
+      const personId=String(student.sid||'');
+      return {
+        personId,
+        enrollmentId:personId&&window.SCScheduleSchemaV2
+          ?SCScheduleSchemaV2.enrollmentIdFor(personId,storage.tabId)
+          :'',
+      };
+    },
+  };
+}
+async function ensureTeacherAttendanceWeekLoaded(weekDates){
+  const runtime=getTeacherOperationalAttendanceRuntime();
+  if(!runtime) throw new Error('강사 출석 데이터 연결을 준비하지 못했습니다.');
+  const storage=teacherAttendanceStorageKeys();
+  return runtime.loadRanges({
+    owner:'attendance-teacher',
+    ranges:[{
+      tabId:storage.tabId,
+      courseType:storage.courseType,
+      dates:(weekDates||[]).map(item=>typeof item==='string'?item:item?.ds).filter(Boolean),
+      baseKeys:[],
+      attendanceKeys:[storage.attendance,storage.attGuests],
+    }],
+  });
+}
 
 // 오늘 스냅샷 저장 (디바운스)
 let _snapshotTimer=null;
@@ -1426,6 +1596,15 @@ async function renderAttendanceTimetable(){
   if(!_attWeekStart) _attWeekStart=getMondayOf(new Date());
   const weekDates=getWeekDates(_attWeekStart);
   const todayStr=toDateStr(new Date());
+  try{
+    const loaded=await ensureTeacherAttendanceWeekLoaded(weekDates);
+    if(loaded?.stale||renderSeq!==_attendanceRenderSeq) return;
+  }catch(error){
+    if(renderSeq!==_attendanceRenderSeq) return;
+    console.warn('teacher attendance range load failed',error);
+    toast('출석부 데이터를 불러오지 못했습니다. 다시 시도해주세요.','err');
+    return;
+  }
   await ensureTeacherDaySnapshotsLoaded(weekDates.filter(item=>item.ds<todayStr).map(item=>item.ds));
   if(renderSeq!==_attendanceRenderSeq) return;
   DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
@@ -1630,7 +1809,7 @@ async function cycleAttendance(slotKey, ds){
       label:'선생님 출석 체크',
       target:attendanceStudentText(slotKey,ds),
       detail:`${attendanceSlotDetail(slotKey,ds)} · ${attendanceStateLabel(auditState)}`,
-      keys:['swim_attendance'],
+      keys:[teacherAttendanceStorageKeys().attendance],
     }).catch(e=>console.warn('audit failed',e));
     renderAttendanceTimetable();
   }
@@ -1663,7 +1842,7 @@ async function cycleGuestAttendance(sgk, ds, gid){
         label:'선생님 추가학생 출석 체크',
         target:auditName,
         detail:`${attendanceGuestSlotDetail(sgk,ds)} · ${attendanceStateLabel(auditState)}`,
-        keys:['swim_att_guests'],
+        keys:[teacherAttendanceStorageKeys().attGuests],
       }).catch(e=>console.warn('audit failed',e));
     }
     renderAttendanceTimetable();
@@ -1694,7 +1873,7 @@ async function addGuest(sgk, ds){
       label:'선생님 출석부 추가학생 등록',
       target:auditName,
       detail:attendanceGuestSlotDetail(sgk,ds),
-      keys:['swim_att_guests'],
+      keys:[teacherAttendanceStorageKeys().attGuests],
     }).catch(e=>console.warn('audit failed',e));
     toast(name+' 추가','ok'); renderAttendanceTimetable();
   }
@@ -1720,7 +1899,7 @@ async function deleteGuest(sgk, ds, gid){
         label:'선생님 출석부 추가학생 삭제',
         target:auditName,
         detail:attendanceGuestSlotDetail(sgk,ds),
-        keys:['swim_att_guests'],
+        keys:[teacherAttendanceStorageKeys().attGuests],
       }).catch(e=>console.warn('audit failed',e));
     }
     renderAttendanceTimetable();
@@ -1761,7 +1940,7 @@ async function markAllPresentToday(){
       label:'선생님 출석 일괄 체크',
       target:_currentTeacher||'데스크 페이지',
       detail:`${fmtDate(today)} ${cnt}명 출석`,
-      keys:['swim_attendance'],
+      keys:[teacherAttendanceStorageKeys().attendance],
     }).catch(e=>console.warn('audit failed',e));
     toast(cnt+'명 출석','ok'); renderAttendanceTimetable();
   }
