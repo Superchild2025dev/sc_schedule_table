@@ -24,7 +24,6 @@
 }
 
 html {
-  min-width: 320px;
   background: var(--surface-soft);
   color: var(--ink);
   font-family: "Noto Sans KR", sans-serif;

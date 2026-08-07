@@ -9,6 +9,7 @@ function read(relativePath) {
 }
 
 const html = read(path.join("regular-vacancy-site", "index.html"));
+const css = read(path.join("regular-vacancy-site", "styles.css"));
 const app = read(path.join("regular-vacancy-site", "app.js"));
 const nginx = read(path.join("deploy", "nginx", "schedule.conf"));
 
@@ -40,7 +41,11 @@ assert.match(visibleText, /본 페이지의 빈자리 현황은 참고용이며,
 assert.match(html, /정확한 등록 가능 여부는 해당 지점으로 문의해 주세요\./);
 assert.match(html, /<strong>본 페이지의 빈자리 현황은 참고용이며,<\/strong>/);
 assert.equal((html.match(/본 페이지의 빈자리 현황은 참고용이며/g) || []).length, 1);
+assert.ok(html.indexOf('class="control-band"') < html.indexOf('class="availability-notice"'));
 assert.ok(html.indexOf('class="availability-notice"') < html.indexOf('class="schedule-band"'));
+assert.equal((html.match(/class="availability-notice"/g) || []).length, 1);
+assert.doesNotMatch(html, /class="notice-band"/);
+assert.doesNotMatch(css, /html\s*\{[^}]*min-width:\s*320px;/s);
 assert.doesNotMatch(html, /2026년 9월 정규반 등록 가능 시간을 확인하세요/);
 assert.doesNotMatch(html, /정규반 전환 안내|>등록 가능한 시간</);
 
