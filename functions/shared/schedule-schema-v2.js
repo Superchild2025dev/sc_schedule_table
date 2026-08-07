@@ -503,12 +503,8 @@
       'ambiguous-fallback-identity'
     ].includes(issue.type));
     const blockingIssues=[...(Array.isArray(bundle.sourceIssues)?bundle.sourceIssues:[]),...conversionBlocking];
-    return {
+    const report={
       branchId:text(branchId),
-      bundle,
-      conversion,
-      identityConflicts,
-      blockingIssues,
       checks:{
         legacyPlacements,
         convertedPlacements:conversion.placements.length,
@@ -578,6 +574,13 @@
           &&!blockingIssues.length,
       },
     };
+    Object.defineProperties(report,{
+      bundle:{value:bundle,writable:true,configurable:true,enumerable:false},
+      conversion:{value:conversion,writable:true,configurable:true,enumerable:false},
+      identityConflicts:{value:identityConflicts,writable:true,configurable:true,enumerable:false},
+      blockingIssues:{value:blockingIssues,writable:true,configurable:true,enumerable:false},
+    });
+    return report;
   }
   function entryDate(entry){
     if(!entry||typeof entry!=='object') return '';

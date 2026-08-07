@@ -131,6 +131,23 @@ test('legacy root diagnostics are read-only and report count mismatches',()=>{
   assert.equal(report.blockingIssues[0].type,'slot-conflict');
 });
 
+test('serialized legacy diagnosis omits PII while direct conversion properties remain accessible',()=>{
+  const schema=loadSchema();
+  const name='PrivacyLeakName_Q2_20260807';
+  const phone='01098765432';
+  const report=schema.diagnoseLegacyRoot('gagyeong',{
+    swim_tab_list:JSON.stringify([{id:'regular',type:'regular'}]),
+    swim_students:JSON.stringify([{sid:'privacy_person',n:name,p:phone,t:'4시',d:'월',l:1,r:1}]),
+  });
+  const serialized=JSON.stringify(report);
+  assert.equal(serialized.includes(name),false);
+  assert.equal(serialized.includes(phone),false);
+  assert.equal(report.bundle.studentsByTab.regular[0].n,name);
+  assert.equal(report.conversion.people[0].name,name);
+  assert.equal(report.identityConflicts.length,0);
+  assert.ok(Array.isArray(report.blockingIssues));
+});
+
 test('paired move maps become one reservation document',()=>{
   const schema=loadSchema();
   const root={
