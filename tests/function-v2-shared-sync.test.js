@@ -20,7 +20,7 @@ test("function V2 shared files match browser sources",()=>{
 test("function V2 shared files expose the converter in Node",()=>{
   delete globalThis.SCScheduleTime;
   delete globalThis.SCScheduleSchemaV2;
-  globalThis.window = globalThis;
+  delete globalThis.window;
 
   for(const name of ["schedule-time.js","schedule-schema-v2.js"]){
     const file = path.join(root, "functions", "shared", name);

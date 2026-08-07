@@ -394,4 +394,4 @@
     normalizeRetireHistory,
     normalizeStoredValue
   };
-})(window);
+})(typeof window!=='undefined'?window:globalThis);
