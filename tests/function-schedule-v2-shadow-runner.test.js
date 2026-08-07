@@ -379,6 +379,32 @@ test("does not delete an unreferenced person during incremental sync",async()=>{
   assert.equal(generationRows(db,"gen_orphan","placements").length,1);
 });
 
+test("full-generation reconciliation removes a person deleted between baseline and parity",async()=>{
+  const db=new FakeFirestore();
+  const root={
+    swim_tab_list:[META[0]],swim_main_tab:{tabId:"regular"},
+    swim_students:[
+      {sid:"stu_keep",n:"Keep Student",p:"01011112222",t:"16:00",d:"mon",l:1,r:1},
+      {sid:"stu_remove",n:"Remove Student",p:"01033334444",t:"17:00",d:"tue",l:1,r:1},
+    ],
+  };
+  const input={
+    db,branchId:"yongam",generationId:"gen_full_people",keys:["swim_students"],
+    readLegacyKey:legacyReader(root),fullGeneration:true,
+    now:new Date("2026-08-07T02:00:00.000Z"),
+  };
+  await runFenced(input);
+  assert.equal(generationRows(db,"gen_full_people","people").length,2);
+  root.swim_students=root.swim_students.slice(0,1);
+
+  const parity=await runFenced({...input,readLegacyKey:legacyReader(root)});
+
+  const people=generationRows(db,"gen_full_people","people");
+  assert.equal(people.length,1);
+  assert.equal(people[0].id,"stu_keep");
+  assert.ok(parity.deletes>=1);
+});
+
 test("a failed second fenced transaction does not produce an applied result",async()=>{
   const db=new FakeFirestore();
   db.failTransactionAt=2;
@@ -393,6 +419,7 @@ test("a failed second fenced transaction does not produce an applied result",asy
     await runFenced({
       db,branchId:"yongam",generationId:"gen_batch",keys:["swim_students"],
       readLegacyKey:legacyReader(root),now:new Date("2026-08-07T02:00:00.000Z"),
+      fullGeneration:true,
     });
     applied=true;
   },error=>error.code==="unavailable");

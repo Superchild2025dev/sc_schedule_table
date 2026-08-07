@@ -193,7 +193,8 @@ async function readPeopleScope(collection,ids){
   return rows;
 }
 
-async function readCollectionScope(collectionRef,collection,tabIds,personIds){
+async function readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration){
+  if(fullGeneration) return snapshotRows(await collectionRef.get());
   if(collection==="people") return readPeopleScope(collectionRef,personIds);
   if(TAB_SCOPED_COLLECTIONS.has(collection)&&tabIds.size){
     const rows=[];
@@ -259,6 +260,7 @@ async function runShadowSyncUnsafe(input){
   const branchId=text(source.branchId);
   const generationId=text(source.generationId);
   const keys=(Array.isArray(source.keys)?source.keys:[]).map(text).filter(policy.isTrackedKey);
+  const fullGeneration=source.fullGeneration===true;
   if(!db||typeof db.collection!=="function") throw coded("invalid-firestore");
   if(!branchId||!generationId||typeof readLegacyKey!=="function") throw coded("invalid-argument");
 
@@ -295,7 +297,7 @@ async function runShadowSyncUnsafe(input){
   let deletes=0;
 
   for(const collection of collections){
-    const tabIds=collectionTabIds(collection,keys,convertedTabs);
+    const tabIds=fullGeneration?new Set():collectionTabIds(collection,keys,convertedTabs);
     const desired=scopedDesired(report.conversion,collection,tabIds);
     const expectedRows=desired.filter(row=>text(row?.id)).map(row=>({
       id:safeDocId(row.id),
@@ -304,13 +306,13 @@ async function runShadowSyncUnsafe(input){
     const expectedById=new Map(expectedRows.map(row=>[row.id,row.value]));
     const personIds=collection==="people"?desired.map(row=>text(row.id)):[];
     const collectionRef=generationRef.collection(collection);
-    const existingRows=await readCollectionScope(collectionRef,collection,tabIds,personIds);
+    const existingRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
     const existingById=new Map(existingRows.map(row=>[row.id,row.value]));
     const operations=[];
     expectedById.forEach((value,id)=>{
       if(!sameDocument(existingById.get(id),value)) operations.push({type:"set",id,value});
     });
-    if(collection!=="people"){
+    if(collection!=="people"||fullGeneration){
       existingById.forEach((value,id)=>{
         if(!expectedById.has(id)) operations.push({type:"delete",id});
       });
@@ -323,7 +325,7 @@ async function runShadowSyncUnsafe(input){
       deletes+=chunk.filter(operation=>operation.type==="delete").length;
     }
 
-    const actualRows=await readCollectionScope(collectionRef,collection,tabIds,personIds);
+    const actualRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
     const actualById=new Map(actualRows.map(row=>[row.id,row.value]));
     const expectedDigest=collectionDigest(expectedRows);
     const actualDigest=collectionDigest(actualRows);

@@ -423,7 +423,27 @@ function preparationGenerationId() {
   return `gen_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
-async function acquireScheduleV2Preparation(branchId) {
+function scheduleV2SourceWriteDate(event) {
+  const afterValue = event?.data?.after?.updateTime;
+  const afterDate = afterValue && (typeof afterValue.toDate === "function" ? afterValue.toDate() : new Date(afterValue));
+  if (afterDate instanceof Date && !Number.isNaN(afterDate.getTime())) return afterDate;
+  const eventDate = event?.time ? new Date(event.time) : null;
+  if (eventDate instanceof Date && !Number.isNaN(eventDate.getTime())) return eventDate;
+  const beforeValue = event?.data?.before?.updateTime;
+  const beforeDate = beforeValue && (typeof beforeValue.toDate === "function" ? beforeValue.toDate() : new Date(beforeValue));
+  if (beforeDate instanceof Date && !Number.isNaN(beforeDate.getTime())) return beforeDate;
+  return null;
+}
+
+function scheduleV2EventDuringPreparation(config, event) {
+  const writtenAt = scheduleV2SourceWriteDate(event);
+  const startedAt = Date.parse(config?.preparationStartedAt || "");
+  const readyAt = Date.parse(config?.readyAt || "");
+  if (!writtenAt || !Number.isFinite(startedAt) || !Number.isFinite(readyAt)) return false;
+  return writtenAt.getTime() >= startedAt && writtenAt.getTime() <= readyAt;
+}
+
+async function acquireScheduleV2Preparation(branchId, expectedRuntime) {
   const configRef = scheduleV2RuntimeRef(branchId, "schedule");
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
   const generationId = preparationGenerationId();
@@ -437,6 +457,12 @@ async function acquireScheduleV2Preparation(branchId) {
     const syncSnapshot = await tx.get(syncRef);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
+    if (expectedRuntime && (
+      String(config.mode || "") !== String(expectedRuntime.mode || "") ||
+      String(config.generationId || "") !== String(expectedRuntime.generationId || "")
+    )) {
+      throw new HttpsError("aborted", "Schedule V2 준비 대상이 변경되었습니다");
+    }
     const activeLeaseUntil = Date.parse(sync.leaseUntil || "");
     if (String(config.mode || "") === "preparing" ||
         (String(sync.leaseId || "") && Number.isFinite(activeLeaseUntil) && activeLeaseUntil > now.getTime())) {
@@ -638,8 +664,8 @@ async function failScheduleV2Preparation(preparation) {
   });
 }
 
-async function prepareScheduleV2(branch) {
-  const preparation = await acquireScheduleV2Preparation(branch.id);
+async function prepareScheduleV2(branch, expectedRuntime) {
+  const preparation = await acquireScheduleV2Preparation(branch.id, expectedRuntime);
   const fence = {ref: preparation.syncRef, leaseId: preparation.leaseId};
   try {
     const baselineKeys = await listScheduleV2BaselineKeys(branch);
@@ -650,6 +676,7 @@ async function prepareScheduleV2(branch) {
       keys: baselineKeys,
       readLegacyKey: key => readStoredValue(branch, key),
       fence,
+      fullGeneration: true,
     });
     for (let pass = 0; pass < 100; pass++) {
       let claim;
@@ -671,6 +698,7 @@ async function prepareScheduleV2(branch) {
         keys: baselineKeys,
         readLegacyKey: key => readStoredValue(branch, key),
         fence,
+        fullGeneration: true,
       });
       if (await tryCompleteScheduleV2Preparation(preparation, parity)) {
         return readScheduleV2Status(branch.id);
@@ -2124,20 +2152,33 @@ exports.queueScheduleV2Shadow = onDocumentWritten({
   serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
 }, async event => {
   const branchId = String(event.params.branchId || "");
-  if (!BRANCHES[branchId]) return null;
+  const branch = BRANCHES[branchId];
+  if (!branch) return null;
   const key = scheduleV2ShadowPolicy.decodeLegacyKey(event.params.docId);
   if (!scheduleV2ShadowPolicy.isTrackedKey(key)) return null;
 
   const configRef = scheduleV2RuntimeRef(branchId, "schedule");
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
-  await db.runTransaction(async tx => {
-    const config = await tx.get(configRef);
-    if (!["preparing", "shadow", "verify"].includes(config.get("mode"))) return;
+  const queuedEvent = await db.runTransaction(async tx => {
+    const configSnapshot = await tx.get(configRef);
+    const config = configSnapshot.data() || {};
+    const mode = String(config.mode || "");
+    const delayedPreparationEvent = mode === "ready" && scheduleV2EventDuringPreparation(config, event);
+    if (!delayedPreparationEvent && !["preparing", "shadow", "verify"].includes(mode)) return null;
     const snapshot = await tx.get(syncRef);
     const queued = scheduleV2ShadowPolicy.mergePending(snapshot.data(), key, new Date());
     queued.retryCount = 0;
     tx.set(syncRef, queued, {merge: true});
+    return delayedPreparationEvent ? {generationId: String(config.generationId || "")} : {};
   });
+  if (queuedEvent?.generationId) {
+    try {
+      await prepareScheduleV2(branch, {mode: "ready", generationId: queuedEvent.generationId});
+    } catch (error) {
+      if (["aborted", "already-exists"].includes(String(error?.code || ""))) return null;
+      throw error;
+    }
+  }
   return null;
 });
 

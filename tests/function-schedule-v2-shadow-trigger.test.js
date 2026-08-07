@@ -7,6 +7,7 @@ const path=require("node:path");
 
 const INDEX_PATH=path.join(__dirname,"..","functions","index.js");
 const FUNCTIONS_DIR=path.dirname(INDEX_PATH);
+const scheduleV2ShadowPolicy=require(path.join(FUNCTIONS_DIR,"schedule-v2-shadow-policy.js"));
 
 function clone(value){
   return value===undefined?undefined:JSON.parse(JSON.stringify(value));
@@ -15,6 +16,7 @@ function clone(value){
 class FakeSnapshot{
   constructor(ref,value){
     this.ref=ref;
+    this.id=ref.id;
     this.exists=value!==undefined;
     this.value=clone(value);
   }
@@ -31,6 +33,17 @@ class FakeDocument{
 class FakeCollection{
   constructor(db,collectionPath){ this.db=db;this.path=collectionPath; }
   doc(id){ return new FakeDocument(this.db,`${this.path}/${id}`); }
+  async get(){
+    const prefix=this.path+"/";
+    const docs=[];
+    for(const [documentPath,value] of this.db.docs){
+      const suffix=documentPath.slice(prefix.length);
+      if(documentPath.startsWith(prefix)&&suffix&&!suffix.includes("/")){
+        docs.push(new FakeSnapshot(new FakeDocument(this.db,documentPath),value));
+      }
+    }
+    return {docs,size:docs.length,empty:!docs.length,forEach(visitor){docs.forEach(visitor);}};
+  }
 }
 
 class FakeFirestore{
@@ -132,7 +145,13 @@ function loadFunctions({initial={},runShadowSync=async()=>({}),now}={}){
 
 function schedulePath(branchId){ return `scheduleV2/${branchId}/runtime/schedule`; }
 function syncPath(branchId){ return `scheduleV2/${branchId}/runtime/scheduleSync`; }
-function sourceEvent(branchId,docId){ return {params:{branchId,docId}}; }
+function sourceEvent(branchId,docId,updatedAt){
+  const event={params:{branchId,docId}};
+  if(updatedAt){
+    event.data={after:{updateTime:{toDate:()=>new Date(updatedAt)}}};
+  }
+  return event;
+}
 function alertEntries(db,branchId){
   const prefix=`scheduleV2/${branchId}/alerts/`;
   return [...db.docs.entries()].filter(([documentPath])=>documentPath.startsWith(prefix));
@@ -199,6 +218,75 @@ test("concurrent source writes transactionally merge both tracked keys",async()=
   assert.deepEqual(queued.pendingKeys.sort(),["swim_inst","swim_students"]);
   assert.equal(queued.requestedRevision,2);
   assert.equal(queued.status,"pending");
+});
+
+test("a source event written during preparation is recovered when delivery occurs after readiness",async()=>{
+  const branchId="gagyeong";
+  const config=schedulePath(branchId);
+  const sync=syncPath(branchId);
+  const initial={
+    [config]:{
+      mode:"ready",generationId:"gen_ready",branchId,
+      preparationStartedAt:"2026-08-07T02:00:00.000Z",
+      readyAt:"2026-08-07T02:00:10.000Z",
+    },
+    [sync]:{pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
+    "scheduleV2/gagyeong/generations/gen_ready":{status:"ready",generationId:"gen_ready",branchId},
+    "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+    "scheduleStores/gagyeong/kv/swim_students":{value:[]},
+    "scheduleStores/gagyeong/kv/swim_mark":{value:{changed:true}},
+  };
+  const fixture=loadFunctions({initial,runShadowSync:async input=>({
+    collections:scheduleV2ShadowPolicy.collectionsForKey(input.keys[0]),
+    writes:0,deletes:0,counts:{},digests:{},
+  })});
+
+  await fixture.exports.queueScheduleV2Shadow(
+    sourceEvent(branchId,"swim_mark","2026-08-07T02:00:05.000Z")
+  );
+
+  const completed=fixture.db.value(config);
+  const completedSync=fixture.db.value(sync);
+  assert.equal(completed.mode,"ready");
+  assert.notEqual(completed.generationId,"gen_ready");
+  assert.ok(fixture.runnerCalls.some(call=>call.keys.includes("swim_mark")));
+  assert.equal(completedSync.requestedRevision,4);
+  assert.equal(completedSync.appliedRevision,4);
+  assert.deepEqual(completedSync.pendingKeys,[]);
+});
+
+test("a delayed delete uses the event occurrence time when after.updateTime is absent",async()=>{
+  const branchId="yongam";
+  const config=schedulePath(branchId);
+  const sync=syncPath(branchId);
+  const fixture=loadFunctions({
+    initial:{
+      [config]:{
+        mode:"ready",generationId:"gen_before_delete",branchId,
+        preparationStartedAt:"2026-08-07T03:00:00.000Z",
+        readyAt:"2026-08-07T03:00:10.000Z",
+      },
+      [sync]:{pendingKeys:[],requestedRevision:8,appliedRevision:8,status:"idle"},
+      "scheduleV2/yongam/generations/gen_before_delete":{status:"ready",generationId:"gen_before_delete",branchId},
+      "scheduleStores/yongam/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+      "scheduleStores/yongam/kv/swim_students":{value:[]},
+    },
+    runShadowSync:async()=>({collections:[],writes:0,deletes:0,counts:{},digests:{}}),
+  });
+  const event={
+    params:{branchId,docId:"swim_mark"},
+    time:"2026-08-07T03:00:05.000Z",
+    data:{
+      after:{exists:false},
+      before:{exists:true,updateTime:{toDate:()=>new Date("2026-08-01T00:00:00.000Z")}},
+    },
+  };
+
+  await fixture.exports.queueScheduleV2Shadow(event);
+
+  assert.notEqual(fixture.db.value(config).generationId,"gen_before_delete");
+  assert.equal(fixture.db.value(sync).requestedRevision,9);
+  assert.equal(fixture.db.value(sync).appliedRevision,9);
 });
 
 test("processor passes the claimed scheduleSync fence and chunk-safe legacy reader",async()=>{

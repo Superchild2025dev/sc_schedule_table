@@ -337,3 +337,58 @@ test("shadow activation wakes preserved work and verify refuses every unsafe que
   }});
   assert.equal((await verify.exports.manageScheduleV2Shadow(request("set-verify","gagyeong"))).mode,"verify");
 });
+
+test("runner failure cannot publish a prepared generation as ready",async()=>{
+  const initial={
+    [schedulePath("gagyeong")]:{mode:"v1",generationId:"",branchId:"gagyeong"},
+    [syncPath("gagyeong")]:{pendingKeys:[],requestedRevision:0,status:"idle"},
+    "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+  };
+  const fixture=loadFunctions({initial,runShadowSync:async()=>{
+    throw Object.assign(new Error("partial-write-failure"),{code:"unavailable"});
+  }});
+
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(request("prepare","gagyeong")),
+    error=>error.code==="failed-precondition",
+  );
+
+  const config=fixture.db.value(schedulePath("gagyeong"));
+  const generation=fixture.db.value(generationPath("gagyeong",config.generationId));
+  assert.equal(config.mode,"v1");
+  assert.equal(generation.status,"failed");
+  assert.notEqual(generation.status,"ready");
+});
+
+test("rollback while preparation is blocked revokes the fence and prevents stale readiness",async()=>{
+  let started;
+  const runnerStarted=new Promise(resolve=>{started=resolve;});
+  let release;
+  const runnerReleased=new Promise(resolve=>{release=resolve;});
+  const initial={
+    [schedulePath("yongam")]:{mode:"v1",generationId:"",branchId:"yongam"},
+    [syncPath("yongam")]:{pendingKeys:[],requestedRevision:0,status:"idle"},
+    "scheduleStores/yongam/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+  };
+  const fixture=loadFunctions({initial,runShadowSync:async()=>{
+    started();
+    await runnerReleased;
+    return {collections:["tabs"],writes:1,deletes:0,counts:{tabs:1},digests:{tabs:"tabs"}};
+  }});
+
+  const preparing=fixture.exports.manageScheduleV2Shadow(request("prepare","yongam"));
+  await Promise.race([runnerStarted,preparing]);
+  const preparingConfig=fixture.db.value(schedulePath("yongam"));
+  assert.equal(preparingConfig.mode,"preparing");
+
+  const rolledBack=await fixture.exports.manageScheduleV2Shadow(request("rollback","yongam"));
+  assert.equal(rolledBack.mode,"v1");
+  release();
+  await assert.rejects(preparing,error=>error.code==="aborted");
+
+  const finalConfig=fixture.db.value(schedulePath("yongam"));
+  const generation=fixture.db.value(generationPath("yongam",preparingConfig.generationId));
+  assert.equal(finalConfig.mode,"v1");
+  assert.notEqual(generation.status,"ready");
+  assert.equal(fixture.db.value(syncPath("yongam")).leaseId,undefined);
+});
