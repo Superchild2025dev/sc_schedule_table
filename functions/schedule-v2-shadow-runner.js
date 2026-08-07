@@ -10,6 +10,9 @@ const WRITE_BATCH_SIZE=350;
 const RESERVATION_KEYS=Object.freeze([
   "swim_retire","swim_enroll","swim_hyuwon","swim_move",
 ]);
+const METADATA_KEYS=Object.freeze([
+  "swim_age_year","swim_student_id_version","swim_ver",
+]);
 const GLOBAL_LEGACY_KEYS=Object.freeze([
   "swim_parent_tab","swim_teachers","swim_tab_folders","swim_archived_tabs",
   "swim_age_year","swim_student_id_version","swim_ver","swim_reserve",
@@ -18,6 +21,13 @@ const GLOBAL_LEGACY_KEYS=Object.freeze([
 ]);
 const TAB_SCOPED_COLLECTIONS=new Set([
   "enrollments","placements","teacherAssignments",
+]);
+const SAFE_ERROR_CODES=new Set([
+  "aborted","already-exists","cancelled","data-loss","deadline-exceeded",
+  "failed-precondition","internal","invalid-argument","not-found","out-of-range",
+  "permission-denied","resource-exhausted","unauthenticated","unavailable",
+  "unimplemented","unknown","invalid-firestore","conversion-mismatch",
+  "verification-mismatch","stale-run",
 ]);
 
 function text(value){
@@ -57,6 +67,9 @@ function requiredLegacyKeys(keys,tabMetadata){
   }
   if(selected.has("scheduleSettings")){
     required.add("swim_parent_tab");
+  }
+  if(selected.has("systemMetadata")){
+    METADATA_KEYS.forEach(key=>required.add(key));
   }
   if(selected.has("classMarks")||selected.has("disabledSlots")){
     [...tabKeys.students,...tabKeys.teachers,"swim_periods"].forEach(key=>required.add(key));
@@ -102,6 +115,13 @@ function collectionDigest(rows){
 
 function coded(code){
   return Object.assign(new Error(code),{code});
+}
+
+function sanitizedError(error){
+  let code="unknown";
+  try{code=text(error?.code).replace(/^functions\//,"").toLowerCase()||"unknown";}
+  catch(ignore){}
+  return coded(SAFE_ERROR_CODES.has(code)?code:"unknown");
 }
 
 function parsedTabs(value){
@@ -205,7 +225,47 @@ function sameIds(left,right){
   return true;
 }
 
-async function runShadowSync(input){
+function normalizedFence(db,value){
+  if(value==null) return null;
+  const leaseId=text(value?.leaseId);
+  if(!value?.ref||typeof value.ref.path!=="string"||!leaseId||typeof db.runTransaction!=="function"){
+    throw coded("invalid-argument");
+  }
+  return {ref:value.ref,leaseId};
+}
+
+async function assertFence(transaction,fence){
+  const snapshot=await transaction.get(fence.ref);
+  if(!snapshot?.exists||text(snapshot.data()?.leaseId)!==fence.leaseId) throw coded("stale-run");
+}
+
+async function commitOperations(db,collectionRef,operations,fence){
+  if(fence){
+    await db.runTransaction(async transaction=>{
+      await assertFence(transaction,fence);
+      operations.forEach(operation=>{
+        const ref=collectionRef.doc(operation.id);
+        if(operation.type==="delete") transaction.delete(ref);
+        else transaction.set(ref,operation.value,{merge:false});
+      });
+    });
+    return;
+  }
+  const batch=db.batch();
+  operations.forEach(operation=>{
+    const ref=collectionRef.doc(operation.id);
+    if(operation.type==="delete") batch.delete(ref);
+    else batch.set(ref,operation.value,{merge:false});
+  });
+  await batch.commit();
+}
+
+async function verifyFence(db,fence){
+  if(!fence) return;
+  await db.runTransaction(transaction=>assertFence(transaction,fence));
+}
+
+async function runShadowSyncUnsafe(input){
   const source=input&&typeof input==="object"?input:{};
   const {db,readLegacyKey}=source;
   const branchId=text(source.branchId);
@@ -215,6 +275,7 @@ async function runShadowSync(input){
   if(!branchId||!generationId||typeof readLegacyKey!=="function") throw coded("invalid-argument");
 
   if(!keys.length) return {collections:[],writes:0,deletes:0,counts:{},digests:{}};
+  const fence=normalizedFence(db,source.fence);
 
   const legacyRoot={};
   legacyRoot.swim_tab_list=await readLegacyKey("swim_tab_list");
@@ -269,13 +330,7 @@ async function runShadowSync(input){
 
     for(let offset=0;offset<operations.length;offset+=WRITE_BATCH_SIZE){
       const chunk=operations.slice(offset,offset+WRITE_BATCH_SIZE);
-      const batch=db.batch();
-      chunk.forEach(operation=>{
-        const ref=collectionRef.doc(operation.id);
-        if(operation.type==="delete") batch.delete(ref);
-        else batch.set(ref,operation.value,{merge:false});
-      });
-      await batch.commit();
+      await commitOperations(db,collectionRef,chunk,fence);
       writes+=chunk.filter(operation=>operation.type==="set").length;
       deletes+=chunk.filter(operation=>operation.type==="delete").length;
     }
@@ -291,7 +346,13 @@ async function runShadowSync(input){
     digests[collection]=actualDigest;
   }
 
+  await verifyFence(db,fence);
   return {collections,writes,deletes,counts,digests};
+}
+
+async function runShadowSync(input){
+  try{return await runShadowSyncUnsafe(input);}
+  catch(error){throw sanitizedError(error);}
 }
 
 module.exports={requiredLegacyKeys,runShadowSync};
