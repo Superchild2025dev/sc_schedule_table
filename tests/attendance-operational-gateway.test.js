@@ -114,6 +114,7 @@ function fixture(mode,overrides={}){
   return {
     gateway,calls,
     legacyAttendance:()=>plain(legacyAttendance),
+    legacyGuests:()=>plain(legacyGuests),
     v2Attendance:()=>plain(v2Attendance),
   };
 }
@@ -185,6 +186,45 @@ test('v2-read writes V2 before its V1 backup and blocks backup after V2 failure'
     ...range,before:{[key]:{s:'absent'}},
   }),/V2 출석 데이터를 저장하지 못했습니다/);
   assert.equal(failed.calls.legacyAttendanceWrites,0);
+});
+
+test('v2-read backup patches attendance without deleting legacy dates outside the loaded range',async()=>{
+  const otherKey='4시/화/1/1/2026-08-04';
+  const env=fixture('v2-read',{
+    legacyAttendance:{
+      [key]:{s:'absent'},
+      [otherKey]:{s:'present',by:'기존 기록'},
+    },
+    v2Attendance:{[key]:{s:'absent'}},
+  });
+  await env.gateway.ready();
+  await env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:{[key]:{s:'absent'}},
+  });
+
+  assert.equal(env.legacyAttendance()[key].s,'present');
+  assert.deepEqual(env.legacyAttendance()[otherKey],{s:'present',by:'기존 기록'});
+});
+
+test('v2-read backup patches guests without deleting legacy dates outside the loaded range',async()=>{
+  const guestKey='4시/월/1/2026-08-03';
+  const otherGuestKey='4시/화/1/2026-08-04';
+  const env=fixture('v2-read',{
+    legacyGuests:{
+      [guestKey]:[{gid:'guest_a',n:'당일 원생'}],
+      [otherGuestKey]:[{gid:'guest_b',n:'다른 날짜 원생'}],
+    },
+    v2Guests:{[guestKey]:[{gid:'guest_a',n:'당일 원생'}]},
+  });
+  await env.gateway.ready();
+  await env.gateway.updateGuests(map=>({...map,[guestKey]:[
+    {gid:'guest_a',n:'당일 원생',s:'present'},
+  ]}),{
+    ...range,before:{[guestKey]:[{gid:'guest_a',n:'당일 원생'}]},
+  });
+
+  assert.equal(env.legacyGuests()[guestKey][0].s,'present');
+  assert.deepEqual(env.legacyGuests()[otherGuestKey],[{gid:'guest_b',n:'다른 날짜 원생'}]);
 });
 
 test('v2 mode does not read or write the V1 attendance map',async()=>{

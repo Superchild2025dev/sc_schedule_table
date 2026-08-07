@@ -163,6 +163,13 @@
       const returned=await mutator(draft);
       return clone(objectMap(returned&&typeof returned==='object'?returned:draft));
     }
+    function applyChangedKeys(current,before,after){
+      const draft=clone(objectMap(current));
+      const diff=model.diffLegacyMaps(before,after);
+      diff.upserts.forEach(change=>{ draft[change.legacyKey]=clone(change.raw); });
+      diff.deletes.forEach(legacyKey=>{ delete draft[legacyKey]; });
+      return draft;
+    }
     function recordMeta(input,legacyKey,raw){
       if(typeof input?.recordMeta==='function') return input.recordMeta(legacyKey,raw)||{};
       return input?.recordMetaByKey?.[legacyKey]||{};
@@ -270,7 +277,7 @@
       let degraded=false;
       if(config.mode==='v2-read'){
         try{
-          await legacy[legacyMethod](()=>clone(after),input);
+          await legacy[legacyMethod](current=>applyChangedKeys(current,before,after),input);
         }catch(error){
           degraded=true;
         }
