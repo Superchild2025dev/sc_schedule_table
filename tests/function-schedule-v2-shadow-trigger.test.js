@@ -79,6 +79,7 @@ class FakeFirestore{
     };
     try{
       const result=await visitor(transaction);
+      attempt.result=result;
       operations.forEach(operation=>{
         if(operation.type==="delete"){
           this.docs.delete(operation.ref.path);
@@ -744,9 +745,50 @@ test("scheduled recovery wakes stranded pending work without consuming its retry
   assert.equal(generation.capabilities.schedule.appliedRevision,5);
 });
 
-test("scheduled recovery skips disabled and active leases and respects the retry bound",async()=>{
+test("scheduled recovery is a repeated no-op at the retry ceiling",async()=>{
+  const branchId="yongam";
+  const sync=syncPath(branchId);
+  const generation=generationPath(branchId,"gen_2");
+  const terminalSync={
+    pendingKeys:[],inFlightKeys:["swim_inst"],requestedRevision:8,appliedRevision:7,
+    status:"processing",leaseId:"bounded-lease",leaseUntil:"2026-08-07T01:00:00.000Z",
+    retryCount:10,lastFailedAt:"2026-08-07T01:01:00.000Z",mismatchCount:3,
+  };
+  const terminalGeneration={
+    ...readyGeneration(branchId,"gen_2",7),
+    capabilities:{schedule:{
+      status:"error",appliedRevision:7,requestedRevision:8,retryCount:10,
+      mismatchCount:3,lastFailedAt:"2026-08-07T01:01:00.000Z",
+    }},
+  };
+  const fixture=loadFunctions({initial:{
+    [schedulePath(branchId)]:{mode:"shadow",generationId:"gen_2"},
+    [sync]:terminalSync,
+    [generation]:terminalGeneration,
+  }});
+  const syncBytes=JSON.stringify(terminalSync);
+  const generationBytes=JSON.stringify(terminalGeneration);
+
+  for(let call=0;call<2;call+=1){
+    const transactionStart=fixture.db.transactions.length;
+    await fixture.exports.recoverScheduleV2ShadowLeases();
+    const recovery=fixture.db.transactions.slice(transactionStart)
+      .find(attempt=>attempt.reads.includes(sync));
+
+    assert.equal(recovery.result,false);
+    assert.deepEqual(recovery.operations,[]);
+    assert.deepEqual(fixture.db.value(sync),terminalSync);
+    assert.equal(JSON.stringify(fixture.db.value(sync)),syncBytes);
+    assert.deepEqual(fixture.db.value(generation),terminalGeneration);
+    assert.equal(JSON.stringify(fixture.db.value(generation)),generationBytes);
+  }
+
+  await fixture.exports.processScheduleV2Shadow({params:{branchId}});
+  assert.equal(fixture.runnerCalls.length,0);
+});
+
+test("scheduled recovery skips disabled and active leases",async()=>{
   const disabledSync=syncPath("gagyeong");
-  const boundedSync=syncPath("yongam");
   const disabled={
     pendingKeys:[],inFlightKeys:["swim_students"],requestedRevision:2,
     status:"processing",leaseId:"disabled-lease",leaseUntil:"2026-08-07T01:00:00.000Z",retryCount:2,
@@ -754,20 +796,11 @@ test("scheduled recovery skips disabled and active leases and respects the retry
   const fixture=loadFunctions({initial:{
     [schedulePath("gagyeong")]:{mode:"v1",generationId:"gen_1"},
     [disabledSync]:disabled,
-    [schedulePath("yongam")]:{mode:"shadow",generationId:"gen_2"},
-    [boundedSync]:{
-      pendingKeys:[],inFlightKeys:["swim_inst"],requestedRevision:8,
-      status:"processing",leaseId:"bounded-lease",leaseUntil:"2026-08-07T01:00:00.000Z",retryCount:10,
-    },
   }});
 
   await fixture.exports.recoverScheduleV2ShadowLeases();
 
   assert.deepEqual(fixture.db.value(disabledSync),disabled);
-  assert.deepEqual(fixture.db.value(boundedSync).pendingKeys,["swim_inst"]);
-  assert.equal(fixture.db.value(boundedSync).retryCount,10);
-  await fixture.exports.processScheduleV2Shadow({params:{branchId:"yongam"}});
-  assert.equal(fixture.runnerCalls.length,0);
 
   const activeFixture=loadFunctions({initial:{
     [schedulePath("gagyeong")]:{mode:"verify",generationId:"gen_1"},

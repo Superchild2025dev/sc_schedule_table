@@ -905,6 +905,7 @@ async function recoverScheduleV2ShadowBranch(branchId, now) {
     const configSnapshot = await tx.get(configRef);
     if (!["shadow", "verify"].includes(configSnapshot.get("mode"))) return false;
     const snapshot = await tx.get(syncRef);
+    if (Number(snapshot.data()?.retryCount || 0) >= SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT) return false;
     const generationId = String(configSnapshot.get("generationId") || "");
     const generationRef = generationId ? scheduleV2GenerationRef(branchId, generationId) : null;
     const generationSnapshot = generationRef ? await tx.get(generationRef) : null;
