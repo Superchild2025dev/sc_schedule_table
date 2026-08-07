@@ -16,8 +16,12 @@ test("one permission manifest owns both generated permission blocks", () => {
   const generator = require(generatorPath);
   const result = generator.syncFiles({root, check:true});
   const authSource = fs.readFileSync(path.join(root, "js", "auth-guard.js"), "utf8");
+  const policy = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
   assert.deepEqual(result.changed, []);
+  assert.equal(policy.teacherCrossBranchAccess, true);
+  assert.match(authSource, /const TEACHERS_CAN_ACCESS_ALL_BRANCHES = true;/);
+  assert.match(authSource, /p\.role === 'teacher' && TEACHERS_CAN_ACCESS_ALL_BRANCHES/);
   assert.match(authSource, /TEACHER_WRITABLE_EXACT_KEYS\.has\(key\)/);
   assert.match(authSource, /TEACHER_WRITABLE_PATTERNS\.some\(pattern=>pattern\.test\(key\)\)/);
 });

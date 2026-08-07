@@ -59,11 +59,16 @@ service cloud.firestore {
         ];
     }
 
+    function isAnyTeacher() {
+      return isGagyeongTeacher()
+        || isYongamTeacher();
+    }
+
     function canReadSchedule(branch) {
       return isOwner()
         || isDeveloper()
-        || (branch == "gagyeong" && (isGagyeongDesk() || isGagyeongTeacher()))
-        || (branch == "yongam" && (isYongamDesk() || isYongamTeacher()));
+        || (branch == "gagyeong" && (isGagyeongDesk() || isAnyTeacher()))
+        || (branch == "yongam" && (isYongamDesk() || isAnyTeacher()));
     }
 
     function canManageSchedule(branch) {
@@ -74,8 +79,8 @@ service cloud.firestore {
     }
 
     function isTeacherForBranch(branch) {
-      return (branch == "gagyeong" && isGagyeongTeacher())
-        || (branch == "yongam" && isYongamTeacher());
+      return branch in ["gagyeong","yongam"]
+        && isAnyTeacher();
     }
 
     function isTeacherWritableScheduleKey(docId) {

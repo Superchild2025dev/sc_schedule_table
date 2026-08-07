@@ -9,6 +9,7 @@
   // PERMISSION_POLICY_START
   const SUPER_ADMIN_EMAILS = ["2025superchild@gmail.com"];
   window.SC_DEVELOPER_EMAILS = Object.freeze(["developer@scswim.local"]);
+  const TEACHERS_CAN_ACCESS_ALL_BRANCHES = true;
   const STAFF_EMAIL_PROFILES = {
     "developer@scswim.local": {
       "name": "시간표 개발자",
@@ -365,6 +366,7 @@
   function canAccessBranch(branchId){
     const p = _currentProfile;
     if(!p || p.role === 'superAdmin' || p.role === 'developer') return true;
+    if(p.role === 'teacher' && TEACHERS_CAN_ACCESS_ALL_BRANCHES) return true;
     const allowed = normalizeBranchIds(p.branchIds);
     if(!allowed.length || !branchId) return true;
     return allowed.includes(branchId);

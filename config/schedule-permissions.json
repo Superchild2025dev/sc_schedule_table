@@ -3,6 +3,7 @@
     {"id": "gagyeong", "ruleName": "Gagyeong"},
     {"id": "yongam", "ruleName": "Yongam"}
   ],
+  "teacherCrossBranchAccess": true,
   "accounts": [
     {"email": "2025superchild@gmail.com", "name": "최고관리자", "role": "superAdmin", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},
     {"email": "developer@scswim.local", "name": "시간표 개발자", "role": "developer", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},

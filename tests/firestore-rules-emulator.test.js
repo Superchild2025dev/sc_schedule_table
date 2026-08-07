@@ -85,14 +85,17 @@ if(emulatorEnabled){
     await assertFails(setDoc(kv(db, "gagyeong", "swim_bt_summer_inst"), {value:"{}"}));
   });
 
-  test("a teacher cannot access the other branch", async () => {
+  test("a teacher can handle attendance after moving branches but cannot edit rosters", async () => {
     await env.withSecurityRulesDisabled(async context=>{
       await setDoc(kv(context.firestore(), "yongam", "swim_attendance"), {value:"{}"});
     });
     const db = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
 
-    await assertFails(getDoc(kv(db, "yongam", "swim_attendance")));
-    await assertFails(setDoc(kv(db, "yongam", "swim_attendance"), {value:"{}"}));
+    await assertSucceeds(getDoc(kv(db, "yongam", "swim_attendance")));
+    await assertSucceeds(setDoc(kv(db, "yongam", "swim_attendance"), {value:"{}"}));
+    await assertSucceeds(setDoc(kv(db, "yongam", "swim_requests"), {value:"{}"}));
+    await assertFails(setDoc(kv(db, "yongam", "swim_students"), {value:"{}"}));
+    await assertFails(setDoc(kv(db, "yongam", "swim_inst"), {value:"{}"}));
   });
 
   test("each desk manages only its own branch", async () => {
@@ -124,12 +127,13 @@ if(emulatorEnabled){
     await assertFails(setDoc(v2Monitor(teacherDb, "gagyeong"), {state:"teacher-write"}));
   });
 
-  test("teachers and desks can manage only their branch V2 attendance rows", async () => {
+  test("teachers manage both branches V2 attendance while desks stay branch-scoped", async () => {
     const teacherDb = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
     const deskDb = staffDb("gagyeong-desk", "gagyeong.desk@scswim.local");
     const ownRecord = attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceRecords", "att_1");
     const ownGuest = attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceGuests", "guest_1");
     const otherRecord = attendanceRecord(teacherDb, "yongam", "gen_1", "attendanceRecords", "att_1");
+    const otherDeskRecord = attendanceRecord(deskDb, "yongam", "gen_1", "attendanceRecords", "att_3");
 
     await assertSucceeds(setDoc(ownRecord, {tabId:"regular", date:"2026-08-07"}));
     await assertSucceeds(getDoc(ownRecord));
@@ -138,8 +142,9 @@ if(emulatorEnabled){
       attendanceRecord(deskDb, "gagyeong", "gen_1", "attendanceRecords", "att_2"),
       {tabId:"regular", date:"2026-08-07"}
     ));
-    await assertFails(setDoc(otherRecord, {tabId:"regular", date:"2026-08-07"}));
-    await assertFails(getDoc(otherRecord));
+    await assertSucceeds(setDoc(otherRecord, {tabId:"regular", date:"2026-08-07"}));
+    await assertSucceeds(getDoc(otherRecord));
+    await assertFails(setDoc(otherDeskRecord, {tabId:"regular", date:"2026-08-07"}));
   });
 
   test("staff can read attendance config but only a developer can change it", async () => {
@@ -154,7 +159,7 @@ if(emulatorEnabled){
 
     await assertSucceeds(getDoc(attendanceConfig(teacherDb, "gagyeong")));
     await assertFails(setDoc(attendanceConfig(teacherDb, "gagyeong"), {mode:"shadow"}));
-    await assertFails(getDoc(attendanceConfig(otherTeacherDb, "gagyeong")));
+    await assertSucceeds(getDoc(attendanceConfig(otherTeacherDb, "gagyeong")));
     await assertSucceeds(setDoc(attendanceConfig(developerDb, "gagyeong"), {
       branchId:"gagyeong", mode:"shadow", generationId:"gen_1",
     }));

@@ -18,6 +18,9 @@ function loadPolicy(root){
 function validatePolicy(policy){
   const branchIds = new Set((policy.branches || []).map(branch=>branch.id));
   if(!branchIds.size) throw new Error("permission policy requires branches");
+  if(typeof policy.teacherCrossBranchAccess !== "boolean"){
+    throw new Error("permission policy requires teacherCrossBranchAccess");
+  }
 
   const emails = new Set();
   (policy.accounts || []).forEach(account=>{
@@ -67,8 +70,17 @@ function renderRulesBlock(policy){
     ));
   });
 
+  const anyTeacherConditions = policy.branches.map(branch=>`is${branch.ruleName}Teacher()`);
+  blocks.push([
+    "    function isAnyTeacher() {",
+    ...anyTeacherConditions.map((condition,index)=>
+      `${index === 0 ? "      return " : "        || "}${condition}${index === anyTeacherConditions.length - 1 ? ";" : ""}`
+    ),
+    "    }",
+  ].join("\n"));
+
   const readConditions = policy.branches.map(branch=>
-    `        || (branch == ${JSON.stringify(branch.id)} && (is${branch.ruleName}Desk() || is${branch.ruleName}Teacher()))`
+    `        || (branch == ${JSON.stringify(branch.id)} && (is${branch.ruleName}Desk() || ${policy.teacherCrossBranchAccess ? "isAnyTeacher()" : `is${branch.ruleName}Teacher()`}))`
   );
   blocks.push([
     "    function canReadSchedule(branch) {",
@@ -89,16 +101,25 @@ function renderRulesBlock(policy){
     "    }",
   ].join("\n"));
 
-  const teacherConditions = policy.branches.map(branch=>
-    `      return (branch == ${JSON.stringify(branch.id)} && is${branch.ruleName}Teacher())`
-  );
-  blocks.push([
-    "    function isTeacherForBranch(branch) {",
-    ...teacherConditions.map((line,index)=>index === 0
-      ? line
-      : `        || ${line.replace(/^\s*return\s+/, "")}${index === teacherConditions.length - 1 ? ";" : ""}`),
-    "    }",
-  ].join("\n"));
+  if(policy.teacherCrossBranchAccess){
+    blocks.push([
+      "    function isTeacherForBranch(branch) {",
+      `      return branch in ${JSON.stringify(policy.branches.map(branch=>branch.id))}`,
+      "        && isAnyTeacher();",
+      "    }",
+    ].join("\n"));
+  }else{
+    const teacherConditions = policy.branches.map(branch=>
+      `      return (branch == ${JSON.stringify(branch.id)} && is${branch.ruleName}Teacher())`
+    );
+    blocks.push([
+      "    function isTeacherForBranch(branch) {",
+      ...teacherConditions.map((line,index)=>index === 0
+        ? line
+        : `        || ${line.replace(/^\s*return\s+/, "")}${index === teacherConditions.length - 1 ? ";" : ""}`),
+      "    }",
+    ].join("\n"));
+  }
 
   const keyConditions = [
     ...policy.teacherWritableExactKeys.map(key=>`docId == ${JSON.stringify(key)}`),
@@ -144,6 +165,7 @@ function renderClientBlock(policy){
   const lines = [
     `  const SUPER_ADMIN_EMAILS = ${JSON.stringify(admins)};`,
     `  window.SC_DEVELOPER_EMAILS = Object.freeze(${JSON.stringify(developers)});`,
+    `  const TEACHERS_CAN_ACCESS_ALL_BRANCHES = ${policy.teacherCrossBranchAccess};`,
     `  const STAFF_EMAIL_PROFILES = ${JSON.stringify(staff, null, 2).replace(/^/gm, "  ").trimStart()};`,
     `  const TEACHER_WRITABLE_EXACT_KEYS = new Set(${JSON.stringify(policy.teacherWritableExactKeys)});`,
     "  const TEACHER_WRITABLE_PATTERNS = [",

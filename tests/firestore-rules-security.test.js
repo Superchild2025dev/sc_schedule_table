@@ -66,11 +66,14 @@ assert.ok(teacherWriteRule, "teacher write-key rule must exist");
 });
 
 assert.match(source,
-  /branch == "gagyeong" && \(isGagyeongDesk\(\) \|\| isGagyeongTeacher\(\)\)/,
-  "gagyeong access must remain branch-scoped");
+  /branch == "gagyeong" && \(isGagyeongDesk\(\) \|\| isAnyTeacher\(\)\)/,
+  "gagyeong teachers must be able to follow a branch transfer");
 assert.match(source,
-  /branch == "yongam" && \(isYongamDesk\(\) \|\| isYongamTeacher\(\)\)/,
-  "yongam access must remain branch-scoped");
+  /branch == "yongam" && \(isYongamDesk\(\) \|\| isAnyTeacher\(\)\)/,
+  "yongam teachers must be able to follow a branch transfer");
+assert.match(source,
+  /function isTeacherForBranch\(branch\) \{[\s\S]*?branch in \["gagyeong",\s*"yongam"\][\s\S]*?isAnyTeacher\(\)/,
+  "teacher attendance writes must work at either known branch");
 
 assert.match(
   source,
@@ -87,12 +90,12 @@ assert.match(
 assert.match(
   source,
   /match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if isDeveloper\(\);[\s\S]*?\}/,
-  "staff may read only their branch attendance runtime config while developers control writes"
+  "staff may read an allowed attendance runtime config while developers control writes"
 );
 assert.match(
   source,
   /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?collection in \["attendanceRecords", "attendanceGuests"\][\s\S]*?canManageSchedule\(branch\) \|\| isTeacherForBranch\(branch\)[\s\S]*?\}/,
-  "only branch staff may access V2 attendance record collections"
+  "desks stay branch-scoped while teachers may access attendance at either branch"
 );
 
 assert.equal(firebaseConfig.firestore.rules, "firestore.rules");
