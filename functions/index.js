@@ -365,6 +365,30 @@ function scheduleV2ShadowRetryCount(value) {
   return Math.min(SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT, count + 1);
 }
 
+async function recordScheduleV2PreparationAlert(branchId, error, keys) {
+  const diagnostic = scheduleV2ShadowPolicy.redactedError(error, {
+    branchId,
+    keys,
+    collections: scheduleV2ShadowCollections(keys),
+    now: new Date(),
+  });
+  const alertRef = scheduleV2ShadowAlertRef(branchId, diagnostic);
+  await db.runTransaction(async tx => {
+    const snapshot = await tx.get(alertRef);
+    const priorCount = Math.max(0, Number(snapshot.data()?.count || 0) || 0);
+    tx.set(alertRef, {
+      ...diagnostic,
+      id: alertRef.id,
+      type: "schedule-v2-shadow",
+      message: `Schedule V2 shadow ${diagnostic.messageClass} failure`,
+      status: "open",
+      lastDetectedAt: diagnostic.detectedAt,
+      count: Math.min(Number.MAX_SAFE_INTEGER, priorCount + 1),
+    }, {merge: false});
+  });
+  logger.error("schedule-v2-shadow-failed", diagnostic);
+}
+
 function scheduleV2GenerationRef(branchId, generationId) {
   return db.collection("scheduleV2").doc(branchId).collection("generations").doc(generationId);
 }
@@ -638,7 +662,7 @@ async function failScheduleV2Preparation(preparation) {
     const failedSync = {
       ...sync,
       pendingKeys,
-      status: pendingKeys.length ? "pending" : "idle",
+      status: pendingKeys.length ? "pending" : "error",
       mismatchCount: Math.max(1, scheduleV2Count(sync.mismatchCount)),
       lastFailedAt: nowIso,
     };
@@ -667,8 +691,9 @@ async function failScheduleV2Preparation(preparation) {
 async function prepareScheduleV2(branch, expectedRuntime) {
   const preparation = await acquireScheduleV2Preparation(branch.id, expectedRuntime);
   const fence = {ref: preparation.syncRef, leaseId: preparation.leaseId};
+  let baselineKeys = ["swim_tab_list"];
   try {
-    const baselineKeys = await listScheduleV2BaselineKeys(branch);
+    baselineKeys = await listScheduleV2BaselineKeys(branch);
     await runShadowSync({
       db,
       branchId: branch.id,
@@ -707,6 +732,7 @@ async function prepareScheduleV2(branch, expectedRuntime) {
     throw new HttpsError("resource-exhausted", "Schedule V2 변경이 계속 발생해 준비를 마치지 못했습니다");
   } catch (error) {
     await failScheduleV2Preparation(preparation);
+    await recordScheduleV2PreparationAlert(branch.id, error, baselineKeys);
     if (error instanceof HttpsError) throw error;
     throw new HttpsError("failed-precondition", "Schedule V2 기준점 준비에 실패했습니다");
   }
