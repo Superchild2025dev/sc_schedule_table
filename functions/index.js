@@ -365,30 +365,6 @@ function scheduleV2ShadowRetryCount(value) {
   return Math.min(SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT, count + 1);
 }
 
-async function recordScheduleV2PreparationAlert(branchId, error, keys) {
-  const diagnostic = scheduleV2ShadowPolicy.redactedError(error, {
-    branchId,
-    keys,
-    collections: scheduleV2ShadowCollections(keys),
-    now: new Date(),
-  });
-  const alertRef = scheduleV2ShadowAlertRef(branchId, diagnostic);
-  await db.runTransaction(async tx => {
-    const snapshot = await tx.get(alertRef);
-    const priorCount = Math.max(0, Number(snapshot.data()?.count || 0) || 0);
-    tx.set(alertRef, {
-      ...diagnostic,
-      id: alertRef.id,
-      type: "schedule-v2-shadow",
-      message: `Schedule V2 shadow ${diagnostic.messageClass} failure`,
-      status: "open",
-      lastDetectedAt: diagnostic.detectedAt,
-      count: Math.min(Number.MAX_SAFE_INTEGER, priorCount + 1),
-    }, {merge: false});
-  });
-  logger.error("schedule-v2-shadow-failed", diagnostic);
-}
-
 function scheduleV2GenerationRef(branchId, generationId) {
   return db.collection("scheduleV2").doc(branchId).collection("generations").doc(generationId);
 }
@@ -647,14 +623,23 @@ async function tryCompleteScheduleV2Preparation(preparation, result) {
   });
 }
 
-async function failScheduleV2Preparation(preparation) {
+async function failScheduleV2Preparation(preparation, error, keys) {
   const nowIso = new Date().toISOString();
-  await db.runTransaction(async tx => {
+  const diagnostic = scheduleV2ShadowPolicy.redactedError(error, {
+    branchId: preparation.branchId,
+    keys,
+    collections: scheduleV2ShadowCollections(keys),
+    now: new Date(nowIso),
+  });
+  const alertRef = scheduleV2ShadowAlertRef(preparation.branchId, diagnostic);
+  const recorded = await db.runTransaction(async tx => {
     const configSnapshot = await tx.get(preparation.configRef);
     const syncSnapshot = await tx.get(preparation.syncRef);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
-    if (sync.leaseId !== preparation.leaseId) return;
+    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+        sync.leaseId !== preparation.leaseId) return false;
+    const alertSnapshot = await tx.get(alertRef);
     const pendingKeys = [...new Set([
       ...scheduleV2Keys(sync, "pendingKeys"),
       ...scheduleV2Keys(sync, "inFlightKeys"),
@@ -685,7 +670,20 @@ async function failScheduleV2Preparation(preparation) {
       status: "failed",
       failedAt: nowIso,
     }, {merge: true});
+    const priorCount = Math.max(0, Number(alertSnapshot.data()?.count || 0) || 0);
+    tx.set(alertRef, {
+      ...diagnostic,
+      id: alertRef.id,
+      type: "schedule-v2-shadow",
+      message: `Schedule V2 shadow ${diagnostic.messageClass} failure`,
+      status: "open",
+      lastDetectedAt: diagnostic.detectedAt,
+      count: Math.min(Number.MAX_SAFE_INTEGER, priorCount + 1),
+    }, {merge: false});
+    return true;
   });
+  if (recorded) logger.error("schedule-v2-shadow-failed", diagnostic);
+  return recorded;
 }
 
 async function prepareScheduleV2(branch, expectedRuntime) {
@@ -731,10 +729,14 @@ async function prepareScheduleV2(branch, expectedRuntime) {
     }
     throw new HttpsError("resource-exhausted", "Schedule V2 변경이 계속 발생해 준비를 마치지 못했습니다");
   } catch (error) {
-    await failScheduleV2Preparation(preparation);
-    await recordScheduleV2PreparationAlert(branch.id, error, baselineKeys);
-    if (error instanceof HttpsError) throw error;
-    throw new HttpsError("failed-precondition", "Schedule V2 기준점 준비에 실패했습니다");
+    const failure = error instanceof HttpsError ? error :
+      new HttpsError("failed-precondition", "Schedule V2 기준점 준비에 실패했습니다");
+    try {
+      await failScheduleV2Preparation(preparation, error, baselineKeys);
+    } catch {
+      // The transaction wrote neither failure state nor alert; preserve the original preparation error.
+    }
+    throw failure;
   }
 }
 

@@ -4,6 +4,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const path=require("node:path");
 const {createRequire}=require("node:module");
+const {isDeepStrictEqual}=require("node:util");
 
 const emulatorEnabled=Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 
@@ -69,6 +70,27 @@ if(emulatorEnabled){
     return data.valueType==="json"?JSON.parse(chunks.join("")):chunks.join("");
   }
 
+  async function snapshotLegacyDocuments(branchId){
+    const rows=[];
+    const roots=await db.collection("scheduleStores").doc(branchId).collection("kv").get();
+    for(const rootSnapshot of roots.docs){
+      rows.push({path:rootSnapshot.ref.path,value:rootSnapshot.data()});
+      const chunks=await rootSnapshot.ref.collection("chunks").get();
+      chunks.docs.forEach(chunkSnapshot=>{
+        rows.push({path:chunkSnapshot.ref.path,value:chunkSnapshot.data()});
+      });
+    }
+    return rows.sort((left,right)=>left.path.localeCompare(right.path));
+  }
+
+  function assertLegacySnapshotUnchanged(before,after){
+    assert.equal(
+      isDeepStrictEqual(after,before),
+      true,
+      "complete V1 root and chunk document snapshot changed",
+    );
+  }
+
   async function seedBranch(branchId,{invalidStudents=false}={}){
     const students=invalidStudents?{invalid:true}:[{
       sid:`${branchId}_student_a`,n:"Fixture A",t:"4시",d:"월",l:1,r:1,
@@ -116,7 +138,9 @@ if(emulatorEnabled){
   test("both branches prepare and shadow chunked student instructor and reservation changes",async()=>{
     for(const branchId of ["gagyeong","yongam"]){
       await seedBranch(branchId);
+      const baselineV1=await snapshotLegacyDocuments(branchId);
       const prepared=await control(branchId,"prepare");
+      assertLegacySnapshotUnchanged(baselineV1,await snapshotLegacyDocuments(branchId));
       assert.equal(prepared.mode,"ready");
       assert.equal(prepared.generationStatus,"ready");
       assert.equal((await kvRef(branchId,"swim_students").get()).get("chunked"),true);
@@ -145,12 +169,14 @@ if(emulatorEnabled){
           moveType:"reserve",moveId,pairKey:"4시/월/1/1",
         },
       });
+      const changedV1=await snapshotLegacyDocuments(branchId);
 
       await queueWrite(branchId,studentWrite);
       await queueWrite(branchId,instructorWrite);
       await queueWrite(branchId,retireWrite);
       await queueWrite(branchId,enrollWrite);
       await processQueue(branchId);
+      assertLegacySnapshotUnchanged(changedV1,await snapshotLegacyDocuments(branchId));
 
       const sync=(await runtimeRef(branchId,"scheduleSync").get()).data();
       assert.equal(sync.status,"idle");
@@ -171,10 +197,12 @@ if(emulatorEnabled){
   test("failed preparation is redacted recoverable and rollback stops later queueing",async()=>{
     const branchId="gagyeong";
     await seedBranch(branchId,{invalidStudents:true});
+    const invalidV1=await snapshotLegacyDocuments(branchId);
     await assert.rejects(
       control(branchId,"prepare"),
       error=>error&&error.code==="failed-precondition",
     );
+    assertLegacySnapshotUnchanged(invalidV1,await snapshotLegacyDocuments(branchId));
 
     const source=await readLegacyValue(branchId,"swim_students");
     assert.equal(source.invalid,true);
@@ -199,7 +227,9 @@ if(emulatorEnabled){
     assert.equal(rolledBack.generationId,generations.docs[0].id);
     const beforeRevision=(await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision");
     const laterWrite=await writeLegacyValue(branchId,"swim_inst",{"6시/수/1/1":"Later Fixture"});
+    const rolledBackV1=await snapshotLegacyDocuments(branchId);
     await queueWrite(branchId,laterWrite);
+    assertLegacySnapshotUnchanged(rolledBackV1,await snapshotLegacyDocuments(branchId));
     const afterRollbackSync=await runtimeRef(branchId,"scheduleSync").get();
     assert.equal(afterRollbackSync.get("requestedRevision"),beforeRevision);
     assert.equal((await readLegacyValue(branchId,"swim_inst"))["6시/수/1/1"],"Later Fixture");

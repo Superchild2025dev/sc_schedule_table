@@ -11,6 +11,15 @@ function read(relativePath) {
 const html = read(path.join("voice", "index.html"));
 const app = read(path.join("voice", "voice.js"));
 const functions = read(path.join("functions", "index.js"));
+const submitCustomerVoiceSource = functions.slice(
+  functions.indexOf("async function submitCustomerVoice"),
+  functions.indexOf("function kvDoc")
+);
+const customerVoiceCallableSource = functions.slice(
+  functions.indexOf("exports.customerVoice = onCall"),
+  functions.indexOf("exports.purgeCustomerVoiceContacts")
+);
+const customerVoiceContract = submitCustomerVoiceSource + customerVoiceCallableSource;
 const rules = read("firestore.rules");
 const nginx = read(path.join("deploy", "nginx", "schedule.conf"));
 
@@ -40,7 +49,9 @@ assert.match(functions, /findParentStudentSet\(branch, studentName, phone\)/,
   "reply requests must verify a real member on the server");
 assert.match(functions, /contact = \{studentName, phone\}/);
 assert.match(functions, /if \(count >= 5\)/, "public submissions need an hourly server-side limit");
-assert.doesNotMatch(functions, /lookupToken|action === "status"/,
+assert.match(submitCustomerVoiceSource, /async function submitCustomerVoice/);
+assert.match(customerVoiceCallableSource, /exports\.customerVoice = onCall/);
+assert.doesNotMatch(customerVoiceContract, /lookupToken|action === "status"/,
   "public ticket lookup credentials and status actions must not be issued");
 assert.match(functions, /exports\.purgeCustomerVoiceContacts = onSchedule/,
   "reply contact details need an automatic retention cleanup");

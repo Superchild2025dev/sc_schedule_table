@@ -56,10 +56,11 @@ class FakeCollection{
 }
 
 class FakeFirestore{
-  constructor(initial={}){
+  constructor(initial={},options={}){
     this.docs=new Map(Object.entries(initial).map(([key,value])=>[key,clone(value)]));
     this.transactions=[];
     this.transactionTail=Promise.resolve();
+    this.failTransactionForPath=String(options.failTransactionForPath||"");
   }
   collection(name){return new FakeCollection(this,String(name));}
   value(documentPath){return clone(this.docs.get(documentPath));}
@@ -81,6 +82,11 @@ class FakeFirestore{
     };
     try{
       const result=await visitor(transaction);
+      if(this.failTransactionForPath&&operations.some(operation=>
+        operation.ref.path.includes(this.failTransactionForPath)
+      )){
+        throw Object.assign(new Error("transaction-commit-failure"),{code:"unavailable"});
+      }
       operations.forEach(operation=>{
         if(operation.type==="delete") return this.docs.delete(operation.ref.path);
         const current=this.docs.get(operation.ref.path);
@@ -103,9 +109,10 @@ function functionWrapper(options,handler){
 
 function loadFunctions({initial={},runShadowSync=async()=>({
   collections:[],writes:0,deletes:0,counts:{},digests:{},
-})}={}){
-  const db=new FakeFirestore(initial);
+}),failTransactionForPath=""}={}){
+  const db=new FakeFirestore(initial,{failTransactionForPath});
   const runnerCalls=[];
+  const logs=[];
   const runner=async input=>{
     runnerCalls.push(input);
     return runShadowSync(input);
@@ -118,7 +125,7 @@ function loadFunctions({initial={},runShadowSync=async()=>({
     if(request==="firebase-functions/v2/firestore") return {onDocumentWritten:functionWrapper};
     if(request==="firebase-functions/v2/scheduler") return {onSchedule:functionWrapper};
     if(request==="firebase-functions/v2") return {setGlobalOptions:()=>{}};
-    if(request==="firebase-functions/logger") return {error:()=>{}};
+    if(request==="firebase-functions/logger") return {error:(...args)=>logs.push(clone(args))};
     if(request==="firebase-admin/app") return {initializeApp:()=>{}};
     if(request==="firebase-admin/firestore") return {
       getFirestore:()=>db,
@@ -139,7 +146,7 @@ function loadFunctions({initial={},runShadowSync=async()=>({
   new Function("exports","require","module","__filename","__dirname",source)(
     module.exports,localRequire,module,INDEX_PATH,FUNCTIONS_DIR,
   );
-  return {db,exports:module.exports,runnerCalls};
+  return {db,exports:module.exports,runnerCalls,logs};
 }
 
 function request(action,branchId,email="developer@scswim.local"){
@@ -358,6 +365,48 @@ test("runner failure cannot publish a prepared generation as ready",async()=>{
   assert.equal(config.mode,"v1");
   assert.equal(generation.status,"failed");
   assert.notEqual(generation.status,"ready");
+  const alertPrefix="scheduleV2/gagyeong/alerts/";
+  const alerts=[...fixture.db.docs.keys()].filter(documentPath=>documentPath.startsWith(alertPrefix));
+  assert.equal(alerts.length,1);
+  const failureTransaction=fixture.db.transactions.find(attempt=>
+    attempt.operations.some(operation=>operation.ref.path.startsWith(alertPrefix))
+  );
+  assert.ok(failureTransaction);
+  assert.deepEqual(new Set(failureTransaction.operations.map(operation=>operation.ref.path)),new Set([
+    schedulePath("gagyeong"),syncPath("gagyeong"),
+    generationPath("gagyeong",config.generationId),alerts[0],
+  ]));
+  assert.equal(fixture.logs.length,1);
+});
+
+test("preparation alert commit failure leaves the fenced failure transition atomic",async()=>{
+  const initial={
+    [schedulePath("gagyeong")]:{mode:"v1",generationId:"",branchId:"gagyeong"},
+    [syncPath("gagyeong")]:{pendingKeys:[],requestedRevision:0,status:"idle"},
+    "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+  };
+  const fixture=loadFunctions({
+    initial,
+    failTransactionForPath:"/alerts/",
+    runShadowSync:async()=>{throw Object.assign(new Error("partial-write-failure"),{code:"unavailable"});},
+  });
+
+  let caught;
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(request("prepare","gagyeong")),
+    error=>{caught=error;return true;},
+  );
+  assert.equal(caught.code,"failed-precondition");
+
+  const config=fixture.db.value(schedulePath("gagyeong"));
+  const sync=fixture.db.value(syncPath("gagyeong"));
+  const generation=fixture.db.value(generationPath("gagyeong",config.generationId));
+  assert.equal(config.mode,"preparing");
+  assert.equal(sync.status,"processing");
+  assert.ok(sync.leaseId);
+  assert.equal(generation.status,"preparing");
+  assert.equal([...fixture.db.docs.keys()].some(path=>path.includes("/alerts/")),false);
+  assert.equal(fixture.logs.length,0);
 });
 
 test("rollback while preparation is blocked revokes the fence and prevents stale readiness",async()=>{
@@ -391,4 +440,6 @@ test("rollback while preparation is blocked revokes the fence and prevents stale
   assert.equal(finalConfig.mode,"v1");
   assert.notEqual(generation.status,"ready");
   assert.equal(fixture.db.value(syncPath("yongam")).leaseId,undefined);
+  assert.equal([...fixture.db.docs.keys()].some(path=>path.includes("/alerts/")),false);
+  assert.equal(fixture.logs.length,0);
 });
