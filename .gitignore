@@ -5,3 +5,4 @@ Thumbs.db
 staff_users.json
 *.pem
 node_modules/
+.worktrees/
