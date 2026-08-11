@@ -133,6 +133,7 @@
   let voiceTicketBranch='';
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
+  let settingsLoadSeqByBranch={};
   let studentDirectoryByBranch={};
   let studentDirectoryLoadingByBranch={};
   let dataV2ReportByBranch={};
@@ -2275,11 +2276,14 @@
   }
   async function loadBranchBundle(branchId){
     const base=defaultSettings(branchId);
+    const sequence=(settingsLoadSeqByBranch[branchId]||0)+1;
+    settingsLoadSeqByBranch[branchId]=sequence;
     try{
       const [settingsSnap,teachersSnap]=await Promise.all([
         branchRoot(branchId).child(SETTINGS_KEY).once('value'),
         branchRoot(branchId).child(TEACHERS_KEY).once('value'),
       ]);
+      if(settingsLoadSeqByBranch[branchId]!==sequence) return;
       settingsByBranch[branchId]=mergeSettings(base,parseStored(settingsSnap.val()));
       teacherNamesByBranch[branchId]=normalizeTeacherNames(parseStored(teachersSnap.val()),branchId);
       settingsLoadFailedByBranch[branchId]=false;
@@ -2291,6 +2295,7 @@
         feedbackByBranch[branchId]=[];
       }
     }catch(e){
+      if(settingsLoadSeqByBranch[branchId]!==sequence) return;
       console.error(e);
       settingsByBranch[branchId]=base;
       teacherNamesByBranch[branchId]=clone(DEFAULT_TEACHERS[branchId]||[]);
@@ -2298,7 +2303,7 @@
       settingsLoadFailedByBranch[branchId]=true;
       toast('설정 로드 실패 — 저장은 차단됩니다','err');
     }
-    renderAll();
+    if(activeBranch===branchId) renderAll();
   }
   async function saveSettings(kind){
     if(window.SCAuth && !SCAuth.requirePermission('manageSettings','설정 저장')) return;
@@ -2376,6 +2381,7 @@
   function setBranch(branchId){
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
     activeBranch=branchId;
+    try{window.SC_SELECTED_BRANCH=branchId;}catch(e){}
     try{localStorage.setItem('selected_branch',branchId);}catch(e){}
     document.querySelectorAll('[data-sc-branch-select]').forEach(select=>{
       select.value=activeBranch;

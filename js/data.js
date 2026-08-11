@@ -3676,9 +3676,25 @@ function retireHistoryEntryForSlot(slotKey,fallback){
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 퇴원 기록 모달 (조회/검색/CSV)
  * ════════════════════════════════════════════════════════════════ */
-function openRetireHistoryModal(){
+async function openRetireHistoryModal(){
   document.getElementById('retire-history-modal').style.display='flex';
   renderRetireHistoryList();
+  if(typeof ensureScheduleAuxiliaryKeysLoaded!=='function') return;
+  try{
+    const result=await ensureScheduleAuxiliaryKeysLoaded('history-records',[
+      STORAGE_KEYS.RETIRE_HISTORY,
+      STORAGE_KEYS.DESK_NOTES,
+    ]);
+    if(result&&result.stale) return;
+    RETIRE_HISTORY=loadJSON(STORAGE_KEYS.RETIRE_HISTORY,[]);
+    DESK_NOTES=loadJSON(STORAGE_KEYS.DESK_NOTES,[]);
+    if(!Array.isArray(RETIRE_HISTORY)) RETIRE_HISTORY=[];
+    if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
+    renderRetireHistoryList();
+  }catch(error){
+    console.error('history load failed',error);
+    if(typeof toast==='function') toast('퇴원 기록을 불러오지 못했습니다','err');
+  }
 }
 function closeRetireHistoryModal(){
   document.getElementById('retire-history-modal').style.display='none';

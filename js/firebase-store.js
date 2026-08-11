@@ -1292,12 +1292,113 @@
     });
   };
 
+  function operationalDomain(key){
+    if(!window.SCV2OperationalModel||typeof SCV2OperationalModel.domainForLegacyKey!=='function') return '';
+    return SCV2OperationalModel.domainForLegacyKey(String(key||''));
+  }
+  function operationalCompatibilityRoot(operationalRoot,legacyRoot){
+    if(typeof Proxy!=='function') return operationalRoot;
+    function transactionMixed(keys,updateFn,meta){
+      const tracked=keys.filter(operationalDomain);
+      const legacy=keys.filter(key=>!operationalDomain(key));
+      return Promise.resolve(operationalRoot.ready()).then(config=>{
+        if(!config||!['v2-read','v2'].includes(String(config.mode||''))){
+          return legacyRoot.transactionKeys(keys,updateFn);
+        }
+        return Promise.all(keys.map(key=>{
+          const owner=operationalDomain(key)?operationalRoot:legacyRoot;
+          return owner.child(key).once('value').then(snapshot=>[key,snapshot.val()]);
+        })).then(entries=>{
+          const before={};
+          entries.forEach(([key,value])=>{ if(value!==null&&value!==undefined) before[key]=value; });
+          const draft=JSON.parse(JSON.stringify(before));
+          const returned=updateFn(draft);
+          if(returned===undefined) return {committed:false,snapshot:new StoreSnapshot(null,null)};
+          const after=returned&&typeof returned==='object'?returned:draft;
+          return operationalRoot.transactionKeys(tracked,current=>{
+            const next=current&&typeof current==='object'?current:{};
+            tracked.forEach(key=>{
+              if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) next[key]=after[key];
+              else delete next[key];
+            });
+            return next;
+          },meta).then(primary=>{
+            if(!primary||primary.committed!==true) return primary;
+            return legacyRoot.transactionKeys(legacy,current=>{
+              const next=current&&typeof current==='object'?current:{};
+              legacy.forEach(key=>{
+                if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) next[key]=after[key];
+                else delete next[key];
+              });
+              return next;
+            }).then(recovery=>{
+              if(!recovery||recovery.committed!==true) return recovery;
+              const merged={};
+              const primaryValues=primary.snapshot&&typeof primary.snapshot.val==='function'?primary.snapshot.val()||{}:{};
+              const legacyValues=recovery.snapshot&&typeof recovery.snapshot.val==='function'?recovery.snapshot.val()||{}:{};
+              keys.forEach(key=>{
+                const source=operationalDomain(key)?primaryValues:legacyValues;
+                if(Object.prototype.hasOwnProperty.call(source,key)) merged[key]=source[key];
+              });
+              return Object.assign({},primary,{snapshot:new StoreSnapshot(null,merged)});
+            });
+          });
+        });
+      });
+    }
+    return new Proxy(operationalRoot,{
+      get(target,property,receiver){
+        if(property==='child'){
+          return key=>operationalDomain(key)?target.child(key):legacyRoot.child(key);
+        }
+        if(property==='transactionKeys'){
+          return (keys,updateFn,meta)=>{
+            const selected=[...new Set((keys||[]).map(key=>String(key||'')).filter(Boolean))];
+            if(selected.length&&selected.every(operationalDomain)) return target.transactionKeys(selected,updateFn,meta);
+            if(selected.every(key=>!operationalDomain(key))) return legacyRoot.transactionKeys(selected,updateFn);
+            return transactionMixed(selected,updateFn,meta);
+          };
+        }
+        if(property==='_list'&&typeof legacyRoot._list==='function') return legacyRoot._list.bind(legacyRoot);
+        return Reflect.get(target,property,receiver);
+      },
+    });
+  }
+
   function createBranchRef(branch){
     if(!branch) throw new Error('branch is required');
-    if(!useFirestore() || !firebase.firestore){
-      return firebase.database().ref(branch.fbPath);
+    const legacyRoot=(!useFirestore() || !firebase.firestore)
+      ?firebase.database().ref(branch.fbPath)
+      :new FirestoreKVRoot(branch);
+    const operationalReady=!!(
+      window.SCAuth
+      &&firebase.auth
+      &&firebase.auth().currentUser
+      &&window.SCV2OperationalStore
+      &&typeof SCV2OperationalStore.create==='function'
+      &&window.SCOperationalSchedule
+      &&typeof SCOperationalSchedule.create==='function'
+      &&window.SCV2OperationalModel
+    );
+    if(!operationalReady||typeof firebase.firestore!=='function'||typeof legacyRoot.transactionKeys!=='function'){
+      return legacyRoot;
     }
-    return new FirestoreKVRoot(branch);
+    const id=branchId(branch);
+    const db=firebase.firestore();
+    const functions=firebase.app().functions('asia-northeast3');
+    const v2Store=SCV2OperationalStore.create({db,branchId:id,model:SCV2OperationalModel});
+    const operationalRoot=SCOperationalSchedule.create({
+      branch,
+      branchId:id,
+      legacyRoot,
+      db,
+      v2Store,
+      model:SCV2OperationalModel,
+      functions,
+      defaultTabIds:['regular'],
+      getBranchId:()=>String(window.SC_SELECTED_BRANCH||id),
+    });
+    return operationalCompatibilityRoot(operationalRoot,legacyRoot);
   }
   function subscribeSelectedRTDB(root,options){
     if(!root||typeof root.child!=='function') throw new Error('selected root is required');

@@ -25,6 +25,7 @@
     const onRender=asFunction(opts.onRender,()=>{});
     const onInvalid=asFunction(opts.onInvalid,()=>{});
     const onError=asFunction(opts.onError,()=>{});
+    const isCurrent=asFunction(opts.isCurrent,()=>true);
     const state={
       started:false,
       stopped:false,
@@ -60,6 +61,12 @@
     function accept(batch){
       if(state.stopped) return false;
       const source=batch&&typeof batch==='object'?batch:{};
+      let current=false;
+      try{ current=isCurrent(source)!==false; }catch(error){ current=false; }
+      if(!current){
+        record('stale-context',{revision:Number(source.revision)||0});
+        return false;
+      }
       const revision=Number(source.revision);
       const nextRevision=Number.isFinite(revision)&&revision>0
         ?revision

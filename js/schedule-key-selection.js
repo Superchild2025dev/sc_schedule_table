@@ -21,16 +21,24 @@
     'swim_reserve',
     'swim_hyuwon',
     'swim_move',
-    'swim_requests',
     'swim_closed',
     'swim_teachers',
     'swim_periods',
-    'swim_retire_history',
-    'swim_desk_notes',
     'swim_age_year',
     'swim_student_id_version',
     'swim_ver',
   ]);
+
+  const FIXED_DOMAINS=Object.freeze({
+    swim_tab_list:'roster',swim_students:'roster',swim_inst:'roster',
+    swim_retire:'workflow',swim_enroll:'workflow',swim_mark:'workflow',swim_disabled:'calendar',
+    swim_reserve:'workflow',swim_hyuwon:'workflow',swim_move:'workflow',
+    swim_closed:'calendar',swim_periods:'calendar',swim_main_tab:'calendar',swim_parent_tab:'calendar',
+    swim_teachers:'administration',swim_tab_folders:'administration',swim_archived_tabs:'administration',
+    swim_age_year:'administration',swim_student_id_version:'administration',swim_ver:'administration',
+    swim_attendance:'attendance',swim_att_guests:'attendance',swim_day_snapshot:'attendance',
+    swim_retire_history:'history',swim_desk_notes:'history',
+  });
 
   function unique(values){
     return [...new Set((values||[]).map(value=>String(value||'').trim()).filter(Boolean))];
@@ -93,6 +101,41 @@
     return ['swim_attendance','swim_att_guests'];
   }
 
+  function domainForKey(key){
+    key=String(key||'');
+    if(FIXED_DOMAINS[key]) return FIXED_DOMAINS[key];
+    if(/^swim_(?:stu|inst)_[A-Za-z0-9_-]+$/.test(key)||/^swim_bt_[A-Za-z0-9_-]+_(?:stu|inst)$/.test(key)) return 'roster';
+    if(/^swim_bt_(?:attendance|att_guests|day_snapshot)_[A-Za-z0-9_-]+$/.test(key)
+      ||/^zz_swim_day_snapshot__(?:regular|bt_[A-Za-z0-9_-]+)__\d{4}-\d{2}-\d{2}$/.test(key)) return 'attendance';
+    return '';
+  }
+
+  function tabIdForKey(key){
+    key=String(key||'');
+    if(['swim_students','swim_inst','swim_attendance','swim_att_guests','swim_day_snapshot'].includes(key)) return 'regular';
+    let match=key.match(/^swim_(?:stu|inst)_([A-Za-z0-9_-]+)$/);
+    if(match) return match[1];
+    match=key.match(/^swim_bt_([A-Za-z0-9_-]+)_(?:stu|inst)$/);
+    if(match) return match[1];
+    match=key.match(/^swim_bt_(?:attendance|att_guests|day_snapshot)_([A-Za-z0-9_-]+)$/);
+    if(match) return match[1];
+    match=key.match(/^zz_swim_day_snapshot__(?:regular|bt_([A-Za-z0-9_-]+))__\d{4}-\d{2}-\d{2}$/);
+    if(match) return match[1]||'regular';
+    return '';
+  }
+
+  function selectionForKeys(keys,options){
+    const selectedKeys=unique(keys);
+    const opts=options&&typeof options==='object'?options:{};
+    const inferredTabs=unique(selectedKeys.map(tabIdForKey));
+    return {
+      keys:selectedKeys,
+      tabIds:inferredTabs.length?inferredTabs:unique(opts.tabIds),
+      domains:unique(selectedKeys.map(domainForKey)),
+      ...(opts.dateRange&&typeof opts.dateRange==='object'?{dateRange:opts.dateRange}:{}),
+    };
+  }
+
   function isTabOwnedKey(key){
     key=String(key||'');
     if(key==='swim_students'||key==='swim_inst') return true;
@@ -124,6 +167,8 @@
     initialBaseKeys,
     tabKeys,
     attendanceKeys,
+    domainForKey,
+    selectionForKeys,
     isTabOwnedKey,
     resolveMainTab,
   });

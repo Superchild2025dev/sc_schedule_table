@@ -23,8 +23,8 @@ function rootWithChild(methods){
   return {
     child(key){
       return {
-        set(value){ return methods.set(key, value); },
-        remove(){ return methods.remove ? methods.remove(key) : Promise.resolve(); },
+        set(value,meta){ return methods.set(key, value, meta); },
+        remove(meta){ return methods.remove ? methods.remove(key,meta) : Promise.resolve(); },
       };
     },
   };
@@ -74,7 +74,7 @@ test('a failed write is reported once and rethrown', async () => {
   assert.equal(reports[0].error, failure);
   assert.equal(reports[0].meta.label, '결석 저장');
   assert.equal(reports[0].meta.keys[0], 'swim_mark');
-  assert.match(reports[0].meta.operationId, /^write_/);
+  assert.match(reports[0].meta.operationId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   assert.equal(gateway.recent(1)[0].status, 'failed');
 });
 
@@ -99,6 +99,37 @@ test('transaction deduplicates keys and uses the keyed transaction API', async (
   assert.deepEqual(calls, [['swim_students', 'swim_enroll']]);
   assert.equal(result.committed, true);
   assert.equal(result.snapshot.val().swim_enroll, '{"slot":true}');
+});
+
+test('every write carries operation metadata and one stable UUID to the storage boundary', async () => {
+  const {create} = require(gatewayPath);
+  const calls=[];
+  const root={
+    child(key){
+      return {
+        set(value,meta){ calls.push({kind:'set',key,value,meta}); return Promise.resolve('saved'); },
+        remove(meta){ calls.push({kind:'remove',key,meta}); return Promise.resolve('removed'); },
+      };
+    },
+    transactionKeys(keys,updateFn,meta){
+      calls.push({kind:'transaction',keys:[...keys],meta});
+      const next=updateFn({swim_mark:'{}'});
+      return Promise.resolve({committed:true,snapshot:{val:()=>next}});
+    },
+  };
+  const gateway=create({getRoot:()=>root});
+
+  await gateway.set('swim_students','[]',{operationType:'move-student',label:'자리 이동'});
+  await gateway.remove('swim_retire',{operationType:'clear-retirement',label:'퇴원 취소'});
+  const retryMeta={operationId:'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a',operationType:'edit-mark',label:'결석 저장'};
+  await gateway.transaction(['swim_mark'],value=>value,retryMeta);
+
+  assert.match(calls[0].meta.operationId,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(calls[0].meta.operationType,'move-student');
+  assert.equal(calls[0].meta.label,'자리 이동');
+  assert.match(calls[1].meta.operationId,/^[0-9a-f-]{36}$/i);
+  assert.equal(calls[2].meta.operationId,retryMeta.operationId);
+  assert.equal(gateway.recent(1)[0].id,retryMeta.operationId);
 });
 
 test('blocked writes never call the storage root', async () => {

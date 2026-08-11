@@ -16,6 +16,7 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
 };
 
 let _fb=null, _fbReady=false;
+let _teacherSelectedController=null;
 const _teacherWrites=SCScheduleWriteGateway.create({
   getRoot:()=>_fb,
   canWrite:()=>_fbReady&&!!_fb,
@@ -388,70 +389,65 @@ function hydrateTeacherLegacyAttendance(){
   return true;
 }
 function loadAllData(){
-  return new Promise((resolve,reject)=>{
-    if(!_fbReady){reject('not ready');return;}
-    _fb.once('value').then(snap=>{
-      const data=snap.val()||{};
-      applyTeacherDataKeys(data);
-      STUDENTS=parseStoredJSON(_teacherStuKey,data[_teacherStuKey],[]);
-      INST_MAP=parseStoredJSON(_teacherInstKey,data[_teacherInstKey],{});
-      MARK_MAP=parseStoredJSON('swim_mark',data.swim_mark,{});
-      REQUESTS=parseStoredJSON('swim_requests',data.swim_requests,{});
-      TEACHERS=parseJSON(data.swim_teachers,[]);
-      const attendanceKeys=teacherAttendanceStorageKeys();
-      _teacherAttendanceRootValues[attendanceKeys.attendance]=data[attendanceKeys.attendance];
-      _teacherAttendanceRootValues[attendanceKeys.attGuests]=data[attendanceKeys.attGuests];
-      _teacherLegacyAttendanceHydratedKeys.delete(attendanceKeys.attendance);
-      _teacherLegacyAttendanceHydratedKeys.delete(attendanceKeys.attGuests);
-      DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
-      resolve();
-    }).catch(reject);
+  if(!_fbReady) return Promise.reject('not ready');
+  if(!window.SCFirebaseStore||typeof SCFirebaseStore.subscribeSelectedRootBatches!=='function'){
+    return Promise.reject(new Error('선택 데이터 연결을 사용할 수 없습니다'));
+  }
+  const attendanceKeys=teacherAttendanceStorageKeys();
+  if(!Object.prototype.hasOwnProperty.call(_teacherAttendanceRootValues,attendanceKeys.attendance)){
+    _teacherAttendanceRootValues[attendanceKeys.attendance]=undefined;
+  }
+  if(!Object.prototype.hasOwnProperty.call(_teacherAttendanceRootValues,attendanceKeys.attGuests)){
+    _teacherAttendanceRootValues[attendanceKeys.attGuests]=undefined;
+  }
+  const selectedReady=new Promise((resolve,reject)=>{
+    let controller=null;
+    controller=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
+      baseKeys:['swim_parent_tab','swim_mark','swim_teachers'],
+      resolveInitialActiveKeys:baseValues=>{
+        applyTeacherDataKeys(baseValues||{});
+        return [_teacherStuKey,_teacherInstKey];
+      },
+      next:batch=>{
+        const values=batch&&batch.values||{};
+        const removed=new Set(batch&&batch.removedKeys||[]);
+        const previousStuKey=_teacherStuKey;
+        const previousInstKey=_teacherInstKey;
+        if(Object.prototype.hasOwnProperty.call(values,'swim_parent_tab')) applyTeacherDataKeys(values);
+        if(removed.has('swim_parent_tab')) applyTeacherDataKeys({});
+        if(Object.prototype.hasOwnProperty.call(values,_teacherStuKey)) STUDENTS=parseStoredJSON(_teacherStuKey,values[_teacherStuKey],[]);
+        else if(removed.has(_teacherStuKey)) STUDENTS=[];
+        if(Object.prototype.hasOwnProperty.call(values,_teacherInstKey)) INST_MAP=parseStoredJSON(_teacherInstKey,values[_teacherInstKey],{});
+        else if(removed.has(_teacherInstKey)) INST_MAP={};
+        if(Object.prototype.hasOwnProperty.call(values,'swim_mark')) MARK_MAP=parseStoredJSON('swim_mark',values.swim_mark,{});
+        else if(removed.has('swim_mark')) MARK_MAP={};
+        if(Object.prototype.hasOwnProperty.call(values,'swim_teachers')) TEACHERS=parseJSON(values.swim_teachers,[]);
+        else if(removed.has('swim_teachers')) TEACHERS=[];
+        DAY_SNAPSHOT=teacherLoadedDaySnapshotMap();
+        if(!batch.initial&&(previousStuKey!==_teacherStuKey||previousInstKey!==_teacherInstKey)){
+          controller.setActiveKeys([_teacherStuKey,_teacherInstKey]).catch(reject);
+        }
+        if(!batch.initial&&_currentTeacher!==null) render();
+      },
+      error:reject,
+    });
+    _teacherSelectedController=controller;
+    Promise.resolve(controller.ready).then(resolve,reject);
   });
+  const requestsReady=_fb.child('swim_requests').once('value').then(snap=>{
+    REQUESTS=parseStoredJSON('swim_requests',snap.val(),{});
+  });
+  return Promise.all([selectedReady,requestsReady]).then(()=>undefined);
 }
 
 function subscribeChanges(){
   if(!_fbReady) return;
-  _fb.on('child_changed',snap=>{
-    const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
-    const attendanceKeys=teacherAttendanceStorageKeys();
-    if(snap.key==='swim_parent_tab'){
-      loadAllData().then(()=>{
-        if(_currentTeacher!==null) render();
-        const selScreen = document.getElementById('teacher-select-screen');
-        if(selScreen && selScreen.style.display !== 'none' && typeof populateTeachers === 'function') populateTeachers();
-      }).catch(e=>console.warn('teacher data reload failed',e));
-      return;
-    }
-    if(snap.key==='swim_requests') REQUESTS=parseStoredJSON('swim_requests',asStr,{});
-    else if(snap.key==='swim_mark') MARK_MAP=parseStoredJSON('swim_mark',asStr,{});
-    else if(snap.key===_teacherStuKey) STUDENTS=parseStoredJSON(_teacherStuKey,asStr,[]);
-    else if(snap.key===_teacherInstKey) INST_MAP=parseStoredJSON(_teacherInstKey,asStr,{});
-    else if(snap.key==='swim_teachers') TEACHERS=parseJSON(asStr,[]);
-    else if(snap.key===attendanceKeys.attendance){
-      _teacherAttendanceRootValues[snap.key]=asStr;
-      if(_teacherAttendanceRuntime&&!isTeacherAttendanceV2Authority()){
-        ATTENDANCE=parseStoredJSON(snap.key,asStr,{});
-        _teacherLegacyAttendanceHydratedKeys.add(snap.key);
-      }else{
-        _teacherLegacyAttendanceHydratedKeys.delete(snap.key);
-      }
-    }
-    else if(snap.key===attendanceKeys.attGuests){
-      _teacherAttendanceRootValues[snap.key]=asStr;
-      if(_teacherAttendanceRuntime&&!isTeacherAttendanceV2Authority()){
-        ATT_GUESTS=parseStoredJSON(snap.key,asStr,{});
-        _teacherLegacyAttendanceHydratedKeys.add(snap.key);
-      }else{
-        _teacherLegacyAttendanceHydratedKeys.delete(snap.key);
-      }
-    }
-    else if(snap.key==='swim_day_snapshot') DAY_SNAPSHOT=parseStoredJSON('swim_day_snapshot',asStr,{});
+  const requestsRef=_fb.child('swim_requests');
+  requestsRef.on('value',snap=>{
+    REQUESTS=parseStoredJSON('swim_requests',snap.val(),{});
     if(_currentTeacher!==null) render();
-    // [v118] 선생님 선택 화면이 보이는 중이면 빨간 배지 갱신
     const selScreen = document.getElementById('teacher-select-screen');
-    if(selScreen && selScreen.style.display !== 'none' && (snap.key==='swim_requests' || snap.key==='swim_mark' || snap.key===_teacherInstKey || snap.key==='swim_teachers')){
-      if(typeof populateTeachers === 'function') populateTeachers();
-    }
+    if(selScreen&&selScreen.style.display!=='none'&&typeof populateTeachers==='function') populateTeachers();
   });
 }
 
@@ -564,7 +560,7 @@ function _teacherTxApplyKey(key,raw){
   else if(key===_teacherStuKey) STUDENTS=parseStoredJSON(_teacherStuKey,raw,[]);
   else if(key===_teacherInstKey) INST_MAP=parseStoredJSON(_teacherInstKey,raw,{});
 }
-function updateTeacherKeysTx(keys,mutator){
+function updateTeacherKeysTx(keys,mutator,meta){
   if(!_fbReady) return Promise.reject('not ready');
   const txKeys=[...new Set((keys||[]).filter(Boolean))];
   if(!txKeys.length) return Promise.reject(new Error('transaction keys are required'));
@@ -586,7 +582,7 @@ function updateTeacherKeysTx(keys,mutator){
     const result=mutator(makeCtx(root));
     if(result===undefined) return;
     return root;
-  },{label:'선생님 데이터 저장'}).then(res=>{
+  },{...(meta||{}),label:meta?.label||'선생님 데이터 저장'}).then(res=>{
     if(!res.committed) throw new Error(abortReason||'transaction aborted');
     const root=res.snapshot.val()||{};
     txKeys.forEach(key=>{
@@ -1333,6 +1329,9 @@ async function acceptRequestAtomic(reqId){
     acceptedReq=JSON.parse(JSON.stringify(reqs[reqId]));
     ctx.set('swim_requests',reqs);
     return true;
+  },{
+    operationType:localReq?.type==='absent-cancel'?'absence-cancel':'makeup-update',
+    label:'보강/결석 요청 처리',
   });
   return acceptedReq;
 }
