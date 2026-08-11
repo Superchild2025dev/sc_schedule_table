@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto=require("node:crypto");
 const permissionManifest=require("../config/schedule-permissions.json");
 require("./schedule-v2-operational-model.js");
 
@@ -12,6 +13,12 @@ const REQUEST_KEY_SET=new Set(REQUEST_KEYS);
 const BRANCH_IDS=new Set((permissionManifest.branches||[]).map(branch=>String(branch.id||"")));
 const ACCOUNT_BY_EMAIL=new Map((permissionManifest.accounts||[]).map(account=>[
   String(account.email||"").trim().toLowerCase(),account,
+]));
+function permissionActorId(email){
+  return crypto.createHash("sha256").update(String(email||"").trim().toLowerCase()).digest("hex").slice(0,24);
+}
+const ACCOUNT_BY_ACTOR_ID=new Map((permissionManifest.accounts||[]).map(account=>[
+  permissionActorId(account.email),account,
 ]));
 const TEACHER_EXACT_KEYS=new Set(permissionManifest.teacherWritableExactKeys||[]);
 const TEACHER_PATTERNS=(permissionManifest.teacherWritablePatterns||[]).map(pattern=>new RegExp(pattern));
@@ -118,7 +125,11 @@ function exactKeys(value,keys){
 }
 
 function requestId(value){
-  return normalizeString(value,/^[A-Za-z0-9_-]{1,128}$/);
+  return normalizeString(value,/^r_[0-9]{13}_[a-z0-9]{6}$/);
+}
+
+function recoveryOperationId(value){
+  return normalizeString(value,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 }
 
 function isoTimestamp(value){
@@ -133,6 +144,17 @@ function validateRequestRecoveryPatch(input){
   }
   const status=text(input.status);
   if(!REQUEST_RECOVERY_TARGET_STATUSES.has(status)) fail("invalid-argument");
+  const requiredByStatus={
+    accepted:["status","processedAt"],
+    rejected:["status","processedAt"],
+    superseded:["status","processedAt","supersededBy"],
+    cancelled:["status","processedAt","cancelledAt","cancelledBy","cancelledRequestId"],
+  };
+  const allowed=new Set(requiredByStatus[status].concat(status==="cancelled"?[]:["clearProcessing"]));
+  const actual=Object.keys(input);
+  if(actual.some(key=>!allowed.has(key))||requiredByStatus[status].some(key=>!actual.includes(key))){
+    fail("invalid-argument");
+  }
   const patch={status};
   if(Object.prototype.hasOwnProperty.call(input,"processedAt")) patch.processedAt=isoTimestamp(input.processedAt);
   if(Object.prototype.hasOwnProperty.call(input,"supersededBy")) patch.supersededBy=requestId(input.supersededBy);
@@ -153,18 +175,20 @@ function validateRequestRecoveryPatch(input){
   if(status==="cancelled"&&(!patch.cancelledAt||patch.cancelledBy!=="parent-approved"||!patch.cancelledRequestId)){
     fail("invalid-argument");
   }
+  if(status==="cancelled"&&patch.cancelledAt!==patch.processedAt) fail("invalid-argument");
   return Object.freeze(patch);
 }
 
 function validateRequestRecoveryCommand(input){
   if(!plainObject(input)||input.version!==REQUEST_RECOVERY_VERSION) fail("invalid-argument");
   const action=text(input.action);
-  if(action==="drain"){
+  if(action==="drain"||action==="status"){
     if(!exactKeys(input,["version","action","branchId","operationId"])) fail("invalid-argument");
     const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
     if(!BRANCH_IDS.has(branchId)) fail("invalid-argument");
     const operationId=text(input.operationId);
-    if(operationId) requestId(operationId);
+    if(action==="status"&&operationId) fail("invalid-argument");
+    if(operationId) recoveryOperationId(operationId);
     return Object.freeze({version:REQUEST_RECOVERY_VERSION,action,branchId,operationId});
   }
   if(action!=="stage"||!exactKeys(input,[
@@ -172,7 +196,7 @@ function validateRequestRecoveryCommand(input){
   ])) fail("invalid-argument");
   const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
   if(!BRANCH_IDS.has(branchId)) fail("invalid-argument");
-  const operationId=requestId(input.operationId);
+  const operationId=recoveryOperationId(input.operationId);
   const operationType=text(input.operationType);
   if(!REQUEST_RECOVERY_OPERATION_TYPES.has(operationType)) fail("invalid-argument");
   if(!Array.isArray(input.intents)||!input.intents.length||input.intents.length>MAX_REQUEST_RECOVERY_INTENTS){
@@ -190,9 +214,19 @@ function validateRequestRecoveryCommand(input){
     if(!REQUEST_RECOVERY_EXPECTED_STATUSES.has(expectedStatus)) fail("invalid-argument");
     const expectedVersion=intent.expectedVersion;
     if(expectedVersion!==null&&!safeInteger(expectedVersion)) fail("invalid-argument");
+    const patch=validateRequestRecoveryPatch(intent.patch);
+    const expectedByTarget={
+      accepted:new Set(["pending","processing"]),
+      rejected:new Set(["pending","processing"]),
+      superseded:new Set(["pending","processing"]),
+      cancelled:new Set(["accepted"]),
+    };
+    if(!expectedByTarget[patch.status].has(expectedStatus)) fail("invalid-argument");
+    if((patch.supersededBy&&patch.supersededBy===id)||
+        (patch.cancelledRequestId&&patch.cancelledRequestId===id)) fail("invalid-argument");
     return Object.freeze({
       requestId:id,expectedStatus,expectedVersion,
-      patch:validateRequestRecoveryPatch(intent.patch),
+      patch,
     });
   });
   const result={version:REQUEST_RECOVERY_VERSION,action,branchId,operationId,operationType,intents};
@@ -310,10 +344,20 @@ function authorizeMutation(authInput,mutationInput){
 
 function authorizeRequestRecovery(authInput,recoveryInput){
   const command=recoveryInput?.action?recoveryInput:validateRequestRecoveryCommand(recoveryInput);
-  if(command.action==="drain") return authorizeBranchStaff(authInput,command.branchId);
+  if(command.action==="drain"||command.action==="status") return authorizeBranchStaff(authInput,command.branchId);
   return authorizeMutation(authInput,{
     branchId:command.branchId,operationType:command.operationType,keys:["swim_mark"],
   });
+}
+
+function requestRecoveryProcessorName(actorId){
+  const normalized=text(actorId).toLowerCase();
+  if(!/^[0-9a-f]{24}$/.test(normalized)) fail("failed-precondition");
+  const account=ACCOUNT_BY_ACTOR_ID.get(normalized);
+  if(!account||account.active===false) fail("failed-precondition");
+  const name=text(account.teacherName)||text(account.name);
+  if(!name) fail("failed-precondition");
+  return name;
 }
 
 function errorCode(error){
@@ -359,6 +403,7 @@ module.exports={
   authorizeMutation,
   validateRequestRecoveryCommand,
   authorizeRequestRecovery,
+  requestRecoveryProcessorName,
   redactedDiagnostic,
   keyFamily,
 };

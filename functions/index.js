@@ -2344,6 +2344,17 @@ exports.recoverScheduleV2OperationalMirrors = onSchedule({
   memory: "1GiB",
 }, async () => {
   await scheduleV2OperationalWriter.recoverOperationalMirrors();
+  return null;
+});
+
+exports.recoverScheduleV2RequestPatches = onSchedule({
+  schedule: "every 5 minutes",
+  timeZone: "Asia/Seoul",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  retryCount: 3,
+  timeoutSeconds: 120,
+  memory: "512MiB",
+}, async () => {
   await scheduleV2OperationalWriter.recoverRequestPatches();
   return null;
 });

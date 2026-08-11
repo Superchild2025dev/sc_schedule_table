@@ -188,7 +188,7 @@
     }
     return true;
   }
-  function updateDeskKeysTx(keys,mutator){
+  function updateDeskKeysTx(keys,mutator,meta){
     if(!_fbReady) return Promise.reject(new Error('not ready'));
     keys=[...new Set((keys||[]).filter(Boolean))];
     let abortReason='';
@@ -207,7 +207,7 @@
       const result=mutator(makeCtx(root));
       if(result===undefined) return;
       return root;
-    },{label:'데스크 요청 처리'}).then(res=>{
+    },{...(meta||{}),label:'데스크 요청 처리'}).then(res=>{
       if(!res.committed) throw new Error(abortReason||'transaction aborted');
       const root=res.snapshot.val()||{};
       keys.forEach(key=>applyChangedKey(key,root[key]));
@@ -263,7 +263,7 @@
       ctx.set('swim_mark',marks);
       ctx.set('swim_requests',reqs);
       return true;
-    }).then(()=>{
+    },{operationType:'absence-cancel'}).then(()=>{
       saved=true;
       render();
       return notifyAbsentCancelAccepted(req);

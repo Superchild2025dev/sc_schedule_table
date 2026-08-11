@@ -10,11 +10,15 @@ const FUNCTIONS_DIR=path.dirname(INDEX_PATH);
 
 function triggerWrapper(options,handler){handler.__options=options;return handler;}
 
-function loadFunctions(){
+function loadFunctions(options={}){
   const calls={mutate:[],recover:0,requestRecovery:[],recoverRequests:0};
   const writer={
     mutate:async request=>{calls.mutate.push(request);return {operationId:"op_api",committed:true};},
-    recoverOperationalMirrors:async()=>{calls.recover+=1;return {applied:0,error:0};},
+    recoverOperationalMirrors:async()=>{
+      calls.recover+=1;
+      if(options.mirrorThrows) throw new Error("mirror failed");
+      return {applied:0,error:0};
+    },
     manageRequestRecovery:async request=>{calls.requestRecovery.push(request);return {state:"staged",code:""};},
     recoverRequestPatches:async()=>{calls.recoverRequests+=1;return {completed:0,error:0};},
   };
@@ -57,9 +61,11 @@ test("exports the operational callable and bounded recovery schedule without cha
   assert.equal(typeof api.mutateScheduleV2Operational,"function");
   assert.equal(api.mutateScheduleV2Operational.__options.cors,true);
   assert.equal(typeof api.recoverScheduleV2OperationalMirrors,"function");
+  assert.equal(typeof api.recoverScheduleV2RequestPatches,"function");
   assert.equal(typeof api.manageScheduleV2RequestRecovery,"function");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.schedule,"every 5 minutes");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.timeZone,"Asia/Seoul");
+  assert.equal(api.recoverScheduleV2RequestPatches.__options.schedule,"every 5 minutes");
 
   for(const existing of [
     "parentPortal","customerVoice","purgeCustomerVoiceContacts","manageScheduleV2Shadow",
@@ -74,6 +80,16 @@ test("exports the operational callable and bounded recovery schedule without cha
   assert.deepEqual(await api.manageScheduleV2RequestRecovery(recoveryRequest),{state:"staged",code:""});
   assert.equal(fixture.calls.requestRecovery[0],recoveryRequest);
   await api.recoverScheduleV2OperationalMirrors();
+  assert.equal(fixture.calls.recover,1);
+  assert.equal(fixture.calls.recoverRequests,0);
+  await api.recoverScheduleV2RequestPatches();
+  assert.equal(fixture.calls.recoverRequests,1);
+});
+
+test("request recovery schedule remains runnable when mirror recovery throws",async()=>{
+  const fixture=loadFunctions({mirrorThrows:true});
+  await assert.rejects(fixture.exports.recoverScheduleV2OperationalMirrors(),/mirror failed/);
+  await fixture.exports.recoverScheduleV2RequestPatches();
   assert.equal(fixture.calls.recover,1);
   assert.equal(fixture.calls.recoverRequests,1);
 });

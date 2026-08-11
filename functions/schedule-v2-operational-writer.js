@@ -25,6 +25,8 @@ const REQUEST_RECOVERY_MAX_ATTEMPTS=5;
 const REQUEST_RECOVERY_LIMIT=20;
 const REQUEST_RECOVERY_LEASE_MS=4*60*1000;
 const REQUEST_RECOVERY_EXPIRY_MS=24*60*60*1000;
+const REQUEST_RECOVERY_TERMINAL_RETENTION_MS=7*24*60*60*1000;
+const REQUEST_RECOVERY_MAX_PAGES=10;
 const REQUEST_RECOVERY_STATES=new Set(["staged","waiting-primary","processing","error","completed","conflict","cancelled","rejected"]);
 const REQUEST_RECOVERY_CODES=new Set(["","primary-pending","primary-expired","manifest-mismatch","request-conflict","retry-exhausted","invalid-record"]);
 const BRANCH_IDS=Object.freeze(["gagyeong","yongam"]);
@@ -849,8 +851,8 @@ async function readOperationalStatus(rawInput,maybeBranchId){
   if(!input.db||!BRANCH_IDS.includes(text(input.branchId))) fail("invalid-argument");
   const runtimeSnapshot=await runtimeRef(input.db,input.branchId).get();
   const collection=input.db.collection(ROOT_COLLECTION).doc(input.branchId).collection("operationalMutations");
-  async function countState(state){
-    const query=collection.where("status","==","committed").where("recoveryState","==",state);
+  const requestCollection=input.db.collection(ROOT_COLLECTION).doc(input.branchId).collection("requestRecoveries");
+  async function countQuery(query){
     if(typeof query.count==="function"){
       const snapshot=await query.count().get();
       return Math.max(0,Number(snapshot.data()?.count||0)||0);
@@ -858,8 +860,21 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     const snapshot=await query.get();
     return Math.max(0,Number(snapshot.size||snapshot.docs?.length||0)||0);
   }
-  const [recoveryPendingCount,recoveryErrorCount,recoveryProcessingCount]=await Promise.all([
+  function countState(state){
+    return countQuery(collection.where("status","==","committed").where("recoveryState","==",state));
+  }
+  function countRequestState(state){
+    return countQuery(requestCollection.where("state","==",state));
+  }
+  const [
+    recoveryPendingCount,recoveryErrorCount,recoveryProcessingCount,
+    requestStaged,requestWaiting,requestProcessing,requestError,requestCompleted,requestConflict,
+    requestCancelled,requestRejected,
+  ]=await Promise.all([
     countState("pending"),countState("error"),countState("processing"),
+    countRequestState("staged"),countRequestState("waiting-primary"),countRequestState("processing"),
+    countRequestState("error"),countRequestState("completed"),countRequestState("conflict"),
+    countRequestState("cancelled"),countRequestState("rejected"),
   ]);
   return {
     branchId:input.branchId,
@@ -870,6 +885,15 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     recoveryPendingCount,
     recoveryErrorCount,
     recoveryProcessingCount,
+    requestRecoveryStagedCount:requestStaged,
+    requestRecoveryWaitingCount:requestWaiting,
+    requestRecoveryProcessingCount:requestProcessing,
+    requestRecoveryPendingCount:requestStaged+requestWaiting+requestProcessing,
+    requestRecoveryErrorCount:requestError,
+    requestRecoveryCompletedCount:requestCompleted,
+    requestRecoveryConflictCount:requestConflict,
+    requestRecoveryCancelledCount:requestCancelled,
+    requestRecoveryRejectedCount:requestRejected,
   };
 }
 
@@ -904,27 +928,71 @@ function requestRecoveryBase(command,input){
     primaryChecks:0,
     createdAt:now.toISOString(),
     updatedAt:now.toISOString(),
-    expiresAt:new Date(now.getTime()+REQUEST_RECOVERY_EXPIRY_MS).toISOString(),
-    leaseId:"",
-    leaseUntil:"",
-    completedAt:"",
-    conflictAt:"",
-    cancelledAt:"",
+    expiresAt:new Date(now.getTime()+REQUEST_RECOVERY_EXPIRY_MS),
     code:"",
   };
 }
 
-const REQUEST_RECOVERY_RECORD_KEYS=new Set([
+const REQUEST_RECOVERY_COMMON_KEYS=[
   "version","branchId","operationId","linkedV2OperationId","operationType","intents",
   "intentFingerprint","state","attempts","primaryChecks","createdAt","updatedAt","expiresAt",
-  "leaseId","leaseUntil","completedAt","conflictAt","cancelledAt","code",
-]);
+  "code",
+];
+const REQUEST_RECOVERY_STATE_KEYS={
+  staged:[],
+  "waiting-primary":[],
+  processing:["leaseId","leaseUntil"],
+  error:["failedAt"],
+  completed:["completedAt"],
+  conflict:["conflictAt"],
+  cancelled:["cancelledAt"],
+};
+
+function timestampMillis(value){
+  if(value instanceof Date) return value.getTime();
+  if(value&&typeof value.toDate==="function") return value.toDate().getTime();
+  const parsed=Date.parse(text(value));
+  return Number.isFinite(parsed)?parsed:NaN;
+}
+
+function exactRecordKeys(record,expected){
+  const actual=Object.keys(record||{});
+  return actual.length===expected.length&&actual.every(key=>expected.includes(key));
+}
+
+function requestRecoveryState(record,state,now,code,extra={}){
+  const next={};
+  REQUEST_RECOVERY_COMMON_KEYS.forEach(key=>{
+    next[key]=key==="intents"?clone(record[key]):record[key];
+  });
+  next.state=state;
+  next.code=code;
+  next.updatedAt=now.toISOString();
+  if(["error","completed","conflict","cancelled"].includes(state)){
+    next.expiresAt=new Date(now.getTime()+REQUEST_RECOVERY_TERMINAL_RETENTION_MS);
+  }
+  return {...next,...extra};
+}
 
 function validateStoredRequestRecovery(record,branchId,operationId){
-  if(!plainObject(record)||Object.keys(record).some(key=>!REQUEST_RECOVERY_RECORD_KEYS.has(key))) fail("invalid-record");
-  for(const key of REQUEST_RECOVERY_RECORD_KEYS){
-    if(!Object.prototype.hasOwnProperty.call(record,key)) fail("invalid-record");
+  if(!plainObject(record)) fail("invalid-record");
+  if(record.state==="rejected"){
+    const rejectedKeys=[
+      "version","branchId","operationId","linkedV2OperationId","state","attempts","primaryChecks",
+      "createdAt","updatedAt","expiresAt","rejectedAt","code",
+    ];
+    if(!exactRecordKeys(record,rejectedKeys)||record.version!==REQUEST_RECOVERY_VERSION||
+        record.branchId!==branchId||record.operationId!==operationId||record.linkedV2OperationId!==operationId||
+        record.code!=="invalid-record"||record.attempts!==0||record.primaryChecks!==0||
+        !Number.isFinite(timestampMillis(record.createdAt))||!Number.isFinite(timestampMillis(record.updatedAt))||
+        !Number.isFinite(timestampMillis(record.rejectedAt))||!Number.isFinite(timestampMillis(record.expiresAt))){
+      fail("invalid-record");
+    }
+    return record;
   }
+  const state=text(record.state);
+  if(!Object.prototype.hasOwnProperty.call(REQUEST_RECOVERY_STATE_KEYS,state)||
+      !exactRecordKeys(record,REQUEST_RECOVERY_COMMON_KEYS.concat(REQUEST_RECOVERY_STATE_KEYS[state]))) fail("invalid-record");
   const command=policy.validateRequestRecoveryCommand({
     version:record.version,action:"stage",branchId:record.branchId,
     operationId:record.operationId,operationType:record.operationType,intents:record.intents,
@@ -932,29 +1000,37 @@ function validateStoredRequestRecovery(record,branchId,operationId){
   if(command.branchId!==branchId||command.operationId!==operationId||
       text(record.linkedV2OperationId)!==operationId||
       text(record.intentFingerprint)!==requestRecoveryFingerprint(command)) fail("invalid-record");
-  if(!REQUEST_RECOVERY_STATES.has(text(record.state))||!REQUEST_RECOVERY_CODES.has(text(record.code))) fail("invalid-record");
+  if(!REQUEST_RECOVERY_STATES.has(state)||!REQUEST_RECOVERY_CODES.has(text(record.code))) fail("invalid-record");
   if(!Number.isSafeInteger(record.attempts)||record.attempts<0||record.attempts>REQUEST_RECOVERY_MAX_ATTEMPTS) fail("invalid-record");
   if(!Number.isSafeInteger(record.primaryChecks)||record.primaryChecks<0||record.primaryChecks>1000) fail("invalid-record");
   for(const key of ["createdAt","updatedAt","expiresAt"]){
-    if(!Number.isFinite(Date.parse(text(record[key])))) fail("invalid-record");
+    if(!Number.isFinite(timestampMillis(record[key]))) fail("invalid-record");
   }
-  for(const key of ["leaseUntil","completedAt","conflictAt","cancelledAt"]){
-    if(text(record[key])&&!Number.isFinite(Date.parse(text(record[key])))) fail("invalid-record");
+  for(const key of REQUEST_RECOVERY_STATE_KEYS[state].filter(key=>key!=="leaseId")){
+    if(!Number.isFinite(timestampMillis(record[key]))) fail("invalid-record");
   }
-  if(text(record.leaseId)&&!/^[A-Za-z0-9_-]{1,128}$/.test(text(record.leaseId))) fail("invalid-record");
+  if(state==="processing"&&!/^[0-9a-f-]{36}$/.test(text(record.leaseId))) fail("invalid-record");
+  const codeByState={
+    staged:new Set([""]),"waiting-primary":new Set(["primary-pending"]),processing:new Set([""]),
+    error:new Set(["retry-exhausted"]),completed:new Set([""]),
+    conflict:new Set(["manifest-mismatch","request-conflict"]),cancelled:new Set(["primary-expired"]),
+  };
+  if(!codeByState[state].has(record.code)) fail("invalid-record");
+  if(state==="error"&&record.attempts!==REQUEST_RECOVERY_MAX_ATTEMPTS) fail("invalid-record");
   return {...record,intents:clone(command.intents)};
 }
 
 function rejectedRequestRecovery(branchId,operationId,now){
   return {
     version:REQUEST_RECOVERY_VERSION,branchId,operationId,linkedV2OperationId:operationId,
-    state:"rejected",attempts:0,primaryChecks:0,updatedAt:now.toISOString(),
+    state:"rejected",attempts:0,primaryChecks:0,createdAt:now.toISOString(),updatedAt:now.toISOString(),
+    expiresAt:new Date(now.getTime()+REQUEST_RECOVERY_TERMINAL_RETENTION_MS),
     rejectedAt:now.toISOString(),code:"invalid-record",
   };
 }
 
 function requestRecoveryLeaseExpired(record,now){
-  return !text(record.leaseUntil)||leaseExpiry(record.leaseUntil)<=now.getTime();
+  return !Number.isFinite(timestampMillis(record.leaseUntil))||timestampMillis(record.leaseUntil)<=now.getTime();
 }
 
 async function readLegacyValueInTransaction(tx,db,branchId,key,item){
@@ -981,21 +1057,35 @@ function currentRequestVersion(request){
   return Number.isSafeInteger(value)&&value>=0?value:null;
 }
 
-function applyRequestIntent(request,intent){
+function applyRequestIntent(request,intent,processorName){
   const currentStatus=text(request.status)||"pending";
-  if(currentStatus===intent.patch.status) return {value:request,alreadyApplied:true};
-  if(currentStatus!==intent.expectedStatus||
-      (intent.expectedVersion!==null&&currentRequestVersion(request)!==intent.expectedVersion)){
+  const versionCompatible=intent.expectedVersion===null||currentRequestVersion(request)===intent.expectedVersion;
+  if(currentStatus===intent.patch.status){
+    const transitionFields=[
+      "status","processedAt","supersededBy","cancelledAt","cancelledBy","cancelledRequestId",
+    ];
+    const fieldsMatch=transitionFields.every(key=>
+      Object.prototype.hasOwnProperty.call(intent.patch,key)
+        ?request[key]===intent.patch[key]
+        :!Object.prototype.hasOwnProperty.call(request,key)
+    );
+    const processingCleared=!Object.prototype.hasOwnProperty.call(request,"processingAt")&&
+      !Object.prototype.hasOwnProperty.call(request,"processingBy");
+    if(versionCompatible&&fieldsMatch&&processingCleared&&request.processedBy===processorName){
+      return {value:request,alreadyApplied:true};
+    }
+    return {conflict:true};
+  }
+  if(currentStatus!==intent.expectedStatus||!versionCompatible){
     return {conflict:true};
   }
   const next={...request};
   Object.entries(intent.patch).forEach(([key,value])=>{
     if(key!=="clearProcessing") next[key]=clone(value);
   });
-  if(intent.patch.clearProcessing){
-    delete next.processingAt;
-    delete next.processingBy;
-  }
+  delete next.processingAt;
+  delete next.processingBy;
+  next.processedBy=processorName;
   return {value:next,alreadyApplied:false};
 }
 
@@ -1022,6 +1112,14 @@ async function claimRequestRecovery(input,branchId,operationId){
     const now=normalizeNow(input.now());
     const recoverySnapshot=await tx.get(recoveryDocument);
     if(!recoverySnapshot.exists) return {state:"missing",operationId};
+    try{
+      policy.validateRequestRecoveryCommand({
+        version:REQUEST_RECOVERY_VERSION,action:"drain",branchId,operationId,
+      });
+    }catch(error){
+      tx.delete(recoveryDocument);
+      return {state:"rejected",operationId:"",code:"invalid-record"};
+    }
     let record;
     try{
       record=validateStoredRequestRecovery(recoverySnapshot.data()||{},branchId,operationId);
@@ -1029,39 +1127,38 @@ async function claimRequestRecovery(input,branchId,operationId){
       tx.set(recoveryDocument,rejectedRequestRecovery(branchId,operationId,now),{merge:false});
       return {state:"rejected",operationId,code:"invalid-record"};
     }
-    if(["completed","conflict","cancelled"].includes(record.state)) return record;
+    if(["error","completed","conflict","cancelled","rejected"].includes(record.state)) return record;
     if(record.state==="processing"&&!requestRecoveryLeaseExpired(record,now)) return record;
     if(record.attempts>=REQUEST_RECOVERY_MAX_ATTEMPTS){
-      const exhausted={...record,state:"error",code:"retry-exhausted",leaseId:"",leaseUntil:"",updatedAt:now.toISOString()};
+      const exhausted=requestRecoveryState(record,"error",now,"retry-exhausted",{failedAt:now.toISOString()});
       tx.set(recoveryDocument,exhausted,{merge:false});
       return exhausted;
     }
     const manifestSnapshot=await tx.get(manifestDocument);
     const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     if(!manifest||text(manifest.status)!=="committed"){
-      if(leaseExpiry(record.expiresAt)<=now.getTime()){
-        const cancelled={...record,state:"cancelled",code:"primary-expired",leaseId:"",leaseUntil:"",cancelledAt:now.toISOString(),updatedAt:now.toISOString()};
+      if(timestampMillis(record.expiresAt)<=now.getTime()){
+        const cancelled=requestRecoveryState(record,"cancelled",now,"primary-expired",{cancelledAt:now.toISOString()});
         tx.set(recoveryDocument,cancelled,{merge:false});
         return cancelled;
       }
-      const waiting={
-        ...record,state:"waiting-primary",code:"primary-pending",leaseId:"",leaseUntil:"",
-        primaryChecks:Math.min(1000,record.primaryChecks+1),updatedAt:now.toISOString(),
-      };
+      const waiting=requestRecoveryState(record,"waiting-primary",now,"primary-pending",{
+        primaryChecks:Math.min(1000,record.primaryChecks+1),
+      });
       tx.set(recoveryDocument,waiting,{merge:false});
       return waiting;
     }
     if(text(manifest.operationId)!==operationId||text(manifest.branchId)!==branchId||
         text(manifest.operationType)!==record.operationType){
-      const conflict={...record,state:"conflict",code:"manifest-mismatch",leaseId:"",leaseUntil:"",conflictAt:now.toISOString(),updatedAt:now.toISOString()};
+      const conflict=requestRecoveryState(record,"conflict",now,"manifest-mismatch",{conflictAt:now.toISOString()});
       tx.set(recoveryDocument,conflict,{merge:false});
       return conflict;
     }
     const leaseId=crypto.randomUUID();
-    const claimed={
-      ...record,state:"processing",code:"",attempts:record.attempts+1,leaseId,
-      leaseUntil:new Date(now.getTime()+REQUEST_RECOVERY_LEASE_MS).toISOString(),updatedAt:now.toISOString(),
-    };
+    const claimed=requestRecoveryState(record,"processing",now,"",{
+      attempts:record.attempts+1,leaseId,
+      leaseUntil:new Date(now.getTime()+REQUEST_RECOVERY_LEASE_MS),
+    });
     tx.set(recoveryDocument,claimed,{merge:false});
     return claimed;
   });
@@ -1085,6 +1182,7 @@ async function applyClaimedRequestRecovery(input,claim){
     }
     if(text(manifest.status)!=="committed"||text(manifest.operationId)!==operationId||
         text(manifest.branchId)!==branchId||text(manifest.operationType)!==record.operationType) fail("failed-precondition");
+    const processorName=policy.requestRecoveryProcessorName(manifest.actorId);
     if(!requestSnapshot.exists) fail("not-found");
     const previous=requestSnapshot.data()||{};
     const raw=await readLegacyValueInTransaction(tx,input.db,branchId,"swim_requests",previous);
@@ -1093,18 +1191,18 @@ async function applyClaimedRequestRecovery(input,claim){
     for(const intent of record.intents){
       const current=requests[intent.requestId];
       if(!plainObject(current)){ conflict=true;break; }
-      const result=applyRequestIntent(current,intent);
+      const result=applyRequestIntent(current,intent,processorName);
       if(result.conflict){ conflict=true;break; }
       requests[intent.requestId]=result.value;
     }
     if(conflict){
-      const next={...record,state:"conflict",code:"request-conflict",leaseId:"",leaseUntil:"",conflictAt:now.toISOString(),updatedAt:now.toISOString()};
+      const next=requestRecoveryState(record,"conflict",now,"request-conflict",{conflictAt:now.toISOString()});
       tx.set(recoveryDocument,next,{merge:false});
       return requestRecoveryResponse(next,operationId);
     }
     const output=typeof raw==="string"?JSON.stringify(requests):requests;
     writeLegacyValue(tx,{...input,branchId,now},"swim_requests",output,previous);
-    const completed={...record,state:"completed",code:"",leaseId:"",leaseUntil:"",completedAt:now.toISOString(),updatedAt:now.toISOString()};
+    const completed=requestRecoveryState(record,"completed",now,"",{completedAt:now.toISOString()});
     tx.set(recoveryDocument,completed,{merge:false});
     return requestRecoveryResponse(completed,operationId);
   });
@@ -1112,10 +1210,39 @@ async function applyClaimedRequestRecovery(input,claim){
 
 async function requestRecoveryCandidates(db,branchId,limit){
   const collection=db.collection(ROOT_COLLECTION).doc(branchId).collection("requestRecoveries");
-  const snapshot=await collection.where("state","in",["staged","waiting-primary","processing","error"]).limit(limit).get();
   const rows=[];
-  snapshot.forEach(doc=>rows.push({operationId:doc.id,record:doc.data()||{}}));
+  for(const state of ["staged","waiting-primary","processing"]){
+    let cursor=null;
+    for(let page=0;page<REQUEST_RECOVERY_MAX_PAGES;page+=1){
+      let query=collection.where("state","==",state).orderBy("updatedAt","asc").limit(limit);
+      if(cursor&&typeof query.startAfter==="function") query=query.startAfter(cursor);
+      const snapshot=await query.get();
+      snapshot.forEach(doc=>rows.push({operationId:doc.id,record:doc.data()||{}}));
+      const docs=snapshot.docs||[];
+      if(docs.length<limit) break;
+      cursor=docs[docs.length-1];
+    }
+  }
   return rows;
+}
+
+async function cleanupTerminalRequestRecoveries(input){
+  const collection=input.db.collection(ROOT_COLLECTION).doc(input.branchId).collection("requestRecoveries");
+  const batch=input.db.batch();
+  let remaining=input.limit;
+  let cleaned=0;
+  for(const state of ["error","completed","conflict","cancelled","rejected"]){
+    if(remaining<=0) break;
+    const snapshot=await collection.where("state","==",state)
+      .where("expiresAt","<=",input.now).orderBy("expiresAt","asc").limit(remaining).get();
+    snapshot.forEach(doc=>{
+      batch.delete(collection.doc(doc.id));
+      cleaned+=1;
+      remaining-=1;
+    });
+  }
+  if(cleaned) await batch.commit();
+  return cleaned;
 }
 
 function createOperationalWriter(options={}){
@@ -1207,8 +1334,12 @@ function createOperationalWriter(options={}){
     const branches=input.branchId?[text(input.branchId)]:BRANCH_IDS;
     if(branches.some(branchId=>!BRANCH_IDS.includes(branchId))) fail("invalid-argument");
     const limit=Math.max(1,Math.min(REQUEST_RECOVERY_LIMIT,Number(input.limit||REQUEST_RECOVERY_LIMIT)||REQUEST_RECOVERY_LIMIT));
-    const summary={completed:0,conflict:0,waiting:0,error:0,rejected:0,skipped:0};
+    const cleanupLimit=Math.max(1,Math.min(100,Number(input.cleanupLimit||50)||50));
+    const summary={completed:0,conflict:0,waiting:0,error:0,rejected:0,skipped:0,cleaned:0};
     for(const branchId of branches){
+      summary.cleaned+=await cleanupTerminalRequestRecoveries({
+        db:options.db,branchId,limit:cleanupLimit,now:normalizeNow(now()),
+      });
       const candidates=await requestRecoveryCandidates(options.db,branchId,limit);
       for(const candidate of candidates){
         const result=await processRequestRecovery(branchId,candidate.operationId);
@@ -1228,6 +1359,23 @@ function createOperationalWriter(options={}){
     policy.authorizeRequestRecovery(callableRequest,command);
     if(command.action==="stage"){
       return stageRequestRecovery({db:options.db,now:now(),serverTimestamp},command);
+    }
+    if(command.action==="status"){
+      const status=await readOperationalStatus({db:options.db,branchId:command.branchId});
+      return {
+        operationId:"",state:"status",attempts:0,code:"",
+        counts:{
+          staged:status.requestRecoveryStagedCount,
+          waiting:status.requestRecoveryWaitingCount,
+          processing:status.requestRecoveryProcessingCount,
+          pending:status.requestRecoveryPendingCount,
+          error:status.requestRecoveryErrorCount,
+          completed:status.requestRecoveryCompletedCount,
+          conflict:status.requestRecoveryConflictCount,
+          cancelled:status.requestRecoveryCancelledCount,
+          rejected:status.requestRecoveryRejectedCount,
+        },
+      };
     }
     if(command.operationId) return processRequestRecovery(command.branchId,command.operationId);
     const summary=await recoverRequestPatches({branchId:command.branchId});

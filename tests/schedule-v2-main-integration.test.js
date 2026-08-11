@@ -141,7 +141,8 @@ test('authenticated teacher and desk selected startup drain server recovery with
 test('a mixed request transaction stages only non-PII intent before V2 and drains without a browser V1 write',async()=>{
   const calls=[];
   const storage=memoryStorage();
-  const legacyValues={swim_requests:'{"req":{"status":"pending","parent":{"name":"민감한이름","phone":"010-secret"}}}'};
+  const requestId='r_1723350000000_ab12cd';
+  const legacyValues={swim_requests:JSON.stringify({[requestId]:{status:'pending',parent:{name:'민감한이름',phone:'010-secret'}}})};
   let staged=null;
   const legacyRoot={
     child(key){return {once(){return Promise.resolve({val:()=>legacyValues[key]??null});}};},
@@ -187,7 +188,9 @@ test('a mixed request transaction stages only non-PII intent before V2 and drain
       if(data.action==='stage') staged=JSON.parse(JSON.stringify(data));
       if(data.action==='drain'){
         const requests=JSON.parse(legacyValues.swim_requests);
-        requests.req.status='accepted';
+        requests[requestId].status='accepted';
+        requests[requestId].processedAt='2026-08-11T03:00:00.000Z';
+        requests[requestId].processedBy='가경점 데스크';
         legacyValues.swim_requests=JSON.stringify(requests);
         return {data:{operationId:data.operationId,state:'completed',attempts:1,code:''}};
       }
@@ -200,7 +203,7 @@ test('a mixed request transaction stages only non-PII intent before V2 and drain
 
   const result=await root.transactionKeys(['swim_requests','swim_mark'],current=>({
     ...current,
-    swim_requests:'{"req":{"status":"accepted","processedAt":"2026-08-11T03:00:00.000Z","parent":{"name":"민감한이름","phone":"010-secret"}}}',
+    swim_requests:JSON.stringify({[requestId]:{status:'accepted',processedAt:'2026-08-11T03:00:00.000Z',processedBy:'가경점 데스크',parent:{name:'민감한이름',phone:'010-secret'}}}),
     swim_mark:'{}',
   }),{operationId:'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a',operationType:'absence-cancel'});
 
@@ -210,13 +213,14 @@ test('a mixed request transaction stages only non-PII intent before V2 and drain
   ]);
   assert.equal(staged.operationId,'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a');
   assert.deepEqual(staged.intents,[{
-    requestId:'req',expectedStatus:'pending',expectedVersion:null,
+    requestId,expectedStatus:'pending',expectedVersion:null,
     patch:{status:'accepted',processedAt:'2026-08-11T03:00:00.000Z'},
   }]);
   assert.equal(JSON.stringify(staged).includes('민감한이름'),false);
   assert.equal(JSON.stringify(staged).includes('010-secret'),false);
   assert.equal([...storage.values.values()].some(value=>/민감한이름|010-secret|swim_requests/.test(value)),false);
-  assert.equal(JSON.parse(result.snapshot.val().swim_requests).req.status,'accepted');
+  assert.equal(JSON.parse(result.snapshot.val().swim_requests)[requestId].status,'accepted');
+  assert.equal(JSON.parse(result.snapshot.val().swim_requests)[requestId].processedBy,'가경점 데스크');
 });
 
 test('V2 selected startup returns legacy values without a full V1 root read',async()=>{

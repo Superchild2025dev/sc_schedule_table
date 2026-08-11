@@ -92,6 +92,11 @@ test('staff pages mutate schedules only through the shared write boundary',()=>{
   assert.match(read('js/settings.js'),/_settingsWrites\([^)]*\)\.transaction\(/);
 });
 
+test('desk absence cancellation supplies the canonical recovery operation type',()=>{
+  const source=read('js/desk.js');
+  assert.match(source,/updateDeskKeysTx\(\['swim_requests','swim_mark'\],[\s\S]*?operationType:'absence-cancel'/);
+});
+
 test('browser recovery code persists no request queue or request payload',()=>{
   const source=read('js/firebase-store.js');
   assert.doesNotMatch(source,/sc_legacy_request_recovery|pendingLegacyRecoveries|retryPendingLegacyRecoveries/);

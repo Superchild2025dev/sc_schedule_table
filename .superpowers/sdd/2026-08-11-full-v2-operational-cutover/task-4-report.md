@@ -282,3 +282,83 @@ Result: exit 0. Git emitted only the repository's existing LF-to-CRLF checkout w
 - Existing findings: full tab-list metadata with scoped roster payload, controlled runtime reload, last-good cache retention, stale response fencing, and settings sequence guards remain covered and green.
 - Compatibility: page-facing root and transaction signatures, Task 2 callable shape, single shared write boundaries, parent V1 behavior, referral, voice, permissions, and Korean UX remain unchanged.
 - Operations: no production mode change, deployment, push, production access, or production data operation was performed.
+
+## Final Review Remediation - Recovery Correctness and Operations
+
+### Status
+
+FIXED
+
+### RED Evidence
+
+The direct functions regressions were added before the final-round implementation and run with:
+
+```powershell
+node --test --test-isolation=none tests/function-schedule-v2-operational-writer.test.js tests/function-schedule-v2-operational-api.test.js
+```
+
+Initial result: 51 tests total, 38 passed, 13 failed. The expected failures covered exact same-status matching, manifest linkage and version conflicts, stale cancellation, trusted `processedBy` parity, canonical production IDs, contradictory transition/state schemas, terminal starvation, pagination, retention cleanup, recovery counts, and the independent scheduler export.
+
+Additional narrow RED checks caught the final audit edges:
+
+```powershell
+node --test --test-isolation=none --test-name-pattern="request recovery accepts production IDs|noncanonical operation key" tests/function-schedule-v2-operational-writer.test.js
+node --test --test-isolation=none --test-name-pattern="malformed stored request recovery" tests/function-schedule-v2-operational-writer.test.js
+node --test --test-isolation=none --test-name-pattern="operational status exposes bounded request|authenticated recovery status" tests/function-schedule-v2-operational-writer.test.js
+```
+
+Results before their production fixes were respectively 0/2, 0/1, and 0/2 passing. They proved that scoped status requests were too broad, corrupt noncanonical queue keys survived scrubbing, rejected records could be reclaimed through an explicit drain, and redacted status omitted queue classes.
+
+### GREEN Evidence
+
+Final syntax checks:
+
+```powershell
+$files = @('functions/index.js','functions/schedule-v2-operational-policy.js','functions/schedule-v2-operational-writer.js','js/desk.js')
+foreach ($file in $files) { node --check $file }
+```
+
+Result: all four files exited 0.
+
+Final focused Task 4 and operational-contract suite:
+
+```powershell
+node --test --test-isolation=none tests/function-schedule-v2-operational-writer.test.js tests/function-schedule-v2-operational-api.test.js tests/schedule-read-coordinator.test.js tests/schedule-write-gateway.test.js tests/schedule-write-boundary.test.js tests/schedule-operational-gateway.test.js tests/schedule-v2-operational-store.test.js tests/schedule-v2-main-integration.test.js tests/schedule-v2-staff-pages.test.js
+```
+
+Result: 136 tests total, 136 passed, 0 failed, 0 skipped.
+
+Final full unit regression:
+
+```powershell
+$tests = Get-ChildItem tests -Filter *.test.js | ForEach-Object { $_.FullName }
+node --test --test-isolation=none $tests
+```
+
+Result: 537 tests total, 535 passed, 0 failed, 2 skipped. The skips remain the existing Firestore rules and Schedule V2 shadow emulator availability checks.
+
+Hygiene:
+
+```powershell
+git diff --check
+```
+
+Result: exit 0. Git emitted only the repository's LF-to-CRLF checkout notices.
+
+### Final Implementation Notes
+
+- Same-status completion now requires an exact match for every persisted transition field, timestamp and request linkage, the expected request version, trusted processor identity, and cleared processing fields. Any newer version, stale cancellation, different supersession/cancellation link, contradictory persisted field, or operational-manifest mismatch returns an explicit conflict.
+- Recovery records remain non-PII. The committed V2 manifest stores only the actor hash; the server resolves that hash against the trusted permission profile at apply time and writes the current V1-compatible teacher or desk display name only into the authoritative `swim_requests` request.
+- Stage commands use exact target-status schemas and status-compatible preconditions. Stored queue records use exact state-discriminated schemas and required state timestamps. Request IDs accept only the production `r_<13 digits>_<6 base36>` form, and recovery operation IDs accept only generated lowercase UUID v4 values; phone-, name-, and path-like identifiers are rejected.
+- Invalid canonical records are replaced with a minimal redacted terminal record. A corrupt noncanonical document key is deleted, terminal states cannot be reclaimed, and exhausted errors are absent from active candidate queries.
+- Active recovery uses ordered, bounded pagination. Terminal records receive Firestore timestamp `expiresAt` values, are retained for seven days, and are deleted in bounded batches. Authenticated status exposes redacted counts for every active and terminal queue class without request IDs or intents.
+- Request recovery has its own exported five-minute scheduler. Operational mirror failure cannot prevent that independent invocation from running, and the original mirror schedule no longer owns request recovery execution.
+- Desk absence cancellation now supplies the established `absence-cancel` operation type through the existing shared write boundary, preserving the page-facing transaction signature and server authorization contract.
+
+### Final Self-Review
+
+- Idempotency and concurrency: the V2 manifest remains the commit oracle; the stable operation UUID links both phases; Firestore transactions, leases, exact preconditions, and terminal-state handling prevent duplicate or stale completion across tabs and devices.
+- Privacy: queue schemas contain only canonical IDs, allowlisted transition intent, retry state, timestamps, and the linked operation ID. No name, phone, student, raw request body, `processedBy`, or `processingBy` is persisted in browser recovery storage, queue records, callable responses, or diagnostics.
+- Operations: active candidates exclude exhausted and terminal errors, pagination is ordered and bounded, terminal retention is cleanup- and TTL-compatible, all queue states are countable, and request recovery scheduling is isolated from mirror failures.
+- Compatibility: the Task 2 mutation callable body remains unchanged. Staff startup draining, V2 startup scoping, V1 rollback recovery, no-V1-fallback authority, lazy attendance/history, cache and stale-response protections, settings sequencing, and the single `_scheduleWrites` boundary remain covered by the focused and full suites.
+- Scope: this round changes only the functions entry point, operational policy/writer modules, the desk boundary adapter, four direct/integration test files, and this report. Parent, referral, voice, permissions, Korean UX, production mode, deployment, push, and production access remain untouched.
