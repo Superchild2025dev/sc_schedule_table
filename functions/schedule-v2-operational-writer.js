@@ -101,6 +101,10 @@ function runtimeRef(db,branchId){
   return db.collection(ROOT_COLLECTION).doc(branchId).collection("runtime").doc("operational");
 }
 
+function attendanceRuntimeRef(db,branchId){
+  return db.collection(ROOT_COLLECTION).doc(branchId).collection("runtime").doc("attendance");
+}
+
 function mutationRef(db,branchId,operationId){
   return db.collection(ROOT_COLLECTION).doc(branchId).collection("operationalMutations").doc(operationId);
 }
@@ -386,14 +390,17 @@ async function completeSnapshotHeaders(input,chunkCount){
 async function finalizeMutation(input,counts,chunkCount){
   const {db,request,fingerprint}=input;
   const runtimeDocument=runtimeRef(db,request.branchId);
+  const attendanceDocument=attendanceRuntimeRef(db,request.branchId);
   const manifestDocument=mutationRef(db,request.branchId,request.operationId);
   return db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
+    const attendanceSnapshot=await tx.get(attendanceDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
     const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(manifest,fingerprint);
     if(manifest?.status==="committed") return resultFromManifest(manifest);
     assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    assertRuntime(attendanceSnapshot.data()||{},request,request.operationId);
     if(!manifest||manifest.status!=="committing"||Number(manifest.completedChunks||0)!==chunkCount) fail("failed-precondition");
     if(Number(manifest.completedSnapshotHeaders||0)!==Number(manifest.snapshotCompletionCount||0)){
       fail("failed-precondition");
@@ -418,7 +425,11 @@ async function finalizeMutation(input,counts,chunkCount){
     delete nextRuntime.activeOperationRevision;
     nextRuntime.revision=request.beforeRevision+1;
     nextRuntime.updatedAt=nowValue;
+    const nextAttendance={...(attendanceSnapshot.data()||{})};
+    nextAttendance.revision=request.beforeRevision+1;
+    nextAttendance.updatedAt=nowValue;
     tx.set(runtimeDocument,nextRuntime,{merge:false});
+    tx.set(attendanceDocument,nextAttendance,{merge:false});
     tx.set(manifestDocument,{
       ...manifest,
       status:"committed",

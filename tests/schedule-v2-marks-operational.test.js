@@ -13,6 +13,10 @@ function plain(value){ return JSON.parse(JSON.stringify(value)); }
 
 function fakeFirestore(seed={}){
   const docs=new Map(Object.entries(seed).map(([key,value])=>[key,plain(value)]));
+  for(const [key,value] of docs){
+    const attendanceKey=key.replace(/\/runtime\/operational$/,"/runtime/attendance");
+    if(attendanceKey!==key&&!docs.has(attendanceKey)) docs.set(attendanceKey,plain(value));
+  }
   let transactionCount=0;
   let failTransaction=0;
   function snapshot(ref){
@@ -145,6 +149,7 @@ test("snapshot interruption resumes the same fenced operation and marks completi
   assert.equal(result.committed,true);
   assert.equal(db.docs.get(generationPath("attendanceSnapshots","snapshot_1")).complete,true);
   assert.equal(db.docs.get(runtimePath()).revision,5);
+  assert.equal(db.docs.get("scheduleV2/yongam/runtime/attendance").revision,5);
   assert.equal(db.docs.get(mutationPath("snapshot_retry_1")).status,"committed");
 });
 

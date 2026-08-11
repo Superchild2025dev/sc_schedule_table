@@ -208,3 +208,13 @@ UI 함수는 V2 경로, 컬렉션 이름, 세대 ID를 직접 사용하지 않�
 - 학부모 페이지와 공개 페이지의 기존 동작에는 변경이 없다.
 - 운영 전환은 별도 배포와 검증을 마친 뒤 개발자 제어로 수행하며 코드 배포만으로 자동 전환하지 않는다.
 
+## Local Task 7 Rollback Evidence (2026-08-11)
+
+- Tested branches: `gagyeong` and `yongam`; each ran regular and bangteuk V2-read workflows.
+- Mode sequence: `verify -> v2-read -> v1` for the rollback scenario. No deployment, production access, push, or mode switch was performed.
+- Workflow count: 17 committed V2 operations per branch (34 total): registration, replacement, move, teacher change, retirement/enrollment/leave reservations, waitlist, all absence/makeup mark transitions, attendance/guests, snapshots, calendar, periods, tabs, and manual records.
+- Concurrency evidence: each branch/course pair proved a fenced retry preserves different-document edits; stale same-slot writes returned `aborted` and did not overwrite the committed value.
+- Recovery evidence: a forced V1 mirror failure left the V2 commit at revision 2, blocked rollback, then `recoverOperationalMirrors` applied one recovery and restored V1/V2 values for both changed rosters.
+- Pointer parity: each committed V2 mutation advances both `runtime/operational.revision` and `runtime/attendance.revision` in the same finalization transaction.
+- Rollback outcome: after recovery and parity, rollback reached `v1`; a newly constructed gateway session loaded the complete legacy staff view as V1 and matched the recovered legacy data.
+

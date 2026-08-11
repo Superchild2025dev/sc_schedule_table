@@ -72,6 +72,10 @@ class CollectionRef extends QueryRef{
 class FakeFirestore{
   constructor(initial={}){
     this.docs=new Map(Object.entries(initial).map(([key,value])=>[key,clone(value)]));
+    for(const [key,value] of this.docs){
+      const attendanceKey=key.replace(/\/runtime\/operational$/,"/runtime/attendance");
+      if(attendanceKey!==key&&!this.docs.has(attendanceKey)) this.docs.set(attendanceKey,clone(value));
+    }
     this.transactions=[];
     this.batches=[];
     this.failBatchAt=0;

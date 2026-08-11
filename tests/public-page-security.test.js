@@ -12,6 +12,8 @@ const html = read(path.join("regular-vacancy-site", "index.html"));
 const css = read(path.join("regular-vacancy-site", "styles.css"));
 const app = read(path.join("regular-vacancy-site", "app.js"));
 const nginx = read(path.join("deploy", "nginx", "schedule.conf"));
+const parentHtml = read("parent.html");
+const parentApp = read(path.join("js", "parent.js"));
 
 const remoteScripts = [...html.matchAll(/<script\s+src="https:\/\/[^\"]+"[\s\S]*?<\/script>/g)];
 assert.ok(remoteScripts.length >= 3, "the public page should expose every remote script to this test");
@@ -48,4 +50,11 @@ assert.doesNotMatch(html, /class="notice-band"/);
 assert.doesNotMatch(css, /html\s*\{[^}]*min-width:\s*320px;/s);
 assert.doesNotMatch(html, /2026년 9월 정규반 등록 가능 시간을 확인하세요/);
 assert.doesNotMatch(html, /정규반 전환 안내|>등록 가능한 시간</);
+
+assert.match(parentHtml, /js\/parent\.js/,
+  "the parent page must keep loading its V1 parent application");
+assert.doesNotMatch(parentHtml, /schedule-v2|schedule-operational-gateway|attendance-operational-gateway/i,
+  "the parent page must not load staff-only V2 operational modules");
+assert.doesNotMatch(parentApp, /schedule-v2|schedule-operational-gateway|attendance-operational-gateway/i,
+  "the parent V1 application must not import staff-only V2 operational modules");
 
