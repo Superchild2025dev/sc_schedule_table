@@ -2726,6 +2726,21 @@ function _updateDeskNotesTx(mutator,meta,silent){
     return Promise.resolve(DESK_NOTES);
   };
   if(typeof updateScheduleTx!=='function') return applyLocal();
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    return handlers.updateManualRecords({
+      keys:[STORAGE_KEYS.DESK_NOTES],operationType:'update-records',tabIds:[String(_activeTab||'regular')],...(meta||{}),
+      mutateContext:ctx=>{
+        const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
+        const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
+        if(next===undefined) return;
+        const normalized=_normalizeDeskNotesList(next);
+        ctx.set(STORAGE_KEYS.DESK_NOTES,normalized);
+        DESK_NOTES=normalized;
+        return true;
+      },
+    }).then(()=>DESK_NOTES);
+  }
   return updateScheduleTx([STORAGE_KEYS.DESK_NOTES],ctx=>{
     const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
     const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
@@ -3823,7 +3838,12 @@ function getMainScheduleLiveHandlers(){
   if(!branch||!window.SCScheduleLiveHandlers||!_fb) return null;
   if(_mainScheduleLiveHandlers&&_mainScheduleLiveHandlersBranch===branch.id) return _mainScheduleLiveHandlers;
   const snapshotWriter=getMainAttendanceSnapshotWriter();
-  _mainScheduleLiveHandlers=SCScheduleLiveHandlers.create({gateway:_fb,snapshotWriter});
+  _mainScheduleLiveHandlers=SCScheduleLiveHandlers.create({
+    gateway:_fb,snapshotWriter,
+    transactionContext:(keys,mutator,meta)=>updateScheduleTx(keys,mutator,meta),
+    getAttendanceRuntime:()=>typeof getOperationalAttendanceRuntime==='function'
+      ?getOperationalAttendanceRuntime():null,
+  });
   _mainScheduleLiveHandlersBranch=branch.id;
   return _mainScheduleLiveHandlers;
 }
@@ -4084,6 +4104,21 @@ function updateDisabledMapTx(mutator){
   return _txJSONMap(STORAGE_KEYS.DISABLED,DISABLED_MAP,next=>{DISABLED_MAP=next;},mutator);
 }
 function updateReserveMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    let next=RESERVE_MAP;
+    return handlers.setReservations({
+      keys:[STORAGE_KEYS.RESERVE],operationType:'update-reservation',tabIds:[String(_activeTab||'regular')],
+      mutateContext:ctx=>{
+        const value=ctx.get(STORAGE_KEYS.RESERVE,{});
+        const result=mutator(value);
+        if(result===undefined) return;
+        next=result;
+        ctx.set(STORAGE_KEYS.RESERVE,result);
+        return true;
+      },
+    }).then(()=>{RESERVE_MAP=next||{};return RESERVE_MAP;});
+  }
   return _txJSONMap(STORAGE_KEYS.RESERVE,RESERVE_MAP,next=>{RESERVE_MAP=next;},mutator);
 }
 function updateHyuwonMapTx(mutator){
@@ -4141,6 +4176,11 @@ function prepareLiveScheduleExportView(){
   return handlers.prepareExportView({tabId,selection:{
     tabIds:[tabId],domains:['roster','workflow','attendance','calendar','administration','history'],keys:[],
   }});
+}
+function renderLiveScheduleExportView(view,source){
+  const handlers=getMainScheduleLiveHandlers();
+  if(!handlers) return {table:source,tab:null,root:null,primary:'v1'};
+  return handlers.renderExportTable({view,source});
 }
 const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
 function _attendanceLegacyEntryDate(key){
@@ -4207,6 +4247,8 @@ function _updateLegacyAttendanceMapTx(mutator,input){
   return _txJSONMap(key,current,next=>{ATTENDANCE=next;},mutator,ATTENDANCE_TX_META);
 }
 function updateAttendanceMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers) return handlers.updateAttendance({mutator,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
   if(!runtime) return _updateLegacyAttendanceMapTx(mutator,_attendanceOperationContext());
   return runtime.updateAttendance(mutator,_attendanceOperationContext());
@@ -4224,6 +4266,8 @@ function _updateLegacyAttGuestsMapTx(mutator,input){
   return _txJSONMap(key,current,next=>{ATT_GUESTS=next;},mutator,ATTENDANCE_TX_META);
 }
 function updateAttGuestsMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers) return handlers.updateAttendance({mutator,guests:true,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
   if(!runtime) return _updateLegacyAttGuestsMapTx(mutator,_attendanceOperationContext());
   return runtime.updateGuests(mutator,_attendanceOperationContext());
@@ -4325,6 +4369,20 @@ function addReserve(instKey,name,phone,memo,date,teacher){
   if(date) obj.d=date;
   if(teacher) obj.teacher=teacher;
   RESERVE_MAP[instKey].push(obj);
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    return handlers.addWaitlistEntry({
+      key:STORAGE_KEYS.RESERVE,slotKey:instKey,entry:obj,
+      operationType:'update-waitlist',tabIds:[String(_activeTab||'regular')],
+      mutateContext:ctx=>{
+        const reserve=ctx.get(STORAGE_KEYS.RESERVE,{});
+        if(!reserve[instKey]) reserve[instKey]=[];
+        reserve[instKey].push(obj);
+        ctx.set(STORAGE_KEYS.RESERVE,reserve);
+        return true;
+      },
+    }).catch(e=>{toast('예약 저장 실패','err');console.error(e);});
+  }
   return updateReserveMapTx(reserve=>{
     if(!reserve[instKey]) reserve[instKey]=[];
     reserve[instKey].push(obj);

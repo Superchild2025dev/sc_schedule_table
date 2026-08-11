@@ -3774,16 +3774,21 @@ function _excelAppendRecords(ws,table,rowHeights){
     extraRow+=writeGroup(day,groups[day]||[],extraRow,null)+1;
   });
 }
-function exportExcel(){
+async function exportExcel(){
+  let preparedView=null;
   if(typeof prepareLiveScheduleExportView==='function'){
-    prepareLiveScheduleExportView().catch(error=>console.warn('schedule export preparation failed',error));
+    try{preparedView=await prepareLiveScheduleExportView();}
+    catch(error){console.warn('schedule export preparation failed',error);toast('운영 내보내기 데이터를 준비하지 못했습니다','err');return;}
   }
   if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
   const source=document.querySelector('#tbl table');
+  const prepared=preparedView&&typeof renderLiveScheduleExportView==='function'
+    ?renderLiveScheduleExportView(preparedView,source)
+    :{table:source?.cloneNode(true),tab:null,root:null,primary:'v1'};
   if(!source){toast('내보낼 시간표가 없습니다','err');return;}
   const todayStr=toDateStr(getToday());
   const wb=XLSX.utils.book_new();
-  const clone=source.cloneNode(true);
+  const clone=prepared.table;
   const origCells=Array.from(source.querySelectorAll('th,td'));
   const cloneCells=Array.from(clone.querySelectorAll('th,td'));
   cloneCells.forEach((cell,i)=>{

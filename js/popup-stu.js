@@ -1764,7 +1764,11 @@ async function handleSave(e, ctx){
     if(replaceMode){
       const stuKey=getTabConfig().stuKey;
       const attKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attendance'):STORAGE_KEYS.ATTENDANCE;
-      await updateScheduleTx([
+      const handlers=typeof getMainScheduleLiveHandlers==='function'?getMainScheduleLiveHandlers():null;
+      const replaceTransaction=(keys,mutateContext,meta)=>handlers
+        ?handlers.replaceScheduledStudents({keys,operationType:'replace-student',tabIds:[String(_activeTab||'regular')],...meta,mutateContext})
+        :updateScheduleTx(keys,mutateContext,meta);
+      await replaceTransaction([
         stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,
         STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED,STORAGE_KEYS.REQUESTS,attKey,
       ],ctx=>{
@@ -1797,11 +1801,16 @@ async function handleSave(e, ctx){
         const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
         const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
         const attendance=ctx.get(attKey,{});
-        _clearReplacementFutureState(
+        const clearFutureState=window.SCScheduleLiveHandlers?.clearReplacementFutureState||_clearReplacementFutureState;
+        clearFutureState(
           {retire,enroll,marks,hyuwon,disabled,requests,attendance},
           groupSlots,
           todayStr,
-          {preserveRetire:true},
+          {
+            preserveRetire:true,
+            shouldPreserveRetire:_replacementRetireShouldStay,
+            isActiveFutureRequest:_isActiveFutureRequestForSlot,
+          },
         );
         ctx.set(stuKey,students);
         ctx.set(STORAGE_KEYS.RETIRE,retire);

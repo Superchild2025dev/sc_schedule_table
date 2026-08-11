@@ -31,9 +31,17 @@ for(const branchId of ["gagyeong","yongam"]){
 
     await handlers.registerStudent({...next("register_regular","add-student",["regular"]),key:"swim_students",student:{sid:`${prefix}_r3`,n:`${prefix} Registered`,p:"01000000009",t:"6PM",d:"Wed",l:1,r:1}});
     await handlers.registerStudent({...next("register_bangteuk","add-student",["summer"]),key:"swim_bt_summer_stu",student:{sid:`${prefix}_b3`,n:`${prefix} Camp Registered`,p:"01000000010",t:"1PM",d:"Fri",l:1,r:1}});
+    await handlers.setReservations({...next("replacement_state","update-reservation",["regular"]),keys:["swim_hyuwon"],values:{
+      swim_hyuwon:{"4PM/Mon/1/1":{dates:["2026-08-12"]}},
+    }});
+    await handlers.updateCalendar({...next("replacement_disabled","update-calendar",["regular"]),keys:["swim_disabled"],values:{
+      swim_disabled:{"4PM/Mon/1/1":true},
+    }});
+    await handlers.setClassMark({...next("replacement_mark","absence-confirmation",["regular"]),key:"swim_mark",markKey:"4PM/Mon/1/1/2026-08-12",mark:{type:"absent",n:`${prefix} Regular One`,p:"01000000001"}});
     await handlers.replaceScheduledStudents({...next("replace","replace-student",["regular"]),
-      keys:["swim_students","swim_enroll","swim_retire","swim_hyuwon"],studentKey:"swim_students",
+      keys:["swim_students","swim_enroll","swim_retire","swim_hyuwon","swim_mark","swim_disabled","swim_attendance"],studentKey:"swim_students",
       enrollKey:"swim_enroll",retireKey:"swim_retire",hyuwonKey:"swim_hyuwon",slotKey:"4PM/Mon/1/1",
+      slotKeys:["4PM/Mon/1/1"],cleanupKeys:["swim_mark","swim_disabled"],
       todayStr:"2026-08-11",periodMonth:8,
       retireEntry:{sid:`${prefix}_r1`,n:`${prefix} Regular One`,p:"01000000001",ds:"2026-08-10"},
       enrollEntry:{sid:`${prefix}_replacement`,name:`${prefix} Replaced`,p:"01000000001",age:10,ds:"2026-08-10"},
@@ -43,6 +51,8 @@ for(const branchId of ["gagyeong","yongam"]){
     assert.deepEqual(rows(replaced,"swim_enroll",{}),{});
     assert.deepEqual(rows(replaced,"swim_retire",{}),{});
     assert.deepEqual(rows(replaced,"swim_hyuwon",{}),{});
+    assert.deepEqual(rows(replaced,"swim_mark",{}),{});
+    assert.deepEqual(rows(replaced,"swim_disabled",{}),{});
     await handlers.moveStudent({...next("move","move-student",["summer"]),key:"swim_bt_summer_stu",sid:`${prefix}_b2`,destination:{t:"12PM",d:"Fri"}});
     await handlers.updateTeachers({...next("teacher","update-teacher",["regular","summer"]),keys:["swim_inst","swim_bt_summer_inst"],assignments:{
       swim_inst:{"4PM/Mon/1":`${prefix} Teacher Updated`},
@@ -80,13 +90,21 @@ for(const branchId of ["gagyeong","yongam"]){
       swim_desk_notes:[{id:`${prefix}_desk`,n:`${prefix} Desk`,p:"01000000015",memo:"manual record"}],
     }});
 
-    assert.equal(operation,19);
-    assert.equal(system.runtime(branchId).revision,21);
+    assert.equal(operation,22);
+    assert.equal(system.runtime(branchId).revision,24);
     await assertParity(system,branchId);
     const exportView=await handlers.prepareExportView({tabId:"regular",selection:completeSelection(await system.legacyValues(branchId))});
     assert.equal(exportView.primary,"v2");
     assert.equal(trackedDigest(exportView.root),trackedDigest(await system.legacyValues(branchId)));
     assert.equal(exportView.preparedFor,"schedule-export");
+    const exportAttributes={};
+    const rendered=handlers.renderExportTable({view:exportView,source:{cloneNode:()=>({
+      setAttribute:(key,value)=>{exportAttributes[key]=value;},
+    })}});
+    assert.equal(rendered.primary,"v2");
+    assert.equal(rendered.tab.name,`${prefix} Regular Updated`);
+    assert.equal(exportAttributes["data-operational-export-primary"],"v2");
+    assert.equal(trackedDigest(rendered.root),trackedDigest(exportView.root));
     assert.deepEqual(rows(exportView.root,"swim_students",[]).map(student=>student.sid),[`${prefix}_r2`,`${prefix}_r3`,`${prefix}_replacement`]);
     assert.deepEqual(rows(exportView.root,"swim_tab_list",[]).map(tab=>tab.id),["regular","summer"]);
     assert.deepEqual(rows(exportView.root,"swim_periods",[]).map(period=>period.month),[8,9]);

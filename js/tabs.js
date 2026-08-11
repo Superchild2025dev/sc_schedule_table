@@ -646,6 +646,33 @@ function updateTabSettingsTx(keys,mutator,meta){
   if(!_fbReady||!_fb){
     return Promise.resolve(applyLocal());
   }
+  const handlers=typeof getMainScheduleLiveHandlers==='function'?getMainScheduleLiveHandlers():null;
+  if(handlers){
+    return handlers.updateTabs({
+      keys,operationType:'update-tabs',tabIds:[String(_activeTab||'regular')],...(meta||{}),
+      mutateContext:ctx=>{
+        const root={};
+        keys.forEach(key=>{root[key]=JSON.stringify(ctx.get(key,[]));});
+        if(typeof createAuditPointFromRoot==='function') auditPoint=createAuditPointFromRoot(keys,root,auditMeta);
+        else if(typeof createAuditPoint==='function') auditPoint=createAuditPoint(keys,auditMeta);
+        const state=_tabStateFromRoot(root);
+        const result=mutator(state);
+        if(result===undefined) return;
+        if(keys.includes(STORAGE_KEYS.TAB_LIST)) ctx.set(STORAGE_KEYS.TAB_LIST,_normalizeTabList(state.tabs));
+        if(keys.includes(STORAGE_KEYS.ARCHIVED_TABS)) ctx.set(STORAGE_KEYS.ARCHIVED_TABS,_normalizeArchivedTabs(state.archived));
+        if(keys.includes(STORAGE_KEYS.TAB_FOLDERS)) ctx.set(STORAGE_KEYS.TAB_FOLDERS,_normalizeTabFolders(state.folders));
+        if(keys.includes(STORAGE_KEYS.PARENT_TAB)) ctx.set(STORAGE_KEYS.PARENT_TAB,state.parent||{});
+        if(keys.includes(STORAGE_KEYS.MAIN_TAB)) ctx.set(STORAGE_KEYS.MAIN_TAB,state.main||{});
+        return true;
+      },
+    }).then(()=>{
+      const state={tabs:_tabList,archived:_archivedTabList,folders:_tabFolderList,
+        parent:loadJSON(STORAGE_KEYS.PARENT_TAB,null)||{},main:loadJSON(STORAGE_KEYS.MAIN_TAB,null)||{}};
+      _applyTabState(state,keys);
+      if(auditPoint&&typeof recordAuditPoint==='function') recordAuditPoint(auditPoint,keys,meta);
+      return true;
+    });
+  }
   return _scheduleWrites.transaction(keys,root=>{
     root=root||{};
     if(typeof createAuditPointFromRoot==='function') auditPoint=createAuditPointFromRoot(keys,root,auditMeta);
