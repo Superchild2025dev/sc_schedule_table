@@ -24,6 +24,74 @@ Settings page's `manageScheduleV2Shadow` callable. It sends the current
 expectation fence. Do not write Firestore runtime or recovery documents
 directly.
 
+## Approved Release and Deployment Identity
+
+Every production deployment group uses one resolved, immutable release commit
+and one reviewed Firebase CLI. Do not deploy a moving branch, including
+`main`. An approved release is either a reviewed 40-character commit SHA or a
+signed, reviewed release tag that is resolved once to its 40-character commit
+SHA. Record that resolved SHA, not only the tag name.
+
+The repository's checked-in rules test toolchain pins the reviewed Firebase
+CLI to `15.26.0`. Use the following setup once in the controlled operator
+shell, replacing the two approval inputs before any deployment command:
+
+```powershell
+$ExpectedProject = 'scswimming-schedule'
+$ApprovedOperatorEmail = '<approved Firebase operator email>'
+$ApprovedReleaseRef = '<approved 40-character SHA or signed reviewed tag>'
+$FirebaseCliVersion = '15.26.0'
+$FirebaseCliPackage = "firebase-tools@$FirebaseCliVersion"
+
+function Invoke-ReviewedFirebaseCli {
+  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+  & npx.cmd $FirebaseCliPackage @Arguments
+  if ($LASTEXITCODE -ne 0) { throw "Firebase CLI $FirebaseCliVersion failed." }
+}
+
+git fetch --tags origin
+if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the approved release reference.' }
+if ($ApprovedReleaseRef -notmatch '^[0-9a-fA-F]{40}$') {
+  git tag -v $ApprovedReleaseRef
+  if ($LASTEXITCODE -ne 0) { throw 'The approved release tag is not signed and verified.' }
+}
+$ApprovedReleaseSha = (git rev-parse "$ApprovedReleaseRef^{commit}").Trim().ToLowerInvariant()
+if ($ApprovedReleaseSha -notmatch '^[0-9a-f]{40}$') { throw 'A 40-character approved release SHA is required.' }
+git rev-parse --verify "$ApprovedReleaseSha^{commit}" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'The approved release commit is unavailable locally.' }
+git checkout --detach $ApprovedReleaseSha
+if ($LASTEXITCODE -ne 0) { throw 'Cannot detach at the approved release SHA.' }
+
+function Assert-DeploymentIdentity {
+  param([string]$ExpectedSha)
+  $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+  if ($head -ne $ExpectedSha) { throw "HEAD $head does not match approved SHA $ExpectedSha." }
+  $dirty = git status --porcelain --untracked-files=all
+  if ($dirty) { throw 'Deployment worktree is not clean.' }
+  $configuredProject = ((Get-Content .firebaserc -Raw | ConvertFrom-Json).projects.default)
+  if ($configuredProject -ne $ExpectedProject) { throw "Configured project $configuredProject is not $ExpectedProject." }
+  $actualCliVersion = (Invoke-ReviewedFirebaseCli --version | Select-Object -Last 1).Trim()
+  if ($actualCliVersion -ne $FirebaseCliVersion) { throw "Firebase CLI $actualCliVersion is not reviewed version $FirebaseCliVersion." }
+  $loginList = (Invoke-ReviewedFirebaseCli login:list 2>&1 | Out-String)
+  if ($loginList -notmatch [regex]::Escape($ApprovedOperatorEmail)) {
+    throw "The approved operator account $ApprovedOperatorEmail is not authenticated."
+  }
+  $projects = (Invoke-ReviewedFirebaseCli projects:list --json | ConvertFrom-Json).result
+  if (-not @($projects | Where-Object { $_.projectId -eq $ExpectedProject })) {
+    throw "The authenticated account cannot access project $ExpectedProject."
+  }
+}
+
+Assert-DeploymentIdentity $ApprovedReleaseSha
+```
+
+Run `Assert-DeploymentIdentity $ApprovedReleaseSha` immediately before every
+deployment group from the controlled operator shell. The static-host command
+below repeats the release-SHA and clean-worktree checks in Bash. The preflight
+must pass again after any pause, shell change, or checkout operation. Every
+Firebase deployment command below includes `--project $ExpectedProject`; do
+not substitute another project identifier.
+
 ## Local Pre-deployment Gate
 
 Run these commands in the release worktree before requesting controlled
@@ -65,11 +133,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 git status --short
 ```
 
-The Task 6 Firestore emulator gate is mandatory before deployment and must be
-attempted exactly as follows:
+The Task 6 Firestore emulator gate is mandatory before deployment. Run the
+same reviewed CLI wrapper after the approval setup above:
 
 ```powershell
-npx.cmd firebase-tools emulators:exec --only firestore "node --test tests/firestore-rules-emulator.test.js tests/function-schedule-v2-shadow-emulator.test.js"
+Assert-DeploymentIdentity $ApprovedReleaseSha
+Invoke-ReviewedFirebaseCli emulators:exec --only firestore "node --test tests/firestore-rules-emulator.test.js tests/function-schedule-v2-shadow-emulator.test.js"
 ```
 
 Do not replace an unavailable emulator with a skip. If this command cannot
@@ -102,13 +171,18 @@ unexpected pointer change; refresh again and start the affected action over.
 
 **Pending controlled operator action.** Before the release, use the deployed
 developer Settings page for `gagyeong` and `yongam`, press `상태 새로고침`, and
-record `mode=verify` for both branches. The operator deploys the already
-approved static release by the established host procedure:
+record `mode=verify` for both branches. The operator deploys only the approved
+detached release prepared in the identity gate:
 
 ```bash
-# Pending: use the approved release reference; this task does not push or switch branches.
+# Pending: run only after the controlled operator shell has passed
+# Assert-DeploymentIdentity for this exact SHA and recorded its evidence.
+APPROVED_RELEASE_SHA='<recorded 40-character approved SHA>'
 cd /var/www/schedule
-sudo git pull origin main
+git fetch --tags origin
+git checkout --detach "$APPROVED_RELEASE_SHA"
+test "$(git rev-parse HEAD)" = "$APPROVED_RELEASE_SHA"
+test -z "$(git status --porcelain --untracked-files=all)"
 ```
 
 Reload the staff timetable and Settings pages. Confirm that the new static
@@ -120,7 +194,8 @@ used. A code deployment has no authority to change a runtime mode.
 **Pending controlled operator action.** Deploy only the committed indexes:
 
 ```powershell
-npx.cmd firebase-tools@latest deploy --only firestore:indexes --project scswimming-schedule --non-interactive
+Assert-DeploymentIdentity $ApprovedReleaseSha
+Invoke-ReviewedFirebaseCli deploy --only firestore:indexes --project $ExpectedProject --non-interactive
 ```
 
 Wait for every index required by the committed `firestore.indexes.json` to be
@@ -137,10 +212,13 @@ Compare the returned collection group, query scope, and fields with
 ### 3. Firestore rules deployment
 
 **Pending controlled operator action.** Re-run the established release guard
-from a clean, committed release checkout, then deploy rules only:
+from the approved, clean, detached checkout, then deploy rules only with the
+same reviewed CLI:
 
 ```powershell
-npm.cmd run release:rules -- --production
+npm.cmd run release:rules -- --dry-run
+Assert-DeploymentIdentity $ApprovedReleaseSha
+Invoke-ReviewedFirebaseCli deploy --only firestore:rules --project $ExpectedProject --non-interactive
 ```
 
 This command deploys `firestore.rules` only. It must not be used to deploy
@@ -154,7 +232,8 @@ branch.
 are `READY` and the rules gate passes:
 
 ```powershell
-npx.cmd firebase-tools@latest deploy --only functions --project scswimming-schedule --non-interactive
+Assert-DeploymentIdentity $ApprovedReleaseSha
+Invoke-ReviewedFirebaseCli deploy --only functions --project $ExpectedProject --non-interactive
 ```
 
 Confirm the deployment reports healthy functions, including
@@ -293,9 +372,11 @@ Keep two separate records:
 - **Local evidence:** command, timestamp, exit result, test totals, generator
   result, version JSON parse result, diff result, and emulator result.
 - **Production evidence:** only a controlled operator may later add deployment
-  timestamps, index `READY` evidence, fresh branch status snapshots, smoke
-  observations, mirror-removal evidence, recovery/rollback observations, and
-  explicit activation approval.
+  timestamps; the exact approved 40-character release SHA; reviewed Firebase
+  CLI version `15.26.0`; verified project ID and operator identity; index
+  `READY` evidence; fresh branch status snapshots; smoke observations;
+  mirror-removal evidence; recovery/rollback observations; and explicit
+  activation approval.
 
 At the time this document was added, no production evidence exists. No
 deployment, production access, status read, smoke test, branch switch, push,
