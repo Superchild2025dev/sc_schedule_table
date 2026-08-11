@@ -4,6 +4,40 @@
     {"id": "yongam", "ruleName": "Yongam"}
   ],
   "teacherCrossBranchAccess": true,
+  "scheduleV2": {
+    "staffReadableRuntimeDocuments": [
+      "operational",
+      "attendance",
+      "scheduleSync"
+    ],
+    "staffReadableGenerationCollections": [
+      "tabs",
+      "people",
+      "enrollments",
+      "placements",
+      "teacherAssignments",
+      "reservations",
+      "waitlistEntries",
+      "classMarks",
+      "attendanceRecords",
+      "attendanceGuests",
+      "attendanceSnapshots",
+      "attendanceSnapshotStudents",
+      "attendanceSnapshotTeachers",
+      "disabledSlots",
+      "calendarClosures",
+      "schedulePeriods",
+      "scheduleSettings",
+      "teacherProfiles",
+      "tabFolders",
+      "archivedTabs",
+      "systemMetadata",
+      "retirementRecords",
+      "deskStudentRecords"
+    ],
+    "developerMonitorRead": true,
+    "browserWritePolicy": "trusted-server-only"
+  },
   "accounts": [
     {"email": "2025superchild@gmail.com", "name": "최고관리자", "role": "superAdmin", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},
     {"email": "developer@scswim.local", "name": "시간표 개발자", "role": "developer", "branchIds": ["gagyeong", "yongam"], "teacherName": ""},

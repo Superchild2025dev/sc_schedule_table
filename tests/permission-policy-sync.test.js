@@ -48,3 +48,47 @@ test("teacher write policy contains attendance keys but no schedule rosters", ()
   assert.ok(!policy.teacherWritableExactKeys.includes("swim_students"));
   assert.ok(!policy.teacherWritableExactKeys.includes("swim_inst"));
 });
+
+test("one manifest grants cross-branch staff V2 reads and keeps every browser V2 write server-only", () => {
+  const generator = require(generatorPath);
+  const policy = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const rules = generator.renderRulesBlock(policy);
+
+  assert.equal(policy.teacherCrossBranchAccess, true);
+  assert.deepEqual(policy.scheduleV2.staffReadableRuntimeDocuments, [
+    "operational",
+    "attendance",
+    "scheduleSync",
+  ]);
+  assert.deepEqual(policy.scheduleV2.staffReadableGenerationCollections, [
+    "tabs",
+    "people",
+    "enrollments",
+    "placements",
+    "teacherAssignments",
+    "reservations",
+    "waitlistEntries",
+    "classMarks",
+    "attendanceRecords",
+    "attendanceGuests",
+    "attendanceSnapshots",
+    "attendanceSnapshotStudents",
+    "attendanceSnapshotTeachers",
+    "disabledSlots",
+    "calendarClosures",
+    "schedulePeriods",
+    "scheduleSettings",
+    "teacherProfiles",
+    "tabFolders",
+    "archivedTabs",
+    "systemMetadata",
+    "retirementRecords",
+    "deskStudentRecords",
+  ]);
+  assert.equal(policy.scheduleV2.developerMonitorRead, true);
+  assert.equal(policy.scheduleV2.browserWritePolicy, "trusted-server-only");
+  assert.match(rules, /function canReadScheduleV2Runtime\(documentId\)/);
+  assert.match(rules, /function canReadScheduleV2GenerationCollection\(collection\)/);
+  assert.match(rules, /allow read: if canReadSchedule\(branch\)/);
+  assert.doesNotMatch(rules, /allow write: if (?!false)/);
+});

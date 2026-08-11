@@ -106,10 +106,11 @@ test("settings page contains a hidden developer-only attendance control", () => 
   assert.ok(policyScript >= 0 && policyScript < settingsScript, "settings policy must load before settings.js");
 });
 
-test("settings runtime gates visibility and writes through the attendance policy", () => {
+test("settings runtime gates visibility and routes attendance transitions through the callable", () => {
   assert.match(settingsSource, /SCAttendanceV2SettingsPolicy\.canView\(profile\)/);
   assert.match(settingsSource, /SCAttendanceV2SettingsPolicy\.evaluate\(/);
   assert.match(settingsSource, /SCV2AttendanceStore\.create\(/);
-  assert.match(settingsSource, /attendanceControlStore\.setConfig\(/);
+  assert.doesNotMatch(settingsSource, /attendanceControlStore\.setConfig\(/);
+  assert.match(settingsSource, /runScheduleV2Action\(action\)/);
   assert.match(settingsSource, /latestAttendanceReadyGeneration\(/);
 });

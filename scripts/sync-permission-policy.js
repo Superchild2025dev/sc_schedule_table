@@ -7,6 +7,8 @@ const RULES_START = "    // PERMISSION_POLICY_START";
 const RULES_END = "    // PERMISSION_POLICY_END";
 const CLIENT_START = "  // PERMISSION_POLICY_START";
 const CLIENT_END = "  // PERMISSION_POLICY_END";
+const LEGACY_V2_RULES_START = "    match /scheduleV2/{document=**} {";
+const NEXT_RULES_START = "    match /scheduleStores/{branch}/{document=**} {";
 
 function loadPolicy(root){
   const file = path.join(root, "config", "schedule-permissions.json");
@@ -33,6 +35,24 @@ function validatePolicy(policy){
     });
   });
   (policy.teacherWritablePatterns || []).forEach(pattern=>new RegExp(pattern));
+
+  const scheduleV2 = policy.scheduleV2;
+  if(!scheduleV2 || typeof scheduleV2 !== "object"){
+    throw new Error("permission policy requires scheduleV2");
+  }
+  ["staffReadableRuntimeDocuments", "staffReadableGenerationCollections"].forEach(field=>{
+    const values = scheduleV2[field];
+    if(!Array.isArray(values) || !values.length || values.some(value=>typeof value !== "string" || !value.trim()) ||
+        new Set(values).size !== values.length){
+      throw new Error(`permission policy requires unique scheduleV2.${field}`);
+    }
+  });
+  if(scheduleV2.developerMonitorRead !== true){
+    throw new Error("permission policy requires scheduleV2.developerMonitorRead");
+  }
+  if(scheduleV2.browserWritePolicy !== "trusted-server-only"){
+    throw new Error("permission policy requires trusted-server-only Schedule V2 writes");
+  }
 }
 
 function accountsFor(policy, role, branchId){
@@ -140,6 +160,69 @@ function renderRulesBlock(policy){
     "    }",
   ].join("\n"));
 
+  blocks.push([
+    "    function canReadScheduleV2Runtime(documentId) {",
+    `      return documentId in ${JSON.stringify(policy.scheduleV2.staffReadableRuntimeDocuments)};`,
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    function canReadScheduleV2GenerationCollection(collection) {",
+    `      return collection in ${JSON.stringify(policy.scheduleV2.staffReadableGenerationCollections)};`,
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    function canReadScheduleV2Monitor() {",
+    "      return isOwner() || isDeveloper();",
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    match /scheduleV2/{branch} {",
+    "      allow read: if canReadScheduleV2Monitor();",
+    "      allow write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/alerts/{alertId} {",
+    "      allow read: if canReadScheduleV2Monitor();",
+    "      allow write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/runtime/operationalRecovery {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/runtime/{documentId} {",
+    "      allow read: if canReadSchedule(branch)",
+    "        && canReadScheduleV2Runtime(documentId);",
+    "      allow write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/generations/{generationId} {",
+    "      allow read: if canReadSchedule(branch);",
+    "      allow write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {",
+    "      allow read: if canReadSchedule(branch)",
+    "        && canReadScheduleV2GenerationCollection(collection);",
+    "      allow write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/operationalMutations/{document=**} {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/requestRecoveries/{document=**} {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{document=**} {",
+    "      allow read, write: if false;",
+    "    }",
+  ].join("\n"));
+
   return blocks.join("\n\n");
 }
 
@@ -189,6 +272,15 @@ function replaceManagedBlock(source, startMarker, endMarker, body){
   return source.replace(pattern, `${startMarker}${eol}${normalizedBody}${eol}${endMarker}`);
 }
 
+function removeLegacyV2Rules(source){
+  const managedEnd = source.indexOf(RULES_END);
+  const start = source.indexOf(LEGACY_V2_RULES_START, managedEnd + RULES_END.length);
+  if(start < 0) return source;
+  const end = source.indexOf(NEXT_RULES_START, start);
+  if(end < 0) throw new Error("legacy Schedule V2 rules have no scheduleStores boundary");
+  return source.slice(0, start) + source.slice(end);
+}
+
 function syncFiles(options){
   options = options || {};
   const root = options.root || path.join(__dirname, "..");
@@ -199,6 +291,7 @@ function syncFiles(options){
       start:RULES_START,
       end:RULES_END,
       body:renderRulesBlock(policy),
+      beforeReplace:removeLegacyV2Rules,
     },
     {
       file:path.join(root, "js", "auth-guard.js"),
@@ -210,7 +303,8 @@ function syncFiles(options){
   const changed = [];
   targets.forEach(target=>{
     const before = fs.readFileSync(target.file, "utf8");
-    const after = replaceManagedBlock(before, target.start, target.end, target.body);
+    const prepared = target.beforeReplace ? target.beforeReplace(before) : before;
+    const after = replaceManagedBlock(prepared, target.start, target.end, target.body);
     if(before === after) return;
     changed.push(path.relative(root, target.file).replace(/\\/g, "/"));
     if(!options.check) fs.writeFileSync(target.file, after, "utf8");

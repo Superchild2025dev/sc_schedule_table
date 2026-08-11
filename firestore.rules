@@ -101,6 +101,61 @@ service cloud.firestore {
       return isTeacherForBranch(branch)
         && isTeacherWritableScheduleKey(docId);
     }
+
+    function canReadScheduleV2Runtime(documentId) {
+      return documentId in ["operational","attendance","scheduleSync"];
+    }
+
+    function canReadScheduleV2GenerationCollection(collection) {
+      return collection in ["tabs","people","enrollments","placements","teacherAssignments","reservations","waitlistEntries","classMarks","attendanceRecords","attendanceGuests","attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers","disabledSlots","calendarClosures","schedulePeriods","scheduleSettings","teacherProfiles","tabFolders","archivedTabs","systemMetadata","retirementRecords","deskStudentRecords"];
+    }
+
+    function canReadScheduleV2Monitor() {
+      return isOwner() || isDeveloper();
+    }
+
+    match /scheduleV2/{branch} {
+      allow read: if canReadScheduleV2Monitor();
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/alerts/{alertId} {
+      allow read: if canReadScheduleV2Monitor();
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/operationalRecovery {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/{documentId} {
+      allow read: if canReadSchedule(branch)
+        && canReadScheduleV2Runtime(documentId);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/generations/{generationId} {
+      allow read: if canReadSchedule(branch);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
+      allow read: if canReadSchedule(branch)
+        && canReadScheduleV2GenerationCollection(collection);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/operationalMutations/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/requestRecoveries/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{document=**} {
+      allow read, write: if false;
+    }
     // PERMISSION_POLICY_END
 
     function canManageReferrals(branch) {
@@ -112,21 +167,6 @@ service cloud.firestore {
         || (signedIn()
           && branch == "yongam"
           && request.auth.token.email == "yongam.desk@scswim.local");
-    }
-
-    match /scheduleV2/{document=**} {
-      allow read: if isOwner() || isDeveloper();
-      allow write: if false;
-    }
-
-    match /scheduleV2/{branch}/runtime/attendance {
-      allow read: if canReadSchedule(branch);
-      allow write: if isDeveloper();
-    }
-
-    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
-      allow read, write: if collection in ["attendanceRecords", "attendanceGuests"]
-        && (canManageSchedule(branch) || isTeacherForBranch(branch));
     }
 
     match /scheduleStores/{branch}/{document=**} {

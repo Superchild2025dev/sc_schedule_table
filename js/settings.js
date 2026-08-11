@@ -1138,7 +1138,10 @@
     })[mode]||'V1 운영';
   }
   function scheduleV2ModeLabel(mode){
-    return ({v1:'V1 운영',preparing:'준비 중',ready:'준비 완료',shadow:'그림자 복사',verify:'검증 모드'})[mode]||String(mode||'V1 운영');
+    return ({
+      v1:'V1 운영',preparing:'준비 중',ready:'준비 완료',shadow:'그림자 복사',verify:'검증 모드',
+      'v2-read':'V2 읽기 + V1 복구',v2:'V2 단독 운영',
+    })[mode]||String(mode||'V1 운영');
   }
   function scheduleV2Developer(){
     const developer=!!(window.SCAuth&&typeof SCAuth.profile==='function'&&SCAuth.profile().role==='developer');
@@ -1170,21 +1173,35 @@
     if(badge) badge.hidden=!developer;
     if($('v2-schedule-mode')) $('v2-schedule-mode').textContent=scheduleV2ModeLabel(status.mode);
     if($('v2-schedule-generation')) $('v2-schedule-generation').textContent=status.generationId||'-';
+    if($('v2-schedule-epoch')) $('v2-schedule-epoch').textContent=String(Number(status.epoch||0));
+    if($('v2-schedule-revision')) $('v2-schedule-revision').textContent=String(Number(status.revision||0));
     if($('v2-schedule-pending')) $('v2-schedule-pending').textContent=`${Number(status.pendingCount||0)+Number(status.inFlightCount||0)}개`;
+    if($('v2-schedule-recovery-pending')) $('v2-schedule-recovery-pending').textContent=`${Number(status.recoveryPendingCount||0)}건`;
+    if($('v2-schedule-recovery-error')) $('v2-schedule-recovery-error').textContent=`${Number(status.recoveryErrorCount||0)}건`;
     if($('v2-schedule-last-sync')) $('v2-schedule-last-sync').textContent=v2MonitorDate(status.lastSuccessfulSync);
     if($('v2-schedule-mismatch')) $('v2-schedule-mismatch').textContent=`${Number(status.unresolvedMismatchCount||0)}건`;
     const busyAction=scheduleV2BusyByBranch[activeBranch]||'';
     const busy=!!busyAction;
-    ['v2-schedule-prepare','v2-schedule-shadow','v2-schedule-verify'].forEach(id=>{
-      if($(id)) $(id).disabled=busy;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    [
+      ['v2-schedule-prepare','prepare'],['v2-schedule-shadow','set-shadow'],
+      ['v2-schedule-verify','set-verify'],['v2-schedule-v2-read','set-v2-read'],
+      ['v2-schedule-v2','set-v2'],['v2-schedule-rollback','rollback'],
+    ].forEach(([id,action])=>{
+      if($(id)) $(id).disabled=busy||!developer||!policy?.evaluate({profile,action,status}).allowed;
     });
-    if($('v2-schedule-rollback')) $('v2-schedule-rollback').disabled=!developer;
     if(busy){
       scheduleV2ControlStatus(busyAction==='prepare'?'새 기준점을 만들고 변경분을 따라잡는 중입니다.':'시간표 서버 모드를 변경하고 있습니다.');
+    }else if(Number(status.recoveryErrorCount||0)>0){
+      scheduleV2ControlStatus(`V1 복구 오류 ${Number(status.recoveryErrorCount||0)}건을 먼저 해결해야 합니다.`,'err');
     }else if(status.generationStatus!=='ready'){
       scheduleV2ControlStatus('준비 완료된 시간표 V2 세대가 없습니다. V1 운영은 그대로 유지됩니다.','err');
     }else{
-      scheduleV2ControlStatus(`세대 ${status.generationId} · 대기 ${Number(status.pendingCount||0)}개 · 처리 중 ${Number(status.inFlightCount||0)}개`,'ok');
+      scheduleV2ControlStatus(
+        `세대 ${status.generationId} · epoch ${Number(status.epoch||0)} · V2 리비전 ${Number(status.revision||0)} · V1 복구 대기 ${Number(status.recoveryPendingCount||0)}건`,
+        'ok',
+      );
     }
   }
   function getScheduleV2Callable(){
@@ -1221,19 +1238,33 @@
       scheduleV2ControlStatus(decision?.reason||'실행할 수 없는 작업입니다.','err');
       return;
     }
-    const labels={
-      prepare:'새 시간표 V2 기준점을 만들까요?',
-      'set-shadow':'그림자 복사를 시작할까요?',
-      'set-verify':'검증 모드로 변경할까요?',
-      rollback:'V1으로 즉시 복귀할까요?',
+    const targetModes={
+      prepare:'새 기준점 준비','set-shadow':'그림자 복사','set-verify':'검증 모드',
+      'set-v2-read':'V2 읽기 + V1 복구','set-v2':'V2 단독 운영',rollback:'V1 운영',
     };
-    if(!window.confirm(labels[action]||'시간표 서버 설정을 변경할까요?')) return;
+    const targetEpoch=action==='prepare'?Number(current.epoch||0):Number(current.epoch||0)+1;
+    const branchName=BRANCHES[branchId]?.name||branchId;
+    const confirmation=[
+      '코드 배포만으로 운영 모드는 전환되지 않습니다.',
+      `대상 지점: ${branchName} (${branchId})`,
+      `대상 모드: ${targetModes[action]||action}`,
+      `대상 epoch: ${targetEpoch}`,
+      '이 상태 변경을 계속할까요?',
+    ].join('\n');
+    if(!window.confirm(confirmation)) return;
     const sequence=(scheduleV2ActionSeqByBranch[branchId]||0)+1;
     scheduleV2ActionSeqByBranch[branchId]=sequence;
     scheduleV2BusyByBranch[branchId]=action;
     renderScheduleV2Status();
     try{
-      const response=await getScheduleV2Callable()({action,branchId});
+      const payload={action,branchId};
+      if(['set-v2-read','set-v2','rollback'].includes(action)){
+        payload.expectedMode=String(current.mode||'');
+        payload.expectedGenerationId=String(current.generationId||'');
+        payload.expectedEpoch=Number(current.epoch||0);
+        payload.expectedRevision=Number(current.revision||0);
+      }
+      const response=await getScheduleV2Callable()(payload);
       if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
       scheduleV2StatusByBranch[branchId]=response?.data||{};
       delete scheduleV2BusyByBranch[branchId];
@@ -1362,19 +1393,11 @@
       attendanceControlStatus(decision.reason,'err');
       return;
     }
-    const label=attendanceModeLabel(mode);
-    if(!window.confirm(`출석 데이터 운영 모드를 "${label}"(으)로 변경할까요?`)) return;
-    attendanceControlBusy=true;
-    renderAttendanceCutover();
-    try{
-      await attendanceControlStore.setConfig({mode,generationId:mode==='v1'?'':readyId});
-      attendanceControlStatus(`${label} 모드로 변경했습니다.`,'ok');
-    }catch(error){
-      attendanceControlStatus('출석 운영 모드 저장 실패 · '+(error.message||String(error)),'err');
-    }finally{
-      attendanceControlBusy=false;
-      renderAttendanceCutover();
-    }
+    const action={
+      v1:'rollback',shadow:'set-shadow',verify:'set-verify','v2-read':'set-v2-read',v2:'set-v2',
+    }[mode];
+    if(!action) return;
+    await runScheduleV2Action(action);
   }
   function renderV2Monitor(){
     const data=v2MonitorDataByBranch[activeBranch]||{};
@@ -3588,6 +3611,8 @@ th{background:#D9EAD3;font-weight:700}
     $('v2-schedule-prepare')?.addEventListener('click',()=>runScheduleV2Action('prepare'));
     $('v2-schedule-shadow')?.addEventListener('click',()=>runScheduleV2Action('set-shadow'));
     $('v2-schedule-verify')?.addEventListener('click',()=>runScheduleV2Action('set-verify'));
+    $('v2-schedule-v2-read')?.addEventListener('click',()=>runScheduleV2Action('set-v2-read'));
+    $('v2-schedule-v2')?.addEventListener('click',()=>runScheduleV2Action('set-v2'));
     $('v2-schedule-rollback')?.addEventListener('click',()=>runScheduleV2Action('rollback'));
     $('v2-attendance-apply')?.addEventListener('click',()=>applyAttendanceCutover());
     $('v2-attendance-rollback')?.addEventListener('click',()=>applyAttendanceCutover('v1'));

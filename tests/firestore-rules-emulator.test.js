@@ -63,8 +63,24 @@ if(emulatorEnabled){
     return doc(db, "scheduleV2", branch, "runtime", "attendance");
   }
 
+  function runtimeConfig(db, branch, documentId){
+    return doc(db, "scheduleV2", branch, "runtime", documentId);
+  }
+
+  function generationHeader(db, branch, generationId){
+    return doc(db, "scheduleV2", branch, "generations", generationId);
+  }
+
   function attendanceRecord(db, branch, generationId, collection, recordId){
     return doc(db, "scheduleV2", branch, "generations", generationId, collection, recordId);
+  }
+
+  function operationalMutation(db, branch, operationId){
+    return doc(db, "scheduleV2", branch, "operationalMutations", operationId);
+  }
+
+  function requestRecovery(db, branch, operationId){
+    return doc(db, "scheduleV2", branch, "requestRecoveries", operationId);
   }
 
   test("a teacher can write regular and vacation attendance documents", async () => {
@@ -115,7 +131,7 @@ if(emulatorEnabled){
     await assertFails(setDoc(chunk(db, "gagyeong", "swim_students", "0000"), {text:"{}"}));
   });
 
-  test("generic V2 documents are server-write-only while owner and developer keep monitor reads", async () => {
+  test("generic V2 monitor documents are server-write-only while owner and developer keep monitor reads", async () => {
     const developerDb = staffDb("developer", "developer@scswim.local");
     const ownerDb = staffDb("owner", "2025superchild@gmail.com");
     const teacherDb = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
@@ -131,30 +147,51 @@ if(emulatorEnabled){
     await assertFails(setDoc(v2Monitor(teacherDb, "gagyeong"), {state:"teacher-write"}));
   });
 
-  test("teachers manage both branches V2 attendance while desks stay branch-scoped", async () => {
+  test("teachers read both branches V2 operations while desks remain branch-scoped", async () => {
     const teacherDb = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
     const deskDb = staffDb("gagyeong-desk", "gagyeong.desk@scswim.local");
     const ownRecord = attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceRecords", "att_1");
     const ownGuest = attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceGuests", "guest_1");
+    const ownPerson = attendanceRecord(teacherDb, "gagyeong", "gen_1", "people", "person_1");
     const otherRecord = attendanceRecord(teacherDb, "yongam", "gen_1", "attendanceRecords", "att_1");
     const otherDeskRecord = attendanceRecord(deskDb, "yongam", "gen_1", "attendanceRecords", "att_3");
 
-    await assertSucceeds(setDoc(ownRecord, {tabId:"regular", date:"2026-08-07"}));
+    await env.withSecurityRulesDisabled(async context=>{
+      const adminDb=context.firestore();
+      await setDoc(attendanceRecord(adminDb, "gagyeong", "gen_1", "attendanceRecords", "att_1"), {
+        tabId:"regular", date:"2026-08-07",
+      });
+      await setDoc(attendanceRecord(adminDb, "gagyeong", "gen_1", "attendanceGuests", "guest_1"), {
+        tabId:"regular", date:"2026-08-07",
+      });
+      await setDoc(attendanceRecord(adminDb, "gagyeong", "gen_1", "people", "person_1"), {
+        personId:"person_1",
+      });
+      await setDoc(attendanceRecord(adminDb, "yongam", "gen_1", "attendanceRecords", "att_1"), {
+        tabId:"regular", date:"2026-08-07",
+      });
+      await setDoc(attendanceRecord(adminDb, "yongam", "gen_1", "attendanceRecords", "att_3"), {
+        tabId:"regular", date:"2026-08-07",
+      });
+    });
     await assertSucceeds(getDoc(ownRecord));
-    await assertSucceeds(setDoc(ownGuest, {tabId:"regular", date:"2026-08-07"}));
-    await assertSucceeds(setDoc(
-      attendanceRecord(deskDb, "gagyeong", "gen_1", "attendanceRecords", "att_2"),
-      {tabId:"regular", date:"2026-08-07"}
-    ));
-    await assertSucceeds(setDoc(otherRecord, {tabId:"regular", date:"2026-08-07"}));
+    await assertSucceeds(getDoc(ownGuest));
+    await assertSucceeds(getDoc(ownPerson));
     await assertSucceeds(getDoc(otherRecord));
-    await assertFails(setDoc(otherDeskRecord, {tabId:"regular", date:"2026-08-07"}));
+    await assertSucceeds(getDoc(attendanceRecord(deskDb, "gagyeong", "gen_1", "attendanceRecords", "att_1")));
+    await assertFails(getDoc(otherDeskRecord));
   });
 
-  test("staff can read attendance config but only a developer can change it", async () => {
+  test("staff can read allowed runtime pointers but every browser runtime write is denied", async () => {
     await env.withSecurityRulesDisabled(async context=>{
       await setDoc(attendanceConfig(context.firestore(), "gagyeong"), {
         branchId:"gagyeong", mode:"v1", generationId:"",
+      });
+      await setDoc(runtimeConfig(context.firestore(), "gagyeong", "operational"), {
+        branchId:"gagyeong", mode:"v1", generationId:"", epoch:1, revision:0,
+      });
+      await setDoc(runtimeConfig(context.firestore(), "gagyeong", "scheduleSync"), {
+        status:"idle", requestedRevision:0, appliedRevision:0,
       });
     });
     const teacherDb = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
@@ -164,15 +201,41 @@ if(emulatorEnabled){
     await assertSucceeds(getDoc(attendanceConfig(teacherDb, "gagyeong")));
     await assertFails(setDoc(attendanceConfig(teacherDb, "gagyeong"), {mode:"shadow"}));
     await assertSucceeds(getDoc(attendanceConfig(otherTeacherDb, "gagyeong")));
-    await assertSucceeds(setDoc(attendanceConfig(developerDb, "gagyeong"), {
+    await assertSucceeds(getDoc(runtimeConfig(teacherDb, "gagyeong", "operational")));
+    await assertSucceeds(getDoc(runtimeConfig(otherTeacherDb, "gagyeong", "scheduleSync")));
+    await assertFails(setDoc(attendanceConfig(developerDb, "gagyeong"), {
       branchId:"gagyeong", mode:"shadow", generationId:"gen_1",
     }));
+  });
+
+  test("attendance marks mutations and every recovery queue are callable-only", async () => {
+    const teacherDb = staffDb("teacher", "gagyeong.son@scswim.local");
+    const deskDb = staffDb("desk", "gagyeong.desk@scswim.local");
+    const developerDb = staffDb("developer", "developer@scswim.local");
+    const writes = [
+      attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceRecords", "att_1"),
+      attendanceRecord(teacherDb, "gagyeong", "gen_1", "attendanceGuests", "guest_1"),
+      attendanceRecord(deskDb, "gagyeong", "gen_1", "classMarks", "mark_1"),
+      generationHeader(developerDb, "gagyeong", "gen_1"),
+      attendanceRecord(developerDb, "gagyeong", "gen_1", "people", "person_1"),
+      operationalMutation(developerDb, "gagyeong", "op_1"),
+      requestRecovery(developerDb, "gagyeong", "op_1"),
+      runtimeConfig(developerDb, "gagyeong", "operationalRecovery"),
+    ];
+    for(const reference of writes){
+      await assertFails(setDoc(reference, {state:"browser-write"}));
+    }
+    await assertFails(getDoc(operationalMutation(developerDb, "gagyeong", "op_1")));
+    await assertFails(getDoc(requestRecovery(developerDb, "gagyeong", "op_1")));
+    await assertFails(getDoc(runtimeConfig(developerDb, "gagyeong", "operationalRecovery")));
   });
 
   test("unauthenticated clients cannot access V2 attendance runtime paths", async () => {
     const db = env.unauthenticatedContext().firestore();
     await assertFails(getDoc(attendanceConfig(db, "gagyeong")));
     await assertFails(setDoc(attendanceConfig(db, "gagyeong"), {mode:"v1"}));
+    await assertFails(getDoc(runtimeConfig(db, "gagyeong", "operational")));
+    await assertFails(getDoc(generationHeader(db, "gagyeong", "gen_1")));
     await assertFails(getDoc(attendanceRecord(db, "gagyeong", "gen_1", "attendanceRecords", "att_1")));
     await assertFails(setDoc(
       attendanceRecord(db, "gagyeong", "gen_1", "attendanceGuests", "guest_1"),

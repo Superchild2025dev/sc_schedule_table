@@ -396,7 +396,11 @@
         <div class="v2-schedule-summary">
           <div><span>현재 모드</span><strong id="v2-schedule-mode">확인 중</strong></div>
           <div><span>현재 세대</span><strong id="v2-schedule-generation">-</strong></div>
+          <div><span>현재 epoch</span><strong id="v2-schedule-epoch">0</strong></div>
+          <div><span>V2 리비전</span><strong id="v2-schedule-revision">0</strong></div>
           <div><span>대기 키</span><strong id="v2-schedule-pending">0개</strong></div>
+          <div><span>V1 복구 대기</span><strong id="v2-schedule-recovery-pending">0건</strong></div>
+          <div><span>V1 복구 오류</span><strong id="v2-schedule-recovery-error">0건</strong></div>
           <div><span>마지막 성공</span><strong id="v2-schedule-last-sync">-</strong></div>
           <div><span>미해결 불일치</span><strong id="v2-schedule-mismatch">0건</strong></div>
         </div>
@@ -404,6 +408,8 @@
           <button type="button" class="ghost-btn" id="v2-schedule-prepare">기준점 새로 만들기</button>
           <button type="button" class="primary-btn" id="v2-schedule-shadow">그림자 복사 시작</button>
           <button type="button" class="ghost-btn" id="v2-schedule-verify">검증 모드</button>
+          <button type="button" class="primary-btn" id="v2-schedule-v2-read">V2 읽기 전환</button>
+          <button type="button" class="ghost-btn" id="v2-schedule-v2">V2 단독 전환</button>
           <button type="button" class="ghost-btn" id="v2-schedule-rollback">V1으로 복귀</button>
         </div>
         <div class="data-v2-status" id="v2-schedule-control-status">시간표 서버 상태를 확인하고 있습니다.</div>

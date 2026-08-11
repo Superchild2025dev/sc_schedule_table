@@ -87,21 +87,39 @@ assert.match(
   "public summary writes must stay blocked"
 );
 
+const v2Rules = source.slice(source.indexOf("match /scheduleV2/"), source.indexOf("match /scheduleStores/"));
+assert.ok(v2Rules, "Schedule V2 rules must exist before scheduleStores");
 assert.match(
-  source,
-  /match \/scheduleV2\/\{document=\*\*\} \{[\s\S]*?allow read: if isOwner\(\) \|\| isDeveloper\(\);[\s\S]*?allow write: if false;[\s\S]*?\}/,
-  "generic Schedule V2 documents must be server-written only"
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/runtime\/\{documentId\} \{[\s\S]*?allow read: if canReadSchedule\(branch\)[\s\S]*?canReadScheduleV2Runtime\(documentId\);[\s\S]*?allow write: if false;/,
+  "staff may read only allowlisted V2 runtime status documents"
 );
 assert.match(
-  source,
-  /match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if isDeveloper\(\);[\s\S]*?\}/,
-  "staff may read an allowed attendance runtime config while developers control writes"
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\} \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if false;/,
+  "staff may read an allowed generation header"
 );
 assert.match(
-  source,
-  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?collection in \["attendanceRecords", "attendanceGuests"\][\s\S]*?canManageSchedule\(branch\) \|\| isTeacherForBranch\(branch\)[\s\S]*?\}/,
-  "desks stay branch-scoped while teachers may access attendance at either branch"
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?canReadScheduleV2GenerationCollection\(collection\)[\s\S]*?allow write: if false;/,
+  "staff may read only allowlisted operational generation collections"
 );
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/requestRecoveries\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "request recovery documents must remain server-only"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/operationalMutations\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "operational mutation manifests must remain server-only"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/runtime\/operationalRecovery \{[\s\S]*?allow read, write: if false;/,
+  "mirror recovery queues must remain server-only"
+);
+assert.doesNotMatch(v2Rules, /allow write: if (?!false)/, "no Schedule V2 browser write may be authorized");
 
 assert.equal(firebaseConfig.firestore.rules, "firestore.rules");
 assert.equal(firebaseConfig.firestore.indexes, "firestore.indexes.json");
