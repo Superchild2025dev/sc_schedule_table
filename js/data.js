@@ -3793,6 +3793,8 @@ function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDA
 function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
 let _mainAttendanceSnapshotWriter=null;
 let _mainAttendanceSnapshotWriterBranch='';
+let _mainOperationalWorkflows=null;
+let _mainOperationalWorkflowsBranch='';
 function getMainAttendanceSnapshotWriter(){
   const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
   if(!branch||!window.SCAttendanceSnapshotWriter||!_scheduleWrites||!_fb) return null;
@@ -3816,6 +3818,16 @@ function getMainAttendanceSnapshotWriter(){
   _mainAttendanceSnapshotWriterBranch=branch.id;
   return _mainAttendanceSnapshotWriter;
 }
+function getMainOperationalWorkflows(){
+  const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
+  if(!branch||!window.SCScheduleOperationalWorkflows||!_fb) return null;
+  if(_mainOperationalWorkflows&&_mainOperationalWorkflowsBranch===branch.id) return _mainOperationalWorkflows;
+  const snapshotWriter=getMainAttendanceSnapshotWriter();
+  if(!snapshotWriter) return null;
+  _mainOperationalWorkflows=SCScheduleOperationalWorkflows.create({gateway:_fb,snapshotWriter});
+  _mainOperationalWorkflowsBranch=branch.id;
+  return _mainOperationalWorkflows;
+}
 async function saveDaySnapshot(ds,tabId,snapshotValue){
   const date=String(ds||'');
   const snapshot=snapshotValue||DAY_SNAPSHOT[date];
@@ -3829,7 +3841,10 @@ async function saveDaySnapshot(ds,tabId,snapshotValue){
   const scope=typeof _attendanceDaySnapshotScope==='function'
     ?_attendanceDaySnapshotScope(targetTabId)
     :(basisTab?.type==='bangteuk'?'bt_'+targetTabId:'regular');
-  return writer.createOnly({scope,date,snapshot,tabId:targetTabId});
+  const workflows=getMainOperationalWorkflows();
+  return (workflows||{createSnapshot:input=>writer.createOnly(input)}).createSnapshot({
+    scope,date,snapshot,tabId:targetTabId,
+  });
 }
 
 function _cacheJSONOnly(key,val){

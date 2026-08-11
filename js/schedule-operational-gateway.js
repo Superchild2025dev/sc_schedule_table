@@ -20,6 +20,50 @@
   function sameValue(left,right){
     try{return JSON.stringify(left)===JSON.stringify(right);}catch(error){return false;}
   }
+  const MISSING=Object.freeze({});
+  function parsedJson(value){
+    if(typeof value!=='string') return {ok:false,value:null};
+    try{return {ok:true,value:JSON.parse(value)};}catch(error){return {ok:false,value:null};}
+  }
+  function rebaseValue(before,after,fresh){
+    if(before===MISSING&&after===MISSING) return MISSING;
+    if(sameValue(before,after)) return fresh===MISSING?MISSING:clone(fresh);
+    const parsedBefore=parsedJson(before);
+    const parsedAfter=parsedJson(after);
+    const parsedFresh=parsedJson(fresh);
+    if(parsedBefore.ok&&parsedAfter.ok&&parsedFresh.ok){
+      return JSON.stringify(rebaseValue(parsedBefore.value,parsedAfter.value,parsedFresh.value));
+    }
+    const beforeObject=object(before);
+    const afterObject=object(after);
+    const freshObject=object(fresh);
+    if(beforeObject&&afterObject&&freshObject){
+      const result=clone(fresh);
+      const keys=new Set([...Object.keys(before),...Object.keys(after)]);
+      for(const key of keys){
+        const hasBefore=Object.prototype.hasOwnProperty.call(before,key);
+        const hasAfter=Object.prototype.hasOwnProperty.call(after,key);
+        const hasFresh=Object.prototype.hasOwnProperty.call(fresh,key);
+        const next=rebaseValue(
+          hasBefore?before[key]:MISSING,
+          hasAfter?after[key]:MISSING,
+          hasFresh?fresh[key]:MISSING,
+        );
+        if(next===MISSING) delete result[key];
+        else result[key]=next;
+      }
+      return result;
+    }
+    if(Array.isArray(before)&&Array.isArray(after)&&Array.isArray(fresh)
+      &&before.length===after.length&&before.length===fresh.length){
+      return before.map((value,index)=>rebaseValue(value,after[index],fresh[index]));
+    }
+    if(sameValue(fresh,before)||sameValue(fresh,after)) return after===MISSING?MISSING:clone(after);
+    fail('aborted','A newer operational edit overlaps this change.');
+  }
+  function rebaseRoot(before,after,fresh){
+    return rebaseValue(before,after,fresh);
+  }
   function configFingerprint(config){
     return [text(config?.branchId),text(config?.mode),text(config?.generationId),Number(config?.epoch)||0,Number(config?.revision)||0].join('|');
   }
@@ -347,6 +391,32 @@
         &&Number(response.revision)===request.beforeRevision+1;
     }
     async function transactionKeys(keys,mutator,meta={}){
+      if(typeof mutator!=='function') throw new TypeError('transaction mutator is required');
+      await ready();
+      if(V1_MODES.has(config.mode)) return transactionKeysOnce(keys,mutator,meta);
+
+      let originalBefore=null;
+      let originalAfter=null;
+      const attemptMeta={...meta,rebaseConflict:true};
+      const captureIntent=root=>{
+        originalBefore=clone(root);
+        const returned=mutator(root);
+        if(returned===undefined) return undefined;
+        originalAfter=object(returned)?clone(returned):clone(root);
+        return returned;
+      };
+      try{
+        return await transactionKeysOnce(keys,captureIntent,attemptMeta);
+      }catch(error){
+        const code=text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
+        if(code!=='aborted'||originalBefore===null||originalAfter===null) throw error;
+        const next=await v2Store.readConfig();
+        pendingRuntimeConfig=null;
+        acceptConfig(next,false);
+        return transactionKeysOnce(keys,root=>rebaseRoot(originalBefore,originalAfter,root),attemptMeta);
+      }
+    }
+    async function transactionKeysOnce(keys,mutator,meta={}){
       keys=unique(keys);
       if(!keys.length) return {committed:false,snapshot:new Snapshot(null,{})};
       if(typeof mutator!=='function') throw new TypeError('transaction mutator is required');
@@ -440,7 +510,7 @@
         };
       }catch(error){
         pendingMutations.delete(operationId);
-        if(pendingRuntimeConfig){
+          if(pendingRuntimeConfig&&!meta.rebaseConflict){
           const next=pendingRuntimeConfig;
           pendingRuntimeConfig=null;
           requestReload(next);

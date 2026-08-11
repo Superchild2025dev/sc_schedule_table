@@ -265,7 +265,7 @@
     const enrollmentsById=new Map(collection(collections,"enrollments").map(row=>[text(row.id),row]));
 
     root.swim_tab_list=serialized(tabs);
-    const placementsByTab=grouped(collection(collections,"placements"),"tabId");
+    const placementsByTab=grouped(collection(collections,"placements").slice().sort(byOrder),"tabId");
     tabs.forEach(tab=>{
       const keys=legacyKeysForTab(tab);
       const students=(placementsByTab.get(text(tab.id))||[]).map(placement=>{
@@ -336,7 +336,10 @@
         students:(snapshotStudents.get(text(snapshot.id))||[]).map(row=>clone(row.payload)),
         inst,
       };
+      const scope=text(snapshot.tabId)===regularTabId?"regular":`bt_${text(snapshot.tabId)}`;
+      root[`zz_swim_day_snapshot__${scope}__${text(snapshot.date)}`]=serialized(snapshotRoot.snapshots[text(snapshot.date)]);
     });
+    tabs.forEach(tab=>attendanceFor(text(tab.id)));
     attendanceRoots.forEach(({keys,records,guests,snapshots})=>{
       root[keys.records]=serialized(records);
       root[keys.guests]=serialized(guests);

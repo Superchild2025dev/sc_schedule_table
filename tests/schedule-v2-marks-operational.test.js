@@ -139,7 +139,7 @@ test("the same person remains in distinct regular and bangteuk placement domains
 test("snapshot interruption resumes the same fenced operation and marks completion last",async()=>{
   const request=snapshotRequest("snapshot_retry_1");
   const db=fakeFirestore({[runtimePath()]:{branchId:"yongam",mode:"v2",generationId:"gen_1",epoch:2,revision:4}});
-  db.failOnTransaction(2);
+  db.failOnTransaction(3);
   await assert.rejects(()=>commitV2Mutation({db,request,changes:snapshotChanges(),now:new Date("2026-08-03T00:00:00Z")}),/interrupted/);
   assert.equal(db.docs.get(generationPath("attendanceSnapshots","snapshot_1")).complete,false);
   assert.equal(db.docs.get(runtimePath()).revision,4);

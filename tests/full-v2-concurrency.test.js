@@ -24,7 +24,7 @@ for(const branchId of ["gagyeong","yongam"]){
     {name:"regular",key:"swim_students",suffixes:["r1","r2"]},
     {name:"bangteuk",key:"swim_bt_summer_stu",suffixes:["b1","b2"]},
   ]){
-    test(`${branchId} ${course.name} different-document edits survive a fenced-device retry`,async()=>{
+    test(`${branchId} ${course.name} initial different-document edits both survive the operational conflict rebase`,async()=>{
       const system=createOperationalSystem({branches:[branchId],mode:"v2-read",deriveBarrierCount:2});
       const first=system.gateway(branchId);
       const second=system.gateway(branchId);
@@ -36,16 +36,7 @@ for(const branchId of ["gagyeong","yongam"]){
         updateStudent(second,course.key,`${prefix}_${course.suffixes[1]}`,`${prefix} Device Two`,`different_${branchId}_${course.name}_2`),
       ]);
 
-      assert.deepEqual(results.map(result=>result.status).sort(),["fulfilled","rejected"]);
-      assert.equal(results.find(result=>result.status==="rejected").reason.code,"aborted");
-      const retried=system.gateway(branchId);
-      await retried.ready();
-      const retryIndex=results[0].status==="rejected"?0:1;
-      const labels=["One","Two"];
-      await updateStudent(
-        retried,course.key,`${prefix}_${course.suffixes[retryIndex]}`,
-        `${prefix} Device ${labels[retryIndex]}`,`different_${branchId}_${course.name}_retry`,
-      );
+      assert.deepEqual(results.map(result=>result.status).sort(),["fulfilled","fulfilled"]);
       const students=parse(system.reconstructV2(branchId),course.key,[]);
       assert.equal(studentName(students.find(item=>item.sid===`${prefix}_${course.suffixes[0]}`).n),`${prefix} Device One`);
       assert.equal(studentName(students.find(item=>item.sid===`${prefix}_${course.suffixes[1]}`).n),`${prefix} Device Two`);

@@ -218,3 +218,11 @@ UI 함수는 V2 경로, 컬렉션 이름, 세대 ID를 직접 사용하지 않�
 - Pointer parity: each committed V2 mutation advances both `runtime/operational.revision` and `runtime/attendance.revision` in the same finalization transaction.
 - Rollback outcome: after recovery and parity, rollback reached `v1`; a newly constructed gateway session loaded the complete legacy staff view as V1 and matched the recovered legacy data.
 
+## Local Task 7 Fix Round 1 Evidence (2026-08-11)
+
+- Both runtime pointers are preflight-validated before a V2 document, manifest, or active-operation write; a mismatched attendance pointer produces zero writes.
+- `gagyeong` and `yongam` each run 20 V2 operations through the production operational workflow adapter: regular and Bangteuk registration, replacement, move, teacher, reservations, waitlist, absence, bogang, sample, mandatory makeup, both cancellations, attendance/guests, two immutable snapshots, calendar, periods, tabs, manual records, and export.
+- The operational gateway rebases non-overlapping stale leaf edits onto a fresh V2 read. Four branch/course different-student races retain both original requests without a third replay; four same-slot races remain `aborted` and retain the winner.
+- Ordered roster, tab, waitlist, period, and export views are compared without recursive array sorting. Placement conversion persists source order and V2 reconstruction preserves it.
+- For each branch, a forced Bangteuk V1 mirror failure blocks rollback at revision 2. Recovery returns `{applied:1,error:0,skipped:0}`, complete tracked V1/V2 staff views match, and a newly constructed V1 gateway session independently reconstructs the same complete view after rollback.
+

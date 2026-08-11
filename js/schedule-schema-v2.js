@@ -123,7 +123,7 @@
       schemaVersion:SCHEMA_VERSION,
     };
   }
-  function placementFromStudent(student,tab){
+  function placementFromStudent(student,tab,order){
     const personId=personIdFor(student);
     const tabId=text(tab?.id)||'regular';
     const enrollmentId=enrollmentIdFor(personId,tabId);
@@ -146,6 +146,7 @@
       memo:text(student?.memo),
       startDate:text(student?.enrolled),
       layoutAdded:student?.layoutAdded||false,
+      order:Number(order)||0,
       extra:unknownStudentFields(student),
       schemaVersion:SCHEMA_VERSION,
     };
@@ -1351,7 +1352,7 @@
           newStudent:existingEnrollment.newStudent||enrollment.newStudent,
           reenroll:existingEnrollment.reenroll||enrollment.reenroll,
         }:enrollment);
-        const placement=placementFromStudent(student,tab);
+        const placement=placementFromStudent(student,tab,index);
         const positionKey=`${tab.id}|${placement.slotKey}`;
         const occupying=occupiedPositions.get(positionKey);
         if(occupying&&occupying.personId!==placement.personId){

@@ -981,7 +981,7 @@ test("retry after the last V2 chunk preserves the original immutable manifest su
   const operationId="op_finalize_retry";
   const fingerprint="fingerprint-finalize-retry";
   const db=new FakeFirestore({[runtimePath()]:runtime()});
-  db.failTransactionAt=2;
+  db.failTransactionAt=3;
 
   await assert.rejects(()=>operational.commitV2Mutation({
     db,request:request({operationId}).data,
@@ -1362,6 +1362,25 @@ test("an active branch recovery fence blocks a new V2 mutation before document w
   }),error=>error.code==="aborted");
   assert.equal(db.value(generationPath("placements","blocked")),undefined);
   assert.equal(db.value(runtimePath()).revision,32);
+});
+
+test("a mismatched attendance pointer blocks a V2 mutation before documents or a manifest are written",async()=>{
+  const operationId="op_attendance_pointer_preflight";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [runtimePath().replace("/operational","/attendance")]:runtime({revision:31}),
+  });
+
+  await assert.rejects(()=>operational.commitV2Mutation({
+    db,request:request({operationId,beforeRevision:32}).data,
+    actor:{email:"developer@scswim.local",role:"developer"},changes:[change("pointer-preflight")],
+    now:NOW,serverTimestamp:()=>"server-time",fingerprint:"fingerprint-attendance-pointer-preflight",
+  }),error=>error.code==="failed-precondition");
+
+  assert.equal(db.value(generationPath("placements","pointer-preflight")),undefined);
+  assert.equal(db.value(manifestPath(operationId)),undefined);
+  assert.equal(db.value(runtimePath()).activeOperationId,undefined);
+  assert.equal(db.transactions.some(attempt=>attempt.operations.length>0),false);
 });
 
 test("expired processing recovery leases are reclaimed and remain bounded",async()=>{

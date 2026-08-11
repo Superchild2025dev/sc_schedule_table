@@ -265,15 +265,18 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
   const {db,request,fingerprint}=input;
   const operationId=request.operationId;
   const runtimeDocument=runtimeRef(db,request.branchId);
+  const attendanceDocument=attendanceRuntimeRef(db,request.branchId);
   const manifestDocument=mutationRef(db,request.branchId,operationId);
   await db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
+    const attendanceSnapshot=await tx.get(attendanceDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
     const recoveryFenceSnapshot=await tx.get(recoveryFenceRef(db,request.branchId));
     const currentManifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(currentManifest,fingerprint);
     if(currentManifest?.status==="committed") return;
     assertRuntime(runtimeSnapshot.data()||{},request,operationId);
+    assertRuntime(attendanceSnapshot.data()||{},request,operationId);
     if(leaseExpiry(recoveryFenceSnapshot.data()?.recoveryLeaseUntil)>input.now.getTime()) fail("aborted");
 
     const documentSnapshots=[];
@@ -327,15 +330,18 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
 async function reserveEmptyMutation(input,counts){
   const {db,request,fingerprint}=input;
   const runtimeDocument=runtimeRef(db,request.branchId);
+  const attendanceDocument=attendanceRuntimeRef(db,request.branchId);
   const manifestDocument=mutationRef(db,request.branchId,request.operationId);
   await db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
+    const attendanceSnapshot=await tx.get(attendanceDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
     const recoveryFenceSnapshot=await tx.get(recoveryFenceRef(db,request.branchId));
     const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(manifest,fingerprint);
     if(manifest?.status==="committed") return;
     assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    assertRuntime(attendanceSnapshot.data()||{},request,request.operationId);
     if(leaseExpiry(recoveryFenceSnapshot.data()?.recoveryLeaseUntil)>input.now.getTime()) fail("aborted");
     const nowValue=serverTime(input);
     tx.set(manifestDocument,{
@@ -442,6 +448,18 @@ async function finalizeMutation(input,counts,chunkCount){
   });
 }
 
+async function assertInitialRuntimePointers(input){
+  const {db,request}=input;
+  const runtimeDocument=runtimeRef(db,request.branchId);
+  const attendanceDocument=attendanceRuntimeRef(db,request.branchId);
+  await db.runTransaction(async tx=>{
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const attendanceSnapshot=await tx.get(attendanceDocument);
+    assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    assertRuntime(attendanceSnapshot.data()||{},request,request.operationId);
+  });
+}
+
 async function commitV2Mutation(rawInput){
   const input={...rawInput};
   if(!input.db||typeof input.db.runTransaction!=="function"||!plainObject(input.request)) fail("invalid-argument");
@@ -492,6 +510,8 @@ async function commitV2Mutation(rawInput){
     input.changedDocumentRefs=clone(manifest.changedDocumentRefs||[]);
     input.deletedDocumentRefs=clone(manifest.deletedDocumentRefs||[]);
   }
+
+  await assertInitialRuntimePointers(input);
 
   if(!changes.length) await reserveEmptyMutation(input,counts);
   const completedChunks=manifest?Math.max(0,Number(manifest.completedChunks||0)||0):0;
