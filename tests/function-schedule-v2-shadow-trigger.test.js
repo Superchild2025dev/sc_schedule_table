@@ -195,11 +195,17 @@ test("exports both shadow triggers on the exact source and queue paths",()=>{
   assert.equal(fixture.exports.processScheduleV2Shadow.__options.memory,"1GiB");
 });
 
-test("source writes queue tracked keys only for known branches in preparing ready shadow or verify mode",async()=>{
+test("source writes queue tracked keys only for a preparing candidate or active shadow and verify modes",async()=>{
   for(const branchId of ["gagyeong","yongam"]){
-    for(const mode of ["preparing","ready","shadow","verify"]){
+    for(const config of [
+      {mode:"v1",generationId:"gen_old",preparationStatus:"preparing",preparationGenerationId:"gen_1"},
+      {mode:"v1",generationId:"gen_old",preparationStatus:"ready",
+        preparationGenerationId:"gen_1",preparedGenerationId:"gen_1"},
+      {mode:"shadow",generationId:"gen_1"},
+      {mode:"verify",generationId:"gen_1"},
+    ]){
       const fixture=loadFunctions({initial:{
-        [schedulePath(branchId)]:{mode,generationId:"gen_1"},
+        [schedulePath(branchId)]:{...config,branchId},
         [generationPath(branchId,"gen_1")]:readyGeneration(branchId,"gen_1"),
       }});
       await fixture.exports.queueScheduleV2Shadow(sourceEvent(branchId,"swim_students"));
@@ -253,11 +259,12 @@ test("a post-ready source write invalidates the ready revision without auto-acti
   const sync=syncPath(branchId);
   const initial={
     [config]:{
-      mode:"ready",generationId:"gen_ready",branchId,
+      mode:"v1",generationId:"gen_old",branchId,
+      preparationStatus:"ready",preparationGenerationId:"gen_ready",preparedGenerationId:"gen_ready",
       preparationStartedAt:"2026-08-07T02:00:00.000Z",
       readyAt:"2026-08-07T02:00:10.000Z",
     },
-    [sync]:{pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
+    [sync]:{generationId:"gen_ready",pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
     [generationPath(branchId,"gen_ready")]:readyGeneration(branchId,"gen_ready",3),
   };
   const fixture=loadFunctions({initial});
@@ -269,8 +276,9 @@ test("a post-ready source write invalidates the ready revision without auto-acti
   const invalidated=fixture.db.value(config);
   const invalidatedSync=fixture.db.value(sync);
   const generation=fixture.db.value(generationPath(branchId,"gen_ready"));
-  assert.equal(invalidated.mode,"ready");
-  assert.equal(invalidated.generationId,"gen_ready");
+  assert.equal(invalidated.mode,"v1");
+  assert.equal(invalidated.generationId,"gen_old");
+  assert.equal(invalidated.preparationStatus,"syncing");
   assert.equal(fixture.runnerCalls.length,0);
   assert.equal(invalidatedSync.requestedRevision,4);
   assert.equal(invalidatedSync.appliedRevision,3);

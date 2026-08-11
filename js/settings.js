@@ -146,6 +146,7 @@
   let v2MonitorAlertsByBranch={};
   let scheduleV2StatusByBranch={};
   let scheduleV2Callable=null;
+  let scheduleV2ResponseGate=null;
   let scheduleV2BusyByBranch={};
   let scheduleV2ActionSeqByBranch={};
   let attendanceControlStore=null;
@@ -1212,27 +1213,39 @@
     scheduleV2Callable=service.httpsCallable('manageScheduleV2Shadow');
     return scheduleV2Callable;
   }
+  function getScheduleV2ResponseGate(){
+    if(scheduleV2ResponseGate) return scheduleV2ResponseGate;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    if(!policy||typeof policy.createResponseGate!=='function') throw new Error('Schedule V2 응답 정책이 없습니다.');
+    scheduleV2ResponseGate=policy.createResponseGate();
+    return scheduleV2ResponseGate;
+  }
   async function loadScheduleV2Status(branchId,silent){
     if(!scheduleV2StatusAllowed()){
       renderScheduleV2Status();
       return;
     }
+    const gate=getScheduleV2ResponseGate();
+    const sequence=gate.begin(branchId);
     try{
       const response=await getScheduleV2Callable()({action:'status',branchId});
-      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      if(!scheduleV2ResponseGate.accept(branchId,sequence,response?.data||{})) return null;
+      scheduleV2StatusByBranch[branchId]=scheduleV2ResponseGate.status(branchId);
       if(activeBranch===branchId){
         renderScheduleV2Status();
         if(!silent) scheduleV2ControlStatus('시간표 서버 상태를 새로 확인했습니다.','ok');
       }
+      return scheduleV2StatusByBranch[branchId];
     }catch(error){
       if(activeBranch===branchId) scheduleV2ControlStatus('시간표 서버 상태 조회 실패 · '+(error.message||String(error)),'err');
+      return null;
     }
   }
   async function runScheduleV2Action(action){
     const branchId=activeBranch;
     const policy=window.SCScheduleV2SettingsPolicy;
     const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
-    const current=scheduleV2StatusByBranch[branchId]||{};
+    const current=await loadScheduleV2Status(branchId,true);
     const decision=policy&&policy.evaluate({profile,action,status:current});
     if(!decision?.allowed){
       scheduleV2ControlStatus(decision?.reason||'실행할 수 없는 작업입니다.','err');
@@ -1256,23 +1269,34 @@
     scheduleV2ActionSeqByBranch[branchId]=sequence;
     scheduleV2BusyByBranch[branchId]=action;
     renderScheduleV2Status();
+    const responseGate=getScheduleV2ResponseGate();
+    const responseSequence=responseGate.begin(branchId,'action');
     try{
-      const payload={action,branchId};
-      if(['set-v2-read','set-v2','rollback'].includes(action)){
-        payload.expectedMode=String(current.mode||'');
-        payload.expectedGenerationId=String(current.generationId||'');
-        payload.expectedEpoch=Number(current.epoch||0);
-        payload.expectedRevision=Number(current.revision||0);
-      }
+      const payload={
+        action,branchId,
+        expectedMode:String(current.mode||''),
+        expectedGenerationId:String(current.generationId||''),
+        expectedEpoch:Number(current.epoch||0),
+        expectedRevision:Number(current.revision||0),
+      };
       const response=await getScheduleV2Callable()(payload);
-      if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
-      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      if(scheduleV2ActionSeqByBranch[branchId]!==sequence){
+        responseGate.finish(branchId,responseSequence);
+        return;
+      }
+      if(!responseGate.accept(branchId,responseSequence,response?.data||{})){
+        delete scheduleV2BusyByBranch[branchId];
+        if(activeBranch===branchId) renderScheduleV2Status();
+        return;
+      }
+      scheduleV2StatusByBranch[branchId]=responseGate.status(branchId);
       delete scheduleV2BusyByBranch[branchId];
       if(activeBranch===branchId){
         renderScheduleV2Status();
         scheduleV2ControlStatus(action==='rollback'?'V1으로 복귀했습니다.':'시간표 서버 설정을 적용했습니다.','ok');
       }
     }catch(error){
+      responseGate.finish(branchId,responseSequence);
       if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
       delete scheduleV2BusyByBranch[branchId];
       if(activeBranch===branchId){

@@ -734,6 +734,36 @@ test("expired terminal recovery records are cleaned in bounded retention batches
   assert.equal(db.value(requestRecoveryPath(retainedId)).state,"completed");
 });
 
+test("cleanup deletes only resolved recoveries and preserves every unresolved blocker",async()=>{
+  const db=new FakeFirestore({[runtimePath()]:runtime()});
+  const writer=createWriter(db);
+  const expiredAt="2026-08-11T02:59:59.000Z";
+  const completedId=operationUuid(140);
+  db.docs.set(requestRecoveryPath(completedId),{state:"completed",expiresAt:expiredAt});
+  const blockers={
+    error:operationUuid(141),
+    conflict:operationUuid(142),
+    cancelled:operationUuid(143),
+    rejected:operationUuid(144),
+  };
+  Object.entries(blockers).forEach(([state,operationId])=>{
+    db.docs.set(requestRecoveryPath(operationId),{state,expiresAt:expiredAt});
+  });
+
+  const summary=await writer.recoverRequestPatches({branchId:BRANCH,cleanupLimit:10});
+
+  assert.equal(summary.cleaned,1);
+  assert.equal(db.value(requestRecoveryPath(completedId)),undefined);
+  Object.entries(blockers).forEach(([state,operationId])=>{
+    assert.equal(db.value(requestRecoveryPath(operationId)).state,state);
+  });
+  const status=await writer.readOperationalStatus(BRANCH);
+  assert.equal(status.requestRecoveryErrorCount,1);
+  assert.equal(status.requestRecoveryConflictCount,1);
+  assert.equal(status.requestRecoveryCancelledCount,1);
+  assert.equal(status.requestRecoveryRejectedCount,1);
+});
+
 test("operational status exposes bounded request recovery counts by active and terminal state",async()=>{
   const stagedId=operationUuid(42);
   const completedId=operationUuid(43);
@@ -841,6 +871,50 @@ test("real model planning ignores storage metadata and changes only the requeste
   assert.equal(plan.changes.length,1);
   assert.equal(plan.changes[0].collection,"teacherProfiles");
   assert.equal(plan.changes[0].type,"set");
+});
+
+test("absence and makeup operations cannot relabel cross-semantic mark changes",async()=>{
+  const schema=globalThis.SCScheduleSchemaV2;
+  const markKey="4PM/Mon/1/1/2026-08-03";
+  const originalMakeup={type:"bogang",sid:"student-1",n:"Original Makeup"};
+  const originalMark={type:"absent",sid:"student-1",n:"Student",sub:originalMakeup};
+  const root={
+    swim_tab_list:JSON.stringify([{id:"regular",type:"regular"}]),
+    swim_students:JSON.stringify([{sid:"student-1",n:"Student",t:"4PM",d:"Mon",l:1,r:1}]),
+    swim_inst:JSON.stringify({"4PM/Mon/1":{n:"Teacher"}}),
+    swim_mark:JSON.stringify({[markKey]:originalMark}),
+  };
+  const report=schema.diagnoseLegacyRoot(BRANCH,root);
+  assert.equal(report.checks.ready,true);
+  const initial={};
+  Object.entries(report.conversion).filter(([,rows])=>Array.isArray(rows)).forEach(([collection,rows])=>{
+    rows.forEach(row=>{
+      initial[generationPath(collection,row.id)]={
+        ...clone(row),branchId:BRANCH,generationId:GENERATION,
+        operationalRevision:31,lastOperationId:"baseline",
+      };
+    });
+  });
+
+  const disguisedMakeup=policy.validateMutationRequest(request({
+    operationId:"op_absence_relabel",operationType:"absence-confirmation",keys:["swim_mark"],
+    nextValues:{swim_mark:JSON.stringify({
+      [markKey]:{...originalMark,sub:{...originalMakeup,n:"Changed Makeup"}},
+    })},
+  }).data);
+  await assert.rejects(
+    ()=>operational.deriveChanges({db:new FakeFirestore(initial),request:disguisedMakeup}),
+    error=>error.code==="permission-denied",
+  );
+
+  const disguisedAbsence=policy.validateMutationRequest(request({
+    operationId:"op_makeup_relabel",operationType:"makeup-update",keys:["swim_mark"],
+    nextValues:{swim_mark:JSON.stringify({[markKey]:originalMakeup})},
+  }).data);
+  await assert.rejects(
+    ()=>operational.deriveChanges({db:new FakeFirestore(initial),request:disguisedAbsence}),
+    error=>error.code==="permission-denied",
+  );
 });
 
 test("more than 400 document changes use fenced chunks of at most 400 changes",async()=>{

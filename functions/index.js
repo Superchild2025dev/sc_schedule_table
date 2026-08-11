@@ -12,6 +12,7 @@ const {buildRegularAvailability} = require("./regular-availability");
 const scheduleV2ShadowPolicy = require("./schedule-v2-shadow-policy.js");
 const {runShadowSync} = require("./schedule-v2-shadow-runner.js");
 const {createOperationalWriter} = require("./schedule-v2-operational-writer.js");
+const schedulePermissionManifest = require("../config/schedule-permissions.json");
 
 initializeApp({projectId: "scswimming-schedule"});
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
@@ -29,8 +30,6 @@ const SCHEDULE_V2_SHADOW_MAX_RETRY_COUNT = 10;
 const SCHEDULE_V2_PREPARATION_LEASE_MS = 15 * 60 * 1000;
 const SCHEDULE_V2_LEASE_HEARTBEAT_MS = 20 * 1000;
 const SCHEDULE_V2_RECENT_EVENT_LIMIT = 256;
-const SCHEDULE_V2_DEVELOPER_EMAIL = "developer@scswim.local";
-const SCHEDULE_V2_OWNER_EMAIL = "2025superchild@gmail.com";
 const SCHEDULE_V2_ACTIONS = new Set([
   "prepare", "set-shadow", "set-verify", "set-v2-read", "set-v2", "rollback", "status",
 ]);
@@ -38,6 +37,15 @@ const SCHEDULE_V2_MIRROR_BLOCKING_STATES = ["pending", "processing", "error"];
 const SCHEDULE_V2_REQUEST_BLOCKING_STATES = [
   "staged", "waiting-primary", "processing", "error", "conflict", "cancelled", "rejected",
 ];
+const SCHEDULE_V2_ATTENDANCE_COLLECTIONS = [
+  "attendanceRecords", "attendanceGuests", "attendanceSnapshots",
+  "attendanceSnapshotStudents", "attendanceSnapshotTeachers",
+];
+const SCHEDULE_V2_ACCOUNT_BY_EMAIL = new Map(
+  (schedulePermissionManifest.accounts || []).map(account => [
+    String(account.email || "").trim().toLowerCase(), account,
+  ]),
+);
 const CUSTOMER_VOICE_COLLECTION = "customerVoice";
 const CUSTOMER_VOICE_RATE_COLLECTION = "customerVoiceRateLimits";
 const CUSTOMER_VOICE_CATEGORY = new Set([
@@ -392,16 +400,22 @@ function scheduleV2RequestRecoveryCollection(branchId) {
 
 function scheduleV2AuthEmail(request) {
   if (!request?.auth?.uid) throw new HttpsError("unauthenticated", "직원 로그인이 필요합니다");
-  return String(request.auth.token?.email || "").trim().toLowerCase();
+  const email = String(request.auth.token?.email || "").trim().toLowerCase();
+  if (!email || request.auth.token?.email_verified !== true) {
+    throw new HttpsError("permission-denied", "인증된 직원 계정이 필요합니다");
+  }
+  return email;
 }
 
-function authorizeScheduleV2Action(request, action) {
+function authorizeScheduleV2Action(request, action, branchId) {
   const email = scheduleV2AuthEmail(request);
-  if (action === "status") {
-    if ([SCHEDULE_V2_DEVELOPER_EMAIL, SCHEDULE_V2_OWNER_EMAIL].includes(email)) return email;
-  } else if (email === SCHEDULE_V2_DEVELOPER_EMAIL) {
-    return email;
-  }
+  const account = SCHEDULE_V2_ACCOUNT_BY_EMAIL.get(email);
+  const role = String(account?.role || "");
+  const branches = Array.isArray(account?.branchIds) ? account.branchIds.map(String) : [];
+  const active = account && account.active !== false;
+  const branchAllowed = branches.includes(branchId);
+  if (active && branchAllowed && action === "status" && ["developer", "superAdmin"].includes(role)) return email;
+  if (active && branchAllowed && action !== "status" && role === "developer") return email;
   throw new HttpsError("permission-denied", "Schedule V2 작업 권한이 없습니다");
 }
 
@@ -472,6 +486,24 @@ function scheduleV2GenerationWithSchedule(generation, status, sync, now, extra =
   return {...generation, status: genericStatus, capabilities: {...capabilities, schedule}};
 }
 
+function scheduleV2VerifiedAttendanceCapability(result, sync, now) {
+  const collections = new Set(Array.isArray(result?.collections) ? result.collections : []);
+  const counts = result?.counts && typeof result.counts === "object" ? result.counts : {};
+  const digests = result?.digests && typeof result.digests === "object" ? result.digests : {};
+  const verified = SCHEDULE_V2_ATTENDANCE_COLLECTIONS.every(name =>
+    collections.has(name) && Object.prototype.hasOwnProperty.call(counts, name) &&
+    Object.prototype.hasOwnProperty.call(digests, name)
+  );
+  if (!verified) {
+    throw new HttpsError("failed-precondition", "출석 Schedule V2 검증 결과가 완전하지 않습니다");
+  }
+  return {
+    status: "ready",
+    appliedRevision: scheduleV2Count(sync?.appliedRevision),
+    verifiedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
+  };
+}
+
 function scheduleV2GenerationStatus(config, sync, generation) {
   const pending = scheduleV2Keys(sync, "pendingKeys");
   const inFlight = scheduleV2Keys(sync, "inFlightKeys");
@@ -480,8 +512,7 @@ function scheduleV2GenerationStatus(config, sync, generation) {
   const capability = generation?.capabilities?.schedule || {};
   if (capability.status === "error" || generation?.status === "failed" ||
       sync?.status === "error" || scheduleV2Count(sync?.mismatchCount)) return "error";
-  if (String(config?.mode || "") === "preparing") return "preparing";
-  if (String(config?.mode || "") === "v1" && String(config?.generationId || "")) return "preserved";
+  if (String(config?.preparationStatus || "") === "preparing") return "preparing";
   if (pending.length || inFlight.length || requestedRevision !== appliedRevision ||
       ["pending", "processing"].includes(String(sync?.status || ""))) return "syncing";
   if (capability.status === "ready" &&
@@ -493,8 +524,15 @@ function scheduleV2GenerationStatus(config, sync, generation) {
 function scheduleV2StatusFrom(branchId, config, sync, generation, runtime = {}) {
   const pending = scheduleV2Keys(sync, "pendingKeys");
   const inFlight = scheduleV2Keys(sync, "inFlightKeys");
+  const preparedGeneration = runtime.preparedGeneration || {};
+  const preparedGenerationId = String(
+    config?.preparedGenerationId || config?.preparationGenerationId || "",
+  );
+  const statusGeneration = preparedGenerationId ? preparedGeneration : generation;
   const capability = generation?.capabilities?.schedule || {};
   const attendanceCapability = generation?.capabilities?.attendance || {};
+  const preparedScheduleCapability = preparedGeneration?.capabilities?.schedule || {};
+  const preparedAttendanceCapability = preparedGeneration?.capabilities?.attendance || {};
   const operational = runtime.operational || {};
   const attendance = runtime.attendance || {};
   const operationalStatus = runtime.operationalStatus || {};
@@ -504,6 +542,8 @@ function scheduleV2StatusFrom(branchId, config, sync, generation, runtime = {}) 
   const generationId = runtime.operationalExists ? operationalGenerationId : scheduleGenerationId;
   const epoch = scheduleV2Count(operational?.epoch);
   const revision = scheduleV2Count(operational?.revision);
+  const requestedRevision = scheduleV2Count(sync?.requestedRevision);
+  const appliedRevision = scheduleV2Count(sync?.appliedRevision);
   const mirrorRecoveryPendingCount = scheduleV2Count(operationalStatus.recoveryPendingCount) +
     scheduleV2Count(operationalStatus.recoveryProcessingCount);
   const requestRecoveryPendingCount = scheduleV2Count(operationalStatus.requestRecoveryPendingCount);
@@ -523,6 +563,23 @@ function scheduleV2StatusFrom(branchId, config, sync, generation, runtime = {}) 
     scheduleGenerationId === generationId;
   const recoverySafe = pointerConsistent && generationCurrent && scheduleReady && attendanceReady &&
     (mode !== "v2" || scheduleV2Count(operational?.recoverySafeRevision) === revision);
+  const committingMutationCount = scheduleV2Count(operationalStatus.committingMutationCount);
+  const activeOperationCount = scheduleV2Count(operationalStatus.activeOperationCount);
+  const activeRecoveryLeaseCount = scheduleV2LeaseIsActive(
+    runtime.recoveryFence?.recoveryLeaseUntil, new Date(),
+  ) ? 1 : 0;
+  const scheduleLeaseCount = scheduleV2LeaseIsActive(sync?.leaseUntil, new Date()) ? 1 : 0;
+  const scheduleStateBlockerCount = ["pending", "processing", "error"].includes(
+    String(sync?.status || ""),
+  ) ? 1 : 0;
+  const revisionDriftCount = requestedRevision !== appliedRevision ? 1 : 0;
+  const transitionBlockerCount = pending.length + inFlight.length + scheduleV2Count(sync?.mismatchCount) +
+    revisionDriftCount + scheduleLeaseCount + scheduleStateBlockerCount + committingMutationCount +
+    activeOperationCount + activeRecoveryLeaseCount + mirrorRecoveryPendingCount +
+    mirrorRecoveryErrorCount + requestRecoveryPendingCount + requestRecoveryErrorCount;
+  const preparationBlockerCount = inFlight.length + scheduleLeaseCount + committingMutationCount +
+    activeOperationCount + activeRecoveryLeaseCount + mirrorRecoveryPendingCount +
+    mirrorRecoveryErrorCount + requestRecoveryPendingCount + requestRecoveryErrorCount;
   return {
     branchId,
     mode,
@@ -531,7 +588,11 @@ function scheduleV2StatusFrom(branchId, config, sync, generation, runtime = {}) 
     scheduleGenerationId,
     epoch,
     revision,
-    generationStatus: scheduleV2GenerationStatus(config, sync, generation),
+    generationStatus: scheduleV2GenerationStatus(config, sync, statusGeneration),
+    preparationStatus: String(config?.preparationStatus || ""),
+    preparedGenerationId: String(config?.preparedGenerationId || ""),
+    preparedScheduleReady: scheduleV2ReadyCapability(preparedScheduleCapability),
+    preparedAttendanceReady: scheduleV2ReadyCapability(preparedAttendanceCapability),
     pendingCount: pending.length,
     inFlightCount: inFlight.length,
     requestedRevision: scheduleV2Count(sync?.requestedRevision),
@@ -544,6 +605,14 @@ function scheduleV2StatusFrom(branchId, config, sync, generation, runtime = {}) 
     requestRecoveryErrorCount,
     recoveryPendingCount: mirrorRecoveryPendingCount + requestRecoveryPendingCount,
     recoveryErrorCount: mirrorRecoveryErrorCount + requestRecoveryErrorCount,
+    committingMutationCount,
+    activeOperationCount,
+    activeRecoveryLeaseCount,
+    scheduleLeaseCount,
+    scheduleStateBlockerCount,
+    revisionDriftCount,
+    transitionBlockerCount,
+    preparationBlockerCount,
     scheduleReady,
     attendanceReady,
     generationCurrent,
@@ -557,14 +626,23 @@ async function readScheduleV2Status(branchId) {
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
   const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
   const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
-  const [configSnapshot, syncSnapshot, operationalSnapshot, attendanceSnapshot, operationalStatus] =
+  const recoveryFenceRef = scheduleV2RuntimeRef(branchId, "operationalRecovery");
+  const [configSnapshot, syncSnapshot, operationalSnapshot, attendanceSnapshot,
+    recoveryFenceSnapshot, operationalStatus] =
     await Promise.all([
-      configRef.get(), syncRef.get(), operationalRef.get(), attendanceRef.get(),
+      configRef.get(), syncRef.get(), operationalRef.get(), attendanceRef.get(), recoveryFenceRef.get(),
       scheduleV2OperationalWriter.readOperationalStatus(branchId),
     ]);
   const config = configSnapshot.data() || {};
   const generationId = String(config.generationId || "");
-  const generationSnapshot = generationId ? await scheduleV2GenerationRef(branchId, generationId).get() : null;
+  const preparedGenerationId = String(
+    config.preparedGenerationId || config.preparationGenerationId || "",
+  );
+  const [generationSnapshot, preparedGenerationSnapshot] = await Promise.all([
+    generationId ? scheduleV2GenerationRef(branchId, generationId).get() : Promise.resolve(null),
+    preparedGenerationId && preparedGenerationId !== generationId ?
+      scheduleV2GenerationRef(branchId, preparedGenerationId).get() : Promise.resolve(null),
+  ]);
   return scheduleV2StatusFrom(
     branchId,
     config,
@@ -576,6 +654,9 @@ async function readScheduleV2Status(branchId) {
       operationalExists: operationalSnapshot.exists,
       attendanceExists: attendanceSnapshot.exists,
       operationalStatus,
+      recoveryFence: recoveryFenceSnapshot.data() || {},
+      preparedGeneration: preparedGenerationSnapshot?.data() ||
+        (preparedGenerationId === generationId ? generationSnapshot?.data() || {} : {}),
     },
   );
 }
@@ -600,6 +681,9 @@ function scheduleV2RememberEvent(sync, eventHash) {
 async function acquireScheduleV2Preparation(branchId, expectedRuntime) {
   const configRef = scheduleV2RuntimeRef(branchId, "schedule");
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
+  const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
+  const recoveryFenceRef = scheduleV2RuntimeRef(branchId, "operationalRecovery");
   const generationId = preparationGenerationId();
   const generationRef = scheduleV2GenerationRef(branchId, generationId);
   const leaseId = `prepare_${crypto.randomUUID()}`;
@@ -607,20 +691,57 @@ async function acquireScheduleV2Preparation(branchId, expectedRuntime) {
   const nowIso = now.toISOString();
   const leaseUntil = new Date(now.getTime() + SCHEDULE_V2_PREPARATION_LEASE_MS).toISOString();
   return db.runTransaction(async tx => {
-    const configSnapshot = await tx.get(configRef);
-    const syncSnapshot = await tx.get(syncRef);
+    const recoveryQueries = scheduleV2RecoveryQueries(branchId);
+    const [configSnapshot, syncSnapshot, operationalSnapshot, attendanceSnapshot,
+      recoveryFenceSnapshot, ...queueSnapshots] = await Promise.all([
+      tx.get(configRef), tx.get(syncRef), tx.get(operationalRef), tx.get(attendanceRef),
+      tx.get(recoveryFenceRef), ...recoveryQueries.map(query => tx.get(query)),
+    ]);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
-    if (expectedRuntime && (
-      String(config.mode || "") !== String(expectedRuntime.mode || "") ||
-      String(config.generationId || "") !== String(expectedRuntime.generationId || "")
-    )) {
+    const operational = operationalSnapshot.data() || {};
+    const attendance = attendanceSnapshot.data() || {};
+    const recoveryFence = recoveryFenceSnapshot.data() || {};
+    const currentMode = operationalSnapshot.exists ? String(operational.mode || "") : String(config.mode || "v1");
+    const currentGenerationId = operationalSnapshot.exists ?
+      String(operational.generationId || "") : String(config.generationId || "");
+    const epoch = operationalSnapshot.exists ? scheduleV2NonnegativeInteger(operational.epoch) : 0;
+    const revision = operationalSnapshot.exists ? scheduleV2NonnegativeInteger(operational.revision) : 0;
+    const attendanceEpoch = attendanceSnapshot.exists ? scheduleV2NonnegativeInteger(attendance.epoch) : 0;
+    const attendanceRevision = attendanceSnapshot.exists ? scheduleV2NonnegativeInteger(attendance.revision) : 0;
+    if (epoch === null || revision === null || attendanceEpoch === null || attendanceRevision === null) {
+      throw new HttpsError("failed-precondition", "Schedule V2 런타임 리비전이 올바르지 않습니다");
+    }
+    if (!expectedRuntime || expectedRuntime.mode !== currentMode ||
+        expectedRuntime.generationId !== currentGenerationId || expectedRuntime.epoch !== epoch ||
+        expectedRuntime.revision !== revision) {
       throw new HttpsError("aborted", "Schedule V2 준비 대상이 변경되었습니다");
     }
+    const implicitV1Pointers = !operationalSnapshot.exists && !attendanceSnapshot.exists &&
+      currentMode === "v1" && epoch === 0 && revision === 0;
+    const pointerConsistent = implicitV1Pointers || (
+      operationalSnapshot.exists && attendanceSnapshot.exists &&
+      String(config.branchId || branchId) === branchId && String(config.mode || "v1") === currentMode &&
+      String(config.generationId || "") === currentGenerationId &&
+      scheduleV2PointerMatches(operational, branchId, currentMode, currentGenerationId) &&
+      scheduleV2PointerMatches(attendance, branchId, currentMode, currentGenerationId) &&
+      attendanceEpoch === epoch && attendanceRevision === revision
+    );
+    if (!pointerConsistent) {
+      throw new HttpsError("failed-precondition", "Schedule V2 활성 포인터가 일치하지 않습니다");
+    }
     const activeLeaseUntil = Date.parse(sync.leaseUntil || "");
-    if (String(config.mode || "") === "preparing" ||
+    if (String(config.preparationStatus || "") === "preparing" ||
         (String(sync.leaseId || "") && Number.isFinite(activeLeaseUntil) && activeLeaseUntil > now.getTime())) {
       throw new HttpsError("already-exists", "Schedule V2 준비 작업이 이미 진행 중입니다");
+    }
+    const scheduleBlocked = scheduleV2Keys(sync, "inFlightKeys").length > 0;
+    const recoveryBlocked = queueSnapshots.some(snapshot => scheduleV2SnapshotCount(snapshot) > 0) ||
+      Boolean(String(operational.activeOperationId || "")) ||
+      scheduleV2LeaseIsActive(recoveryFence.recoveryLeaseUntil, now);
+    if (scheduleBlocked || recoveryBlocked ||
+        (currentMode === "v2" && scheduleV2Count(operational.recoverySafeRevision) !== revision)) {
+      throw new HttpsError("failed-precondition", "대기 중인 동기화 또는 복구 작업을 먼저 해결해야 합니다");
     }
     const startingRevision = scheduleV2Count(sync.requestedRevision);
     const nextSync = {
@@ -634,6 +755,7 @@ async function acquireScheduleV2Preparation(branchId, expectedRuntime) {
       leaseUntil,
       processingStartedAt: nowIso,
       preparationGenerationId: generationId,
+      generationId,
       mismatchCount: 0,
       retryCount: 0,
     };
@@ -642,9 +764,11 @@ async function acquireScheduleV2Preparation(branchId, expectedRuntime) {
     tx.set(configRef, {
       ...config,
       branchId,
-      mode: "preparing",
-      generationId,
+      mode: currentMode,
+      generationId: currentGenerationId,
       requiresPrepare: true,
+      preparationStatus: "preparing",
+      preparationGenerationId: generationId,
       preparationStartedAt: nowIso,
       updatedAt: nowIso,
     }, {merge: false});
@@ -676,7 +800,8 @@ async function claimScheduleV2PreparationCatchup(preparation) {
     const syncSnapshot = await tx.get(preparation.syncRef);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
-    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+    if (config.preparationStatus !== "preparing" ||
+        config.preparationGenerationId !== preparation.generationId ||
         sync.leaseId !== preparation.leaseId) {
       throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
     }
@@ -702,7 +827,8 @@ async function finishScheduleV2PreparationCatchup(preparation, claim, result) {
     const syncSnapshot = await tx.get(preparation.syncRef);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
-    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+    if (config.preparationStatus !== "preparing" ||
+        config.preparationGenerationId !== preparation.generationId ||
         sync.leaseId !== preparation.leaseId) {
       throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
     }
@@ -732,7 +858,8 @@ async function tryCompleteScheduleV2Preparation(preparation, result) {
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
     const generation = generationSnapshot.data() || {};
-    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+    if (config.preparationStatus !== "preparing" ||
+        config.preparationGenerationId !== preparation.generationId ||
         sync.leaseId !== preparation.leaseId) {
       throw new HttpsError("aborted", "Schedule V2 준비 펜스가 변경되었습니다");
     }
@@ -756,12 +883,14 @@ async function tryCompleteScheduleV2Preparation(preparation, result) {
     delete completedSync.processingStartedAt;
     delete completedSync.preparationGenerationId;
     tx.set(preparation.syncRef, completedSync, {merge: false});
+    const attendanceCapability = scheduleV2VerifiedAttendanceCapability(result, completedSync, nowIso);
     tx.set(preparation.configRef, {
       ...config,
-      mode: "ready",
       branchId: preparation.branchId,
-      generationId: preparation.generationId,
       requiresPrepare: false,
+      preparationStatus: "ready",
+      preparationGenerationId: preparation.generationId,
+      preparedGenerationId: preparation.generationId,
       readyRevision: completedSync.appliedRevision,
       readyAt: nowIso,
       updatedAt: nowIso,
@@ -778,6 +907,10 @@ async function tryCompleteScheduleV2Preparation(preparation, result) {
       counts: result.counts,
       digests: result.digests,
     }, "ready", completedSync, new Date(nowIso));
+    completedGeneration.capabilities = {
+      ...completedGeneration.capabilities,
+      attendance: attendanceCapability,
+    };
     tx.set(preparation.generationRef, completedGeneration, {merge: false});
     return true;
   });
@@ -799,7 +932,8 @@ async function failScheduleV2Preparation(preparation, error, keys) {
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
     const generation = generationSnapshot.data() || {};
-    if (config.mode !== "preparing" || config.generationId !== preparation.generationId ||
+    if (config.preparationStatus !== "preparing" ||
+        config.preparationGenerationId !== preparation.generationId ||
         sync.leaseId !== preparation.leaseId) return false;
     const alertSnapshot = await tx.get(alertRef);
     const pendingKeys = [...new Set([
@@ -822,9 +956,9 @@ async function failScheduleV2Preparation(preparation, error, keys) {
     tx.set(preparation.configRef, {
       ...config,
       branchId: preparation.branchId,
-      mode: "v1",
-      generationId: preparation.generationId,
       requiresPrepare: true,
+      preparationStatus: "failed",
+      preparationGenerationId: preparation.generationId,
       updatedAt: nowIso,
     }, {merge: false});
     const failedGeneration = scheduleV2GenerationWithSchedule({
@@ -927,72 +1061,16 @@ function scheduleV2LeaseHeartbeat(syncRef, leaseId) {
   };
 }
 
-async function setScheduleV2Mode(branchId, targetMode, updatedBy) {
-  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
-  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
-  const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
-  const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
-  await db.runTransaction(async tx => {
-    const configSnapshot = await tx.get(configRef);
-    const syncSnapshot = await tx.get(syncRef);
-    const operationalSnapshot = await tx.get(operationalRef);
-    const attendanceSnapshot = await tx.get(attendanceRef);
-    const config = configSnapshot.data() || {};
-    const sync = syncSnapshot.data() || {};
-    const operational = operationalSnapshot.data() || {};
-    const attendance = attendanceSnapshot.data() || {};
-    const generationId = String(config.generationId || "");
-    const generationRef = generationId ? scheduleV2GenerationRef(branchId, generationId) : null;
-    const generationSnapshot = generationRef ? await tx.get(generationRef) : null;
-    const generation = generationSnapshot?.data() || {};
-    const capability = generation.capabilities?.schedule || {};
-    const requestedRevision = scheduleV2Count(sync.requestedRevision);
-    const appliedRevision = scheduleV2Count(sync.appliedRevision);
-    const unsafe = scheduleV2Keys(sync, "pendingKeys").length ||
-      scheduleV2Keys(sync, "inFlightKeys").length ||
-      scheduleV2Count(sync.mismatchCount) ||
-      ["pending", "processing", "error"].includes(String(sync.status || "")) ||
-      requestedRevision !== appliedRevision ||
-      scheduleV2Count(capability.requestedRevision) !== requestedRevision ||
-      scheduleV2Count(capability.appliedRevision) !== appliedRevision;
-    if (!generationId || capability.status !== "ready") {
-      throw new HttpsError("failed-precondition", "준비가 완료된 Schedule V2 세대가 없습니다");
-    }
-    if (targetMode === "shadow" && (config.mode !== "ready" || config.requiresPrepare === true)) {
-      throw new HttpsError("failed-precondition", "새 Schedule V2 기준점을 준비해야 합니다");
-    }
-    if (targetMode === "verify" && !["shadow", "verify"].includes(String(config.mode || ""))) {
-      throw new HttpsError("failed-precondition", "그림자 복사 상태에서만 검증 모드를 시작할 수 있습니다");
-    }
-    if (unsafe) {
-      throw new HttpsError("failed-precondition", "대기 작업 또는 불일치를 먼저 해결해야 합니다");
-    }
-    const nowIso = new Date().toISOString();
-    const epoch = scheduleV2Count(operational.epoch) + 1;
-    const revision = scheduleV2Count(operational.revision);
-    tx.set(configRef, {...config, branchId, mode: targetMode, generationId, updatedAt: nowIso}, {merge: false});
-    tx.set(syncRef, {...sync, activationRequestedAt: nowIso}, {merge: false});
-    tx.set(operationalRef, {
-      ...operational, branchId, mode: targetMode, generationId, epoch, revision,
-      updatedAt: nowIso, updatedBy,
-    }, {merge: false});
-    tx.set(attendanceRef, {
-      ...attendance, branchId, mode: targetMode, generationId, epoch, revision,
-      updatedAt: nowIso, updatedBy,
-    }, {merge: false});
-  });
-  return readScheduleV2Status(branchId);
-}
-
 function scheduleV2TransitionExpectation(data) {
   const fields = ["expectedMode", "expectedGenerationId", "expectedEpoch", "expectedRevision"];
   if(!fields.some(field => data?.[field] !== undefined)) return null;
   if(fields.some(field => data?.[field] === undefined)) {
     throw new HttpsError("invalid-argument", "Schedule V2 전환 기준 상태가 완전하지 않습니다");
   }
-  const expectedEpoch = Number(data.expectedEpoch);
-  const expectedRevision = Number(data.expectedRevision);
-  if(!String(data.expectedMode || "").trim() || !String(data.expectedGenerationId || "").trim() ||
+  const expectedEpoch = data.expectedEpoch;
+  const expectedRevision = data.expectedRevision;
+  if(typeof data.expectedMode !== "string" || !data.expectedMode.trim() ||
+      typeof data.expectedGenerationId !== "string" ||
       !Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0 ||
       !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
     throw new HttpsError("invalid-argument", "Schedule V2 전환 기준 상태가 올바르지 않습니다");
@@ -1003,6 +1081,29 @@ function scheduleV2TransitionExpectation(data) {
     epoch: expectedEpoch,
     revision: expectedRevision,
   };
+}
+
+function validateScheduleV2ActionData(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new HttpsError("invalid-argument", "Schedule V2 요청 형식이 올바르지 않습니다");
+  }
+  if (typeof value.action !== "string" || value.action !== value.action.trim() ||
+      typeof value.branchId !== "string" || value.branchId !== value.branchId.trim() ||
+      !SCHEDULE_V2_ACTIONS.has(value.action) || !Object.hasOwn(BRANCHES, value.branchId)) {
+    throw new HttpsError("invalid-argument", "Schedule V2 작업 또는 지점이 올바르지 않습니다");
+  }
+  const expectedKeys = value.action === "status" ? ["action", "branchId"] : [
+    "action", "branchId", "expectedMode", "expectedGenerationId", "expectedEpoch", "expectedRevision",
+  ];
+  const actualKeys = Object.keys(value);
+  if (actualKeys.length !== expectedKeys.length ||
+      expectedKeys.some(key => !Object.hasOwn(value, key)) ||
+      actualKeys.some(key => !expectedKeys.includes(key))) {
+    throw new HttpsError("invalid-argument", "Schedule V2 요청 필드가 올바르지 않습니다");
+  }
+  if (value.action !== "status") scheduleV2TransitionExpectation(value);
+  return value;
 }
 
 function scheduleV2RecoveryQueries(branchId) {
@@ -1036,8 +1137,10 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     const syncSnapshot = await tx.get(syncRef);
     const config = configSnapshot.data() || {};
     const sync = syncSnapshot.data() || {};
-    const generationId = String(config.generationId || "");
-    const generationRef = generationId ? scheduleV2GenerationRef(branchId, generationId) : null;
+    const activeGenerationId = String(config.generationId || "");
+    const targetGenerationId = targetMode === "shadow" ?
+      String(config.preparedGenerationId || "") : activeGenerationId;
+    const generationRef = targetGenerationId ? scheduleV2GenerationRef(branchId, targetGenerationId) : null;
     const recoveryQueries = scheduleV2RecoveryQueries(branchId);
     const [generationSnapshot, operationalSnapshot, attendanceSnapshot, recoveryFenceSnapshot, ...queueSnapshots] =
       await Promise.all([
@@ -1049,11 +1152,13 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     const operational = operationalSnapshot.data() || {};
     const attendance = attendanceSnapshot.data() || {};
     const recoveryFence = recoveryFenceSnapshot.data() || {};
-    const currentMode = String(operational.mode || "");
-    const epoch = scheduleV2NonnegativeInteger(operational.epoch);
-    const revision = scheduleV2NonnegativeInteger(operational.revision);
-    const attendanceEpoch = scheduleV2NonnegativeInteger(attendance.epoch);
-    const attendanceRevision = scheduleV2NonnegativeInteger(attendance.revision);
+    const currentMode = operationalSnapshot.exists ? String(operational.mode || "") : String(config.mode || "v1");
+    const currentGenerationId = operationalSnapshot.exists ?
+      String(operational.generationId || "") : activeGenerationId;
+    const epoch = operationalSnapshot.exists ? scheduleV2NonnegativeInteger(operational.epoch) : 0;
+    const revision = operationalSnapshot.exists ? scheduleV2NonnegativeInteger(operational.revision) : 0;
+    const attendanceEpoch = attendanceSnapshot.exists ? scheduleV2NonnegativeInteger(attendance.epoch) : 0;
+    const attendanceRevision = attendanceSnapshot.exists ? scheduleV2NonnegativeInteger(attendance.revision) : 0;
     const requestedRevision = scheduleV2NonnegativeInteger(sync.requestedRevision);
     const appliedRevision = scheduleV2NonnegativeInteger(sync.appliedRevision);
     const scheduleCapability = generation.capabilities?.schedule || {};
@@ -1066,24 +1171,39 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
       throw new HttpsError("failed-precondition", "Schedule V2 런타임 리비전이 올바르지 않습니다");
     }
 
-    if(expectation && (expectation.mode !== currentMode || expectation.generationId !== generationId ||
-        expectation.epoch !== epoch || expectation.revision !== revision)) {
+    if(!expectation || expectation.mode !== currentMode || expectation.generationId !== currentGenerationId ||
+        expectation.epoch !== epoch || expectation.revision !== revision) {
       throw new HttpsError("aborted", "Schedule V2 상태가 변경되었습니다. 다시 확인해 주세요");
     }
-    const allowedSourceModes = targetMode === "v2-read" ? ["verify"] :
-      targetMode === "v2" ? ["v2-read"] : ["ready", "shadow", "verify", "v2-read", "v2"];
+    const allowedSourceModes = targetMode === "shadow" ? ["v1", "v2-read", "v2"] :
+      targetMode === "verify" ? ["shadow"] :
+      targetMode === "v2-read" ? ["verify"] :
+      targetMode === "v2" ? ["v2-read"] : ["shadow", "verify", "v2-read", "v2"];
     if(!allowedSourceModes.includes(currentMode) || String(config.mode || "") !== currentMode) {
       throw new HttpsError("failed-precondition", "현재 Schedule V2 모드에서는 이 전환을 실행할 수 없습니다");
     }
-    const pointerConsistent = generationId &&
-      String(config.branchId || "") === branchId &&
-      String(generation.branchId || "") === branchId &&
-      String(generation.generationId || generation.id || "") === generationId &&
-      scheduleV2PointerMatches(operational, branchId, currentMode, generationId) &&
-      scheduleV2PointerMatches(attendance, branchId, currentMode, generationId) &&
-      attendanceEpoch === epoch && attendanceRevision === revision;
+    const implicitV1Pointers = !operationalSnapshot.exists && !attendanceSnapshot.exists &&
+      currentMode === "v1" && epoch === 0 && revision === 0;
+    const pointerConsistent = implicitV1Pointers || (
+      operationalSnapshot.exists && attendanceSnapshot.exists &&
+      String(config.branchId || branchId) === branchId && activeGenerationId === currentGenerationId &&
+      scheduleV2PointerMatches(operational, branchId, currentMode, currentGenerationId) &&
+      scheduleV2PointerMatches(attendance, branchId, currentMode, currentGenerationId) &&
+      attendanceEpoch === epoch && attendanceRevision === revision
+    );
     if(!pointerConsistent) {
       throw new HttpsError("failed-precondition", "Schedule V2 지점 또는 세대 포인터가 일치하지 않습니다");
+    }
+    if(targetMode === "shadow" && (
+      config.preparationStatus !== "ready" || config.requiresPrepare === true ||
+      !targetGenerationId || targetGenerationId === currentGenerationId
+    )) {
+      throw new HttpsError("failed-precondition", "새 Schedule V2 기준점을 준비해야 합니다");
+    }
+    if(String(generation.branchId || "") !== branchId ||
+        String(generation.generationId || generation.id || "") !== targetGenerationId ||
+        (String(sync.generationId || targetGenerationId) !== targetGenerationId)) {
+      throw new HttpsError("failed-precondition", "Schedule V2 준비 세대가 일치하지 않습니다");
     }
     const scheduleReady = scheduleV2ReadyCapability(scheduleCapability) &&
       scheduleV2NonnegativeInteger(scheduleCapability.requestedRevision) === requestedRevision &&
@@ -1103,7 +1223,7 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     if(scheduleBlocked || recoveryBlocked) {
       throw new HttpsError("failed-precondition", "대기 중인 동기화 또는 복구 작업을 먼저 해결해야 합니다");
     }
-    if(targetMode === "v1" && currentMode === "v2" &&
+    if(currentMode === "v2" && targetMode !== "v2" &&
         scheduleV2Count(operational.recoverySafeRevision) !== revision) {
       throw new HttpsError("failed-precondition", "현재 V1 복구본이 검증된 V2 리비전과 일치하지 않습니다");
     }
@@ -1111,16 +1231,19 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     const nowIso = now.toISOString();
     const nextEpoch = epoch + 1;
     const nextConfig = {
-      ...config, branchId, mode: targetMode, generationId,
+      ...config, branchId, mode: targetMode, generationId: targetGenerationId,
       requiresPrepare: targetMode === "v1", updatedAt: nowIso, updatedBy,
     };
+    if (targetMode === "shadow") nextConfig.preparationStatus = "activated";
     if(targetMode === "v1") nextConfig.rolledBackAt = nowIso;
     const nextOperational = {
-      ...operational, branchId, mode: targetMode, generationId, epoch: nextEpoch, revision,
+      ...operational, branchId, mode: targetMode, generationId: targetGenerationId,
+      epoch: nextEpoch, revision,
       recoverySafeRevision: revision, updatedAt: nowIso, updatedBy,
     };
     const nextAttendance = {
-      ...attendance, branchId, mode: targetMode, generationId, epoch: nextEpoch, revision,
+      ...attendance, branchId, mode: targetMode, generationId: targetGenerationId,
+      epoch: nextEpoch, revision,
       updatedAt: nowIso, updatedBy,
     };
     tx.set(configRef, nextConfig, {merge: false});
@@ -2513,22 +2636,19 @@ exports.manageScheduleV2Shadow = onCall({
   timeoutSeconds: 540,
   memory: "1GiB",
 }, async request => {
-  const data = request.data || {};
-  const action = String(data.action || "").trim();
-  const branchId = String(data.branchId || "").trim();
-  if (!SCHEDULE_V2_ACTIONS.has(action)) {
-    throw new HttpsError("invalid-argument", "지원하지 않는 Schedule V2 작업입니다");
-  }
-  const actorEmail = authorizeScheduleV2Action(request, action);
+  const data = validateScheduleV2ActionData(request.data);
+  const action = data.action;
+  const branchId = data.branchId;
   const branch = BRANCHES[branchId];
-  if (!branch) throw new HttpsError("invalid-argument", "알 수 없는 지점입니다");
+  const actorEmail = authorizeScheduleV2Action(request, action, branchId);
   if (action === "status") return readScheduleV2Status(branchId);
-  if (action === "prepare") return prepareScheduleV2(branch);
-  if (action === "set-shadow") return setScheduleV2Mode(branchId, "shadow", actorEmail);
-  if (action === "set-verify") return setScheduleV2Mode(branchId, "verify", actorEmail);
   const expectation = scheduleV2TransitionExpectation(data);
-  if (!expectation) {
-    throw new HttpsError("invalid-argument", "Schedule V2 전환 기준 상태가 필요합니다");
+  if (action === "prepare") return prepareScheduleV2(branch, expectation);
+  if (action === "set-shadow") {
+    return transitionScheduleV2Authority(branchId, "shadow", expectation, actorEmail);
+  }
+  if (action === "set-verify") {
+    return transitionScheduleV2Authority(branchId, "verify", expectation, actorEmail);
   }
   if (action === "set-v2-read") {
     return transitionScheduleV2Authority(branchId, "v2-read", expectation, actorEmail);
@@ -2619,12 +2739,17 @@ exports.queueScheduleV2Shadow = onDocumentWritten({
     const configSnapshot = await tx.get(configRef);
     const config = configSnapshot.data() || {};
     const mode = String(config.mode || "");
-    if (!["preparing", "ready", "shadow", "verify"].includes(mode)) return null;
+    const preparationStatus = String(config.preparationStatus || "");
+    const preparingCandidate = ["preparing", "ready"].includes(preparationStatus) &&
+      Boolean(String(config.preparationGenerationId || config.preparedGenerationId || ""));
+    if (!preparingCandidate && !["shadow", "verify"].includes(mode)) return null;
     const snapshot = await tx.get(syncRef);
     const sync = snapshot.data() || {};
     const remembered = scheduleV2RememberEvent(sync, scheduleV2SourceEventHash(event));
     if (remembered.duplicate) return null;
-    const generationId = String(config.generationId || "");
+    const generationId = preparingCandidate ?
+      String(config.preparationGenerationId || config.preparedGenerationId || "") :
+      String(config.generationId || "");
     const generationRef = generationId ? scheduleV2GenerationRef(branchId, generationId) : null;
     const generationSnapshot = generationRef ? await tx.get(generationRef) : null;
     const now = new Date();
@@ -2632,17 +2757,18 @@ exports.queueScheduleV2Shadow = onDocumentWritten({
     queued.retryCount = 0;
     queued.recentSourceEvents = remembered.recent;
     tx.set(syncRef, queued, {merge: false});
-    if (mode === "ready") {
+    if (preparationStatus === "ready") {
       tx.set(configRef, {
         ...config,
         requiresPrepare: true,
+        preparationStatus: "syncing",
         invalidatedAt: now.toISOString(),
         updatedAt: now.toISOString(),
       }, {merge: false});
     }
     if (generationRef && generationSnapshot?.exists) {
       tx.set(generationRef, scheduleV2GenerationWithSchedule(
-        generationSnapshot.data() || {}, mode === "preparing" ? "preparing" : "syncing",
+        generationSnapshot.data() || {}, preparationStatus === "preparing" ? "preparing" : "syncing",
         queued, now, {invalidatedAt: now.toISOString()},
       ), {merge: false});
     }

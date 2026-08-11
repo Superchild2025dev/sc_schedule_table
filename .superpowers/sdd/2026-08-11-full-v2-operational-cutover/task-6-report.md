@@ -136,3 +136,83 @@ It could not start because `firebase-tools` and the rules test dependencies are 
 ## Residual Note
 
 The only unexecuted verification is the live Firestore emulator suite because its pinned tool dependencies are unavailable locally. Static rule generation, rule source assertions, emulator test loading, all syntax checks and the complete unit suite are green.
+
+## Review Fix Round (2026-08-11)
+
+### Outcome
+
+DONE_WITH_CONCERNS
+
+All six binding review findings were implemented. The only concern is unchanged from the original Task 6 round: the live Firestore emulator suite could not start because `firebase-tools` is not installed or cached in this worktree.
+
+### Fixes
+
+- Preparation now keeps the active schedule, operational and attendance pointers unchanged while it builds a separately identified candidate generation. `prepare`, `set-shadow`, `set-verify`, `set-v2-read`, `set-v2` and `rollback` all require exact mode/generation/epoch/revision request data. Every pointer transition uses the same transaction, pointer consistency checks, readiness checks and schedule/recovery blocker gates.
+- Preparation verifies all attendance generation collections and publishes `capabilities.attendance` with the same generation before shadow activation is allowed. The end-to-end `prepare -> shadow -> verify -> v2-read` regression proves dual readiness and atomic pointer writes.
+- Operational mark planning compares semantic before/after projections. Absence operations may only add or remove the absence wrapper while preserving makeup data; makeup operations may only change makeup data while preserving the absence wrapper.
+- Request recovery cleanup deletes only `completed` records. Expired `error`, `conflict`, `cancelled` and `rejected` records remain durable and continue contributing transition-blocking counts.
+- `manageScheduleV2Shadow` accepts exact plain-object schemas with strict primitive types, rejects inherited/extra fields and prototype branch names, uses `Object.hasOwn` for branches, and authorizes active verified manifest accounts. Only manifest developers mutate; manifest developers and super administrators may read status for assigned branches.
+- Settings status and action responses share one sequence gate, with an active action taking priority over an older status poll. Every confirmation follows a fresh status read and policy reevaluation. Preparation uses its own blocker count so a stale candidate can be repaired, while transitions remain blocked by the complete operational count. Server status returns redacted counts for committing mutations, active operations, live recovery/schedule leases, schedule state, revision drift, mirror recovery and every request recovery blocker.
+
+### RED Evidence
+
+```powershell
+node --test --test-isolation=none tests/schedule-v2-settings.test.js
+```
+
+Result before production fixes: 27 tests total, 18 passed and 9 failed. Failures covered stale settings responses, crafted callable payloads, active pointer disturbance during preparation, missing attendance readiness, unfenced shadow/verify transitions, missing recovery gates and incomplete blocker counts.
+
+```powershell
+node --test --test-isolation=none --test-name-pattern="absence and makeup|cleanup deletes only" tests/function-schedule-v2-operational-writer.test.js
+```
+
+Result before production fixes: 2 tests total, 0 passed and 2 failed. The planner accepted cross-semantic mark changes and cleanup deleted all five expired records instead of only the resolved record.
+
+### GREEN Evidence
+
+```powershell
+node scripts/sync-permission-policy.js --check
+```
+
+Result: exit 0, `permission artifacts are in sync`.
+
+```powershell
+node --test --test-isolation=none tests/permission-policy-sync.test.js tests/firestore-rules-security.test.js tests/schedule-v2-settings.test.js tests/function-schedule-v2-operational-writer.test.js tests/attendance-v2-settings.test.js tests/v2-developer-gate.test.js tests/firestore-rules-emulator.test.js
+```
+
+Result: 98 tests total, 97 passed, 0 failed and 1 environment-gated skip.
+
+```powershell
+node --test --test-isolation=none tests/function-schedule-v2-shadow-trigger.test.js
+```
+
+Result: 20 passed, 0 failed and 0 skipped. Candidate preparation, invalidation and active shadow/verify trigger behavior are covered.
+
+```powershell
+node --test --test-isolation=none tests/*.test.js
+```
+
+Result: 586 tests total, 584 passed, 0 failed and 2 environment-gated skips. This includes parent/referral/voice isolation, cross-branch staff reads, callable-only V2 writes and deployment-does-not-switch coverage. The default `npm.cmd run test:unit` was also attempted first; all 69 file workers failed before test execution with the managed Windows `spawn EPERM` limitation, so the established single-process command above was used.
+
+```powershell
+$files = @('functions/index.js','functions/schedule-v2-operational-policy.js','functions/schedule-v2-operational-writer.js','js/schedule-v2-settings-policy.js','js/settings.js','tests/function-schedule-v2-operational-writer.test.js','tests/function-schedule-v2-shadow-emulator.test.js','tests/function-schedule-v2-shadow-trigger.test.js','tests/schedule-v2-settings.test.js'); foreach ($file in $files) { node --check $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+git diff --check
+```
+
+Result: all 9 syntax checks exited 0; `git diff --check` exited 0 with only existing LF-to-CRLF checkout notices.
+
+### Emulator Attempt
+
+```powershell
+npx.cmd firebase-tools emulators:exec --only firestore "node --test tests/firestore-rules-emulator.test.js tests/function-schedule-v2-shadow-emulator.test.js"
+```
+
+Result: not executed because `npx` exited 1 with `ENOTCACHED`; `firebase-tools` is unavailable in the local cache. Both emulator files load successfully in the unit suite and skip only when the emulator environment variable is absent.
+
+### Constraint Audit
+
+- Parent portal V1 files were not changed; the full suite's parent/referral/voice isolation checks pass.
+- Manifest-generated Firestore rules still provide cross-branch teacher reads and branch-scoped desk reads while denying every browser V2 write.
+- Operational V2 writes remain callable-only, including attendance and mark mutations.
+- Loading function exports remains side-effect free and does not switch production mode.
+- No deployment, push, production access, production data operation or production mode switch was performed.

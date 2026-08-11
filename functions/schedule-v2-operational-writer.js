@@ -548,6 +548,11 @@ async function deriveChangesDefault(input){
     if(input.request.removedKeys.includes(key)) delete afterRoot[key];
     else afterRoot[key]=clone(input.request.nextValues[key]);
   });
+  if(input.request.keys.includes("swim_mark")){
+    policy.validateMarkMutationSemantics(
+      input.request.operationType,beforeRoot.swim_mark,afterRoot.swim_mark,
+    );
+  }
   const changedKeys=model.changedLegacyKeys(beforeRoot,afterRoot,input.request.keys);
   if(changedKeys.some(key=>!input.request.keys.includes(key))) fail("invalid-argument");
   const report=schema.diagnoseLegacyRoot(input.request.branchId,afterRoot);
@@ -931,10 +936,11 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     return countQuery(requestCollection.where("state","==",state));
   }
   const [
-    recoveryPendingCount,recoveryErrorCount,recoveryProcessingCount,
+    committingMutationCount,recoveryPendingCount,recoveryErrorCount,recoveryProcessingCount,
     requestStaged,requestWaiting,requestProcessing,requestError,requestCompleted,requestConflict,
     requestCancelled,requestRejected,
   ]=await Promise.all([
+    countQuery(collection.where("status","==","committing")),
     countState("pending"),countState("error"),countState("processing"),
     countRequestState("staged"),countRequestState("waiting-primary"),countRequestState("processing"),
     countRequestState("error"),countRequestState("completed"),countRequestState("conflict"),
@@ -946,6 +952,8 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     generationId:text(runtimeSnapshot.data()?.generationId),
     epoch:Math.max(0,Number(runtimeSnapshot.data()?.epoch||0)||0),
     revision:Math.max(0,Number(runtimeSnapshot.data()?.revision||0)||0),
+    committingMutationCount,
+    activeOperationCount:text(runtimeSnapshot.data()?.activeOperationId)?1:0,
     recoveryPendingCount,
     recoveryErrorCount,
     recoveryProcessingCount,
@@ -1295,7 +1303,7 @@ async function cleanupTerminalRequestRecoveries(input){
   const batch=input.db.batch();
   let remaining=input.limit;
   let cleaned=0;
-  for(const state of ["error","completed","conflict","cancelled","rejected"]){
+  for(const state of ["completed"]){
     if(remaining<=0) break;
     const snapshot=await collection.where("state","==",state)
       .where("expiresAt","<=",input.now).orderBy("expiresAt","asc").limit(remaining).get();

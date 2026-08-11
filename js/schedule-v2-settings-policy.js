@@ -14,7 +14,8 @@
   function result(allowed,reason){return {allowed:!!allowed,reason:reason||''};}
   function canView(profile){return text(profile?.role)==='developer';}
   function scheduleQueueBlocked(status){
-    return count(status.pendingCount)>0||count(status.inFlightCount)>0
+    return count(status.transitionBlockerCount)>0
+      ||count(status.pendingCount)>0||count(status.inFlightCount)>0
       ||count(status.unresolvedMismatchCount)>0;
   }
   function recoveryBlocked(status){
@@ -56,7 +57,11 @@
     if(MUTATIONS.has(action)&&role!=='developer'){
       return result(false,'개발자 계정만 Schedule V2 설정을 변경할 수 있습니다.');
     }
-    if(action==='prepare') return result(true,'새 Schedule V2 기준점을 준비할 수 있습니다.');
+    if(action==='prepare'){
+      return count(status.preparationBlockerCount)>0||(text(status.mode)==='v2'&&status.recoverySafe!==true)
+        ?result(false,'대기 중인 동기화 또는 복구 작업을 먼저 해결해야 합니다.')
+        :result(true,'새 Schedule V2 기준점을 준비할 수 있습니다.');
+    }
     if(action==='set-v2-read'||action==='set-v2'){
       const ready=cutoverReady(status);
       if(!ready.allowed) return ready;
@@ -77,22 +82,57 @@
         ?result(true,'검증된 V1 복구본으로 전환할 수 있습니다.')
         :result(false,'현재 세대는 V1 복귀에 안전한 리비전으로 검증되지 않았습니다.');
     }
-    if(text(status.generationStatus)!=='ready'){
-      return result(false,'준비가 완료된 Schedule V2 세대가 필요합니다.');
-    }
-    if(count(status.pendingCount)>0||count(status.inFlightCount)>0){
+    if(count(status.pendingCount)>0||count(status.inFlightCount)>0||recoveryBlocked(status)){
       return result(false,'대기 중이거나 처리 중인 Schedule V2 변경이 남아 있습니다.');
     }
     if(count(status.unresolvedMismatchCount)>0){
       return result(false,'해결되지 않은 Schedule V2 불일치가 남아 있습니다.');
     }
     if(action==='set-shadow'){
-      return text(status.mode)==='ready'||text(status.scheduleMode)==='ready'
+      return status.preparationStatus==='ready'&&status.preparedScheduleReady===true
+        &&status.preparedAttendanceReady===true&&['v1','v2-read','v2'].includes(text(status.mode))
         ?result(true,'그림자 복사를 시작할 수 있습니다.')
         :result(false,'새 기준점 준비를 완료해야 그림자 복사를 시작할 수 있습니다.');
     }
-    return result(true,'Schedule V2 검증 모드로 변경할 수 있습니다.');
+    if(action==='set-verify'){
+      return text(status.mode)==='shadow'&&text(status.generationStatus)==='ready'
+        ?result(true,'Schedule V2 검증 모드로 변경할 수 있습니다.')
+        :result(false,'그림자 복사 상태에서만 검증 모드로 변경할 수 있습니다.');
+    }
+    return result(false,'지원하지 않는 Schedule V2 작업입니다.');
   }
 
-  global.SCScheduleV2SettingsPolicy=Object.freeze({ACTIONS,canView,evaluate});
+  function createResponseGate(){
+    let nextSequence=0;
+    const latestByBranch=new Map();
+    const activeActionByBranch=new Map();
+    const statusByBranch=new Map();
+    return Object.freeze({
+      begin(branchId,kind='status'){
+        const branch=text(branchId);
+        const sequence=++nextSequence;
+        if(kind==='action'){
+          activeActionByBranch.set(branch,sequence);
+          latestByBranch.set(branch,sequence);
+        }else if(!activeActionByBranch.has(branch)){
+          latestByBranch.set(branch,sequence);
+        }
+        return sequence;
+      },
+      accept(branchId,sequence,status){
+        const branch=text(branchId);
+        if(latestByBranch.get(branch)!==sequence) return false;
+        statusByBranch.set(branch,status&&typeof status==='object'?status:{});
+        if(activeActionByBranch.get(branch)===sequence) activeActionByBranch.delete(branch);
+        return true;
+      },
+      finish(branchId,sequence){
+        const branch=text(branchId);
+        if(activeActionByBranch.get(branch)===sequence) activeActionByBranch.delete(branch);
+      },
+      status(branchId){return statusByBranch.get(text(branchId))||{};},
+    });
+  }
+
+  global.SCScheduleV2SettingsPolicy=Object.freeze({ACTIONS,canView,evaluate,createResponseGate});
 })(typeof window!=='undefined'?window:globalThis);

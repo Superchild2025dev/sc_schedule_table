@@ -18,7 +18,7 @@ if(emulatorEnabled){
   const functions=require(path.join(root,"functions","index.js"));
   const {getFirestore}=requireFunctions("firebase-admin/firestore");
   const db=getFirestore();
-  const developerAuth={uid:"schedule-v2-emulator",token:{email:"developer@scswim.local"}};
+  const developerAuth={uid:"schedule-v2-emulator",token:{email:"developer@scswim.local",email_verified:true}};
   let eventSequence=0;
 
   function kvRef(branchId,key){
@@ -114,7 +114,19 @@ if(emulatorEnabled){
   }
 
   async function control(branchId,action){
-    return functions.manageScheduleV2Shadow.run({data:{branchId,action},auth:developerAuth});
+    const data={branchId,action};
+    if(action!=="status"){
+      const status=await functions.manageScheduleV2Shadow.run({
+        data:{branchId,action:"status"},auth:developerAuth,
+      });
+      Object.assign(data,{
+        expectedMode:status.mode,
+        expectedGenerationId:status.generationId,
+        expectedEpoch:status.epoch,
+        expectedRevision:status.revision,
+      });
+    }
+    return functions.manageScheduleV2Shadow.run({data,auth:developerAuth});
   }
 
   async function queueWrite(branchId,write){
@@ -143,9 +155,9 @@ if(emulatorEnabled){
       const baselineV1=await snapshotLegacyDocuments(branchId);
       let prepared=await control(branchId,"prepare");
       assertLegacySnapshotUnchanged(baselineV1,await snapshotLegacyDocuments(branchId));
-      assert.equal(prepared.mode,"ready");
+      assert.equal(prepared.mode,"v1");
       assert.equal(prepared.generationStatus,"ready");
-      const firstGenerationId=prepared.generationId;
+      const firstGenerationId=prepared.preparedGenerationId;
       const readyChange=await writeLegacyValue(branchId,"swim_mark",{});
       await queueWrite(branchId,readyChange);
       const invalidated=await control(branchId,"status");
@@ -155,13 +167,14 @@ if(emulatorEnabled){
         error=>error&&error.code==="failed-precondition",
       );
       prepared=await control(branchId,"prepare");
-      assert.notEqual(prepared.generationId,firstGenerationId);
+      assert.notEqual(prepared.preparedGenerationId,firstGenerationId);
       assert.equal(prepared.generationStatus,"ready");
       assert.equal((await generationRef(branchId,firstGenerationId).get()).exists,true);
       assert.equal((await kvRef(branchId,"swim_students").get()).get("chunked"),true);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"people"),1);
+      assert.equal(await collectionSize(generationRef(branchId,prepared.preparedGenerationId),"people"),1);
       const activated=await control(branchId,"set-shadow");
       assert.equal(activated.mode,"shadow");
+      const activeGenerationId=activated.generationId;
 
       const students=[
         {sid:`${branchId}_student_a`,n:"Fixture A",t:"4시",d:"월",l:1,r:1},
@@ -198,25 +211,25 @@ if(emulatorEnabled){
       assert.deepEqual(sync.pendingKeys,[]);
       assert.equal(sync.mismatchCount,0);
       assert.equal(sync.appliedRevision,sync.requestedRevision);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"people"),2);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"placements"),2);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"teacherAssignments"),2);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"reservations"),1);
+      assert.equal(await collectionSize(generationRef(branchId,activeGenerationId),"people"),2);
+      assert.equal(await collectionSize(generationRef(branchId,activeGenerationId),"placements"),2);
+      assert.equal(await collectionSize(generationRef(branchId,activeGenerationId),"teacherAssignments"),2);
+      assert.equal(await collectionSize(generationRef(branchId,activeGenerationId),"reservations"),1);
       assert.equal((await readLegacyValue(branchId,"swim_students")).length,2);
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_inst")).length,2);
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_retire")).length,1);
-      assert.equal((await generationRef(branchId,prepared.generationId).get()).get("status"),"ready");
+      assert.equal((await generationRef(branchId,activeGenerationId).get()).get("status"),"ready");
 
       const rolledBack=await control(branchId,"rollback");
       assert.equal(rolledBack.mode,"v1");
-      const preservedCount=await collectionSize(generationRef(branchId,prepared.generationId),"placements");
+      const preservedCount=await collectionSize(generationRef(branchId,activeGenerationId),"placements");
       const afterRollback=await writeLegacyValue(branchId,"swim_inst",{
         "7시/금/1/1":"Post Rollback Fixture",
       });
       const beforeRevision=(await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision");
       await queueWrite(branchId,afterRollback);
       assert.equal((await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision"),beforeRevision);
-      assert.equal(await collectionSize(generationRef(branchId,prepared.generationId),"placements"),preservedCount);
+      assert.equal(await collectionSize(generationRef(branchId,activeGenerationId),"placements"),preservedCount);
       await assert.rejects(
         control(branchId,"set-shadow"),
         error=>error&&error.code==="failed-precondition",
@@ -252,9 +265,9 @@ if(emulatorEnabled){
     assert.equal(JSON.stringify(alert).includes("Fixture A"),false);
     assert.equal(JSON.stringify(alert).includes("invalid"),false);
 
-    const rolledBack=await control(branchId,"rollback");
-    assert.equal(rolledBack.mode,"v1");
-    assert.equal(rolledBack.generationId,generations.docs[0].id);
+    const failedStatus=await control(branchId,"status");
+    assert.equal(failedStatus.mode,"v1");
+    assert.equal(failedStatus.preparationStatus,"failed");
     const beforeRevision=(await runtimeRef(branchId,"scheduleSync").get()).get("requestedRevision");
     const laterWrite=await writeLegacyValue(branchId,"swim_inst",{"6시/수/1/1":"Later Fixture"});
     const rolledBackV1=await snapshotLegacyDocuments(branchId);

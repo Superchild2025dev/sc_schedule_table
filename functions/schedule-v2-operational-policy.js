@@ -82,6 +82,9 @@ const OPERATION_RULES=Object.freeze({
 const MAKEUP_OPERATION_TYPES=new Set([
   "makeup","makeup-update","makeup-cancel","set-makeup","sample-makeup","mandatory-makeup",
 ]);
+const ABSENCE_OPERATION_TYPES=new Set([
+  "absence-confirmation","confirm-absence","absence-cancel",
+]);
 const REQUEST_RECOVERY_VERSION=1;
 const REQUEST_RECOVERY_OPERATION_TYPES=new Set(["absence-cancel","makeup-update","makeup-cancel","makeup"]);
 const REQUEST_RECOVERY_EXPECTED_STATUSES=new Set(["pending","processing","accepted"]);
@@ -295,6 +298,42 @@ function validateMutationRequest(input){
   };
 }
 
+function parseMarkMap(value){
+  let parsed=value;
+  if(typeof value==="string"){
+    try{parsed=JSON.parse(value);}
+    catch(error){fail("invalid-argument");}
+  }
+  if(!plainObject(parsed)) fail("invalid-argument");
+  return parsed;
+}
+
+function markSemanticProjections(value){
+  if(!plainObject(value)) return {absence:null,makeup:null};
+  if(value.type!=="absent") return {absence:null,makeup:value};
+  const absence={...value};
+  delete absence.sub;
+  return {absence,makeup:plainObject(value.sub)?value.sub:null};
+}
+
+function validateMarkMutationSemantics(operationType,beforeValue,afterValue){
+  const absenceOperation=ABSENCE_OPERATION_TYPES.has(operationType);
+  const makeupOperation=MAKEUP_OPERATION_TYPES.has(operationType);
+  if(!absenceOperation&&!makeupOperation) return;
+  const before=parseMarkMap(beforeValue);
+  const after=parseMarkMap(afterValue);
+  const keys=new Set([...Object.keys(before),...Object.keys(after)]);
+  for(const key of keys){
+    const previous=markSemanticProjections(before[key]);
+    const next=markSemanticProjections(after[key]);
+    const protectedBefore=absenceOperation?previous.makeup:previous.absence;
+    const protectedAfter=absenceOperation?next.makeup:next.absence;
+    if(model.canonicalDigest(protectedBefore)!==model.canonicalDigest(protectedAfter)){
+      fail("permission-denied");
+    }
+  }
+}
+
 function normalizeAuth(input){
   if(input?.auth) return input.auth;
   return input;
@@ -400,6 +439,7 @@ function redactedDiagnostic(error,input={}){
 module.exports={
   OPERATION_RULES,
   validateMutationRequest,
+  validateMarkMutationSemantics,
   authorizeMutation,
   validateRequestRecoveryCommand,
   authorizeRequestRecovery,
