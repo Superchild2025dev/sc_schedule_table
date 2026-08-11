@@ -247,7 +247,7 @@ test("sparse V1 roots validate without materialized default keys", () => {
   const validation = model.validateRoundTrip({branchId:"yongam",legacyRoot:root,collections});
 
   assert.deepEqual(clone(validation.issues), []);
-  assert.deepEqual(clone(model.changedLegacyKeys(root, rebuilt)), []);
+  assert.deepEqual(clone(model.changedLegacyKeys(root, rebuilt, Object.keys(root))), []);
 });
 
 test("placements without a matching person cannot produce a writable legacy root", () => {
@@ -282,4 +282,65 @@ test("malformed collection shapes return issues instead of destructive deletes",
 
   assert.ok(clone(result.issues).some(issue => issue.type === "invalid-collection-shape" && issue.collection === "people"));
   assert.deepEqual(clone(result.changes), []);
+});
+
+test("changed legacy keys include an after-only dynamic roster key by default", () => {
+  const model = loadModel();
+  const before = {swim_tab_list:JSON.stringify([{id:"regular",type:"regular"}])};
+  const after = {...before,swim_stu_new:JSON.stringify([])};
+
+  assert.deepEqual(clone(model.changedLegacyKeys(before, after)), ["swim_stu_new"]);
+});
+
+test("orphaned teacher assignments cannot produce a writable legacy root", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  collections.teacherAssignments.push({id:"asg_missing",tabId:"missing",courseType:"regular",slotKey:"4PM/Mon/1",teacherName:"Missing Teacher"});
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-tab-reference" && issue.collection === "teacherAssignments"));
+});
+
+test("orphaned attendance records and guests cannot produce a writable legacy root", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  collections.attendanceRecords.push({id:"att_missing",tabId:"missing",courseType:"regular",legacyKey:"4PM/Mon/1/1/2026-08-04",payload:{s:"present"}});
+  collections.attendanceGuests.push({id:"guest_missing",tabId:"missing",courseType:"regular",legacyKey:"4PM/Mon/1/2026-08-04",payload:{gid:"guest_missing"}});
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-tab-reference" && issue.collection === "attendanceRecords"));
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-tab-reference" && issue.collection === "attendanceGuests"));
+});
+
+test("orphaned attendance snapshots and snapshot children cannot produce a writable legacy root", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  collections.attendanceSnapshots.push({id:"ats_missing_tab",tabId:"missing",courseType:"regular",date:"2026-08-04"});
+  collections.attendanceSnapshotStudents.push({id:"atstu_missing_header",snapshotId:"ats_missing_header",tabId:"regular",courseType:"regular",date:"2026-08-04",payload:{sid:"missing_header"}});
+  collections.attendanceSnapshotTeachers.push({id:"atinst_missing_header",snapshotId:"ats_missing_header",tabId:"regular",courseType:"regular",date:"2026-08-04",slotKey:"4PM/Mon/1",teacherName:"Missing Header"});
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-tab-reference" && issue.collection === "attendanceSnapshots"));
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-snapshot-reference" && issue.collection === "attendanceSnapshotStudents"));
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-snapshot-reference" && issue.collection === "attendanceSnapshotTeachers"));
+});
+
+test("tab-scoped documents reject ownership mismatches", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  collections.teacherAssignments[0].courseType = "bangteuk";
+  collections.attendanceRecords.find(row => row.tabId === "regular").courseType = "bangteuk";
+  const regularSnapshot = collections.attendanceSnapshots.find(row => row.tabId === "regular");
+  const child = collections.attendanceSnapshotStudents.find(row => row.snapshotId === regularSnapshot.id);
+  child.tabId = "summer";
+  child.courseType = "bangteuk";
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "tab-owner-mismatch" && issue.collection === "teacherAssignments"));
+  assert.ok(clone(validation.issues).some(issue => issue.type === "tab-owner-mismatch" && issue.collection === "attendanceRecords"));
+  assert.ok(clone(validation.issues).some(issue => issue.type === "snapshot-owner-mismatch" && issue.collection === "attendanceSnapshotStudents"));
 });
