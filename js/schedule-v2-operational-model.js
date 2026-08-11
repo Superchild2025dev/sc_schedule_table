@@ -102,7 +102,7 @@
     return view;
   }
   function changedLegacyKeys(before,after,allowedKeys){
-    const allowed=new Set(Array.isArray(allowedKeys)?allowedKeys:Object.keys({...before,...after}));
+    const allowed=new Set(Array.isArray(allowedKeys)?allowedKeys:Object.keys(before||{}));
     return [...allowed].filter(key=>domainForLegacyKey(key)&&canonicalDigest(parseLegacyValue(before?.[key]))!==canonicalDigest(parseLegacyValue(after?.[key]))).sort();
   }
   function legacyKeysForTab(tab){
@@ -119,6 +119,9 @@
   function collectionIssues(collections){
     const issues=[];
     COLLECTION_NAMES.forEach(name=>{
+      if(Object.prototype.hasOwnProperty.call(collections||{},name)&&!Array.isArray(collections[name])){
+        issues.push({type:"invalid-collection-shape",collection:name,actual:Array.isArray(collections[name])?"array":typeof collections[name]});
+      }
       const ids=new Map();
       collection(collections,name).forEach((row,index)=>{
         const id=text(row?.id);
@@ -134,15 +137,35 @@
         ids.set(id,row);
       });
     });
+    const tabsById=new Map(collection(collections,"tabs").map(row=>[text(row.id),row]));
+    const peopleById=new Map(collection(collections,"people").map(row=>[text(row.id),row]));
+    const enrollmentsById=new Map(collection(collections,"enrollments").map(row=>[text(row.id),row]));
+    collection(collections,"enrollments").forEach(row=>{
+      const id=text(row?.id);
+      const tabId=text(row?.tabId);
+      const personId=text(row?.personId);
+      if(!tabsById.has(tabId)) issues.push({type:"missing-tab-reference",collection:"enrollments",id,tabId});
+      if(!peopleById.has(personId)) issues.push({type:"missing-person-reference",collection:"enrollments",id,personId});
+    });
     const occupied=new Map();
     collection(collections,"placements").forEach(row=>{
+      const id=text(row?.id);
       const tabId=text(row?.tabId);
+      const personId=text(row?.personId);
+      const enrollmentId=text(row?.enrollmentId);
       const slotKey=text(row?.slotKey);
+      const enrollment=enrollmentsById.get(enrollmentId);
+      if(!tabsById.has(tabId)) issues.push({type:"missing-tab-reference",collection:"placements",id,tabId});
+      if(!peopleById.has(personId)) issues.push({type:"missing-person-reference",collection:"placements",id,personId});
+      if(!enrollment) issues.push({type:"missing-enrollment-reference",collection:"placements",id,enrollmentId});
+      else if(text(enrollment.personId)!==personId||text(enrollment.tabId)!==tabId){
+        issues.push({type:"placement-reference-mismatch",id,enrollmentId,tabId,personId});
+      }
       if(!tabId||!slotKey) return;
       const key=`${tabId}|${slotKey}`;
       const previous=occupied.get(key);
-      if(previous&&text(previous.personId)!==text(row?.personId)){
-        issues.push({type:"slot-collision",tabId,slotKey,currentPersonId:text(previous.personId),incomingPersonId:text(row?.personId)});
+      if(previous){
+        issues.push({type:"slot-collision",tabId,slotKey,currentPersonId:text(previous.personId),incomingPersonId:personId});
       }else occupied.set(key,row);
     });
     return issues;
@@ -290,7 +313,7 @@
     if(issues.length) return {issues,root:null};
     const root=legacyRootFromCollections(input);
     const legacyRoot=input?.legacyRoot||input?.root;
-    if(legacyRoot&&canonicalDigest(trackedLegacyView(legacyRoot))!==canonicalDigest(trackedLegacyView(root))){
+    if(legacyRoot&&changedLegacyKeys(legacyRoot,root).length){
       return {issues:[{type:"round-trip-mismatch"}],root:null};
     }
     return {issues:[],root};

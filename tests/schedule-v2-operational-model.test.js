@@ -234,3 +234,52 @@ test("canonical digests and changed legacy keys ignore object-key order and hono
   assert.deepEqual(clone(model.changedLegacyKeys(before, after, ["swim_mark"])), ["swim_mark"]);
   assert.deepEqual(clone(model.changedLegacyKeys(before, after, ["swim_students"])), []);
 });
+
+test("sparse V1 roots validate without materialized default keys", () => {
+  const model = loadModel();
+  const schema = loadSchema();
+  const root = {
+    swim_tab_list: JSON.stringify([{id:"regular",type:"regular"}]),
+    swim_students: JSON.stringify([{sid:"stu_sparse",n:"Sparse Student",p:"01012345678",t:"4PM",d:"Mon",l:1,r:1}]),
+  };
+  const collections = schema.diagnoseLegacyRoot("yongam", root).conversion;
+  const rebuilt = model.legacyRootFromCollections({branchId:"yongam",collections});
+  const validation = model.validateRoundTrip({branchId:"yongam",legacyRoot:root,collections});
+
+  assert.deepEqual(clone(validation.issues), []);
+  assert.deepEqual(clone(model.changedLegacyKeys(root, rebuilt)), []);
+});
+
+test("placements without a matching person cannot produce a writable legacy root", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  collections.people = collections.people.filter(row => row.id !== "stu_rename");
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "missing-person-reference"));
+  assert.equal(model.legacyRootFromCollections({branchId:"yongam",collections}), null);
+});
+
+test("duplicate placements for one person and slot are rejected", () => {
+  const model = loadModel();
+  const collections = convertedFixture();
+  const duplicate = clone(collections.placements[0]);
+  duplicate.id = "plc_same_person_same_slot";
+  collections.placements.push(duplicate);
+  const validation = model.validateRoundTrip({branchId:"yongam",collections});
+
+  assert.equal(validation.root, null);
+  assert.ok(clone(validation.issues).some(issue => issue.type === "slot-collision"));
+});
+
+test("malformed collection shapes return issues instead of destructive deletes", () => {
+  const model = loadModel();
+  const before = convertedFixture();
+  const after = clone(before);
+  after.people = {unexpected:true};
+  const result = model.collectionChanges({before,after});
+
+  assert.ok(clone(result.issues).some(issue => issue.type === "invalid-collection-shape" && issue.collection === "people"));
+  assert.deepEqual(clone(result.changes), []);
+});
