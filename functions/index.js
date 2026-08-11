@@ -11,6 +11,7 @@ const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore"
 const {buildRegularAvailability} = require("./regular-availability");
 const scheduleV2ShadowPolicy = require("./schedule-v2-shadow-policy.js");
 const {runShadowSync} = require("./schedule-v2-shadow-runner.js");
+const {createOperationalWriter} = require("./schedule-v2-operational-writer.js");
 
 initializeApp({projectId: "scswimming-schedule"});
 setGlobalOptions({region: "asia-northeast3", maxInstances: 20});
@@ -68,6 +69,10 @@ const BRANCHES = {
   gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동", phone: "043-715-2019"},
   yongam: {id: "yongam", name: "용암점", aligoBranch: "용암점", phone: "043-288-2016"},
 };
+const scheduleV2OperationalWriter = createOperationalWriter({
+  db,
+  serverTimestamp: () => FieldValue.serverTimestamp(),
+});
 const ALIGO_PROXY_BASE = "https://adminsuperchild.cloud/aligo";
 const ALIGO_SEND_PATH = "/alimtalk/send/";
 
@@ -2291,6 +2296,37 @@ exports.manageScheduleV2Shadow = onCall({
   if (action === "set-shadow") return setScheduleV2Mode(branchId, "shadow");
   if (action === "set-verify") return setScheduleV2Mode(branchId, "verify");
   return rollbackScheduleV2(branchId);
+});
+
+exports.mutateScheduleV2Operational = onCall({
+  cors: true,
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  timeoutSeconds: 540,
+  memory: "1GiB",
+}, async request => {
+  try {
+    return await scheduleV2OperationalWriter.mutate(request);
+  } catch (error) {
+    const allowed = new Set([
+      "aborted", "already-exists", "failed-precondition", "internal",
+      "invalid-argument", "not-found", "permission-denied",
+      "resource-exhausted", "unauthenticated", "unavailable",
+    ]);
+    const code = String(error?.code || "").replace(/^functions\//, "");
+    throw new HttpsError(allowed.has(code) ? code : "internal", "Schedule V2 operational mutation failed");
+  }
+});
+
+exports.recoverScheduleV2OperationalMirrors = onSchedule({
+  schedule: "every 5 minutes",
+  timeZone: "Asia/Seoul",
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  retryCount: 3,
+  timeoutSeconds: 540,
+  memory: "1GiB",
+}, async () => {
+  await scheduleV2OperationalWriter.recoverOperationalMirrors();
+  return null;
 });
 
 exports.queueScheduleV2Shadow = onDocumentWritten({
