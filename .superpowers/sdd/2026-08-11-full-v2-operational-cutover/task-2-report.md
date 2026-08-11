@@ -126,3 +126,120 @@ Additional regression coverage included the Task 1 operational model, permission
 - Non-blocking: Task 2 tests use a stateful Firestore test double. The existing emulator availability tests were skipped in this environment, so emulator-backed validation remains part of the later integration/deployment gates.
 - Non-blocking: a single mutation is capped at 2,000 V2 document changes in addition to the 400-change fenced chunk size, keeping the redacted manifest below Firestore document limits. Larger UI operations must be split into separate operation IDs.
 - No deployment, push, production-data access, or production-mode transition was performed.
+
+## Independent Review Fixes (2026-08-11)
+
+### Fix Commit
+
+- `819d68c` Fix operational recovery safety gaps
+
+The report update is committed separately so this section can include the exact fix commit.
+
+### Review RED Evidence
+
+The six independent-review findings were first encoded as direct regression tests. No production implementation was changed before this run.
+
+```powershell
+node --test --test-isolation=none tests/function-schedule-v2-operational-writer.test.js tests/function-schedule-v2-operational-api.test.js
+```
+
+Result: 21 tests total, 13 passed, 8 failed.
+
+Observed failures:
+
+- Yongam teachers without `editMakeup` could perform makeup operations in both branches.
+- A present email with a missing `email_verified` claim was accepted.
+- Retrying after the final V2 chunk replaced the original manifest statistics with zero-change retry statistics.
+- Oversized encoded document IDs, V2 documents, and operation manifests were not rejected before writes.
+- A newer V1 mirror could be overwritten and the older operation marked `applied` by out-of-order recovery.
+- Concurrent recovery had no persisted branch fence and did not revalidate the runtime before V1 writes.
+- Expired `processing` operations were absent from scheduler candidates and status accounting.
+- Operational status did not expose the `processing` recovery count.
+
+### Review GREEN Evidence
+
+Exact focused checks:
+
+```powershell
+node --check functions/schedule-v2-operational-policy.js
+node --check functions/schedule-v2-operational-writer.js
+node --check functions/index.js
+node --test --test-isolation=none tests/function-schedule-v2-operational-writer.test.js tests/function-schedule-v2-operational-api.test.js
+```
+
+Result: all syntax checks passed; focused tests 22 total, 22 passed, 0 failed, 0 skipped.
+
+Full unit regression:
+
+```powershell
+npm.cmd run test:unit
+```
+
+Result: the sandboxed attempt returned `spawn EPERM` before tests could start. The approved unrestricted rerun completed with 441 tests total, 439 passed, 0 failed, and 2 pre-existing emulator availability skips.
+
+Diff and staged-scope checks:
+
+```powershell
+git diff --check
+git diff --cached --check
+node scripts/check-release-diff.js --cached
+```
+
+Result: all passed with exit code 0. The release guard's sandboxed attempt also hit `spawnSync git EPERM`; its approved unrestricted rerun passed.
+
+### Fix Details
+
+1. Persisted branch recovery fence and stale-revision defense
+
+- Added `scheduleV2/{branchId}/runtime/operationalRecovery` as the branch-scoped Firestore lease and applied-revision fence.
+- Recovery claim atomically checks runtime, operation manifest, and branch fence. A newer runtime or applied mirror marks an older operation `superseded`, never `applied`.
+- Every V1 key write is now a transaction that immediately revalidates runtime generation/revision, branch lease ownership/expiry, and operation lease ownership before applying the existing inline/chunked encoding and stale-chunk deletes.
+- Finalization revalidates runtime revision and fence ownership again before recording `applied`.
+- An active recovery fence blocks a new V2 mutation before its first document write, preventing partial multi-key V1 recovery from being interleaved with a newer V2 commit.
+- Added out-of-order, concurrent stale recovery, and active-fence/V2 regression tests. The fence is stored in Firestore and does not depend on process memory.
+
+2. Expiring and reclaimable recovery leases
+
+- Scheduler candidates now include expired `processing` operations while excluding active leases.
+- Reclaiming an expired processing lease consumes one bounded attempt. A crashed operation at the tenth attempt is moved to terminal `error` and its lease is cleared.
+- Operational status now reports `recoveryProcessingCount` in addition to complete pending/error counts.
+- Added crashed-worker, active-lease, expired-lease, retry-cap, and processing-status tests.
+
+3. Exact teacher makeup capability
+
+- All existing makeup operation aliases require the account's exact `editMakeup` capability.
+- Attendance and absence confirmation retain the existing teacher cross-branch policy and writable-key limits.
+- Added tests for every makeup alias for a Gagyeong teacher with the capability and a Yongam teacher without it in both branches.
+
+4. Verified identity requirement
+
+- Authorization now requires `email_verified === true`; missing and false claims fail closed.
+- Added explicit missing/false/true claim tests.
+
+5. Immutable manifest summary on finalization retry
+
+- Resumed committing operations retain the original counts, changed/deleted references, chunk count, completed chunk offset, request fingerprint, and other manifest summary fields.
+- A retry after every V2 chunk is already written skips chunk reservation and finalizes against the original chunk count.
+- Added an injected failure after the last chunk but before finalization, followed by a zero-change retry that proves the original result and references survive.
+
+6. Firestore size prevalidation
+
+- Before the first V2 write, encoded document IDs are limited to 1,500 UTF-8 bytes.
+- Stored V2 documents and the completed operation manifest are conservatively estimated and limited to 900,000 serialized bytes, leaving margin below Firestore's document limit.
+- Existing committing manifests are rechecked including final result fields before a retry writes or finalizes them.
+- Added oversized encoded-ID, document-value, and 2,000-reference manifest tests; each asserts rejection before any transaction or V2 document write.
+
+### Review Self-Assessment
+
+- Confirmed the public nine-field request contract and callable/module exports are unchanged.
+- Confirmed V2 remains the primary committed result and V1 remains a recoverable mirror; V1 failure does not roll back or erase the V2 commit.
+- Confirmed generation, epoch, runtime revision, target document revision/digest, 400-change chunk fencing, and operation-ID idempotency remain enforced.
+- Confirmed recovery processes at most the configured per-branch limit and never reconstructs from a `committing` manifest.
+- Confirmed manifests, branch fences, diagnostics, and tests do not persist names, phone numbers, request bodies, or recovered payload values.
+- Confirmed `functions/index.js`, parent/referral/customer-voice paths, deployment settings, production mode, and unrelated files were not changed by review fixes.
+
+### Review Concerns
+
+- Non-blocking: when more eligible items exist than the per-branch limit, older committed operations may be marked `superseded` over several scheduler ticks before the current runtime revision is mirrored. The persisted revision fence keeps this delayed convergence monotonic and prevents stale writes.
+- Non-blocking: Firestore emulator availability remains one of the two environment-dependent skipped tests; the stateful Firestore test double directly covers transaction ownership, expiry, ordering, chunk deletion, and injected crash/failure paths.
+- No deployment, push, production-data access, or production-mode transition was performed during the fixes.
