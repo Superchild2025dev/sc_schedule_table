@@ -226,3 +226,11 @@ UI 함수는 V2 경로, 컬렉션 이름, 세대 ID를 직접 사용하지 않�
 - Ordered roster, tab, waitlist, period, and export views are compared without recursive array sorting. Placement conversion persists source order and V2 reconstruction preserves it.
 - For each branch, a forced Bangteuk V1 mirror failure blocks rollback at revision 2. Recovery returns `{applied:1,error:0,skipped:0}`, complete tracked V1/V2 staff views match, and a newly constructed V1 gateway session independently reconstructs the same complete view after rollback.
 
+## Local Task 7 Fix Round 2 Evidence (2026-08-11)
+
+- Resumed snapshot header completion validates both runtime pointers before changing snapshot completion or its manifest.
+- Operational rebase awaits async mutator intent and fails closed before a retry when mode, generation, or epoch changes.
+- Tab conversion stores `sourceOrder`; reconstruction restores it despite deliberately reordered collection retrieval while older rows without that field keep stable retrieval order.
+- The staff page uses `SCScheduleLiveHandlers` for snapshot, V2 mark, scheduled replacement/future-state cleanup, and export preparation. The two-branch scenario drives that same production adapter through the real operational gateway.
+- The round-two focused suite passed 123 tests and the full suite passed 601 of 603 tests with no failures. The remaining two tests are explicit emulator-environment skips.
+

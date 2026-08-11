@@ -3793,8 +3793,8 @@ function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDA
 function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
 let _mainAttendanceSnapshotWriter=null;
 let _mainAttendanceSnapshotWriterBranch='';
-let _mainOperationalWorkflows=null;
-let _mainOperationalWorkflowsBranch='';
+let _mainScheduleLiveHandlers=null;
+let _mainScheduleLiveHandlersBranch='';
 function getMainAttendanceSnapshotWriter(){
   const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
   if(!branch||!window.SCAttendanceSnapshotWriter||!_scheduleWrites||!_fb) return null;
@@ -3818,15 +3818,14 @@ function getMainAttendanceSnapshotWriter(){
   _mainAttendanceSnapshotWriterBranch=branch.id;
   return _mainAttendanceSnapshotWriter;
 }
-function getMainOperationalWorkflows(){
+function getMainScheduleLiveHandlers(){
   const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
-  if(!branch||!window.SCScheduleOperationalWorkflows||!_fb) return null;
-  if(_mainOperationalWorkflows&&_mainOperationalWorkflowsBranch===branch.id) return _mainOperationalWorkflows;
+  if(!branch||!window.SCScheduleLiveHandlers||!_fb) return null;
+  if(_mainScheduleLiveHandlers&&_mainScheduleLiveHandlersBranch===branch.id) return _mainScheduleLiveHandlers;
   const snapshotWriter=getMainAttendanceSnapshotWriter();
-  if(!snapshotWriter) return null;
-  _mainOperationalWorkflows=SCScheduleOperationalWorkflows.create({gateway:_fb,snapshotWriter});
-  _mainOperationalWorkflowsBranch=branch.id;
-  return _mainOperationalWorkflows;
+  _mainScheduleLiveHandlers=SCScheduleLiveHandlers.create({gateway:_fb,snapshotWriter});
+  _mainScheduleLiveHandlersBranch=branch.id;
+  return _mainScheduleLiveHandlers;
 }
 async function saveDaySnapshot(ds,tabId,snapshotValue){
   const date=String(ds||'');
@@ -3841,8 +3840,8 @@ async function saveDaySnapshot(ds,tabId,snapshotValue){
   const scope=typeof _attendanceDaySnapshotScope==='function'
     ?_attendanceDaySnapshotScope(targetTabId)
     :(basisTab?.type==='bangteuk'?'bt_'+targetTabId:'regular');
-  const workflows=getMainOperationalWorkflows();
-  return (workflows||{createSnapshot:input=>writer.createOnly(input)}).createSnapshot({
+  const handlers=getMainScheduleLiveHandlers();
+  return (handlers||{createSnapshot:input=>writer.createOnly(input)}).createSnapshot({
     scope,date,snapshot,tabId:targetTabId,
   });
 }
@@ -4114,10 +4113,34 @@ function updateMarkMapTx(mutator,meta){
   return getMainMarkMapTransaction().mutate(mutator,meta);
 }
 function setMarkEntryTx(markKey,val,meta){
+  const handlers=getMainScheduleLiveHandlers();
+  const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
+  if(handlers&&(mode==='v2-read'||mode==='v2')){
+    return handlers.setClassMark({key:STORAGE_KEYS.MARK,markKey,mark:val,...(meta||{})}).then(()=>{
+      MARK_MAP={...(MARK_MAP||{}),[markKey]:val};
+      return MARK_MAP;
+    });
+  }
   return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; },meta);
 }
 function clearMarkEntryTx(markKey,meta){
+  const handlers=getMainScheduleLiveHandlers();
+  const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
+  if(handlers&&(mode==='v2-read'||mode==='v2')){
+    return handlers.clearClassMark({key:STORAGE_KEYS.MARK,markKey,...(meta||{})}).then(()=>{
+      const next={...(MARK_MAP||{})};delete next[markKey];MARK_MAP=next;
+      return MARK_MAP;
+    });
+  }
   return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; },meta);
+}
+function prepareLiveScheduleExportView(){
+  const handlers=getMainScheduleLiveHandlers();
+  if(!handlers) return Promise.resolve(null);
+  const tabId=String(_activeTab||'regular');
+  return handlers.prepareExportView({tabId,selection:{
+    tabIds:[tabId],domains:['roster','workflow','attendance','calendar','administration','history'],keys:[],
+  }});
 }
 const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
 function _attendanceLegacyEntryDate(key){

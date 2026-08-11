@@ -35,10 +35,18 @@
   function withoutSchema(value){
     const result=clone(value)||{};
     delete result.schemaVersion;
+    delete result.sourceOrder;
     return result;
   }
   function serialized(value){ return JSON.stringify(value); }
   function byOrder(left,right){ return (Number(left?.order)||0)-(Number(right?.order)||0)||text(left?.id).localeCompare(text(right?.id)); }
+  function bySourceOrder(left,right){
+    const leftOrder=Number(left?.sourceOrder),rightOrder=Number(right?.sourceOrder);
+    if(!Number.isFinite(leftOrder)&&!Number.isFinite(rightOrder)) return 0;
+    if(!Number.isFinite(leftOrder)) return 1;
+    if(!Number.isFinite(rightOrder)) return -1;
+    return leftOrder-rightOrder||text(left?.id).localeCompare(text(right?.id));
+  }
   function grouped(rows,key){
     const result=new Map();
     rows.forEach(row=>{
@@ -259,7 +267,7 @@
     const collections=input?.collections||{};
     if(collectionIssues(collections).length) return null;
     const root={};
-    const tabs=collection(collections,"tabs").map(withoutSchema);
+    const tabs=collection(collections,"tabs").slice().sort(bySourceOrder).map(withoutSchema);
     const tabsById=new Map(tabs.map(tab=>[text(tab.id),tab]));
     const peopleById=new Map(collection(collections,"people").map(row=>[text(row.id),row]));
     const enrollmentsById=new Map(collection(collections,"enrollments").map(row=>[text(row.id),row]));

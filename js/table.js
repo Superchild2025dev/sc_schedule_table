@@ -1170,6 +1170,14 @@ function _buildStudentDatePreview(todayStr,cp){
     }
     return String(student.n||'').trim()===String(entry.name||entry.n||'').trim();
   };
+  if(window.SCScheduleLiveHandlers){
+    return SCScheduleLiveHandlers.applyFutureStudentState({
+      students,enroll,retire,hyuwon,todayStr,periodMonth:cp?.month,
+      isBangteukSlotKey:_isBangteukSlotKey,sameStudent:identityMatches,
+      normalizeBangteukStudent:window.SCScheduleTime?.normalizeBangteukStudent,
+      parseBangteukWeek5Name:window.SCScheduleTime?.parseBangteukWeek5Name,
+    });
+  }
   const slotMatch=(s,slotKey)=>{
     const [t,d,l,r]=String(slotKey||'').split('/');
     return s.t===t&&s.d===d&&parseInt(s.l,10)===parseInt(l,10)&&parseInt(s.r,10)===parseInt(r,10);
@@ -1297,6 +1305,31 @@ function syncStudentsBeforeRender(){
   if(!needsSync) return;
 
   const stuKey=getTabConfig().stuKey;
+  if(window.SCScheduleLiveHandlers){
+    let committedChange=false;
+    let blockedRetireCount=0;
+    _studentSyncInFlight=updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE,STORAGE_KEYS.휴원],ctx=>{
+      const next=SCScheduleLiveHandlers.applyFutureStudentState({
+        students:ctx.get(stuKey,[]),enroll:ctx.get(STORAGE_KEYS.ENROLL,{}),
+        retire:ctx.get(STORAGE_KEYS.RETIRE,{}),hyuwon:ctx.get(STORAGE_KEYS.휴원,{}),
+        todayStr,periodMonth:cp.month,isBangteukSlotKey:_isBangteukSlotKey,sameStudent:identityMatches,
+        normalizeBangteukStudent:window.SCScheduleTime?.normalizeBangteukStudent,
+        parseBangteukWeek5Name:window.SCScheduleTime?.parseBangteukWeek5Name,
+      });
+      blockedRetireCount=next.blockedRetireCount;
+      ctx.set(stuKey,next.students);ctx.set(STORAGE_KEYS.ENROLL,next.enroll);
+      ctx.set(STORAGE_KEYS.RETIRE,next.retire);ctx.set(STORAGE_KEYS.휴원,next.hyuwon);
+      committedChange=true;
+      return true;
+    },{type:'edit',label:'자동 등록/제외 처리',deleteReason:'auto-retire',skipDeleteSafety:true,skipUndo:true})
+      .then(()=>{
+        if(blockedRetireCount&&typeof toast==='function') toast('예약 원생과 현재 원생이 달라 자동 제외를 차단했습니다','err');
+        if(committedChange) buildTable();
+      })
+      .catch(err=>{console.error('syncStudentsBeforeRender transaction failed',err);})
+      .finally(()=>{_studentSyncInFlight=null;});
+    return;
+  }
   let committedChange=false;
   let blockedRetireCount=0;
   _studentSyncInFlight=updateScheduleTx([stuKey,STORAGE_KEYS.ENROLL,STORAGE_KEYS.RETIRE,STORAGE_KEYS.休원],ctx=>{
@@ -3742,6 +3775,9 @@ function _excelAppendRecords(ws,table,rowHeights){
   });
 }
 function exportExcel(){
+  if(typeof prepareLiveScheduleExportView==='function'){
+    prepareLiveScheduleExportView().catch(error=>console.warn('schedule export preparation failed',error));
+  }
   if(typeof XLSX==='undefined'){toast('엑셀 라이브러리 로드 실패','err');return;}
   const source=document.querySelector('#tbl table');
   if(!source){toast('내보낼 시간표가 없습니다','err');return;}

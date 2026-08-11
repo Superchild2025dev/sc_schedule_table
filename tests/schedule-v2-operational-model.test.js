@@ -89,6 +89,20 @@ test("all tracked staff data survives V1 to V2 to legacy-view round trip", () =>
   assert.equal(Object.hasOwn(rebuilt, "ignored_key"), false);
 });
 
+test("tab source order survives deliberately reordered V2 collection retrieval", () => {
+  const schema = loadSchema();
+  const model = loadModel();
+  const root = fullLegacyFixture();
+  const collections = schema.diagnoseLegacyRoot("yongam", root).conversion;
+  assert.deepEqual(clone(collections.tabs.map(tab => tab.sourceOrder)), [0, 1]);
+
+  collections.tabs.reverse();
+  const rebuilt = model.legacyRootFromCollections({branchId:"yongam",generationId:"gen_1",collections});
+
+  assert.deepEqual(JSON.parse(rebuilt.swim_tab_list).map(tab => tab.id), ["regular", "summer"]);
+  assert.deepEqual(model.trackedLegacyView(rebuilt), model.trackedLegacyView(root));
+});
+
 test("per-day attendance snapshots round-trip independent of their legacy storage key", () => {
   const model = loadModel();
   const schema = loadSchema();

@@ -168,13 +168,14 @@
       gender:current.gender||next.gender,
     };
   }
-  function tabDocument(tab){
+  function tabDocument(tab,sourceOrder){
     const copy=clone(tab||{});
     const rawType=text(copy.type);
     return {
       ...copy,
       id:text(copy.id)||'regular',
       type:rawType==='snapshot'?'snapshot':(rawType==='bangteuk'?'bangteuk':'regular'),
+      sourceOrder:Math.max(0,Number(sourceOrder)||0),
       schemaVersion:SCHEMA_VERSION,
     };
   }
@@ -1317,8 +1318,8 @@
     const issues=[];
     const tabDocs=[];
 
-    tabs.forEach(rawTab=>{
-      const tab=tabDocument(rawTab);
+    tabs.forEach((rawTab,index)=>{
+      const tab=tabDocument(rawTab,index);
       if(tab.type==='snapshot') return;
       tabDocs.push(tab);
       const students=Array.isArray(studentsByTab[tab.id])?studentsByTab[tab.id]:[];

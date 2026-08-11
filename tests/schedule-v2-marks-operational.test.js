@@ -153,6 +153,27 @@ test("snapshot interruption resumes the same fenced operation and marks completi
   assert.equal(db.docs.get(mutationPath("snapshot_retry_1")).status,"committed");
 });
 
+test("a resumed snapshot header completion validates both runtime pointers before any header or manifest write",async()=>{
+  const request=snapshotRequest("snapshot_pointer_resume");
+  const db=fakeFirestore({[runtimePath()]:{branchId:"yongam",mode:"v2",generationId:"gen_1",epoch:2,revision:4}});
+  db.failOnTransaction(3);
+  await assert.rejects(()=>commitV2Mutation({db,request,changes:snapshotChanges(),now:new Date("2026-08-03T00:00:00Z")}),/interrupted/);
+
+  const attendancePath="scheduleV2/yongam/runtime/attendance";
+  db.docs.set(attendancePath,{branchId:"yongam",mode:"v2",generationId:"gen_1",epoch:2,revision:3});
+  const beforeManifest=plain(db.docs.get(mutationPath("snapshot_pointer_resume")));
+  db.failOnTransaction(0);
+  await assert.rejects(
+    ()=>commitV2Mutation({db,request,changes:[],now:new Date("2026-08-03T00:01:00Z")}),
+    error=>error?.code==="failed-precondition",
+  );
+
+  assert.equal(db.docs.get(generationPath("attendanceSnapshots","snapshot_1")).complete,false);
+  assert.deepEqual(db.docs.get(mutationPath("snapshot_pointer_resume")),beforeManifest);
+  assert.equal(db.docs.get(runtimePath()).revision,4);
+  assert.equal(db.docs.get(attendancePath).revision,3);
+});
+
 test("an explicit snapshot creation cannot replace an existing historical snapshot",async()=>{
   const existing={
     id:"snapshot_1",tabId:"regular",courseType:"regular",date:"2026-08-03",

@@ -18,7 +18,7 @@ function snapshot(key,value){ return {key:key||null,val:()=>plain(value)}; }
 function createEnvironment(mode,overrides={}){
   const calls={
     legacyReads:0,legacyWrites:0,v2Reads:0,mutationReads:0,parity:0,mutations:0,
-    invalidations:0,reloads:0,configUnsubscribes:0,legacySubscriptions:0,delegateStops:0,order:[],
+    invalidations:0,reloads:0,configReads:0,configUnsubscribes:0,legacySubscriptions:0,delegateStops:0,order:[],
     reloadDetails:[],
   };
   let legacyData=plain(overrides.legacyData||{
@@ -80,9 +80,12 @@ function createEnvironment(mode,overrides={}){
   };
   const v2Store={
     async readConfig(){
+      const configured=Array.isArray(overrides.configSequence)
+        ?overrides.configSequence[Math.min(calls.configReads++,overrides.configSequence.length-1)]
+        :config;
       if(overrides.configReadPromise) return overrides.configReadPromise;
       if(overrides.configError) throw new Error('config unavailable secret');
-      return plain(config);
+      return plain(configured);
     },
     subscribeConfig(next){
       configListener=next;next(plain(config));
@@ -130,6 +133,9 @@ function createEnvironment(mode,overrides={}){
     calls.mutations+=1;calls.order.push('v2-write');
     mutationRequests.push(plain(request));
     if(overrides.mutationPromise) return overrides.mutationPromise;
+    if(Array.isArray(overrides.mutationErrors)&&overrides.mutationErrors[mutationAttempt-1]){
+      throw overrides.mutationErrors[mutationAttempt-1];
+    }
     if((overrides.transientMutationError||overrides.transientMutationCode)&&mutationAttempt===1){
       throw Object.assign(new Error('temporary secret'),{code:overrides.transientMutationCode||'unavailable'});
     }
@@ -646,6 +652,65 @@ test('diagnostics retain safe operation metadata and redact payloads names phone
 
   assert.match(encoded,/v2-read-error/);
   assert.doesNotMatch(encoded,/기존 이름|secret-name|010-secret|payload|swim_students/);
+});
+
+test('an aborted retry awaits an async mutator and preserves unrelated fresh data',async()=>{
+  let read=0;
+  const env=createEnvironment('v2-read',{
+    mutationErrors:[Object.assign(new Error('overlap'),{code:'aborted'})],
+    loadMutation(){
+      read+=1;
+      const students=read===1
+        ?[{id:'student-1',name:'before'},{id:'student-2',name:'unchanged'}]
+        :[{id:'student-1',name:'before'},{id:'student-2',name:'fresh remote'}];
+      return {
+        root:{swim_students:JSON.stringify(students)},collections:{},
+        config:{branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:31,valid:true},
+        context:{branchId:'yongam',generationId:'gen_1',epoch:4,revision:31},selection,
+      };
+    },
+  });
+
+  await env.root.transactionKeys(['swim_students'],async draft=>{
+    await Promise.resolve();
+    const students=JSON.parse(draft.swim_students);
+    students[0].name='local async';
+    draft.swim_students=JSON.stringify(students);
+    return draft;
+  },{operationId:'async_rebase',operationType:'update-student',tabIds:['regular']});
+
+  assert.equal(env.calls.mutations,2);
+  assert.deepEqual(JSON.parse(env.mutationRequests[1].nextValues.swim_students),[
+    {id:'student-1',name:'local async'},
+    {id:'student-2',name:'fresh remote'},
+  ]);
+});
+
+test('an aborted retry fails closed when operational authority changes',async()=>{
+  const authorities=[
+    {label:'mode',mode:'v1',generationId:'',epoch:4},
+    {label:'generation',mode:'v2-read',generationId:'gen_2',epoch:4},
+    {label:'epoch',mode:'v2-read',generationId:'gen_1',epoch:5},
+  ];
+  for(const authority of authorities){
+    const initial={branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:31,valid:true};
+    const env=createEnvironment('v2-read',{
+      configSequence:[initial,{...initial,...authority}],
+      mutationErrors:[Object.assign(new Error('overlap'),{code:'aborted'})],
+    });
+    await env.root.ready();
+
+    await assert.rejects(
+      env.root.transactionKeys(['swim_students'],draft=>{
+        draft.swim_students=JSON.stringify([{id:'student-1',name:authority.label}]);
+        return draft;
+      },{operationId:`authority_${authority.label}`,operationType:'update-student',tabIds:['regular']}),
+      error=>error?.code==='operational-reload-required',
+      authority.label,
+    );
+    assert.equal(env.calls.mutations,1,authority.label);
+    assert.equal(env.calls.reloads,1,authority.label);
+  }
 });
 
 test('staff pages load operational modules once in exact dependency order without Firebase reinitialization',()=>{

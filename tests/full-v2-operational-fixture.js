@@ -12,7 +12,7 @@ const schema=globalThis.SCScheduleSchemaV2;
 const model=globalThis.SCV2OperationalModel;
 const storeApi=require(path.join(ROOT,"js","schedule-v2-operational-store.js"));
 const gatewayApi=require(path.join(ROOT,"js","schedule-operational-gateway.js"));
-const workflowsApi=require(path.join(ROOT,"js","schedule-operational-workflows.js"));
+const liveHandlersApi=require(path.join(ROOT,"js","schedule-live-handlers.js"));
 const snapshotWriterApi=require(path.join(ROOT,"js","attendance-snapshot-writer.js"));
 const operational=require(path.join(ROOT,"functions","schedule-v2-operational-writer.js"));
 
@@ -433,7 +433,7 @@ function createOperationalSystem(options={}){
       now:()=>cloneDate(NOW),
     });
   }
-  function workflows(branchId){
+  function liveHandlers(branchId){
     const operationalGateway=gateway(branchId);
     const snapshotWriter=snapshotWriterApi.create({
       branchId,
@@ -441,7 +441,7 @@ function createOperationalSystem(options={}){
       write:(key,value,meta)=>operationalGateway.child(key).set(value,meta),
       normalize:value=>clone(value),
     });
-    return workflowsApi.create({gateway:operationalGateway,snapshotWriter});
+    return liveHandlersApi.create({gateway:operationalGateway,snapshotWriter});
   }
   async function transition(branchId,action){
     const runtime=db.value(runtimePath(branchId,"operational"));
@@ -451,7 +451,7 @@ function createOperationalSystem(options={}){
     }));
   }
   return {
-    db,writer,management,branchInfo,gateway,workflows,transition,
+    db,writer,management,branchInfo,gateway,liveHandlers,transition,
     reconstructV2:branchId=>reconstructV2(db,branchId,branchInfo[branchId].generationId),
     legacyValues:branchId=>legacyValues(db,branchId),
     runtime:(branchId,name="operational")=>db.value(runtimePath(branchId,name)),

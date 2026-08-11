@@ -361,14 +361,17 @@ async function completeSnapshotHeaders(input,chunkCount){
   if(!ids.length) return;
   const {db,request,fingerprint}=input;
   const runtimeDocument=runtimeRef(db,request.branchId);
+  const attendanceDocument=attendanceRuntimeRef(db,request.branchId);
   const manifestDocument=mutationRef(db,request.branchId,request.operationId);
   await db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
+    const attendanceSnapshot=await tx.get(attendanceDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
     const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(manifest,fingerprint);
     if(manifest?.status==="committed") return;
     assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    assertRuntime(attendanceSnapshot.data()||{},request,request.operationId);
     if(!manifest||manifest.status!=="committing"||Number(manifest.completedChunks||0)!==chunkCount){
       fail("failed-precondition");
     }

@@ -67,6 +67,12 @@
   function configFingerprint(config){
     return [text(config?.branchId),text(config?.mode),text(config?.generationId),Number(config?.epoch)||0,Number(config?.revision)||0].join('|');
   }
+  function sameRebaseAuthority(left,right){
+    return text(left?.branchId)===text(right?.branchId)
+      &&text(left?.mode)===text(right?.mode)
+      &&text(left?.generationId)===text(right?.generationId)
+      &&Number(left?.epoch||0)===Number(right?.epoch||0);
+  }
   function defaultOperationId(){
     if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
     operationSequence=(operationSequence+1)%1000000;
@@ -398,9 +404,9 @@
       let originalBefore=null;
       let originalAfter=null;
       const attemptMeta={...meta,rebaseConflict:true};
-      const captureIntent=root=>{
+      const captureIntent=async root=>{
         originalBefore=clone(root);
-        const returned=mutator(root);
+        const returned=await mutator(root);
         if(returned===undefined) return undefined;
         originalAfter=object(returned)?clone(returned):clone(root);
         return returned;
@@ -411,6 +417,10 @@
         const code=text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
         if(code!=='aborted'||originalBefore===null||originalAfter===null) throw error;
         const next=await v2Store.readConfig();
+        if(!sameRebaseAuthority(config,next)){
+          requestReload(next);
+          fail('operational-reload-required','Operational authority changed before retry.');
+        }
         pendingRuntimeConfig=null;
         acceptConfig(next,false);
         return transactionKeysOnce(keys,root=>rebaseRoot(originalBefore,originalAfter,root),attemptMeta);
