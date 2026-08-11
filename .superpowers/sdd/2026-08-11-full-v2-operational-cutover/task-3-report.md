@@ -127,3 +127,84 @@ Result: 463 tests total, 461 passed, 0 failed, 2 skipped. The skips are the exis
 ## Concerns
 
 - Non-blocking: emulator-backed rule and shadow tests remain environment-dependent and were the two existing skips. All browser store/gateway tests and the remaining unit regression passed locally.
+
+---
+
+## Independent Review Remediation
+
+Date: 2026-08-11
+
+All eight independent-review findings were reproduced with direct regression or integration tests and fixed without changing the operational mode, page permissions, parent page, referral paths, customer voice paths, or production state.
+
+### Review RED Evidence
+
+Command:
+
+```powershell
+node --test --test-isolation=none tests/schedule-v2-operational-store.test.js tests/schedule-operational-gateway.test.js
+```
+
+Result before remediation: 30 tests total, 15 passed, 15 failed, 0 skipped.
+
+The expected failures directly demonstrated:
+
+- functions-prefixed callable errors were not retried;
+- shared mutation values were prepared from a partial display read;
+- manufactured unloaded values replaced valid cached values;
+- a pending callable could commit after a tab switch;
+- bangteuk roster keys were parsed as malformed tab IDs;
+- verify compared the whole V1 root and did not carry a shadow fence;
+- stop-before-ready and root disposal did not cancel listeners completely;
+- `index.html` did not load Firebase Functions compat;
+- roster-only reads materialized every unread collection and legacy default;
+- attendance-only reconstruction failed without unrelated identity reads;
+- no authoritative mutation loader existed;
+- verify did not wait for delayed shadow completion.
+
+### Finding-by-Finding Resolution
+
+1. Added `loadMutation` as a separate authoritative path. Shared maps (`swim_mark`, reservation maps, tab list, disabled slots, calendar, administration, and history keys) read their complete owning collections. Roster and attendance keys read only their exact key-owned tabs. The existing mutator now receives complete values for every affected key before `nextValues` is computed.
+2. Replaced the all-empty collection map with sparse loaded collections and explicit `loadedKeys`. Display cache merging touches only that authoritative projection; unread keys survive, while a requested-but-absent key is correctly evicted.
+3. Attendance-only reads fetch minimal selected tab metadata, records, guests, snapshot headers, and snapshot children. A model-only validation copy omits unavailable person, enrollment, and class-mark references, while returned rows remain unchanged. No people or enrollment query is issued.
+4. Added exact, distinct roster, attendance, guest, bundled snapshot, and daily snapshot patterns. Key-owned tab IDs are resolved before the current/default tab, covering regular-to-bangteuk and bangteuk-to-regular changes and removals.
+5. Added a monotonic selection generation and active selection signature to every captured operation context. Branch, generation ID, epoch, tab signature, session, selection generation, and expected revision are rechecked immediately before cache or config mutation. Stale load and callable completions return controlled stale errors and cannot publish or advance local revision.
+6. Verify now projects only selected keys, captures the pre-write shadow revision, and requires a later settled shadow revision before parity. The store polls pending/in-flight shadow state with a bounded timeout, then distinguishes delayed completion from a settled true mismatch.
+7. Added exactly one Firebase Functions compat script to `index.html`, after Firestore and before the operational gateway. Tests validate this order on all four staff pages and confirm no duplicate Firebase initialization.
+8. Retry codes normalize `functions/` and `firebase/functions/` prefixes. Stop and dispose invalidate pending selections, prevent late delegate creation, stop active delegates, unsubscribe the config listener, and remain idempotent.
+
+### Review GREEN Evidence
+
+Syntax and focused regression:
+
+```powershell
+node --check js/schedule-v2-operational-store.js
+node --check js/schedule-operational-gateway.js
+node --test --test-isolation=none tests/schedule-v2-operational-store.test.js tests/schedule-operational-gateway.test.js tests/schedule-v2-store.test.js
+```
+
+Result: both syntax checks exited 0. Focused tests: 40 total, 40 passed, 0 failed, 0 skipped.
+
+The final focused suite includes multi-tab preservation for marks, reservations, tab lists, roster values, and disabled slots; sparse roster/cache preservation; attendance records, guests, bundled snapshots, and selected metadata; overlapping tab loads; stale callable completion after tab, branch, and config changes; delayed shadow completion and true mismatch; exact active-key removals in both tab directions; prefixed retry codes; stop-before-ready; config unsubscribe; script order; strict callable fields; and stable retry operation IDs.
+
+The default package command was also attempted:
+
+```powershell
+npm.cmd run test:unit
+```
+
+The sandbox prevented Node from spawning test workers, so all 63 files stopped before test code with `spawn EPERM`. The complete suite was then run in the repository's supported single-process mode:
+
+```powershell
+node --test --test-isolation=none tests/*.test.js
+```
+
+Result: 480 tests total, 478 passed, 0 failed, 2 skipped. The two skips are the existing Firestore rules emulator and Schedule V2 shadow emulator availability checks.
+
+Final hygiene commands:
+
+```powershell
+git diff --check
+git diff --cached --check
+```
+
+No deployment, push, production-data access, or production mode change was performed.

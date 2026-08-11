@@ -16,14 +16,22 @@ function deferred(){
 function snapshot(key,value){ return {key:key||null,val:()=>plain(value)}; }
 
 function createEnvironment(mode,overrides={}){
-  const calls={legacyReads:0,legacyWrites:0,v2Reads:0,parity:0,mutations:0,invalidations:0,reloads:0,order:[]};
-  let legacyData={swim_students:JSON.stringify([{id:'student-1',name:'기존 이름',phone:'010-secret'}])};
+  const calls={
+    legacyReads:0,legacyWrites:0,v2Reads:0,mutationReads:0,parity:0,mutations:0,
+    invalidations:0,reloads:0,configUnsubscribes:0,legacySubscriptions:0,delegateStops:0,order:[],
+  };
+  let legacyData=plain(overrides.legacyData||{
+    swim_students:JSON.stringify([{id:'student-1',name:'기존 이름',phone:'010-secret'}]),
+  });
   let config={
     branchId:'yongam',mode,generationId:['v2-read','v2','shadow','verify'].includes(mode)?'gen_1':'',
     epoch:4,revision:31,valid:true,
   };
   let configListener=null;
   const mutationRequests=[];
+  const readSelections=[];
+  const mutationSelections=[];
+  const parityInputs=[];
   const loadedRoots={
     regular:{
       swim_tab_list:JSON.stringify([{id:'regular',type:'regular'}]),
@@ -59,24 +67,31 @@ function createEnvironment(mode,overrides={}){
       return {committed:true,snapshot:snapshot(null,after)};
     },
     subscribeSelectedBatches(options){
+      calls.legacySubscriptions+=1;
       calls.order.push('v1-subscribe');
       const values={};
       (options.baseKeys||[]).forEach(key=>{ if(legacyData[key]!==undefined) values[key]=legacyData[key]; });
       options.next({initial:true,revision:1,values,removedKeys:[],changedKeys:Object.keys(values)});
-      return {ready:Promise.resolve({stale:false}),setActiveKeys:async()=>({stale:false}),setAuxiliaryKeys:async()=>({stale:false}),releaseAuxiliaryKeys(){},waitForActive:async()=>({stale:false}),stop(){}};
+      return {ready:Promise.resolve({stale:false}),setActiveKeys:async()=>({stale:false}),setAuxiliaryKeys:async()=>({stale:false}),releaseAuxiliaryKeys(){},waitForActive:async()=>({stale:false}),stop(){calls.delegateStops+=1;}};
     },
   };
   const v2Store={
     async readConfig(){
+      if(overrides.configReadPromise) return overrides.configReadPromise;
       if(overrides.configError) throw new Error('config unavailable secret');
       return plain(config);
     },
-    subscribeConfig(next){ configListener=next;next(plain(config));return ()=>{configListener=null;}; },
+    subscribeConfig(next){
+      configListener=next;next(plain(config));
+      return ()=>{calls.configUnsubscribes+=1;configListener=null;};
+    },
     invalidate(){ calls.invalidations+=1; },
     async loadSelection(selection){
       calls.v2Reads+=1;calls.order.push('v2-read');
+      readSelections.push(plain(selection));
       if(overrides.v2ReadError) throw new Error('v2 read secret-name 010-secret');
       if(overrides.v2ReadPromise) return overrides.v2ReadPromise;
+      if(typeof overrides.loadSelection==='function') return overrides.loadSelection(plain(selection),plain(config));
       const tabId=selection.tabIds?.[0]||'regular';
       return {
         root:plain(loadedRoots[tabId]||{}),collections:{},config:plain(config),
@@ -84,8 +99,23 @@ function createEnvironment(mode,overrides={}){
         selection:plain(selection),
       };
     },
+    async loadMutation(selection){
+      calls.v2Reads+=1;calls.mutationReads+=1;calls.order.push('v2-mutation-read');
+      mutationSelections.push(plain(selection));
+      if(typeof overrides.loadMutation==='function') return overrides.loadMutation(plain(selection),plain(config));
+      const tabId=selection.tabIds?.[0]||'regular';
+      return {
+        root:plain(overrides.mutationRoot||loadedRoots[tabId]||{}),collections:{},config:plain(config),
+        context:{branchId:config.branchId,generationId:config.generationId,epoch:config.epoch,revision:config.revision},
+        selection:plain(selection),
+      };
+    },
+    async readShadowState(){
+      return plain(overrides.shadowState||{requestedRevision:8,appliedRevision:8,status:'idle'});
+    },
     async verifyParity(input){
       calls.parity+=1;calls.order.push('v2-parity');
+      parityInputs.push(plain(input));
       if(overrides.parityPromise) await overrides.parityPromise;
       if(overrides.parityError) throw new Error('parity mismatch');
       return {matches:true,keyCount:Object.keys(input.values||{}).length};
@@ -97,8 +127,8 @@ function createEnvironment(mode,overrides={}){
     calls.mutations+=1;calls.order.push('v2-write');
     mutationRequests.push(plain(request));
     if(overrides.mutationPromise) return overrides.mutationPromise;
-    if(overrides.transientMutationError&&mutationAttempt===1){
-      throw Object.assign(new Error('temporary secret'),{code:'unavailable'});
+    if((overrides.transientMutationError||overrides.transientMutationCode)&&mutationAttempt===1){
+      throw Object.assign(new Error('temporary secret'),{code:overrides.transientMutationCode||'unavailable'});
     }
     if(overrides.mutationError) throw overrides.mutationError;
     return {
@@ -112,11 +142,11 @@ function createEnvironment(mode,overrides={}){
     branchId:'yongam',legacyRoot,v2Store,model,mutate,
     makeOperationId:()=>overrides.operationId||'op_1',
     now:()=>new Date('2026-08-11T03:00:00.000Z'),
-    getBranchId:()=>overrides.currentBranchId||'yongam',
+    getBranchId:typeof overrides.getBranchId==='function'?overrides.getBranchId:()=>overrides.currentBranchId||'yongam',
     onReloadRequired(){ calls.reloads+=1; },
   });
   return {
-    root,calls,mutationRequests,
+    root,calls,mutationRequests,readSelections,mutationSelections,parityInputs,
     emitConfig(next){ config=plain(next);configListener?.(plain(config)); },
     setLoaded(tabId,value){ loadedRoots[tabId]=plain(value); },
     legacyData:()=>plain(legacyData),
@@ -198,6 +228,117 @@ test('transactionKeys sends only the strict Task 2 request and keeps one operati
   assert.equal(env.root.currentConfig().revision,32);
 });
 
+test('functions-prefixed transient callable codes retry with the same operation id',async()=>{
+  const env=createEnvironment('v2-read',{transientMutationCode:'functions/unavailable',operationId:'stable_prefixed_op'});
+  await env.root.transactionKeys(['swim_students'],draft=>{
+    draft.swim_students=JSON.stringify([{id:'student-1',name:'재시도'}]);
+    return draft;
+  },{operationType:'update-student',tabIds:['regular']});
+
+  assert.equal(env.mutationRequests.length,2);
+  assert.equal(env.mutationRequests[0].operationId,'stable_prefixed_op');
+  assert.equal(env.mutationRequests[1].operationId,'stable_prefixed_op');
+});
+
+test('transaction preparation uses complete authoritative values for shared and global keys',async()=>{
+  const full={
+    swim_mark:JSON.stringify({regular:{color:'blue'},camp:{color:'red'}}),
+    swim_enroll:JSON.stringify({'regular-slot':{state:'regular'},'camp-slot':{state:'camp'}}),
+    swim_tab_list:JSON.stringify([{id:'regular',name:'정규반'},{id:'camp',name:'방학특강'}]),
+    swim_students:JSON.stringify([{id:'regular-student',name:'정규 원생'}]),
+    swim_disabled:JSON.stringify({'regular-slot':true,'camp-slot':true}),
+  };
+  const env=createEnvironment('v2-read',{
+    mutationRoot:full,
+    loadSelection(selection,config){
+      return {root:{swim_mark:JSON.stringify({regular:{color:'blue'}})},collections:{},config,context:{...config},selection};
+    },
+  });
+  await env.root.transactionKeys(Object.keys(full),draft=>{
+    const marks=JSON.parse(draft.swim_mark);marks.regular.color='green';draft.swim_mark=JSON.stringify(marks);
+    const reservations=JSON.parse(draft.swim_enroll);reservations['regular-slot'].state='changed';draft.swim_enroll=JSON.stringify(reservations);
+    const tabs=JSON.parse(draft.swim_tab_list);tabs[0].name='정규 변경';draft.swim_tab_list=JSON.stringify(tabs);
+    const students=JSON.parse(draft.swim_students);students[0].name='원생 변경';draft.swim_students=JSON.stringify(students);
+    const disabled=JSON.parse(draft.swim_disabled);disabled['regular-slot']=false;draft.swim_disabled=JSON.stringify(disabled);
+    return draft;
+  },{operationType:'edit-schedule',tabIds:['regular']});
+
+  assert.equal(env.calls.mutationReads,1);
+  const next=env.mutationRequests[0].nextValues;
+  assert.equal(JSON.parse(next.swim_mark).camp.color,'red');
+  assert.equal(JSON.parse(next.swim_enroll)['camp-slot'].state,'camp');
+  assert.equal(JSON.parse(next.swim_tab_list)[1].id,'camp');
+  assert.equal(JSON.parse(next.swim_students).length,1);
+  assert.equal(JSON.parse(next.swim_disabled)['camp-slot'],true);
+});
+
+test('cache merge ignores manufactured values outside the returned loaded-key projection',async()=>{
+  const fullMark=JSON.stringify({regular:{color:'blue'},camp:{color:'red'}});
+  let reads=0;
+  const env=createEnvironment('v2-read',{
+    loadSelection(selection,config){
+      reads+=1;
+      if(reads===1) return {root:{swim_mark:fullMark},loadedKeys:['swim_mark'],collections:{},config,context:{...config},selection};
+      return {
+        root:{swim_students:JSON.stringify([{id:'student-1'}]),swim_mark:'{}'},
+        loadedKeys:['swim_students'],collections:{},config,context:{...config},selection,
+      };
+    },
+  });
+  await env.root.loadSelection({tabIds:['regular'],domains:['workflow'],keys:['swim_mark']});
+  await env.root.loadSelection({tabIds:['regular'],domains:['roster'],keys:['swim_students']});
+  const mark=await env.root.child('swim_mark').once('value');
+
+  assert.equal(mark.val(),fullMark);
+  assert.equal(reads,2);
+});
+
+test('an absent selected key is evicted without disturbing cached unread keys',async()=>{
+  const tabList=JSON.stringify([{id:'regular'},{id:'camp'}]);
+  let reads=0;
+  const env=createEnvironment('v2-read',{
+    loadSelection(selection,config){
+      reads+=1;
+      if(reads===1) return {
+        root:{swim_mark:JSON.stringify({regular:{color:'blue'}}),swim_tab_list:tabList},
+        loadedKeys:['swim_mark','swim_tab_list'],collections:{},config,context:{...config},selection,
+      };
+      return {root:{},loadedKeys:['swim_mark'],collections:{},config,context:{...config},selection};
+    },
+  });
+  await env.root.loadSelection({tabIds:['regular'],domains:['roster','workflow'],keys:['swim_mark','swim_tab_list']});
+  await env.root.loadSelection({tabIds:['regular'],domains:['workflow'],keys:['swim_mark']});
+
+  const cachedTabs=await env.root.child('swim_tab_list').once('value');
+  const removedMark=await env.root.child('swim_mark').once('value',{tabIds:['regular']});
+  assert.equal(cachedTabs.val(),tabList);
+  assert.equal(removedMark.val(),null);
+  assert.equal(reads,3);
+});
+
+test('overlapping selected-tab loads surface a controlled stale result without publishing the old tab',async()=>{
+  const regularGate=deferred();
+  const env=createEnvironment('v2-read',{
+    async loadSelection(selection,config){
+      if(selection.tabIds.includes('regular')){
+        await regularGate.promise;
+        throw Object.assign(new Error('old selection'),{code:'stale-operational-selection'});
+      }
+      return {
+        root:{swim_bt_camp_stu:JSON.stringify([{id:'camp-current'}])},loadedKeys:['swim_bt_camp_stu'],
+        collections:{},config,context:{...config},selection,
+      };
+    },
+  });
+  const old=env.root.loadSelection({tabIds:['regular'],domains:['roster'],keys:['swim_students']});
+  await new Promise(resolve=>setImmediate(resolve));
+  const current=await env.root.loadSelection({tabIds:['camp'],domains:['roster'],keys:['swim_bt_camp_stu']});
+  regularGate.resolve();
+
+  assert.equal(JSON.parse(current.root.swim_bt_camp_stu)[0].id,'camp-current');
+  await assert.rejects(old,error=>error.code==='stale-operational-response');
+});
+
 test('cache changes only after an accepted matching server revision',async()=>{
   const env=createEnvironment('v2',{responseRevision:99});
   await env.root.ready();
@@ -234,6 +375,39 @@ test('tab and config changes fence pending responses and request one controlled 
   assert.equal(env.calls.invalidations,1);
   assert.equal(env.calls.reloads,1);
   assert.equal(env.root.currentConfig().epoch,5);
+});
+
+test('a tab switch while the callable is pending cannot update cache or revision',async()=>{
+  const mutation=deferred();
+  const env=createEnvironment('v2-read',{mutationPromise:mutation.promise});
+  const pending=env.root.transactionKeys(['swim_students'],draft=>{
+    draft.swim_students=JSON.stringify([{id:'student-1',name:'stale-tab'}]);
+    return draft;
+  },{operationType:'update-student',tabIds:['regular']});
+  await new Promise(resolve=>setImmediate(resolve));
+  await env.root.loadSelection({tabIds:['camp'],domains:['roster'],keys:['swim_bt_camp_stu']});
+  mutation.resolve({operationId:'op_1',committed:true,revision:32,recoveryState:'applied'});
+
+  await assert.rejects(pending,error=>error.code==='stale-operational-response');
+  assert.equal(env.root.currentConfig().revision,31);
+  const regular=await env.root.child('swim_students').once('value');
+  assert.equal(JSON.parse(regular.val())[0].name,'기존 이름');
+});
+
+test('a branch change while the callable is pending cannot update cache or revision',async()=>{
+  const mutation=deferred();
+  const branch={id:'yongam'};
+  const env=createEnvironment('v2-read',{mutationPromise:mutation.promise,getBranchId:()=>branch.id});
+  const pending=env.root.transactionKeys(['swim_students'],draft=>{
+    draft.swim_students=JSON.stringify([{id:'student-1',name:'stale-branch'}]);
+    return draft;
+  },{operationType:'update-student',tabIds:['regular']});
+  await new Promise(resolve=>setImmediate(resolve));
+  branch.id='gagyeong';
+  mutation.resolve({operationId:'op_1',committed:true,revision:32,recoveryState:'applied'});
+
+  await assert.rejects(pending,error=>error.code==='stale-operational-response');
+  assert.equal(env.root.currentConfig().revision,31);
 });
 
 test('the expected runtime revision notification waits for the accepted callable response',async()=>{
@@ -290,6 +464,99 @@ test('root-compatible child once transaction and selected subscription use snaps
   controller.stop();
 });
 
+test('active-key switching infers exact key-owned bangteuk tabs before the previous selection',async()=>{
+  const batches=[];
+  const env=createEnvironment('v2-read',{
+    loadSelection(selection,config){
+      const keys=selection.keys||[];
+      const root={swim_tab_list:JSON.stringify([{id:'regular'},{id:'camp'}]),swim_students:'[]'};
+      if(keys.includes('swim_bt_attendance_camp')) root.swim_bt_attendance_camp='{}';
+      return {root,loadedKeys:keys,collections:{},config,context:{...config},selection};
+    },
+  });
+  const controller=env.root.subscribeSelectedBatches({
+    baseKeys:['swim_tab_list'],resolveInitialActiveKeys:()=>['swim_students'],next:batch=>batches.push(plain(batch)),
+  });
+  await controller.ready;
+  await controller.setActiveKeys(['swim_bt_camp_stu']);
+  assert.deepEqual(env.readSelections.at(-1).tabIds,['camp']);
+  assert.deepEqual(batches.at(-1).removedKeys,['swim_bt_camp_stu']);
+
+  await controller.setActiveKeys(['swim_bt_attendance_camp']);
+  assert.deepEqual(env.readSelections.at(-1).tabIds,['camp']);
+  assert.equal(batches.at(-1).values.swim_bt_attendance_camp,'{}');
+  controller.stop();
+});
+
+test('active-key switching infers regular and bangteuk removals in both directions',async()=>{
+  const batches=[];
+  const env=createEnvironment('v2-read',{
+    loadSelection(selection,config){
+      const keys=selection.keys||[];
+      return {
+        root:keys.includes('swim_tab_list')?{swim_tab_list:JSON.stringify([{id:'regular'},{id:'camp'}])}:{},
+        loadedKeys:keys,collections:{},config,context:{...config},selection,
+      };
+    },
+  });
+  const controller=env.root.subscribeSelectedBatches({
+    baseKeys:['swim_tab_list'],resolveInitialActiveKeys:()=>['swim_students'],next:batch=>batches.push(plain(batch)),
+  });
+  await controller.ready;
+  assert.deepEqual(env.readSelections.at(-1).tabIds,['regular']);
+  assert.ok(batches.at(-1).removedKeys.includes('swim_students'));
+
+  await controller.setActiveKeys(['swim_bt_camp_stu']);
+  assert.deepEqual(env.readSelections.at(-1).tabIds,['camp']);
+  assert.ok(batches.at(-1).removedKeys.includes('swim_bt_camp_stu'));
+
+  await controller.setActiveKeys(['swim_students']);
+  assert.deepEqual(env.readSelections.at(-1).tabIds,['regular']);
+  assert.ok(batches.at(-1).removedKeys.includes('swim_students'));
+  controller.stop();
+});
+
+test('verify compares only the selected projection and passes the pre-write shadow revision',async()=>{
+  const env=createEnvironment('verify',{
+    legacyData:{
+      swim_students:JSON.stringify([{id:'student-1'}]),
+      swim_mark:JSON.stringify({unrelated:{color:'red'}}),
+    },
+  });
+  await env.root.loadSelection({tabIds:['regular'],domains:['roster'],keys:['swim_students']});
+  await env.root.transactionKeys(['swim_students'],draft=>draft,{operationType:'update-student',tabIds:['regular']});
+
+  assert.deepEqual(env.parityInputs[0].keys,['swim_students']);
+  assert.deepEqual(Object.keys(env.parityInputs[0].values),['swim_students']);
+  assert.equal(env.parityInputs[1].afterShadowRevision,8);
+  assert.equal(env.parityInputs[1].requireShadowAdvance,true);
+});
+
+test('stopping a selected subscription before readiness prevents late V1 delegate creation',async()=>{
+  const gate=deferred();
+  const env=createEnvironment('v1',{configReadPromise:gate.promise});
+  const controller=env.root.subscribeSelectedBatches({baseKeys:['swim_students'],next(){}});
+  controller.stop();
+  gate.resolve({branchId:'yongam',mode:'v1',generationId:'',epoch:4,revision:31,valid:true});
+  const result=await controller.ready;
+
+  assert.deepEqual(result,{stale:true});
+  assert.equal(env.calls.legacySubscriptions,0);
+});
+
+test('dispose cancels listeners and config subscription once',async()=>{
+  const env=createEnvironment('v1');
+  const controller=env.root.subscribeSelectedBatches({baseKeys:['swim_students'],next(){}});
+  await controller.ready;
+  assert.equal(typeof env.root.dispose,'function');
+  env.root.dispose();
+  env.root.dispose();
+
+  assert.equal(env.calls.delegateStops,1);
+  assert.equal(env.calls.configUnsubscribes,1);
+  await assert.rejects(env.root.loadSelection(selection),error=>error.code==='operational-disposed');
+});
+
 test('diagnostics retain safe operation metadata and redact payloads names phones and messages',async()=>{
   const env=createEnvironment('v2-read',{v2ReadError:true});
   await assert.rejects(env.root.loadSelection(selection));
@@ -320,6 +587,9 @@ test('staff pages load operational modules once in exact dependency order withou
       assert.equal(source.split(`scJs('${file}')`).length-1,1,`${page} loads ${file} once`);
     }
     assert.equal((source.match(/firebase-app-compat\.js/g)||[]).length,1,`${page} loads Firebase app once`);
+    assert.equal((source.match(/firebase-functions-compat\.js/g)||[]).length,1,`${page} loads Firebase Functions once`);
+    assert.ok(source.indexOf('firebase-firestore-compat.js')<source.indexOf('firebase-functions-compat.js'),`${page} Functions follows Firestore`);
+    assert.ok(source.indexOf('firebase-functions-compat.js')<source.indexOf("scJs('js/schedule-operational-gateway.js')"),`${page} Functions precedes gateway`);
   }
   for(const file of ['js/schedule-v2-operational-model.js','js/schedule-v2-operational-store.js','js/schedule-operational-gateway.js']){
     const source=fs.readFileSync(path.join(__dirname,'..',file),'utf8');

@@ -31,6 +31,7 @@ function createFirestore(input={}){
   const runtime=plain(input.runtime||{
     branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:31,
   });
+  const shadowStates=(input.shadowStates||[{status:'idle',requestedRevision:0,appliedRevision:0,pendingKeys:[],inFlightKeys:[],mismatchCount:0}]).map(plain);
   const queriedCollections=new Set();
   const documentReads={people:[],enrollments:[],tabs:[]};
   const readConcurrency={people:0,enrollments:0};
@@ -38,6 +39,7 @@ function createFirestore(input={}){
   const queryGates=input.queryGates||{};
   let genericGenerationReads=0;
   let runtimeListener=null;
+  let shadowReads=0;
 
   function matches(row,filters){
     return filters.every(({field,op,value})=>{
@@ -95,9 +97,16 @@ function createFirestore(input={}){
       return ()=>{ runtimeListener=null; };
     },
   };
+  const shadowRef={
+    async get(){
+      const state=shadowStates[Math.min(shadowReads,shadowStates.length-1)];
+      shadowReads+=1;
+      return {id:'scheduleSync',exists:true,data:()=>plain(state)};
+    },
+  };
   const branchRef={
     collection(name){
-      if(name==='runtime') return {doc:()=>runtimeRef};
+      if(name==='runtime') return {doc:id=>id==='scheduleSync'?shadowRef:runtimeRef};
       if(name==='generations') return {doc:()=>generationRef};
       throw new Error(`unexpected branch collection ${name}`);
     },
@@ -113,6 +122,7 @@ function createFirestore(input={}){
     queriedCollections,
     documentReads,
     maxReadConcurrency,
+    get shadowReads(){ return shadowReads; },
     get genericGenerationReads(){ return genericGenerationReads; },
     emitRuntime(next){
       Object.keys(runtime).forEach(key=>delete runtime[key]);
@@ -129,10 +139,36 @@ function selectedFixture(){
       {id:'camp',type:'bangteuk',name:'방학특강',order:1},
     ],
     placements:[],people:[],enrollments:[],teacherAssignments:[],
-    reservations:[{id:'r_regular',tabId:'regular',type:'enroll',slotKey:'월-1',payload:{state:'waiting'}}],
+    reservations:[
+      {id:'r_regular',tabId:'regular',type:'enroll',slotKey:'월-1',payload:{state:'regular-waiting'}},
+      {id:'r_camp',tabId:'camp',type:'enroll',slotKey:'화-1',payload:{state:'camp-waiting'}},
+    ],
     waitlistEntries:[{id:'w_regular',tabId:'regular',instKey:'월-1',order:0,payload:{state:'waiting'}}],
-    classMarks:[{id:'m_regular',tabId:'regular',legacyKey:'월-1',layer:'primary',payload:{color:'blue'}}],
-    attendanceRecords:[{id:'a_regular',tabId:'regular',legacyKey:'att-1',payload:{state:'present'}}],
+    classMarks:[
+      {id:'m_regular',tabId:'regular',legacyKey:'regular-mark',layer:'primary',payload:{color:'blue'}},
+      {id:'m_camp',tabId:'camp',legacyKey:'camp-mark',layer:'primary',payload:{color:'red'}},
+    ],
+    attendanceRecords:[{
+      id:'a_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',
+      personId:'p_0',enrollmentId:'e_0',legacyKey:'att-1',payload:{state:'present'},
+    }],
+    attendanceGuests:[{
+      id:'g_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',
+      legacyKey:'guest-1',order:0,payload:{name:'게스트'},
+    }],
+    attendanceSnapshots:[{
+      id:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',createdAt:'2026-08-11T01:00:00.000Z',
+    }],
+    attendanceSnapshotStudents:[{
+      id:'snap_student',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',order:0,payload:{name:'기록 원생'},
+    }],
+    attendanceSnapshotTeachers:[{
+      id:'snap_teacher',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',slotKey:'월-1',payload:'김강사',
+    }],
+    disabledSlots:[
+      {id:'d_regular',legacyKey:'regular-disabled',tabId:'regular',payload:{disabled:true}},
+      {id:'d_camp',legacyKey:'camp-disabled',tabId:'camp',payload:{disabled:true}},
+    ],
     retirementRecords:[{id:'h_regular',tabId:'regular',order:0,payload:{reason:'done'}}],
   };
   for(let index=0;index<35;index+=1){
@@ -200,11 +236,69 @@ test('selected V2 rows rebuild the stable legacy root through the operational mo
     branchId:'yongam',generationId:'gen_1',collections:loaded.collections,
   });
 
-  assert.deepEqual(plain(model.trackedLegacyView(loaded.root)),plain(model.trackedLegacyView(direct)));
+  Object.keys(loaded.root).forEach(key=>assert.equal(loaded.root[key],direct[key],key));
+  assert.equal(Object.prototype.hasOwnProperty.call(loaded.root,'swim_attendance'),false);
+  assert.equal(Object.prototype.hasOwnProperty.call(loaded.root,'swim_retire_history'),false);
   assert.equal(loaded.context.branchId,'yongam');
   assert.equal(loaded.context.generationId,'gen_1');
   assert.equal(loaded.context.epoch,4);
   assert.equal(loaded.context.revision,31);
+});
+
+test('roster-only reads return no manufactured values for unread domains',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const loaded=await store.loadSelection({tabIds:['regular'],domains:['roster']});
+
+  assert.deepEqual(Object.keys(loaded.collections).sort(),[
+    'enrollments','people','placements','tabs','teacherAssignments',
+  ]);
+  assert.deepEqual(Object.keys(loaded.root).sort(),['swim_inst','swim_students','swim_tab_list']);
+  for(const key of ['swim_mark','swim_enroll','swim_attendance','swim_disabled','swim_teachers','swim_retire_history']){
+    assert.equal(Object.prototype.hasOwnProperty.call(loaded.root,key),false,key);
+  }
+});
+
+test('attendance-only reads use selected tab metadata without widening person or enrollment reads',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const loaded=await store.loadSelection({
+    tabIds:['regular'],domains:['attendance'],dateRange:{dates:['2026-08-11']},
+  });
+
+  assert.deepEqual([...firestore.queriedCollections].sort(),[
+    'attendanceGuests','attendanceRecords','attendanceSnapshotStudents',
+    'attendanceSnapshotTeachers','attendanceSnapshots','tabs',
+  ]);
+  assert.deepEqual(firestore.documentReads.people,[]);
+  assert.deepEqual(firestore.documentReads.enrollments,[]);
+  assert.deepEqual(Object.keys(loaded.root).sort(),[
+    'swim_att_guests','swim_attendance','swim_day_snapshot',
+  ]);
+  assert.equal(JSON.parse(loaded.root.swim_attendance)['att-1'].state,'present');
+  assert.equal(JSON.parse(loaded.root.swim_att_guests)['guest-1'][0].name,'게스트');
+  assert.equal(JSON.parse(loaded.root.swim_day_snapshot)['2026-08-11'].students[0].name,'기록 원생');
+});
+
+test('mutation loads complete shared values while keeping tab-owned roster values scoped',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const loaded=await store.loadMutation({
+    tabIds:['regular'],
+    keys:['swim_mark','swim_enroll','swim_tab_list','swim_students','swim_disabled'],
+  });
+
+  assert.deepEqual(Object.keys(loaded.root).sort(),[
+    'swim_disabled','swim_enroll','swim_mark','swim_students','swim_tab_list',
+  ]);
+  assert.deepEqual(Object.keys(JSON.parse(loaded.root.swim_mark)).sort(),['camp-mark','regular-mark']);
+  assert.deepEqual(Object.keys(JSON.parse(loaded.root.swim_enroll)).sort(),['월-1','화-1']);
+  assert.equal(JSON.parse(loaded.root.swim_tab_list).length,2);
+  assert.equal(JSON.parse(loaded.root.swim_students).length,35);
+  assert.equal(Object.prototype.hasOwnProperty.call(loaded.root,'swim_bt_camp_stu'),false);
+  assert.deepEqual(Object.keys(JSON.parse(loaded.root.swim_disabled)).sort(),['camp-disabled','regular-disabled']);
+  assert.equal(firestore.documentReads.people.includes('p_unrelated'),false);
+  assert.equal(firestore.documentReads.enrollments.includes('e_unrelated'),false);
 });
 
 test('verify parity compares legacy JSON values canonically',async()=>{
@@ -222,13 +316,52 @@ test('verify parity compares legacy JSON values canonically',async()=>{
     selection:{tabIds:['regular'],domains:['workflow']},
     values:{swim_mark:JSON.stringify({
       '월-2':{label:'두 번째',color:'red'},
-      '월-1':{color:'blue'},
+      'regular-mark':{color:'blue'},
+      'camp-mark':{color:'red'},
     })},
     keys:['swim_mark'],
   });
 
   assert.equal(result.matches,true);
   assert.equal(result.keyCount,1);
+});
+
+test('verify parity waits for delayed shadow completion before comparing selected keys',async()=>{
+  const collections=selectedFixture();
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[
+      {status:'pending',requestedRevision:8,appliedRevision:7,pendingKeys:['swim_mark'],inFlightKeys:[],mismatchCount:0},
+      {status:'idle',requestedRevision:8,appliedRevision:8,pendingKeys:[],inFlightKeys:[],mismatchCount:0},
+    ],
+    collections,
+  });
+  const store=storeApi.create({
+    db:firestore.db,branchId:'yongam',model,verifyPollMs:1,verifyTimeoutMs:10,sleep:async()=>{},
+  });
+  const values={swim_mark:JSON.stringify({'regular-mark':{color:'blue'},'camp-mark':{color:'red'}})};
+
+  const result=await store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},values,keys:['swim_mark'],
+  });
+
+  assert.equal(result.matches,true);
+  assert.ok(firestore.shadowReads>=2);
+});
+
+test('verify parity reports a true selected projection mismatch after shadow settles',async()=>{
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[{status:'idle',requestedRevision:8,appliedRevision:8,pendingKeys:[],inFlightKeys:[],mismatchCount:0}],
+    collections:selectedFixture(),
+  });
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model,sleep:async()=>{}});
+
+  await assert.rejects(store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'wrong'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],
+  }),error=>error.code==='v2-operational-parity-mismatch');
 });
 
 test('a newer selected tab invalidates an older pending selection response',async()=>{
