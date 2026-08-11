@@ -4274,7 +4274,9 @@ function updateAttendanceMapTx(mutator){
   const handlers=getMainScheduleLiveHandlers();
   if(handlers) return handlers.updateAttendance({mutator,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
-  if(!runtime) return _updateLegacyAttendanceMapTx(mutator,_attendanceOperationContext());
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateAttendance(mutator,_attendanceOperationContext());
 }
 function setAttendanceEntryTx(attKey,val){
@@ -4293,7 +4295,9 @@ function updateAttGuestsMapTx(mutator){
   const handlers=getMainScheduleLiveHandlers();
   if(handlers) return handlers.updateAttendance({mutator,guests:true,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
-  if(!runtime) return _updateLegacyAttGuestsMapTx(mutator,_attendanceOperationContext());
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateGuests(mutator,_attendanceOperationContext());
 }
 function setAttGuestsEntryTx(guestKey,list){

@@ -1312,6 +1312,60 @@
     }
     if(window.location&&typeof window.location.reload==='function') window.location.reload();
   }
+  function operationalAuthorityError(){
+    return Object.assign(new Error('운영 저장 권한을 확인할 수 없어 읽기 전용으로 전환했습니다.'),{
+      code:'operational-authority-unavailable',
+    });
+  }
+  function readOnlyOperationalFacade(target,isRoot){
+    const facade={};
+    const readMethods=isRoot
+      ?['once','on','subscribeSelectedBatches','subscribeBatches']
+      :['once','on','off'];
+    readMethods.forEach(name=>{
+      if(typeof target?.[name]==='function') facade[name]=target[name].bind(target);
+    });
+    if(typeof target?.child==='function'){
+      facade.child=key=>readOnlyOperationalRef(target.child(key));
+    }
+    ['transactionKeys','set','remove','update','transaction','push'].forEach(name=>{
+      facade[name]=()=>Promise.reject(operationalAuthorityError());
+    });
+    ['key','path','branch','disabled'].forEach(name=>{
+      if(target&&name in target){
+        Object.defineProperty(facade,name,{enumerable:true,get:()=>target[name]});
+      }
+    });
+    return Object.freeze(facade);
+  }
+  function readOnlyOperationalRef(ref){
+    if(!ref) return ref;
+    if(typeof Proxy!=='function') return readOnlyOperationalFacade(ref,false);
+    return new Proxy(ref,{
+      get(target,property){
+        if(['set','remove','update','transaction'].includes(String(property))){
+          return ()=>Promise.reject(operationalAuthorityError());
+        }
+        if(property==='child') return key=>readOnlyOperationalRef(target.child(key));
+        const value=Reflect.get(target,property,target);
+        return typeof value==='function'?value.bind(target):value;
+      },
+    });
+  }
+  function readOnlyOperationalRoot(root){
+    if(!root) return root;
+    if(typeof Proxy!=='function') return readOnlyOperationalFacade(root,true);
+    return new Proxy(root,{
+      get(target,property){
+        if(['transactionKeys','set','remove','update','transaction'].includes(String(property))){
+          return ()=>Promise.reject(operationalAuthorityError());
+        }
+        if(property==='child') return key=>readOnlyOperationalRef(target.child(key));
+        const value=Reflect.get(target,property,target);
+        return typeof value==='function'?value.bind(target):value;
+      },
+    });
+  }
   function operationalCompatibilityRoot(operationalRoot,legacyRoot,operationalBranchId,requestRecovery){
     if(typeof Proxy!=='function') return operationalRoot;
     function copy(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
@@ -1463,37 +1517,45 @@
     const legacyRoot=(!useFirestore() || !firebase.firestore)
       ?firebase.database().ref(branch.fbPath)
       :new FirestoreKVRoot(branch);
-    const operationalReady=!!(
+    const authenticatedStaff=!!(
       window.SCAuth
       &&firebase.auth
       &&firebase.auth().currentUser
+    );
+    if(!authenticatedStaff) return legacyRoot;
+    const operationalReady=!!(
+      window.SCV2OperationalModel
+      &&typeof SCV2OperationalModel.domainForLegacyKey==='function'
       &&window.SCV2OperationalStore
       &&typeof SCV2OperationalStore.create==='function'
       &&window.SCOperationalSchedule
       &&typeof SCOperationalSchedule.create==='function'
-      &&window.SCV2OperationalModel
     );
     if(!operationalReady||typeof firebase.firestore!=='function'||typeof legacyRoot.transactionKeys!=='function'){
-      return legacyRoot;
+      return readOnlyOperationalRoot(legacyRoot);
     }
-    const id=branchId(branch);
-    const db=firebase.firestore();
-    const functions=firebase.app().functions('asia-northeast3');
-    const v2Store=SCV2OperationalStore.create({db,branchId:id,model:SCV2OperationalModel});
-    const operationalRoot=SCOperationalSchedule.create({
-      branch,
-      branchId:id,
-      legacyRoot,
-      db,
-      v2Store,
-      model:SCV2OperationalModel,
-      functions,
-      defaultTabIds:['regular'],
-      getBranchId:()=>String(window.SC_SELECTED_BRANCH||id),
-      onReloadRequired:requestOperationalPageReload,
-    });
-    const requestRecovery=functions.httpsCallable('manageScheduleV2RequestRecovery');
-    return operationalCompatibilityRoot(operationalRoot,legacyRoot,id,requestRecovery);
+    try{
+      const id=branchId(branch);
+      const db=firebase.firestore();
+      const functions=firebase.app().functions('asia-northeast3');
+      const v2Store=SCV2OperationalStore.create({db,branchId:id,model:SCV2OperationalModel});
+      const operationalRoot=SCOperationalSchedule.create({
+        branch,
+        branchId:id,
+        legacyRoot,
+        db,
+        v2Store,
+        model:SCV2OperationalModel,
+        functions,
+        defaultTabIds:['regular'],
+        getBranchId:()=>String(window.SC_SELECTED_BRANCH||id),
+        onReloadRequired:requestOperationalPageReload,
+      });
+      const requestRecovery=functions.httpsCallable('manageScheduleV2RequestRecovery');
+      return operationalCompatibilityRoot(operationalRoot,legacyRoot,id,requestRecovery);
+    }catch(error){
+      return readOnlyOperationalRoot(legacyRoot);
+    }
   }
   function subscribeSelectedRTDB(root,options){
     if(!root||typeof root.child!=='function') throw new Error('selected root is required');

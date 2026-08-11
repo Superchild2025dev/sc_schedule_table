@@ -63,6 +63,10 @@
     return {name:week5?raw.replace(/^[*＊]+\s*/,'').trim():raw,week5};
   }
   function courseTypeForTab(tab){ return tab?.type==='bangteuk'?'bangteuk':'regular'; }
+  function attendanceOwner(tabId,tab){
+    const courseType=courseTypeForTab(tab);
+    return {tabId:courseType==='regular'?'regular':text(tabId),courseType};
+  }
   function personIdFor(student){
     const existing=text(student?.sid);
     if(existing) return existing;
@@ -804,6 +808,7 @@
 
     Object.entries(bundle.attendanceByTab||{}).forEach(([tabId,source])=>{
       const tab=tabsById.get(tabId)||null;
+      const owner=attendanceOwner(tabId,tab);
       const map=normalizedAttendanceMap(tabId,source,'records');
       Object.entries(map||{}).forEach(([legacyKey,raw])=>{
         const parts=legacyAttendanceParts(legacyKey);
@@ -813,10 +818,10 @@
         const placement=parts.isSub?null:placementForAttendance(tabId,parts.slotKey,context);
         const personId=text(mark?.personId||placement?.personId);
         attendanceRecords.push({
-          id:id('att',`${tabId}|${legacyKey}`),
+          id:id('att',`${owner.tabId}|${legacyKey}`),
           legacyKey,
-          tabId,
-          courseType:tab?courseTypeForTab(tab):'',
+          tabId:owner.tabId,
+          courseType:owner.courseType,
           recordType:parts.isSub?'marked-student':'scheduled-student',
           slotKey:parts.slotKey,
           time:parts.time,
@@ -838,6 +843,7 @@
 
     Object.entries(bundle.attendanceGuestsByTab||{}).forEach(([tabId,source])=>{
       const tab=tabsById.get(tabId)||null;
+      const owner=attendanceOwner(tabId,tab);
       const map=normalizedAttendanceMap(tabId,source,'guests');
       Object.entries(map||{}).forEach(([legacyKey,list])=>{
         const group=legacyAttendanceGuestParts(legacyKey);
@@ -858,11 +864,11 @@
             g:payload.g||payload.gender,
           });
           attendanceGuests.push({
-            id:id('guest',`${tabId}|${legacyKey}|${guestId||index}`),
+            id:id('guest',`${owner.tabId}|${legacyKey}|${guestId||index}`),
             legacyKey,
             guestId,
-            tabId,
-            courseType:tab?courseTypeForTab(tab):'',
+            tabId:owner.tabId,
+            courseType:owner.courseType,
             slotGroupKey:group.slotGroupKey,
             slotKey,
             time:group.time,
@@ -895,6 +901,7 @@
     const helper=global.SCScheduleTime;
     Object.entries(bundle.attendanceSnapshotsByTab||{}).forEach(([tabId,map])=>{
       const tab=tabsById.get(tabId)||null;
+      const owner=attendanceOwner(tabId,tab);
       Object.entries(map&&typeof map==='object'&&!Array.isArray(map)?map:{}).forEach(([date,raw])=>{
         if(!/^\d{4}-\d{2}-\d{2}$/.test(text(date))) return;
         const storageKey=`zz_swim_day_snapshot__${attendanceSnapshotScope(tab)}__${date}`;
@@ -903,11 +910,11 @@
           :clone(raw);
         if(!snapshot||typeof snapshot!=='object'||Array.isArray(snapshot)||!Array.isArray(snapshot.students)) return;
         const inst=snapshot.inst&&typeof snapshot.inst==='object'&&!Array.isArray(snapshot.inst)?snapshot.inst:{};
-        const snapshotId=id('ats',`${tabId}|${date}`);
+        const snapshotId=id('ats',`${owner.tabId}|${date}`);
         attendanceSnapshots.push({
           id:snapshotId,
-          tabId,
-          courseType:tab?courseTypeForTab(tab):'',
+          tabId:owner.tabId,
+          courseType:owner.courseType,
           date,
           studentCount:snapshot.students.length,
           teacherCount:Object.keys(inst).length,
@@ -919,10 +926,10 @@
           const person=personFromStudent(student);
           const slotKey=slotKeyFor(student);
           attendanceSnapshotStudents.push({
-            id:id('atstu',`${tabId}|${date}|${slotKey}|${person.id}|${index}`),
+            id:id('atstu',`${owner.tabId}|${date}|${slotKey}|${person.id}|${index}`),
             snapshotId,
-            tabId,
-            courseType:tab?courseTypeForTab(tab):'',
+            tabId:owner.tabId,
+            courseType:owner.courseType,
             date,
             personId:person.id,
             name:person.name,
@@ -943,10 +950,10 @@
           const teacherName=text(typeof teacher==='object'?(teacher.name||teacher.n):teacher);
           if(!teacherName) return;
           attendanceSnapshotTeachers.push({
-            id:id('atinst',`${tabId}|${date}|${slotKey}`),
+            id:id('atinst',`${owner.tabId}|${date}|${slotKey}`),
             snapshotId,
-            tabId,
-            courseType:tab?courseTypeForTab(tab):'',
+            tabId:owner.tabId,
+            courseType:owner.courseType,
             date,
             slotKey:text(slotKey),
             teacherName,

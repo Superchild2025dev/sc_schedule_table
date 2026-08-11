@@ -120,6 +120,61 @@ test("per-day attendance snapshots round-trip independent of their legacy storag
   assert.deepEqual(model.trackedLegacyView(rebuilt), model.trackedLegacyView(root));
 });
 
+test("a named current regular tab stores attendance under the canonical regular owner",()=>{
+  const model=loadModel();
+  const schema=loadSchema();
+  const root=fullLegacyFixture();
+  const tabs=JSON.parse(root.swim_tab_list);
+  tabs[0]={...tabs[0],id:"autumn",name:"Autumn Regular"};
+  root.swim_tab_list=JSON.stringify(tabs);
+  root.swim_stu_autumn=root.swim_students;
+  root.swim_inst_autumn=root.swim_inst;
+  delete root.swim_students;
+  delete root.swim_inst;
+  root.swim_main_tab=JSON.stringify({tabId:"autumn",month:"2026-08"});
+  root.swim_parent_tab=JSON.stringify({tabId:"autumn"});
+
+  const collections=schema.diagnoseLegacyRoot("yongam",root).conversion;
+  const regularRows=[
+    ...collections.attendanceRecords,
+    ...collections.attendanceGuests,
+    ...collections.attendanceSnapshots,
+    ...collections.attendanceSnapshotStudents,
+    ...collections.attendanceSnapshotTeachers,
+  ].filter(row=>row.courseType==="regular");
+  const rebuilt=model.legacyRootFromCollections({branchId:"yongam",collections});
+
+  assert.ok(regularRows.length>0);
+  assert.deepEqual([...new Set(regularRows.map(row=>row.tabId))],["regular"]);
+  assert.ok(Object.hasOwn(rebuilt,"swim_attendance"));
+  assert.ok(Object.hasOwn(rebuilt,"swim_day_snapshot"));
+  assert.equal(Object.keys(rebuilt).some(key=>key.startsWith("swim_bt_attendance_autumn")),false);
+  assert.deepEqual(model.trackedLegacyView(rebuilt),model.trackedLegacyView(root));
+});
+
+test("archived regular attendance and historical snapshots rebuild through canonical shared keys",()=>{
+  const model=loadModel();
+  const collections=convertedFixture();
+  const regularRecord=collections.attendanceRecords.find(row=>row.courseType==="regular");
+  const regularSnapshot=collections.attendanceSnapshots.find(row=>row.courseType==="regular");
+  regularRecord.tabId="may";
+  regularSnapshot.tabId="may";
+  collections.attendanceSnapshotStudents
+    .filter(row=>row.snapshotId===regularSnapshot.id)
+    .forEach(row=>{row.tabId="may";});
+  collections.attendanceSnapshotTeachers
+    .filter(row=>row.snapshotId===regularSnapshot.id)
+    .forEach(row=>{row.tabId="may";});
+
+  const rebuilt=model.legacyRootFromCollections({branchId:"yongam",collections});
+
+  assert.ok(rebuilt);
+  assert.equal(JSON.parse(rebuilt.swim_attendance)[regularRecord.legacyKey].s,"present");
+  assert.equal(JSON.parse(rebuilt.swim_day_snapshot)[regularSnapshot.date].date,regularSnapshot.date);
+  assert.ok(Object.hasOwn(rebuilt,`zz_swim_day_snapshot__regular__${regularSnapshot.date}`));
+  assert.equal(Object.keys(rebuilt).some(key=>key.includes("attendance_may")||key.includes("snapshot_may")),false);
+});
+
 test("siblings with one phone remain separate legacy student rows", () => {
   const model = loadModel();
   const rebuilt = model.legacyRootFromCollections({branchId:"yongam",collections:convertedFixture()});

@@ -113,6 +113,11 @@ function requestRecoveryRef(db,branchId,operationId){
   return db.collection(ROOT_COLLECTION).doc(branchId).collection("requestRecoveries").doc(operationId);
 }
 
+function recoveryResolutionRef(db,branchId,kind,operationId){
+  return db.collection(ROOT_COLLECTION).doc(branchId).collection("recoveryResolutions")
+    .doc(`${kind}_${safeDocId(operationId)}`);
+}
+
 function recoveryFenceRef(db,branchId){
   return db.collection(ROOT_COLLECTION).doc(branchId).collection("runtime").doc("operationalRecovery");
 }
@@ -593,11 +598,18 @@ async function deriveChangesDefault(input){
   if(!report?.checks?.ready||!report.conversion) fail("failed-precondition");
   const planned=model.collectionChanges({before:collections,after:report.conversion});
   if(planned.issues.length) fail("failed-precondition");
+  const attendanceRelated=input.request.keys.some(key=>
+    ["attendance","roster","workflow"].includes(model.domainForLegacyKey(key))
+  );
+  const plannedChanges=attendanceRelated?planned.changes:planned.changes.filter(change=>
+    !SNAPSHOT_COLLECTIONS.has(change.collection)&&
+    change.collection!=="attendanceRecords"&&change.collection!=="attendanceGuests"
+  );
   const beforeByCollection={};
   COLLECTIONS.forEach(name=>{
     beforeByCollection[name]=new Map((storedCollections[name]||[]).map(row=>[text(row.id),row]));
   });
-  const changes=planned.changes.map(change=>{
+  const changes=plannedChanges.map(change=>{
     const before=beforeByCollection[change.collection].get(text(change.id));
     return {
       ...change,
@@ -1460,6 +1472,183 @@ function createOperationalWriter(options={}){
     return summary;
   }
 
+  function terminalResolution(command,actor,outcome,at){
+    return {
+      version:1,
+      branchId:command.branchId,
+      kind:command.kind,
+      operationId:command.operationId,
+      action:command.action,
+      expectedState:command.expectedState,
+      outcome,
+      resolvedBy:actorId(actor),
+      resolvedAt:at.toISOString(),
+      updatedAt:serverTimestamp(),
+    };
+  }
+
+  function canonicalLegacyValue(value){
+    if(typeof value!=="string") return value;
+    try{return JSON.parse(value);}catch(error){return value;}
+  }
+
+  async function manageMirrorTerminalRecovery(command,actor){
+    const manifestDocument=mutationRef(options.db,command.branchId,command.operationId);
+    const runtimeDocument=runtimeRef(options.db,command.branchId);
+    const resolutionDocument=recoveryResolutionRef(
+      options.db,command.branchId,command.kind,command.operationId,
+    );
+    const [manifestSnapshot,runtimeSnapshot]=await Promise.all([
+      manifestDocument.get(),runtimeDocument.get(),
+    ]);
+    if(!manifestSnapshot.exists||!runtimeSnapshot.exists) fail("not-found");
+    const manifest=manifestSnapshot.data()||{};
+    const runtime=runtimeSnapshot.data()||{};
+    if(manifest.status!=="committed"||manifest.recoveryState!==command.expectedState||
+        text(manifest.operationId)!==command.operationId||text(manifest.branchId)!==command.branchId||
+        text(runtime.branchId)!==command.branchId||text(runtime.generationId)!==text(manifest.generationId)||
+        text(runtime.activeOperationId)||Number(runtime.revision||0)<Number(manifest.resultingRevision||0)||
+        !Array.isArray(manifest.keys)) fail("failed-precondition");
+    const sourceRevision=Number(runtime.revision||0);
+    const currentManifest={...manifest,recoverySourceRevision:sourceRevision};
+    const values=await resolveRecoveryValues({
+      db:options.db,branchId:command.branchId,operationId:command.operationId,
+      manifest:currentManifest,heartbeat:async()=>{},
+    });
+    if(!plainObject(values)) fail("failed-precondition");
+    const nowValue=normalizeNow(now());
+    const prepared=await options.db.runTransaction(async tx=>{
+      const [latestManifestSnapshot,latestRuntimeSnapshot]=await Promise.all([
+        tx.get(manifestDocument),tx.get(runtimeDocument),
+      ]);
+      const latestManifest=latestManifestSnapshot.data()||{};
+      const latestRuntime=latestRuntimeSnapshot.data()||{};
+      if(latestManifest.status!=="committed"||latestManifest.recoveryState!==command.expectedState||
+          text(latestRuntime.generationId)!==text(latestManifest.generationId)||
+          text(latestRuntime.activeOperationId)||Number(latestRuntime.revision||0)!==sourceRevision){
+        fail("aborted");
+      }
+      let mirrorMatches=true;
+      for(const key of latestManifest.keys){
+        const legacyDocument=legacyKeyRef(options.db,command.branchId,key);
+        const legacySnapshot=await tx.get(legacyDocument);
+        const current=legacySnapshot.exists
+          ?await readLegacyValueInTransaction(tx,options.db,command.branchId,key,legacySnapshot.data()||{})
+          :undefined;
+        const expected=Object.prototype.hasOwnProperty.call(values,key)?values[key]:undefined;
+        if(model.canonicalDigest(canonicalLegacyValue(current))!==
+            model.canonicalDigest(canonicalLegacyValue(expected))){
+          mirrorMatches=false;
+        }
+      }
+      if(command.action==="resolve"&&!mirrorMatches) fail("failed-precondition");
+      if(mirrorMatches){
+        const applied=manifestWithRecoveryState(latestManifest,"applied",{
+          now:nowValue,serverTimestamp,
+        });
+        applied.recoveryResolvedAt=nowValue.toISOString();
+        applied.recoveryResolvedBy=actorId(actor);
+        tx.set(manifestDocument,applied,{merge:false});
+        tx.set(resolutionDocument,terminalResolution(command,actor,"applied",nowValue),{merge:false});
+        return {state:"applied",retry:false};
+      }
+      const pending=manifestWithRecoveryState(latestManifest,"pending",{
+        now:nowValue,serverTimestamp,
+      });
+      pending.recoveryAttempts=0;
+      pending.recoverySourceRevision=sourceRevision;
+      delete pending.recoveryFailedAt;
+      delete pending.recoveryErrorCode;
+      delete pending.recoveryResolvedAt;
+      delete pending.recoveryResolvedBy;
+      tx.set(manifestDocument,pending,{merge:false});
+      tx.set(resolutionDocument,terminalResolution(command,actor,"requeued",nowValue),{merge:false});
+      return {state:"pending",retry:true};
+    });
+    if(!prepared.retry){
+      return {operationId:command.operationId,kind:command.kind,state:prepared.state};
+    }
+    const result=await applyV1Recovery({
+      db:options.db,branchId:command.branchId,operationId:command.operationId,
+      resolveRecoveryValues,clock:now,now:normalizeNow(now()),serverTimestamp,
+    });
+    const completedAt=normalizeNow(now());
+    await options.db.runTransaction(async tx=>{
+      tx.set(resolutionDocument,terminalResolution(
+        command,actor,result.recoveryState,completedAt,
+      ),{merge:false});
+    });
+    return {operationId:command.operationId,kind:command.kind,state:result.recoveryState};
+  }
+
+  async function manageRequestTerminalRecovery(command,actor){
+    const recoveryDocument=requestRecoveryRef(options.db,command.branchId,command.operationId);
+    const manifestDocument=mutationRef(options.db,command.branchId,command.operationId);
+    const requestDocument=legacyKeyRef(options.db,command.branchId,"swim_requests");
+    const resolutionDocument=recoveryResolutionRef(
+      options.db,command.branchId,command.kind,command.operationId,
+    );
+    const nowValue=normalizeNow(now());
+    const prepared=await options.db.runTransaction(async tx=>{
+      const [recoverySnapshot,manifestSnapshot,requestSnapshot]=await Promise.all([
+        tx.get(recoveryDocument),tx.get(manifestDocument),tx.get(requestDocument),
+      ]);
+      if(!recoverySnapshot.exists||!manifestSnapshot.exists||!requestSnapshot.exists) fail("not-found");
+      const rawRecord=recoverySnapshot.data()||{};
+      const record=validateStoredRequestRecovery(rawRecord,command.branchId,command.operationId);
+      const manifest=manifestSnapshot.data()||{};
+      if(record.state!==command.expectedState||manifest.status!=="committed"||
+          text(manifest.operationId)!==command.operationId||text(manifest.branchId)!==command.branchId){
+        fail("failed-precondition");
+      }
+      const raw=await readLegacyValueInTransaction(
+        tx,options.db,command.branchId,"swim_requests",requestSnapshot.data()||{},
+      );
+      const requests=parseLegacyRequests(raw);
+      if(record.state==="rejected"){
+        if(command.action!=="resolve") fail("failed-precondition");
+        tx.delete(recoveryDocument);
+        tx.set(resolutionDocument,terminalResolution(command,actor,"dismissed",nowValue),{merge:false});
+        return {state:"dismissed",retry:false};
+      }
+      if(text(manifest.operationType)!==record.operationType) fail("failed-precondition");
+      const processorName=policy.requestRecoveryProcessorName(manifest.actorId);
+      const alreadyApplied=record.intents.every(intent=>{
+        const current=requests[intent.requestId];
+        return plainObject(current)&&applyRequestIntent(current,intent,processorName).alreadyApplied===true;
+      });
+      if(command.action==="resolve"&&!alreadyApplied) fail("failed-precondition");
+      if(alreadyApplied){
+        const completed=requestRecoveryState(record,"completed",nowValue,"",{
+          completedAt:nowValue.toISOString(),
+        });
+        tx.set(recoveryDocument,completed,{merge:false});
+        tx.set(resolutionDocument,terminalResolution(command,actor,"completed",nowValue),{merge:false});
+        return {state:"completed",retry:false};
+      }
+      const staged=requestRecoveryState(record,"staged",nowValue,"",{attempts:0,primaryChecks:0});
+      tx.set(recoveryDocument,staged,{merge:false});
+      tx.set(resolutionDocument,terminalResolution(command,actor,"requeued",nowValue),{merge:false});
+      return {state:"staged",retry:true};
+    });
+    if(!prepared.retry){
+      return {operationId:command.operationId,kind:command.kind,state:prepared.state};
+    }
+    const result=await processRequestRecovery(command.branchId,command.operationId);
+    const completedAt=normalizeNow(now());
+    await options.db.runTransaction(async tx=>{
+      tx.set(resolutionDocument,terminalResolution(command,actor,result.state,completedAt),{merge:false});
+    });
+    return {operationId:command.operationId,kind:command.kind,state:result.state};
+  }
+
+  async function manageTerminalRecovery(callableRequest){
+    const command=policy.validateTerminalRecoveryCommand(callableRequest?.data);
+    const actor=policy.authorizeTerminalRecovery(callableRequest,command);
+    if(command.kind==="mirror") return manageMirrorTerminalRecovery(command,actor);
+    return manageRequestTerminalRecovery(command,actor);
+  }
+
   async function manageRequestRecovery(callableRequest){
     const command=policy.validateRequestRecoveryCommand(callableRequest?.data);
     policy.authorizeRequestRecovery(callableRequest,command);
@@ -1492,6 +1681,7 @@ function createOperationalWriter(options={}){
     mutate,
     recoverOperationalMirrors,
     manageRequestRecovery,
+    manageTerminalRecovery,
     recoverRequestPatches,
     readOperationalStatus:branchId=>readOperationalStatus({db:options.db,branchId}),
   });

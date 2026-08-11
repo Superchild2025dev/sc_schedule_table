@@ -74,6 +74,7 @@ function fixture(mode,overrides={}){
   const v2Store={
     async readConfig(){
       if(overrides.configError) throw new Error('config failed');
+      if(Object.prototype.hasOwnProperty.call(overrides,'configValue')) return plain(overrides.configValue);
       return {
         mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',
         epoch:7,revision:12,valid:true,
@@ -160,6 +161,35 @@ test('v1 mode reads and writes only the legacy attendance map',async()=>{
   assert.equal(saved.primary,'v1');
   assert.equal(saved.attendance[key].s,'present');
   assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2ReadInputs:[],v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:['legacy-read','legacy-write']});
+});
+
+test('an unreadable attendance authority remains readable from V1 but rejects every V1 write',async()=>{
+  const env=fixture('v1',{configError:true});
+  const loaded=await env.gateway.loadRange(range);
+
+  assert.equal(loaded.primary,'v1');
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:loaded.attendance,
+  }),error=>error?.code==='operational-authority-unavailable');
+  assert.equal(env.calls.legacyLoads,1);
+  assert.equal(env.calls.legacyAttendanceWrites,0);
+});
+
+test('malformed attendance authority never grants an implicit V1 write',async()=>{
+  const invalidConfigs=[
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:7,revision:12,valid:false,compatibilityValid:true},
+    {mode:'unknown',generationId:'',branchId:'yongam',epoch:7,revision:12,valid:true,compatibilityValid:true},
+    {mode:'v1',generationId:'',branchId:'gagyeong',epoch:7,revision:12,valid:true,compatibilityValid:true},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:7,revision:-1,valid:true,compatibilityValid:true},
+  ];
+  for(const candidate of invalidConfigs){
+    const env=fixture('v1',{configValue:candidate});
+    await env.gateway.ready();
+    await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+      ...range,before:{[key]:{s:'absent'}},
+    }),error=>error?.code==='operational-authority-unavailable',JSON.stringify(candidate));
+    assert.equal(env.calls.legacyAttendanceWrites,0,JSON.stringify(candidate));
+  }
 });
 
 test('a compatibility pointer mismatch blocks a confirmed V2 save with redacted diagnostics',async()=>{

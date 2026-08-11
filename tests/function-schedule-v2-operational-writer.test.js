@@ -145,6 +145,7 @@ function accountActorId(email){return crypto.createHash("sha256").update(email.t
 function runtimePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operational`;}
 function manifestPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/operationalMutations/${operationId}`;}
 function requestRecoveryPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/requestRecoveries/${operationId}`;}
+function recoveryResolutionPath(kind,operationId,branchId=BRANCH){return `scheduleV2/${branchId}/recoveryResolutions/${kind}_${operationId}`;}
 function recoveryFencePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operationalRecovery`;}
 function legacyPath(key,branchId=BRANCH){
   return `scheduleStores/${branchId}/kv/${encodeURIComponent(key).replace(/\./g,"%2E")}`;
@@ -185,6 +186,12 @@ function requestRecoveryCommand(action="stage",overrides={}){
     }],
   }:{version:1,action,branchId:BRANCH,operationId:""};
   return {...auth("yongam.desk@scswim.local"),data:{...base,...overrides}};
+}
+function terminalRecoveryCommand(action="retry",overrides={}){
+  return {...auth(),data:{
+    version:1,action,branchId:BRANCH,kind:"mirror",operationId:"terminal_op",expectedState:"error",
+    ...overrides,
+  }};
 }
 function committedManifest(operationId=operationUuid(1),overrides={}){
   return {
@@ -310,6 +317,29 @@ test("request recovery accepts production IDs and rejects phone or name-like ide
   assert.throws(()=>policy.validateRequestRecoveryCommand({
     ...requestRecoveryCommand("status").data,operationId:operationUuid(30),
   }),error=>error.code==="invalid-argument");
+});
+
+test("terminal recovery commands are exact and developer-only",()=>{
+  for(const kind of ["mirror","request"]){
+    const expectedState=kind==="mirror"?"error":"conflict";
+    const command=policy.validateTerminalRecoveryCommand(terminalRecoveryCommand("retry",{
+      kind,operationId:kind==="mirror"?"terminal_op":operationUuid(1),expectedState,
+    }).data);
+    assert.equal(command.kind,kind);
+    assert.equal(policy.authorizeTerminalRecovery(terminalRecoveryCommand().auth,command).role,"developer");
+  }
+  for(const invalid of [
+    {...terminalRecoveryCommand().data,version:2},
+    {...terminalRecoveryCommand().data,kind:"unknown"},
+    {...terminalRecoveryCommand().data,expectedState:"pending"},
+    {...terminalRecoveryCommand().data,payload:{name:"private"}},
+  ]) assert.throws(()=>policy.validateTerminalRecoveryCommand(invalid),error=>error.code==="invalid-argument");
+  for(const email of ["2025superchild@gmail.com","yongam.desk@scswim.local","yongam.lee1@scswim.local"]){
+    assert.throws(
+      ()=>policy.authorizeTerminalRecovery(auth(email).auth,policy.validateTerminalRecoveryCommand(terminalRecoveryCommand().data)),
+      error=>error.code==="permission-denied",
+    );
+  }
 });
 
 test("target-status schemas reject every contradictory transition field combination",()=>{
@@ -691,6 +721,62 @@ test("terminal exhausted errors cannot starve active recovery candidates",async(
   assert.equal(db.value(requestRecoveryPath(exhaustedId)).attempts,5);
 });
 
+test("developer retry revalidates and repairs a terminal V1 mirror with a durable resolution",async()=>{
+  const operationId="terminal_op";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime(),
+    [manifestPath(operationId)]:{
+      operationId,branchId:BRANCH,generationId:GENERATION,operationType:"sort-teachers",
+      status:"committed",keys:["swim_teachers"],removedKeys:[],resultingRevision:31,
+      recoverySourceRevision:31,recoveryState:"error",recoveryAttempts:5,
+      result:{operationId,committed:true,revision:31,recoveryState:"error"},
+    },
+    [legacyPath("swim_teachers")]:{key:"swim_teachers",value:"[]",chunked:false,branchId:BRANCH},
+  });
+  const writer=createWriter(db,{resolveRecoveryValues:async()=>({
+    swim_teachers:JSON.stringify([{name:"Teacher One"}]),
+  })});
+
+  const result=await writer.manageTerminalRecovery(terminalRecoveryCommand("retry"));
+
+  assert.equal(result.kind,"mirror");
+  assert.equal(result.state,"applied");
+  assert.equal(db.value(manifestPath(operationId)).recoveryState,"applied");
+  assert.deepEqual(JSON.parse(db.value(legacyPath("swim_teachers")).value),[{name:"Teacher One"}]);
+  const resolution=db.value(recoveryResolutionPath("mirror",operationId));
+  assert.equal(resolution.action,"retry");
+  assert.equal(resolution.outcome,"applied");
+  assert.equal(JSON.stringify(resolution).includes("Teacher One"),false);
+});
+
+test("developer resolve closes an already-applied terminal request conflict and keeps durable evidence",async()=>{
+  const operationId=operationUuid(31);
+  const manifest=committedManifest(operationId);
+  const db=new FakeFirestore({
+    [manifestPath(operationId)]:manifest,
+    [legacyPath("swim_requests")]:legacyRequests({[REQUEST_ID]:{status:"rejected"}}),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  assert.equal((await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}))).state,"conflict");
+  db.docs.set(legacyPath("swim_requests"),legacyRequests({[REQUEST_ID]:{
+    status:"accepted",processedAt:"2026-08-11T03:00:00.000Z",
+    processedBy:policy.requestRecoveryProcessorName(manifest.actorId),
+  }}));
+
+  const result=await writer.manageTerminalRecovery(terminalRecoveryCommand("resolve",{
+    kind:"request",operationId,expectedState:"conflict",
+  }));
+
+  assert.equal(result.kind,"request");
+  assert.equal(result.state,"completed");
+  assert.equal(db.value(requestRecoveryPath(operationId)).state,"completed");
+  const resolution=db.value(recoveryResolutionPath("request",operationId));
+  assert.equal(resolution.action,"resolve");
+  assert.equal(resolution.outcome,"completed");
+  assert.equal(JSON.stringify(resolution).includes(REQUEST_ID),false);
+});
+
 test("request recovery uses ordered pagination instead of leaving later active records stranded",async()=>{
   const requests={};
   const db=new FakeFirestore({[legacyPath("swim_requests")]:legacyRequests(requests)});
@@ -875,6 +961,49 @@ test("real model planning ignores storage metadata and changes only the requeste
   assert.equal(plan.changes.length,1);
   assert.equal(plan.changes[0].collection,"teacherProfiles");
   assert.equal(plan.changes[0].type,"set");
+});
+
+test("an unrelated mutation preserves archived regular attendance ownership and historical snapshots",async()=>{
+  const model=globalThis.SCV2OperationalModel;
+  const schema=globalThis.SCScheduleSchemaV2;
+  const emptyCollections={};
+  Object.values(model.DOMAIN_COLLECTIONS).flat().forEach(name=>{emptyCollections[name]=[];});
+  const root=model.legacyRootFromCollections({branchId:BRANCH,generationId:GENERATION,collections:emptyCollections});
+  root.swim_tab_list=JSON.stringify([{id:"autumn",name:"Autumn Regular",type:"regular"}]);
+  root.swim_stu_autumn="[]";
+  root.swim_inst_autumn="{}";
+  root.swim_main_tab=JSON.stringify({tabId:"autumn"});
+  root.swim_parent_tab=JSON.stringify({tabId:"autumn"});
+  root.swim_archived_tabs=JSON.stringify([{id:"may",name:"May Archive",type:"regular"}]);
+  root.swim_teachers="[]";
+  root.swim_attendance=JSON.stringify({"4PM/Mon/1/1/2026-05-04":{s:"present"}});
+  root.swim_att_guests="{}";
+  root.swim_day_snapshot=JSON.stringify({"2026-05-04":{
+    date:"2026-05-04",students:[{sid:"historical",n:"Historical",t:"4PM",d:"Mon",l:1,r:1}],inst:{},
+  }});
+  const baseline=schema.diagnoseLegacyRoot(BRANCH,root).conversion;
+  baseline.attendanceRecords.forEach(row=>{if(row.courseType==="regular") row.tabId="may";});
+  baseline.attendanceSnapshots.forEach(row=>{if(row.courseType==="regular") row.tabId="may";});
+  baseline.attendanceSnapshotStudents.forEach(row=>{if(row.courseType==="regular") row.tabId="may";});
+  baseline.attendanceSnapshotTeachers.forEach(row=>{if(row.courseType==="regular") row.tabId="may";});
+  const initial={[runtimePath()]:runtime()};
+  Object.entries(baseline).filter(([,rows])=>Array.isArray(rows)).forEach(([collection,rows])=>{
+    rows.forEach(row=>{
+      initial[generationPath(collection,row.id)]={
+        ...clone(row),branchId:BRANCH,generationId:GENERATION,
+        operationalRevision:31,lastOperationId:"baseline",
+      };
+    });
+  });
+  const mutation=policy.validateMutationRequest(request({
+    operationId:"op_unrelated_history",operationType:"sort-teachers",keys:["swim_teachers"],
+    nextValues:{swim_teachers:[{name:"Teacher One"}]},
+  }).data);
+
+  const plan=await operational.deriveChanges({db:new FakeFirestore(initial),request:mutation});
+
+  assert.equal(plan.changes.some(change=>change.collection.startsWith("attendance")),false);
+  assert.deepEqual(plan.changes.map(change=>change.collection),["teacherProfiles"]);
 });
 
 test("absence and makeup operations cannot relabel cross-semantic mark changes",async()=>{

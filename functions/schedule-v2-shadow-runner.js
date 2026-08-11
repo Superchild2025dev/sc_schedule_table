@@ -17,10 +17,15 @@ const GLOBAL_LEGACY_KEYS=Object.freeze([
   "swim_parent_tab","swim_teachers","swim_tab_folders","swim_archived_tabs",
   "swim_age_year","swim_student_id_version","swim_ver","swim_reserve",
   "swim_mark","swim_disabled","swim_closed","swim_periods",
-  "swim_retire_history","swim_desk_notes",
+  "swim_retire_history","swim_desk_notes","swim_attendance","swim_att_guests",
+  "swim_day_snapshot",
 ]);
 const TAB_SCOPED_COLLECTIONS=new Set([
   "enrollments","placements","teacherAssignments",
+]);
+const ATTENDANCE_COLLECTIONS=new Set([
+  "attendanceRecords","attendanceGuests","attendanceSnapshots",
+  "attendanceSnapshotStudents","attendanceSnapshotTeachers",
 ]);
 const SAFE_ERROR_CODES=new Set([
   "aborted","already-exists","cancelled","data-loss","deadline-exceeded",
@@ -37,17 +42,30 @@ function text(value){
 function tabLegacyKeys(tabMetadata){
   const students=[];
   const teachers=[];
+  const attendance=[];
+  const guests=[];
+  const snapshots=[];
   (Array.isArray(tabMetadata)?tabMetadata:[]).forEach(tab=>{
     const tabId=text(tab?.id)||"regular";
     if(tab?.type==="bangteuk"){
       students.push(`swim_bt_${tabId}_stu`);
       teachers.push(`swim_bt_${tabId}_inst`);
+      attendance.push(`swim_bt_attendance_${tabId}`);
+      guests.push(`swim_bt_att_guests_${tabId}`);
+      snapshots.push(`swim_bt_day_snapshot_${tabId}`);
     }else{
       students.push(tabId==="regular"?"swim_students":`swim_stu_${tabId}`);
       teachers.push(tabId==="regular"?"swim_inst":`swim_inst_${tabId}`);
+      attendance.push("swim_attendance");
+      guests.push("swim_att_guests");
+      snapshots.push("swim_day_snapshot");
     }
   });
-  return {students,teachers};
+  return {
+    students:[...new Set(students)],teachers:[...new Set(teachers)],
+    attendance:[...new Set(attendance)],guests:[...new Set(guests)],
+    snapshots:[...new Set(snapshots)],
+  };
 }
 
 function requiredLegacyKeys(keys,tabMetadata){
@@ -57,7 +75,10 @@ function requiredLegacyKeys(keys,tabMetadata){
   const selected=new Set(selectedCollections(changed));
   const tabKeys=tabLegacyKeys(tabMetadata);
   if(changed.includes("swim_tab_list")){
-    [...tabKeys.students,...tabKeys.teachers,...GLOBAL_LEGACY_KEYS,...RESERVATION_KEYS]
+    [
+      ...tabKeys.students,...tabKeys.teachers,...tabKeys.attendance,...tabKeys.guests,
+      ...tabKeys.snapshots,...GLOBAL_LEGACY_KEYS,...RESERVATION_KEYS,
+    ]
       .forEach(key=>required.add(key));
   }
   if(selected.has("reservations")){
@@ -93,6 +114,14 @@ function requiredLegacyKeys(keys,tabMetadata){
   if(selected.has("deskStudentRecords")){
     required.add("swim_desk_notes");
     required.add("swim_periods");
+  }
+  if(selected.has("attendanceRecords")){
+    [...tabKeys.students,...tabKeys.attendance,"swim_mark"].forEach(key=>required.add(key));
+  }
+  if(selected.has("attendanceGuests")) tabKeys.guests.forEach(key=>required.add(key));
+  if(selected.has("attendanceSnapshots")||selected.has("attendanceSnapshotStudents")
+    ||selected.has("attendanceSnapshotTeachers")){
+    tabKeys.snapshots.forEach(key=>required.add(key));
   }
   return [...required];
 }
@@ -178,6 +207,44 @@ function collectionTabIds(collection,keys,tabs){
   return new Set();
 }
 
+function attendanceOwnerScope(key){
+  key=text(key);
+  if(["swim_attendance","swim_att_guests","swim_day_snapshot"].includes(key)){
+    return {owner:"regular",date:""};
+  }
+  let match=key.match(/^swim_bt_(?:attendance|att_guests|day_snapshot)_([A-Za-z0-9_-]+)$/);
+  if(match) return {owner:`bangteuk:${match[1]}`,date:""};
+  match=key.match(/^zz_swim_day_snapshot__(regular|bt_([A-Za-z0-9_-]+))__(\d{4}-\d{2}-\d{2})$/);
+  if(!match) return null;
+  return {owner:match[1]==="regular"?"regular":`bangteuk:${match[2]}`,date:match[3]};
+}
+
+function attendanceScope(collection,keys){
+  if(!ATTENDANCE_COLLECTIONS.has(collection)) return null;
+  const scoped=new Map();
+  for(const key of Array.isArray(keys)?keys:[]){
+    if(!policy.collectionsForKey(key).includes(collection)) continue;
+    if(key==="swim_tab_list") return {all:true,owners:new Map()};
+    const parsed=attendanceOwnerScope(key);
+    if(!parsed) continue;
+    if(!scoped.has(parsed.owner)) scoped.set(parsed.owner,new Set());
+    const dates=scoped.get(parsed.owner);
+    if(!parsed.date) scoped.set(parsed.owner,null);
+    else if(dates) dates.add(parsed.date);
+  }
+  return {all:false,owners:scoped};
+}
+
+function attendanceRowInScope(row,scope){
+  if(!scope||scope.all) return true;
+  const value=row?.value||row||{};
+  const owner=text(value.courseType)==="regular"
+    ?"regular":`bangteuk:${text(value.tabId)}`;
+  if(!scope.owners.has(owner)) return false;
+  const dates=scope.owners.get(owner);
+  return dates===null||dates.has(text(value.date));
+}
+
 function hasTabKey(keys,kind){
   return (Array.isArray(keys)?keys:[]).some(key=>{
     if(kind==="student") return key==="swim_students"||/^swim_stu_/.test(key)||/^swim_bt_.+_stu$/.test(key);
@@ -213,8 +280,11 @@ async function readPeopleScope(collection,ids){
   return rows;
 }
 
-async function readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration){
+async function readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration,attendance){
   if(fullGeneration) return snapshotRows(await collectionRef.get());
+  if(ATTENDANCE_COLLECTIONS.has(collection)){
+    return snapshotRows(await collectionRef.get()).filter(row=>attendanceRowInScope(row,attendance));
+  }
   if(collection==="people") return readPeopleScope(collectionRef,personIds);
   if(TAB_SCOPED_COLLECTIONS.has(collection)&&tabIds.size){
     const rows=[];
@@ -226,8 +296,11 @@ async function readCollectionScope(collectionRef,collection,tabIds,personIds,ful
   return snapshotRows(await collectionRef.get());
 }
 
-function scopedDesired(conversion,collection,tabIds){
+function scopedDesired(conversion,collection,tabIds,attendance){
   const source=Array.isArray(conversion?.[collection])?conversion[collection]:[];
+  if(ATTENDANCE_COLLECTIONS.has(collection)){
+    return source.filter(row=>attendanceRowInScope(row,attendance));
+  }
   if(TAB_SCOPED_COLLECTIONS.has(collection)&&tabIds.size){
     return source.filter(row=>tabIds.has(text(row?.tabId)));
   }
@@ -362,7 +435,8 @@ async function runShadowSyncUnsafe(input){
 
   for(const collection of collections){
     const tabIds=fullGeneration?new Set():collectionTabIds(collection,keys,convertedTabs);
-    const desired=scopedDesired(report.conversion,collection,tabIds);
+    const attendance=fullGeneration?null:attendanceScope(collection,keys);
+    const desired=scopedDesired(report.conversion,collection,tabIds,attendance);
     const expectedRows=desired.filter(row=>text(row?.id)).map(row=>({
       id:safeDocId(row.id),
       value:{...row,generationId,branchId},
@@ -371,7 +445,9 @@ async function runShadowSyncUnsafe(input){
     const personIds=collection==="people"?desired.map(row=>text(row.id)):[];
     const collectionRef=generationRef.collection(collection);
     await heartbeat();
-    const existingRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
+    const existingRows=await readCollectionScope(
+      collectionRef,collection,tabIds,personIds,fullGeneration,attendance,
+    );
     const existingById=new Map(existingRows.map(row=>[row.id,row.value]));
     const operations=[];
     expectedById.forEach((value,id)=>{
@@ -392,7 +468,9 @@ async function runShadowSyncUnsafe(input){
     }
 
     await heartbeat();
-    const actualRows=await readCollectionScope(collectionRef,collection,tabIds,personIds,fullGeneration);
+    const actualRows=await readCollectionScope(
+      collectionRef,collection,tabIds,personIds,fullGeneration,attendance,
+    );
     const actualById=new Map(actualRows.map(row=>[row.id,row.value]));
     const expectedDigest=collectionDigest(expectedRows);
     const actualDigest=collectionDigest(actualRows);

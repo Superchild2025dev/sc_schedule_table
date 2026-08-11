@@ -11,7 +11,7 @@ const FUNCTIONS_DIR=path.dirname(INDEX_PATH);
 function triggerWrapper(options,handler){handler.__options=options;return handler;}
 
 function loadFunctions(options={}){
-  const calls={mutate:[],recover:0,requestRecovery:[],recoverRequests:0};
+  const calls={mutate:[],recover:0,requestRecovery:[],terminalRecovery:[],recoverRequests:0};
   const writer={
     mutate:async request=>{calls.mutate.push(request);return {operationId:"op_api",committed:true};},
     recoverOperationalMirrors:async()=>{
@@ -20,6 +20,7 @@ function loadFunctions(options={}){
       return {applied:0,error:0};
     },
     manageRequestRecovery:async request=>{calls.requestRecovery.push(request);return {state:"staged",code:""};},
+    manageTerminalRecovery:async request=>{calls.terminalRecovery.push(request);return {kind:"mirror",state:"applied"};},
     recoverRequestPatches:async()=>{calls.recoverRequests+=1;return {completed:0,error:0};},
   };
   const db={collection(){return {doc(){return {collection(){return {doc(){return {};}};}};}};}};
@@ -63,6 +64,7 @@ test("exports the operational callable and bounded recovery schedule without cha
   assert.equal(typeof api.recoverScheduleV2OperationalMirrors,"function");
   assert.equal(typeof api.recoverScheduleV2RequestPatches,"function");
   assert.equal(typeof api.manageScheduleV2RequestRecovery,"function");
+  assert.equal(typeof api.resolveScheduleV2TerminalRecovery,"function");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.schedule,"every 5 minutes");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.timeZone,"Asia/Seoul");
   assert.equal(api.recoverScheduleV2RequestPatches.__options.schedule,"every 5 minutes");
@@ -79,6 +81,11 @@ test("exports the operational callable and bounded recovery schedule without cha
   const recoveryRequest={auth:{uid:"uid"},data:{version:1,action:"drain",branchId:"yongam",operationId:""}};
   assert.deepEqual(await api.manageScheduleV2RequestRecovery(recoveryRequest),{state:"staged",code:""});
   assert.equal(fixture.calls.requestRecovery[0],recoveryRequest);
+  const terminalRequest={auth:{uid:"uid"},data:{
+    version:1,action:"retry",branchId:"yongam",kind:"mirror",operationId:"op_api",expectedState:"error",
+  }};
+  assert.deepEqual(await api.resolveScheduleV2TerminalRecovery(terminalRequest),{kind:"mirror",state:"applied"});
+  assert.equal(fixture.calls.terminalRecovery[0],terminalRequest);
   await api.recoverScheduleV2OperationalMirrors();
   assert.equal(fixture.calls.recover,1);
   assert.equal(fixture.calls.recoverRequests,0);
@@ -100,5 +107,6 @@ test("loading function exports does not write or switch an operational runtime m
   assert.equal(fixture.calls.mutate.length,0);
   assert.equal(fixture.calls.recover,0);
   assert.equal(fixture.calls.requestRecovery.length,0);
+  assert.equal(fixture.calls.terminalRecovery.length,0);
   assert.equal(fixture.calls.recoverRequests,0);
 });

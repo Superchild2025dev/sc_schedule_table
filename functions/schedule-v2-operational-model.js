@@ -146,11 +146,26 @@
       });
     });
     const tabsById=new Map(collection(collections,"tabs").map(row=>[text(row.id),row]));
+    const archivedTabsById=new Map(collection(collections,"archivedTabs").map(row=>{
+      const payload=object(row?.payload)?row.payload:{};
+      const id=text(row?.sourceTabId||payload.id);
+      return [id,{id,type:text(row?.type||payload.type)||"regular"}];
+    }).filter(([id])=>id));
     const peopleById=new Map(collection(collections,"people").map(row=>[text(row.id),row]));
     const enrollmentsById=new Map(collection(collections,"enrollments").map(row=>[text(row.id),row]));
     const classMarksById=new Map(collection(collections,"classMarks").map(row=>[text(row.id),row]));
     const snapshotsById=new Map(collection(collections,"attendanceSnapshots").map(row=>[text(row.id),row]));
     const courseTypeForTab=tab=>tab?.type==="bangteuk"?"bangteuk":"regular";
+    const attendanceCourseType=row=>{
+      const explicit=text(row?.courseType);
+      if(explicit) return explicit;
+      return courseTypeForTab(tabsById.get(text(row?.tabId))||archivedTabsById.get(text(row?.tabId)));
+    };
+    const sameAttendanceOwner=(left,right)=>{
+      const leftType=attendanceCourseType(left);
+      const rightType=attendanceCourseType(right);
+      return leftType===rightType&&(leftType==="regular"||text(left?.tabId)===text(right?.tabId));
+    };
     const validateTabOwner=(row,collectionName)=>{
       const id=text(row?.id);
       const tabId=text(row?.tabId);
@@ -161,13 +176,27 @@
       }
       return tab;
     };
+    const validateAttendanceOwner=(row,collectionName)=>{
+      const id=text(row?.id);
+      const tabId=text(row?.tabId);
+      const courseType=attendanceCourseType(row);
+      const tab=tabsById.get(tabId)||archivedTabsById.get(tabId);
+      const canonicalRegular=tabId==="regular"&&courseType==="regular";
+      if(!tab&&!canonicalRegular){
+        issues.push({type:"missing-tab-reference",collection:collectionName,id,tabId});
+      }else if(!["regular","bangteuk"].includes(courseType)||
+          (tab&&courseType!==courseTypeForTab(tab))){
+        issues.push({type:"tab-owner-mismatch",collection:collectionName,id,tabId,courseType});
+      }
+      return tab;
+    };
     const validateEnrollmentOwner=(row,collectionName)=>{
       const id=text(row?.id);
       const enrollmentId=text(row?.enrollmentId);
       if(!enrollmentId) return;
       const enrollment=enrollmentsById.get(enrollmentId);
       if(!enrollment) issues.push({type:"missing-enrollment-reference",collection:collectionName,id,enrollmentId});
-      else if(text(enrollment.personId)!==text(row?.personId)||text(enrollment.tabId)!==text(row?.tabId)){
+      else if(text(enrollment.personId)!==text(row?.personId)||!sameAttendanceOwner(enrollment,row)){
         issues.push({type:"enrollment-owner-mismatch",collection:collectionName,id,enrollmentId});
       }
     };
@@ -204,26 +233,26 @@
       const id=text(row?.id);
       const personId=text(row?.personId);
       const classMarkId=text(row?.classMarkId);
-      validateTabOwner(row,"attendanceRecords");
+      validateAttendanceOwner(row,"attendanceRecords");
       if(personId&&!peopleById.has(personId)) issues.push({type:"missing-person-reference",collection:"attendanceRecords",id,personId});
       validateEnrollmentOwner(row,"attendanceRecords");
       if(classMarkId){
         const mark=classMarksById.get(classMarkId);
         if(!mark) issues.push({type:"missing-class-mark-reference",collection:"attendanceRecords",id,classMarkId});
-        else if(text(mark.tabId)!==text(row?.tabId)||text(mark.personId)!==personId){
+        else if(!sameAttendanceOwner(mark,row)||text(mark.personId)!==personId){
           issues.push({type:"attendance-owner-mismatch",collection:"attendanceRecords",id,classMarkId});
         }
       }
     });
-    collection(collections,"attendanceGuests").forEach(row=>{ validateTabOwner(row,"attendanceGuests"); });
-    collection(collections,"attendanceSnapshots").forEach(row=>{ validateTabOwner(row,"attendanceSnapshots"); });
+    collection(collections,"attendanceGuests").forEach(row=>{ validateAttendanceOwner(row,"attendanceGuests"); });
+    collection(collections,"attendanceSnapshots").forEach(row=>{ validateAttendanceOwner(row,"attendanceSnapshots"); });
     ["attendanceSnapshotStudents","attendanceSnapshotTeachers"].forEach(collectionName=>{
       collection(collections,collectionName).forEach(row=>{
         const id=text(row?.id);
         const snapshotId=text(row?.snapshotId);
         const snapshot=snapshotsById.get(snapshotId);
         if(!snapshot) issues.push({type:"missing-snapshot-reference",collection:collectionName,id,snapshotId});
-        else if(text(row?.tabId)!==text(snapshot.tabId)||text(row?.courseType)!==text(snapshot.courseType)||text(row?.date)!==text(snapshot.date)){
+        else if(!sameAttendanceOwner(row,snapshot)||text(row?.date)!==text(snapshot.date)){
           issues.push({type:"snapshot-owner-mismatch",collection:collectionName,id,snapshotId});
         }
       });
@@ -252,15 +281,8 @@
     if(text(placement.startDate)) student.enrolled=text(placement.startDate);
     return student;
   }
-  function selectedRegularTabId(collections){
-    const tabs=collection(collections,"tabs");
-    const settings=collection(collections,"scheduleSettings")[0]||{};
-    const main=text(settings.mainTabId);
-    if(tabs.some(tab=>tab.id===main&&tab.type!=="bangteuk")) return main;
-    return text(tabs.find(tab=>tab.id==="regular")?.id||tabs.find(tab=>tab.type!=="bangteuk")?.id);
-  }
-  function attendanceKeys(tabId,regularTabId){
-    if(tabId===regularTabId) return {records:"swim_attendance",guests:"swim_att_guests",snapshots:"swim_day_snapshot"};
+  function attendanceKeys(tabId,courseType){
+    if(courseType==="regular") return {records:"swim_attendance",guests:"swim_att_guests",snapshots:"swim_day_snapshot"};
     return {records:`swim_bt_attendance_${tabId}`,guests:`swim_bt_att_guests_${tabId}`,snapshots:`swim_bt_day_snapshot_${tabId}`};
   }
   function legacyRootFromCollections(input){
@@ -318,24 +340,30 @@
     });
     root.swim_mark=serialized(marks);
 
-    const regularTabId=selectedRegularTabId(collections);
     const attendanceRoots=new Map();
-    const attendanceFor=tabId=>{
-      const keys=attendanceKeys(tabId,regularTabId);
-      if(!attendanceRoots.has(tabId)) attendanceRoots.set(tabId,{keys,records:{},guests:{},snapshots:{}});
-      return attendanceRoots.get(tabId);
+    const attendanceFor=row=>{
+      const tabId=text(row?.tabId);
+      const tab=tabsById.get(tabId);
+      const courseType=text(row?.courseType)||(tab?.type==="bangteuk"?"bangteuk":"regular");
+      const ownerKey=courseType==="regular"?"regular":`bangteuk:${tabId}`;
+      const keys=attendanceKeys(tabId,courseType);
+      if(!attendanceRoots.has(ownerKey)) attendanceRoots.set(ownerKey,{keys,courseType,tabId,records:{},guests:{},snapshots:{}});
+      return attendanceRoots.get(ownerKey);
     };
     collection(collections,"attendanceRecords").forEach(row=>{
-      if(text(row.legacyKey)) attendanceFor(text(row.tabId)).records[text(row.legacyKey)]=clone(row.payload);
+      if(text(row.legacyKey)) attendanceFor(row).records[text(row.legacyKey)]=clone(row.payload);
     });
-    grouped(collection(collections,"attendanceGuests").slice().sort(byOrder),"legacyKey").forEach((rows,key)=>{
-      const tabId=text(rows[0]?.tabId);
-      attendanceFor(tabId).guests[key]=rows.map(row=>clone(row.payload));
+    collection(collections,"attendanceGuests").slice().sort(byOrder).forEach(row=>{
+      const key=text(row?.legacyKey);
+      if(!key) return;
+      const owner=attendanceFor(row);
+      if(!owner.guests[key]) owner.guests[key]=[];
+      owner.guests[key].push(clone(row.payload));
     });
     const snapshotStudents=grouped(collection(collections,"attendanceSnapshotStudents").slice().sort(byOrder),"snapshotId");
     const snapshotTeachers=grouped(collection(collections,"attendanceSnapshotTeachers").slice().sort(byOrder),"snapshotId");
     collection(collections,"attendanceSnapshots").forEach(snapshot=>{
-      const snapshotRoot=attendanceFor(text(snapshot.tabId));
+      const snapshotRoot=attendanceFor(snapshot);
       const inst={};
       (snapshotTeachers.get(text(snapshot.id))||[]).forEach(row=>{ if(text(row.slotKey)) inst[text(row.slotKey)]=clone(row.payload??row.teacherName); });
       snapshotRoot.snapshots[text(snapshot.date)]={
@@ -344,10 +372,10 @@
         students:(snapshotStudents.get(text(snapshot.id))||[]).map(row=>clone(row.payload)),
         inst,
       };
-      const scope=text(snapshot.tabId)===regularTabId?"regular":`bt_${text(snapshot.tabId)}`;
+      const scope=snapshotRoot.courseType==="regular"?"regular":`bt_${snapshotRoot.tabId}`;
       root[`zz_swim_day_snapshot__${scope}__${text(snapshot.date)}`]=serialized(snapshotRoot.snapshots[text(snapshot.date)]);
     });
-    tabs.forEach(tab=>attendanceFor(text(tab.id)));
+    tabs.forEach(tab=>attendanceFor({tabId:text(tab.id),courseType:tab.type==="bangteuk"?"bangteuk":"regular"}));
     attendanceRoots.forEach(({keys,records,guests,snapshots})=>{
       root[keys.records]=serialized(records);
       root[keys.guests]=serialized(guests);

@@ -508,7 +508,9 @@ function updateAttendanceMapTx(mutator,meta){
   if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   const runtime=getTeacherOperationalAttendanceRuntime();
   const context={...teacherAttendanceOperationContext(),...(meta||{})};
-  if(!runtime) return _updateLegacyTeacherAttendanceMapTx(mutator,context);
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateAttendance(mutator,context);
 }
 function _updateLegacyTeacherAttGuestsMapTx(mutator,input){
@@ -532,7 +534,9 @@ function updateAttGuestsMapTx(mutator){
   const key=teacherAttendanceStorageKeys().attGuests;
   if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다'));
   const runtime=getTeacherOperationalAttendanceRuntime();
-  if(!runtime) return _updateLegacyTeacherAttGuestsMapTx(mutator,teacherAttendanceOperationContext());
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateGuests(mutator,teacherAttendanceOperationContext());
 }
 function updateMarkTx(mutator,meta){

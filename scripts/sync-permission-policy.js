@@ -47,6 +47,14 @@ function validatePolicy(policy){
       throw new Error(`permission policy requires unique scheduleV2.${field}`);
     }
   });
+  ["trackedLegacyExactKeys", "trackedLegacyPatterns"].forEach(field=>{
+    const values=scheduleV2[field];
+    if(!Array.isArray(values)||!values.length||values.some(value=>typeof value!=="string"||!value.trim())||
+        new Set(values).size!==values.length){
+      throw new Error(`permission policy requires unique scheduleV2.${field}`);
+    }
+  });
+  scheduleV2.trackedLegacyPatterns.forEach(pattern=>new RegExp(pattern));
   if(scheduleV2.developerMonitorRead !== true){
     throw new Error("permission policy requires scheduleV2.developerMonitorRead");
   }
@@ -160,6 +168,41 @@ function renderRulesBlock(policy){
     "    }",
   ].join("\n"));
 
+  const trackedLegacyConditions=[
+    ...policy.scheduleV2.trackedLegacyExactKeys.map(key=>`docId == ${JSON.stringify(key)}`),
+    ...policy.scheduleV2.trackedLegacyPatterns.map(pattern=>`docId.matches(${JSON.stringify(pattern)})`),
+  ];
+  blocks.push([
+    "    function isTrackedLegacyScheduleKey(docId) {",
+    ...trackedLegacyConditions.map((condition,index)=>
+      `${index===0?"      return ":"        || "}${condition}${index===trackedLegacyConditions.length-1?";":""}`
+    ),
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    function hasLegacyScheduleAuthority(branch) {",
+    "      return exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational)",
+    "        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.branchId == branch",
+    "        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.mode in [\"v1\", \"shadow\", \"verify\"];",
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    function activationFreezeAllowsLegacyWrites(branch) {",
+    "      return !exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze)",
+    "        || get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze).data.active == false;",
+    "    }",
+  ].join("\n"));
+
+  blocks.push([
+    "    function canWriteLegacyScheduleKey(branch, docId) {",
+    "      return !isTrackedLegacyScheduleKey(docId)",
+    "        || (hasLegacyScheduleAuthority(branch)",
+    "          && activationFreezeAllowsLegacyWrites(branch));",
+    "    }",
+  ].join("\n"));
+
   blocks.push([
     "    function canReadScheduleV2Runtime(documentId) {",
     `      return documentId in ${JSON.stringify(policy.scheduleV2.staffReadableRuntimeDocuments)};`,
@@ -193,6 +236,14 @@ function renderRulesBlock(policy){
     "      allow read, write: if false;",
     "    }",
     "",
+    "    match /scheduleV2/{branch}/runtime/activationFreeze {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/runtime/canonicalParity {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
     "    match /scheduleV2/{branch}/runtime/{documentId} {",
     "      allow read: if canReadSchedule(branch)",
     "        && canReadScheduleV2Runtime(documentId);",
@@ -215,6 +266,10 @@ function renderRulesBlock(policy){
     "    }",
     "",
     "    match /scheduleV2/{branch}/requestRecoveries/{document=**} {",
+    "      allow read, write: if false;",
+    "    }",
+    "",
+    "    match /scheduleV2/{branch}/recoveryResolutions/{document=**} {",
     "      allow read, write: if false;",
     "    }",
     "",

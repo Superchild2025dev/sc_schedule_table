@@ -128,9 +128,12 @@ function functionWrapper(options,handler){
 
 function loadFunctions({initial={},runShadowSync=async()=>({
   collections:[],writes:0,deletes:0,counts:{},digests:{},
+}),readCanonicalParity=async()=>({
+  matches:true,v1Digest:"a".repeat(64),v2Digest:"a".repeat(64),v1KeyCount:1,v2KeyCount:1,
 }),failTransactionForPath="",permissionManifest=null}={}){
   const db=new FakeFirestore(initial,{failTransactionForPath});
   const runnerCalls=[];
+  const parityCalls=[];
   const logs=[];
   const runner=async input=>{
     runnerCalls.push(input);
@@ -158,6 +161,10 @@ function loadFunctions({initial={},runShadowSync=async()=>({
     if(request==="../config/schedule-permissions.json"&&permissionManifest) return permissionManifest;
     if(request==="./schedule-v2-shadow-policy.js") return require(path.join(FUNCTIONS_DIR,"schedule-v2-shadow-policy.js"));
     if(request==="./schedule-v2-shadow-runner.js") return {runShadowSync:runner};
+    if(request==="./schedule-v2-cutover-parity.js") return {readCanonicalParity:async input=>{
+      parityCalls.push(input);
+      return readCanonicalParity(input);
+    }};
     if(request.startsWith("./")) return require(path.join(FUNCTIONS_DIR,request));
     return require(request);
   };
@@ -166,7 +173,7 @@ function loadFunctions({initial={},runShadowSync=async()=>({
   new Function("exports","require","module","__filename","__dirname",source)(
     module.exports,localRequire,module,INDEX_PATH,FUNCTIONS_DIR,
   );
-  return {db,exports:module.exports,runnerCalls,logs};
+  return {db,exports:module.exports,runnerCalls,parityCalls,logs};
 }
 
 function request(action,branchId,email="developer@scswim.local",data={}){
@@ -177,9 +184,12 @@ function syncPath(branchId){return `scheduleV2/${branchId}/runtime/scheduleSync`
 function operationalPath(branchId){return `scheduleV2/${branchId}/runtime/operational`;}
 function attendancePath(branchId){return `scheduleV2/${branchId}/runtime/attendance`;}
 function recoveryFencePath(branchId){return `scheduleV2/${branchId}/runtime/operationalRecovery`;}
+function activationFreezePath(branchId){return `scheduleV2/${branchId}/runtime/activationFreeze`;}
+function canonicalParityPath(branchId){return `scheduleV2/${branchId}/runtime/canonicalParity`;}
 function generationPath(branchId,generationId){return `scheduleV2/${branchId}/generations/${generationId}`;}
 function mutationPath(branchId,operationId){return `scheduleV2/${branchId}/operationalMutations/${operationId}`;}
 function requestRecoveryPath(branchId,operationId){return `scheduleV2/${branchId}/requestRecoveries/${operationId}`;}
+function recoveryResolutionPath(branchId,kind,operationId){return `scheduleV2/${branchId}/recoveryResolutions/${kind}_${operationId}`;}
 function sourceEvent(branchId,docId,id){return {id,params:{branchId,docId}};}
 function readyGeneration(branchId,generationId,revision=0){
   return {
@@ -639,9 +649,12 @@ test("prepare through shadow verify and v2-read is fenced atomic and dual-ready"
     attempt.operations.some(operation=>operation.ref.path===operationalPath(branchId)),
   ).filter(attempt=>attempt.operations.some(operation=>operation.value?.mode!=="v1"));
   assert.equal(pointerTransactions.length,3);
-  pointerTransactions.forEach(attempt=>assert.deepEqual(
+  pointerTransactions.forEach((attempt,index)=>assert.deepEqual(
     new Set(attempt.operations.map(operation=>operation.ref.path)),
-    new Set([schedulePath(branchId),operationalPath(branchId),attendancePath(branchId)]),
+    new Set([
+      schedulePath(branchId),operationalPath(branchId),attendancePath(branchId),
+      ...(index===2?[activationFreezePath(branchId)]:[]),
+    ]),
   ));
 });
 
@@ -875,7 +888,88 @@ test("set-v2-read atomically advances epoch and updates schedule operational and
   assert.ok(transition);
   assert.deepEqual(new Set(transition.operations.map(operation=>operation.ref.path)),new Set([
     schedulePath("gagyeong"),operationalPath("gagyeong"),attendancePath("gagyeong"),
+    activationFreezePath("gagyeong"),
   ]));
+});
+
+test("set-v2-read freezes tracked V1 writes, drains a full source snapshot, and publishes exact parity evidence",async()=>{
+  let fixture;
+  let freezeDuringDrain;
+  let freezeDuringParity;
+  fixture=loadFunctions({
+    initial:cutoverState("gagyeong",{extra:{
+      "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+      "scheduleStores/gagyeong/kv/swim_mark":{value:[{id:"pre-freeze"}]},
+    }}),
+    runShadowSync:async input=>{
+      freezeDuringDrain=fixture.db.value(activationFreezePath("gagyeong"));
+      await fixture.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_mark","delayed-trigger"));
+      return {collections:["classMarks"],writes:1,deletes:0,counts:{classMarks:1},digests:{classMarks:"drained"}};
+    },
+    readCanonicalParity:async()=>{
+      freezeDuringParity=fixture.db.value(activationFreezePath("gagyeong"));
+      return {matches:true,v1Digest:"b".repeat(64),v2Digest:"b".repeat(64),v1KeyCount:2,v2KeyCount:2};
+    },
+  });
+
+  const status=await fixture.exports.manageScheduleV2Shadow(request(
+    "set-v2-read","gagyeong","developer@scswim.local",expectedStatus(),
+  ));
+
+  assert.equal(status.mode,"v2-read");
+  assert.equal(freezeDuringDrain.active,true);
+  assert.equal(freezeDuringDrain.state,"draining");
+  assert.equal(freezeDuringParity.active,true);
+  assert.equal(fixture.runnerCalls.length,1);
+  assert.equal(fixture.runnerCalls[0].fullGeneration,true);
+  assert.deepEqual(new Set(fixture.runnerCalls[0].keys),new Set(["swim_tab_list","swim_mark"]));
+  assert.equal(fixture.parityCalls.length,1);
+  assert.deepEqual(fixture.parityCalls[0],{
+    db:fixture.db,branchId:"gagyeong",generationId:"gen_ready",
+  });
+  const sync=fixture.db.value(syncPath("gagyeong"));
+  assert.equal(sync.status,"idle");
+  assert.deepEqual(sync.pendingKeys,[]);
+  assert.deepEqual(sync.inFlightKeys,[]);
+  assert.equal(sync.appliedRevision,sync.requestedRevision);
+  const evidence=fixture.db.value(canonicalParityPath("gagyeong"));
+  assert.equal(evidence.matches,true);
+  assert.equal(evidence.purpose,"activation");
+  assert.equal(evidence.generationId,"gen_ready");
+  assert.equal(evidence.revision,7);
+  assert.equal(evidence.v1Digest,"b".repeat(64));
+  assert.equal(evidence.v2Digest,"b".repeat(64));
+  const freeze=fixture.db.value(activationFreezePath("gagyeong"));
+  assert.equal(evidence.freezeToken,freeze.token);
+  assert.equal(freeze.active,false);
+  assert.equal(freeze.state,"completed");
+
+  await fixture.exports.queueScheduleV2Shadow(sourceEvent("gagyeong","swim_mark","after-cutover"));
+  assert.deepEqual(fixture.db.value(syncPath("gagyeong")).pendingKeys,[]);
+});
+
+test("set-v2-read fails closed and releases its freeze when canonical parity mismatches",async()=>{
+  const fixture=loadFunctions({
+    initial:cutoverState("gagyeong",{extra:{
+      "scheduleStores/gagyeong/kv/swim_tab_list":{value:[{id:"regular",type:"regular"}]},
+    }}),
+    readCanonicalParity:async()=>({
+      matches:false,v1Digest:"c".repeat(64),v2Digest:"d".repeat(64),v1KeyCount:1,v2KeyCount:1,
+    }),
+  });
+
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(request(
+      "set-v2-read","gagyeong","developer@scswim.local",expectedStatus(),
+    )),
+    error=>error.code==="failed-precondition",
+  );
+
+  assert.equal(fixture.db.value(operationalPath("gagyeong")).mode,"verify");
+  assert.equal(fixture.db.value(attendancePath("gagyeong")).mode,"verify");
+  assert.equal(fixture.db.value(schedulePath("gagyeong")).mode,"verify");
+  assert.equal(fixture.db.value(activationFreezePath("gagyeong")).active,false);
+  assert.equal(fixture.db.value(activationFreezePath("gagyeong")).state,"failed");
 });
 
 test("set-v2 and rollback each atomically advance epoch and update both runtime pointers",async()=>{
@@ -886,6 +980,7 @@ test("set-v2 and rollback each atomically advance epoch and update both runtime 
     "set-v2","gagyeong","developer@scswim.local",expectedStatus({expectedMode:"v2-read"}),
   ));
   assert.equal(v2Status.mode,"v2");
+  assert.equal(setV2.parityCalls.length,1);
   assert.equal(v2Status.epoch,4);
   assert.equal(setV2.db.value(operationalPath("gagyeong")).recoverySafeRevision,7);
   for(const path of [schedulePath("gagyeong"),operationalPath("gagyeong"),attendancePath("gagyeong")]){
@@ -905,6 +1000,8 @@ test("set-v2 and rollback each atomically advance epoch and update both runtime 
     "rollback","gagyeong","developer@scswim.local",expectedStatus({expectedMode:"v2"}),
   ));
   assert.equal(v1Status.mode,"v1");
+  assert.equal(rollback.parityCalls.length,1);
+  assert.equal(rollback.db.value(canonicalParityPath("gagyeong")).purpose,"rollback");
   assert.equal(v1Status.epoch,4);
   for(const path of [schedulePath("gagyeong"),operationalPath("gagyeong"),attendancePath("gagyeong")]){
     assert.equal(rollback.db.value(path).mode,"v1",path);
@@ -914,7 +1011,71 @@ test("set-v2 and rollback each atomically advance epoch and update both runtime 
   );
   assert.deepEqual(new Set(rollbackTransaction.operations.map(operation=>operation.ref.path)),new Set([
     schedulePath("gagyeong"),operationalPath("gagyeong"),attendancePath("gagyeong"),
+    activationFreezePath("gagyeong"),
   ]));
+});
+
+test("fresh canonical parity blocks rollback even when recovery-safe metadata still matches",async()=>{
+  const fixture=loadFunctions({
+    initial:cutoverState("gagyeong",{
+      schedule:{mode:"v2"},operational:{mode:"v2",recoverySafeRevision:7},attendance:{mode:"v2"},
+    }),
+    readCanonicalParity:async()=>({
+      matches:false,v1Digest:"e".repeat(64),v2Digest:"f".repeat(64),v1KeyCount:4,v2KeyCount:4,
+    }),
+  });
+
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(request(
+      "rollback","gagyeong","developer@scswim.local",expectedStatus({expectedMode:"v2"}),
+    )),
+    error=>error.code==="failed-precondition",
+  );
+
+  assert.equal(fixture.parityCalls.length,1);
+  assert.equal(fixture.db.value(operationalPath("gagyeong")).mode,"v2");
+  assert.equal(fixture.db.value(attendancePath("gagyeong")).mode,"v2");
+  assert.equal(fixture.db.value(schedulePath("gagyeong")).mode,"v2");
+});
+
+test("developer terminal recovery resolution removes the blocker and permits a verified rollback",async()=>{
+  const operationId="terminal_mirror";
+  const initial=cutoverState("gagyeong",{
+    schedule:{mode:"v2"},operational:{mode:"v2",recoverySafeRevision:7},attendance:{mode:"v2"},
+    extra:{
+      [mutationPath("gagyeong",operationId)]:{
+        operationId,branchId:"gagyeong",generationId:"gen_ready",operationType:"sort-teachers",
+        status:"committed",keys:["swim_teachers"],removedKeys:[],resultingRevision:7,
+        recoverySourceRevision:7,recoveryState:"error",recoveryAttempts:5,
+        result:{operationId,committed:true,revision:7,recoveryState:"error"},
+      },
+      "scheduleStores/gagyeong/kv/swim_teachers":{
+        key:"swim_teachers",value:"[]",chunked:false,branchId:"gagyeong",
+      },
+    },
+  });
+  const fixture=loadFunctions({initial});
+  const rollbackRequest=()=>request(
+    "rollback","gagyeong","developer@scswim.local",expectedStatus({expectedMode:"v2"}),
+  );
+  await assert.rejects(
+    ()=>fixture.exports.manageScheduleV2Shadow(rollbackRequest()),
+    error=>error.code==="failed-precondition",
+  );
+
+  const resolution=await fixture.exports.resolveScheduleV2TerminalRecovery({
+    auth:{uid:"developer",token:{email:"developer@scswim.local",email_verified:true}},
+    data:{
+      version:1,action:"resolve",branchId:"gagyeong",kind:"mirror",
+      operationId,expectedState:"error",
+    },
+  });
+  assert.equal(resolution.state,"applied");
+  assert.equal(fixture.db.value(mutationPath("gagyeong",operationId)).recoveryState,"applied");
+  assert.equal(fixture.db.value(recoveryResolutionPath("gagyeong","mirror",operationId)).outcome,"applied");
+
+  const status=await fixture.exports.manageScheduleV2Shadow(rollbackRequest());
+  assert.equal(status.mode,"v1");
 });
 
 test("every pointer-changing action requires a complete expected runtime fence",async()=>{

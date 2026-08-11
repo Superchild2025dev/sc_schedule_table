@@ -10,7 +10,7 @@ require('../js/schedule-v2-operational-model.js');
 const model=global.SCV2OperationalModel;
 const keySelection=require('../js/schedule-key-selection.js');
 
-function loadFirebaseStore(authenticated){
+function loadFirebaseStore(authenticated,overrides={}){
   const calls=[];
   const legacyFallback={child(){return legacyFallback;},once(){return Promise.resolve({val:()=>({})});}};
   const kv={where(){return kv;},doc(){return {get:async()=>({exists:true,data:()=>({value:'{}',chunked:false})})};}};
@@ -25,15 +25,21 @@ function loadFirebaseStore(authenticated){
   const reloads=[];
   const sessionValues=new Map();
   const context={console,Map,Set,Promise,Date,setTimeout,clearTimeout};
+  if(overrides.withoutProxy) context.Proxy=undefined;
   context.window=context;
   context.globalThis=context;
   context.SC_DATA_BACKEND='firestore';
   context.SCAuth={};
   context.SC_SELECTED_BRANCH='gagyeong';
-  context.SCV2OperationalModel=model;
-  context.SCV2OperationalStore={create(options){calls.push({type:'store',options});return {marker:'v2-store'};}};
-  context.SCOperationalSchedule={create(options){
+  if(overrides.missingDependency!=='model') context.SCV2OperationalModel=model;
+  if(overrides.missingDependency!=='store') context.SCV2OperationalStore={create(options){
+    calls.push({type:'store',options});
+    if(overrides.storeCreateError) throw new Error('store startup failed');
+    return {marker:'v2-store'};
+  }};
+  if(overrides.missingDependency!=='gateway') context.SCOperationalSchedule={create(options){
     calls.push({type:'gateway',options});
+    if(overrides.gatewayCreateError) throw new Error('gateway startup failed');
     return {
       marker:'operational',options,
       subscribeSelectedBatches(){
@@ -114,6 +120,27 @@ test('createBranchRef wires a one-shot controlled reload for each runtime author
   onReloadRequired({...revision,revision:14});
 
   assert.equal(env.reloads.length,2);
+});
+
+test('authenticated staff bootstrap failures expose legacy reads but no writable V1 root',async()=>{
+  const cases=[
+    {missingDependency:'model'},
+    {missingDependency:'store'},
+    {missingDependency:'gateway'},
+    {storeCreateError:true},
+    {gatewayCreateError:true},
+    {missingDependency:'model',withoutProxy:true},
+  ];
+  for(const overrides of cases){
+    const env=loadFirebaseStore(true,overrides);
+    const root=env.context.SCFirebaseStore.createBranchRef({id:'gagyeong',fbPath:'schedule'});
+    const read=await root.child('swim_students').once('value');
+    assert.equal(typeof read.val,'function',JSON.stringify(overrides));
+    await assert.rejects(()=>root.transactionKeys(['swim_students'],draft=>draft),
+      error=>error?.code==='operational-authority-unavailable',JSON.stringify(overrides));
+    await assert.rejects(()=>root.child('swim_students').set('private'),
+      error=>error?.code==='operational-authority-unavailable',JSON.stringify(overrides));
+  }
 });
 
 test('authenticated teacher and desk selected startup drain server recovery without calling ready',async()=>{

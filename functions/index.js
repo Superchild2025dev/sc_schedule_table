@@ -11,6 +11,7 @@ const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore"
 const {buildRegularAvailability} = require("./regular-availability");
 const scheduleV2ShadowPolicy = require("./schedule-v2-shadow-policy.js");
 const {runShadowSync} = require("./schedule-v2-shadow-runner.js");
+const {readCanonicalParity} = require("./schedule-v2-cutover-parity.js");
 const {createOperationalWriter} = require("./schedule-v2-operational-writer.js");
 const schedulePermissionManifest = require("../config/schedule-permissions.json");
 
@@ -1126,12 +1127,258 @@ function scheduleV2LeaseIsActive(value, now) {
   return Number.isFinite(until) && until > now.getTime();
 }
 
-async function transitionScheduleV2Authority(branchId, targetMode, expectation, updatedBy) {
+function scheduleV2CanonicalProofIsValid(evidence, proof, branchId, generationId, expectation) {
+  const digestPattern = /^[a-f0-9]{64}$/;
+  return evidence && proof && evidence.matches === true &&
+    String(evidence.proofId || "") === String(proof.proofId || "") &&
+    String(evidence.purpose || "") === String(proof.purpose || "") &&
+    String(evidence.branchId || "") === branchId &&
+    String(evidence.generationId || "") === generationId &&
+    String(evidence.sourceMode || "") === expectation.mode &&
+    String(evidence.freezeToken || "") === String(proof.freezeToken || "") &&
+    scheduleV2NonnegativeInteger(evidence.epoch) === expectation.epoch &&
+    scheduleV2NonnegativeInteger(evidence.revision) === expectation.revision &&
+    digestPattern.test(String(evidence.v1Digest || "")) &&
+    String(evidence.v1Digest || "") === String(evidence.v2Digest || "");
+}
+
+async function acquireScheduleV2CanonicalFreeze(branchId, expectation, purpose, updatedBy, drain) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
+  const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
+  const freezeRef = scheduleV2RuntimeRef(branchId, "activationFreeze");
+  const token = crypto.randomUUID();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const leaseUntil = new Date(now.getTime() + SCHEDULE_V2_PREPARATION_LEASE_MS).toISOString();
+  return db.runTransaction(async tx => {
+    const [configSnapshot, syncSnapshot, operationalSnapshot, attendanceSnapshot, freezeSnapshot] =
+      await Promise.all([
+        tx.get(configRef), tx.get(syncRef), tx.get(operationalRef),
+        tx.get(attendanceRef), tx.get(freezeRef),
+      ]);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const operational = operationalSnapshot.data() || {};
+    const attendance = attendanceSnapshot.data() || {};
+    const mode = String(operational.mode || config.mode || "");
+    const generationId = String(operational.generationId || config.generationId || "");
+    const epoch = scheduleV2NonnegativeInteger(operational.epoch);
+    const revision = scheduleV2NonnegativeInteger(operational.revision);
+    const attendanceEpoch = scheduleV2NonnegativeInteger(attendance.epoch);
+    const attendanceRevision = scheduleV2NonnegativeInteger(attendance.revision);
+    const requestedRevision = scheduleV2NonnegativeInteger(sync.requestedRevision);
+    const appliedRevision = scheduleV2NonnegativeInteger(sync.appliedRevision);
+    const allowedModes = purpose === "activation" ? ["verify"] : ["shadow", "verify", "v2-read", "v2"];
+    if (epoch === null || revision === null || attendanceEpoch === null || attendanceRevision === null ||
+        requestedRevision === null || appliedRevision === null) {
+      throw new HttpsError("failed-precondition", "Schedule V2 authority counters are malformed");
+    }
+    if (!allowedModes.includes(mode) || String(config.mode || "") !== mode) {
+      throw new HttpsError("failed-precondition", "Schedule V2 mode cannot enter this canonical transition");
+    }
+    if (!expectation || expectation.mode !== mode || expectation.generationId !== generationId ||
+        expectation.epoch !== epoch || expectation.revision !== revision) {
+      throw new HttpsError("aborted", "Schedule V2 authority changed before the canonical freeze");
+    }
+    if (!operationalSnapshot.exists || !attendanceSnapshot.exists ||
+        !scheduleV2PointerMatches(operational, branchId, mode, generationId) ||
+        !scheduleV2PointerMatches(attendance, branchId, mode, generationId) ||
+        attendanceEpoch !== epoch || attendanceRevision !== revision) {
+      throw new HttpsError("failed-precondition", "Schedule V2 authority pointers are inconsistent");
+    }
+    if (freezeSnapshot.data()?.active === true) {
+      throw new HttpsError("aborted", "A Schedule V2 canonical freeze is already active");
+    }
+    const scheduleBlocked = scheduleV2Keys(sync, "pendingKeys").length ||
+      scheduleV2Keys(sync, "inFlightKeys").length || scheduleV2Count(sync.mismatchCount) ||
+      ["pending", "processing", "error"].includes(String(sync.status || "")) ||
+      requestedRevision !== appliedRevision ||
+      scheduleV2LeaseIsActive(sync.leaseUntil, now);
+    if (scheduleBlocked) {
+      throw new HttpsError("failed-precondition", "Schedule V2 source work must be idle before freezing");
+    }
+    const freeze = {
+      active: true,
+      state: drain ? "draining" : "parity",
+      token,
+      purpose,
+      branchId,
+      sourceMode: mode,
+      generationId,
+      epoch,
+      revision,
+      startedAt: nowIso,
+      leaseUntil,
+      updatedAt: nowIso,
+      updatedBy,
+    };
+    tx.set(freezeRef, freeze, {merge: false});
+    if (drain) {
+      tx.set(syncRef, {
+        ...sync,
+        pendingKeys: [],
+        inFlightKeys: [],
+        status: "processing",
+        leaseId: token,
+        leaseUntil,
+        processingStartedAt: nowIso,
+      }, {merge: false});
+    }
+    return {
+      branchId,
+      generationId,
+      token,
+      purpose,
+      drain,
+      configRef,
+      syncRef,
+      freezeRef,
+      generationRef: scheduleV2GenerationRef(branchId, generationId),
+    };
+  });
+}
+
+async function finishScheduleV2CanonicalDrain(freeze, result) {
+  const nowIso = new Date().toISOString();
+  await db.runTransaction(async tx => {
+    const [configSnapshot, syncSnapshot, freezeSnapshot, generationSnapshot] = await Promise.all([
+      tx.get(freeze.configRef), tx.get(freeze.syncRef), tx.get(freeze.freezeRef),
+      tx.get(freeze.generationRef),
+    ]);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const currentFreeze = freezeSnapshot.data() || {};
+    if (currentFreeze.active !== true || currentFreeze.token !== freeze.token ||
+        sync.leaseId !== freeze.token || String(config.generationId || "") !== freeze.generationId) {
+      throw new HttpsError("aborted", "Schedule V2 canonical drain lost its fence");
+    }
+    const requestedRevision = scheduleV2Count(sync.requestedRevision);
+    const completed = {
+      ...sync,
+      pendingKeys: [],
+      inFlightKeys: [],
+      requestedRevision,
+      appliedRevision: requestedRevision,
+      status: "idle",
+      mismatchCount: 0,
+      lastSyncedAt: nowIso,
+      collections: result.collections,
+      counts: result.counts,
+      digests: result.digests,
+      writes: result.writes,
+      deletes: result.deletes,
+    };
+    delete completed.leaseId;
+    delete completed.leaseUntil;
+    delete completed.processingStartedAt;
+    delete completed.leaseHeartbeatAt;
+    tx.set(freeze.syncRef, completed, {merge: false});
+    if (generationSnapshot.exists) {
+      tx.set(freeze.generationRef, scheduleV2GenerationWithSchedule(
+        generationSnapshot.data() || {}, "ready", completed, new Date(nowIso),
+      ), {merge: false});
+    }
+    tx.set(freeze.freezeRef, {
+      ...currentFreeze, state: "parity", drainedAt: nowIso, updatedAt: nowIso,
+    }, {merge: false});
+  });
+}
+
+async function releaseScheduleV2CanonicalFreeze(freeze, state = "failed") {
+  if (!freeze) return;
+  await db.runTransaction(async tx => {
+    const [freezeSnapshot, syncSnapshot] = await Promise.all([
+      tx.get(freeze.freezeRef), freeze.drain ? tx.get(freeze.syncRef) : Promise.resolve(null),
+    ]);
+    const current = freezeSnapshot.data() || {};
+    if (current.active !== true || current.token !== freeze.token) return;
+    const nowIso = new Date().toISOString();
+    tx.set(freeze.freezeRef, {
+      ...current, active: false, state, releasedAt: nowIso, updatedAt: nowIso,
+    }, {merge: false});
+    const sync = syncSnapshot?.data() || {};
+    if (freeze.drain && sync.leaseId === freeze.token) {
+      const released = {
+        ...sync,
+        pendingKeys: [...new Set([
+          ...scheduleV2Keys(sync, "pendingKeys"), ...scheduleV2Keys(sync, "inFlightKeys"),
+        ])],
+      };
+      released.status = released.pendingKeys.length ? "pending" : "idle";
+      delete released.inFlightKeys;
+      delete released.leaseId;
+      delete released.leaseUntil;
+      delete released.processingStartedAt;
+      delete released.leaseHeartbeatAt;
+      tx.set(freeze.syncRef, released, {merge: false});
+    }
+  });
+}
+
+async function recordScheduleV2CanonicalProof(branchId, expectation, purpose, result, freeze) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
+  const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
+  const evidenceRef = scheduleV2RuntimeRef(branchId, "canonicalParity");
+  const proofId = crypto.randomUUID();
+  const digestPattern = /^[a-f0-9]{64}$/;
+  await db.runTransaction(async tx => {
+    const reads = [tx.get(configRef), tx.get(operationalRef), tx.get(attendanceRef)];
+    if (freeze) reads.push(tx.get(freeze.freezeRef));
+    const [configSnapshot, operationalSnapshot, attendanceSnapshot, freezeSnapshot] = await Promise.all(reads);
+    const config = configSnapshot.data() || {};
+    const operational = operationalSnapshot.data() || {};
+    const attendance = attendanceSnapshot.data() || {};
+    if (String(config.mode || "") !== expectation.mode ||
+        String(config.generationId || "") !== expectation.generationId ||
+        !scheduleV2PointerMatches(operational, branchId, expectation.mode, expectation.generationId) ||
+        !scheduleV2PointerMatches(attendance, branchId, expectation.mode, expectation.generationId) ||
+        scheduleV2NonnegativeInteger(operational.epoch) !== expectation.epoch ||
+        scheduleV2NonnegativeInteger(operational.revision) !== expectation.revision ||
+        scheduleV2NonnegativeInteger(attendance.epoch) !== expectation.epoch ||
+        scheduleV2NonnegativeInteger(attendance.revision) !== expectation.revision) {
+      throw new HttpsError("aborted", "Schedule V2 authority changed during canonical verification");
+    }
+    if (freeze && (freezeSnapshot.data()?.active !== true || freezeSnapshot.data()?.token !== freeze.token)) {
+      throw new HttpsError("aborted", "Schedule V2 canonical freeze changed during verification");
+    }
+    const v1Digest = String(result?.v1Digest || "");
+    const v2Digest = String(result?.v2Digest || "");
+    const matches = result?.matches === true && digestPattern.test(v1Digest) && v1Digest === v2Digest;
+    tx.set(evidenceRef, {
+      proofId,
+      purpose,
+      branchId,
+      sourceMode: expectation.mode,
+      generationId: expectation.generationId,
+      epoch: expectation.epoch,
+      revision: expectation.revision,
+      matches,
+      v1Digest,
+      v2Digest,
+      v1KeyCount: scheduleV2Count(result?.v1KeyCount),
+      v2KeyCount: scheduleV2Count(result?.v2KeyCount),
+      freezeToken: freeze?.token || "",
+      verifiedAt: new Date().toISOString(),
+    }, {merge: false});
+  });
+  if (result?.matches !== true || !digestPattern.test(String(result?.v1Digest || "")) ||
+      String(result?.v1Digest || "") !== String(result?.v2Digest || "")) {
+    throw new HttpsError("failed-precondition", "Canonical V1 and V2 schedule state does not match");
+  }
+  return {proofId, purpose, freezeToken: freeze?.token || ""};
+}
+
+async function transitionScheduleV2Authority(branchId, targetMode, expectation, updatedBy, proof = null) {
   const configRef = scheduleV2RuntimeRef(branchId, "schedule");
   const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
   const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
   const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
   const recoveryFenceRef = scheduleV2RuntimeRef(branchId, "operationalRecovery");
+  const evidenceRef = scheduleV2RuntimeRef(branchId, "canonicalParity");
+  const freezeRef = scheduleV2RuntimeRef(branchId, "activationFreeze");
   await db.runTransaction(async tx => {
     const configSnapshot = await tx.get(configRef);
     const syncSnapshot = await tx.get(syncRef);
@@ -1142,10 +1389,13 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
       String(config.preparedGenerationId || "") : activeGenerationId;
     const generationRef = targetGenerationId ? scheduleV2GenerationRef(branchId, targetGenerationId) : null;
     const recoveryQueries = scheduleV2RecoveryQueries(branchId);
-    const [generationSnapshot, operationalSnapshot, attendanceSnapshot, recoveryFenceSnapshot, ...queueSnapshots] =
+    const [generationSnapshot, operationalSnapshot, attendanceSnapshot, recoveryFenceSnapshot,
+      evidenceSnapshot, freezeSnapshot, ...queueSnapshots] =
       await Promise.all([
         generationRef ? tx.get(generationRef) : Promise.resolve(null),
         tx.get(operationalRef), tx.get(attendanceRef), tx.get(recoveryFenceRef),
+        proof ? tx.get(evidenceRef) : Promise.resolve(null),
+        proof?.freezeToken ? tx.get(freezeRef) : Promise.resolve(null),
         ...recoveryQueries.map(query => tx.get(query)),
       ]);
     const generation = generationSnapshot?.data() || {};
@@ -1193,6 +1443,20 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     );
     if(!pointerConsistent) {
       throw new HttpsError("failed-precondition", "Schedule V2 지점 또는 세대 포인터가 일치하지 않습니다");
+    }
+    if (proof && !scheduleV2CanonicalProofIsValid(
+      evidenceSnapshot?.data() || {}, proof, branchId, currentGenerationId, expectation,
+    )) {
+      throw new HttpsError("failed-precondition", "Canonical V1 and V2 proof is stale or invalid");
+    }
+    if (proof?.freezeToken) {
+      const freeze = freezeSnapshot?.data() || {};
+      if (freeze.active !== true || freeze.token !== proof.freezeToken ||
+          freeze.purpose !== proof.purpose || freeze.generationId !== currentGenerationId ||
+          scheduleV2NonnegativeInteger(freeze.epoch) !== epoch ||
+          scheduleV2NonnegativeInteger(freeze.revision) !== revision) {
+        throw new HttpsError("failed-precondition", "Schedule V2 canonical freeze proof is stale");
+      }
     }
     if(targetMode === "shadow" && (
       config.preparationStatus !== "ready" || config.requiresPrepare === true ||
@@ -1249,12 +1513,72 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
     tx.set(configRef, nextConfig, {merge: false});
     tx.set(operationalRef, nextOperational, {merge: false});
     tx.set(attendanceRef, nextAttendance, {merge: false});
+    if (proof?.freezeToken) {
+      const freeze = freezeSnapshot.data() || {};
+      tx.set(freezeRef, {
+        ...freeze,
+        active: false,
+        state: "completed",
+        targetMode,
+        completedAt: nowIso,
+        updatedAt: nowIso,
+      }, {merge: false});
+    }
   });
   return readScheduleV2Status(branchId);
 }
 
 async function rollbackScheduleV2(branchId, expectation, updatedBy) {
-  return transitionScheduleV2Authority(branchId, "v1", expectation, updatedBy);
+  const drain = ["shadow", "verify"].includes(expectation.mode);
+  return frozenScheduleV2CanonicalTransition(branchId, "v1", expectation, updatedBy, "rollback", drain);
+}
+
+async function frozenScheduleV2CanonicalTransition(
+  branchId, targetMode, expectation, updatedBy, purpose, drain,
+) {
+  const freeze = await acquireScheduleV2CanonicalFreeze(
+    branchId, expectation, purpose, updatedBy, drain,
+  );
+  try {
+    if (drain) {
+      const branch = BRANCHES[branchId];
+      const keys = await listScheduleV2BaselineKeys(branch);
+      const result = await runShadowSync({
+        db,
+        branchId,
+        generationId: freeze.generationId,
+        keys,
+        readLegacyKey: key => readStoredValue(branch, key),
+        fence: {ref: freeze.syncRef, leaseId: freeze.token},
+        fullGeneration: true,
+      });
+      await finishScheduleV2CanonicalDrain(freeze, result);
+    }
+    const parity = await readCanonicalParity({db, branchId, generationId: freeze.generationId});
+    const proof = await recordScheduleV2CanonicalProof(branchId, expectation, purpose, parity, freeze);
+    return await transitionScheduleV2Authority(branchId, targetMode, expectation, updatedBy, proof);
+  } catch (error) {
+    try {
+      await releaseScheduleV2CanonicalFreeze(freeze);
+    } catch {
+      // Preserve the canonical transition failure; an active freeze remains fail-closed.
+    }
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("failed-precondition", "Schedule V2 canonical transition failed");
+  }
+}
+
+async function verifiedScheduleV2CanonicalTransition(
+  branchId, targetMode, expectation, updatedBy, purpose,
+) {
+  try {
+    const parity = await readCanonicalParity({db, branchId, generationId: expectation.generationId});
+    const proof = await recordScheduleV2CanonicalProof(branchId, expectation, purpose, parity, null);
+    return transitionScheduleV2Authority(branchId, targetMode, expectation, updatedBy, proof);
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("failed-precondition", "Schedule V2 canonical transition failed");
+  }
 }
 
 async function recoverScheduleV2ShadowBranch(branchId, now) {
@@ -2651,10 +2975,14 @@ exports.manageScheduleV2Shadow = onCall({
     return transitionScheduleV2Authority(branchId, "verify", expectation, actorEmail);
   }
   if (action === "set-v2-read") {
-    return transitionScheduleV2Authority(branchId, "v2-read", expectation, actorEmail);
+    return frozenScheduleV2CanonicalTransition(
+      branchId, "v2-read", expectation, actorEmail, "activation", true,
+    );
   }
   if (action === "set-v2") {
-    return transitionScheduleV2Authority(branchId, "v2", expectation, actorEmail);
+    return verifiedScheduleV2CanonicalTransition(
+      branchId, "v2", expectation, actorEmail, "v2-promotion",
+    );
   }
   return rollbackScheduleV2(branchId, expectation, actorEmail);
 });
@@ -2693,6 +3021,24 @@ exports.manageScheduleV2RequestRecovery = onCall({
     ]);
     const code = String(error?.code || "").replace(/^functions\//, "");
     throw new HttpsError(allowed.has(code) ? code : "internal", "Schedule V2 request recovery failed");
+  }
+});
+
+exports.resolveScheduleV2TerminalRecovery = onCall({
+  cors: true,
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  timeoutSeconds: 540,
+  memory: "1GiB",
+}, async request => {
+  try {
+    return await scheduleV2OperationalWriter.manageTerminalRecovery(request);
+  } catch (error) {
+    const allowed = new Set([
+      "aborted", "failed-precondition", "invalid-argument", "not-found",
+      "permission-denied", "resource-exhausted", "unauthenticated", "unavailable",
+    ]);
+    const code = String(error?.code || "").replace(/^functions\//, "");
+    throw new HttpsError(allowed.has(code) ? code : "internal", "Schedule V2 terminal recovery failed");
   }
 });
 
@@ -2819,14 +3165,25 @@ exports.processScheduleV2Shadow = onDocumentWritten({
   if (!claim) return null;
 
   try {
+    const fullGeneration = claim.keys.includes("swim_tab_list");
+    let keys = fullGeneration ? await listScheduleV2BaselineKeys(branch) : claim.keys;
+    const includesAttendanceSnapshots = key =>
+      scheduleV2ShadowPolicy.collectionsForKey(key).includes("attendanceSnapshots");
+    if (!fullGeneration && claim.keys.some(includesAttendanceSnapshots)) {
+      const baselineKeys = await listScheduleV2BaselineKeys(branch);
+      const snapshotKeys = baselineKeys.filter(key =>
+        key !== "swim_tab_list" && includesAttendanceSnapshots(key));
+      keys = [...new Set([...keys, ...snapshotKeys])];
+    }
     const result = await runShadowSync({
       db,
       branchId,
       generationId: claim.generationId,
-      keys: claim.keys,
+      keys,
       readLegacyKey: key => readStoredValue(branch, key),
       fence: {ref: syncRef, leaseId: claim.leaseId},
       heartbeat: scheduleV2LeaseHeartbeat(syncRef, claim.leaseId),
+      fullGeneration,
     });
     await db.runTransaction(async tx => {
       const snapshot = await tx.get(syncRef);

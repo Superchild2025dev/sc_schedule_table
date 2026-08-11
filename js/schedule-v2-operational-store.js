@@ -127,7 +127,7 @@
   }
   function attendanceKeysForTab(tab){
     const id=text(tab?.id)||'regular';
-    return id==='regular'
+    return tab?.type!=='bangteuk'
       ?['swim_attendance','swim_att_guests','swim_day_snapshot']
       :[`swim_bt_attendance_${id}`,`swim_bt_att_guests_${id}`,`swim_bt_day_snapshot_${id}`];
   }
@@ -270,10 +270,25 @@
         appendRows(collections,name,await readTabCollection(ref,name,selection.tabIds));
       }));
     }
+    async function readAttendanceOwners(ref,name,selection,tabs){
+      const rows=[];
+      const regularSelected=selection.tabIds.includes('regular')||tabs.some(tab=>tab.type!=='bangteuk')||
+        selection.keys.some(key=>[
+          'swim_attendance','swim_att_guests','swim_day_snapshot',
+        ].includes(key)||/^zz_swim_day_snapshot__regular__/.test(key));
+      if(regularSelected){
+        rows.push(...snapshotRows(await ref.collection(name).where('courseType','==','regular').get()));
+      }
+      const bangteukIds=unique(tabs.filter(tab=>tab.type==='bangteuk').map(tab=>tab.id));
+      if(bangteukIds.length) rows.push(...await readTabCollection(ref,name,bangteukIds));
+      return rows.filter((row,index)=>rows.findIndex(candidate=>text(candidate.id)===text(row.id))===index);
+    }
     async function readAttendance(ref,selection,collections){
-      const [tabs,records,guests,snapshots]=await Promise.all([
-        readDocsByIds(ref.collection('tabs'),selection.tabIds),readTabCollection(ref,'attendanceRecords',selection.tabIds),
-        readTabCollection(ref,'attendanceGuests',selection.tabIds),readTabCollection(ref,'attendanceSnapshots',selection.tabIds),
+      const tabs=await readDocsByIds(ref.collection('tabs'),selection.tabIds);
+      const [records,guests,snapshots]=await Promise.all([
+        readAttendanceOwners(ref,'attendanceRecords',selection,tabs),
+        readAttendanceOwners(ref,'attendanceGuests',selection,tabs),
+        readAttendanceOwners(ref,'attendanceSnapshots',selection,tabs),
       ]);
       appendRows(collections,'tabs',tabs);
       appendRows(collections,'attendanceRecords',records.filter(row=>dateMatches(row,selection.dateRange)));

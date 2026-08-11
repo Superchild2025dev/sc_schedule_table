@@ -304,6 +304,23 @@ test('attendance-only reads use selected tab metadata without widening person or
   assert.equal(JSON.parse(loaded.root.swim_day_snapshot)['2026-08-11'].students[0].name,'기록 원생');
 });
 
+test('a named regular tab reads canonical regular attendance by course type',async()=>{
+  const collections=selectedFixture();
+  collections.tabs[0]={...collections.tabs[0],id:'autumn',name:'Autumn Regular'};
+  collections.scheduleSettings[0]={...collections.scheduleSettings[0],mainTabId:'autumn',parentTabId:'autumn'};
+  const firestore=createFirestore({collections});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+
+  const loaded=await store.loadSelection({
+    tabIds:['autumn'],domains:['attendance'],dateRange:{dates:['2026-08-11']},
+  });
+
+  assert.equal(JSON.parse(loaded.root.swim_attendance)['att-1'].state,'present');
+  assert.equal(JSON.parse(loaded.root.swim_att_guests)['guest-1'][0].name,collections.attendanceGuests[0].payload.name);
+  assert.equal(JSON.parse(loaded.root.swim_day_snapshot)['2026-08-11'].students[0].name,collections.attendanceSnapshotStudents[0].payload.name);
+  assert.equal(Object.keys(loaded.root).some(key=>key.includes('autumn')),false);
+});
+
 test('bundled attendance mutation ignores a display date range and preserves every backing date in the callable payload',async()=>{
   const firestore=createFirestore({collections:selectedFixture()});
   const store=storeApi.create({db:firestore.db,branchId:'yongam',model});

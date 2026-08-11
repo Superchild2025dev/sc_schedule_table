@@ -39,6 +39,19 @@ if(emulatorEnabled){
     await env.clearFirestore();
   });
 
+  test.beforeEach(async()=>{
+    await env.withSecurityRulesDisabled(async context=>{
+      for(const branch of ["gagyeong","yongam"]){
+        await setDoc(runtimeConfig(context.firestore(),branch,"operational"),{
+          branchId:branch,mode:"v1",generationId:"",epoch:1,revision:0,
+        });
+        await setDoc(runtimeConfig(context.firestore(),branch,"activationFreeze"),{
+          branchId:branch,active:false,state:"idle",
+        });
+      }
+    });
+  });
+
   test.after(async () => {
     await env.cleanup();
   });
@@ -129,6 +142,31 @@ if(emulatorEnabled){
 
     await assertSucceeds(setDoc(chunk(db, "gagyeong", "swim_attendance", "0000"), {text:"{}"}));
     await assertFails(setDoc(chunk(db, "gagyeong", "swim_students", "0000"), {text:"{}"}));
+  });
+
+  test("tracked V1 parent and chunk writes fail closed under freeze V2 or unknown authority",async()=>{
+    const deskDb=staffDb("gagyeong-desk","gagyeong.desk@scswim.local");
+    const teacherDb=staffDb("gagyeong-teacher","gagyeong.son@scswim.local");
+    const setRuntime=async(documentId,value)=>env.withSecurityRulesDisabled(async context=>{
+      await setDoc(runtimeConfig(context.firestore(),"gagyeong",documentId),value);
+    });
+
+    await setRuntime("activationFreeze",{branchId:"gagyeong",active:true,state:"draining"});
+    await assertFails(setDoc(kv(deskDb,"gagyeong","swim_students"),{value:"[]"}));
+    await assertFails(setDoc(kv(teacherDb,"gagyeong","swim_attendance"),{value:"{}"}));
+    await assertFails(setDoc(chunk(teacherDb,"gagyeong","swim_attendance","0000"),{text:"{}"}));
+    await assertSucceeds(setDoc(kv(teacherDb,"gagyeong","swim_requests"),{value:"{}"}));
+
+    await setRuntime("activationFreeze",{branchId:"gagyeong",active:false,state:"completed"});
+    for(const mode of ["v2-read","v2","unknown"]){
+      await setRuntime("operational",{branchId:"gagyeong",mode,generationId:"gen_1",epoch:2,revision:1});
+      await assertFails(setDoc(kv(deskDb,"gagyeong","swim_students"),{value:"[]"}));
+      await assertFails(setDoc(kv(teacherDb,"gagyeong","swim_attendance"),{value:"{}"}));
+      await assertSucceeds(setDoc(kv(teacherDb,"gagyeong","swim_requests"),{value:"{}"}));
+    }
+
+    await setRuntime("operational",{branchId:"yongam",mode:"v1",generationId:"",epoch:3,revision:1});
+    await assertFails(setDoc(kv(deskDb,"gagyeong","swim_students"),{value:"[]"}));
   });
 
   test("generic V2 monitor documents are server-write-only while owner and developer keep monitor reads", async () => {

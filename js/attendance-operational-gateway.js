@@ -3,6 +3,8 @@
 
   const MAX_DIAGNOSTICS=80;
   const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
+  const V1_AUTHORITY_MODES=new Set(['v1','shadow','verify']);
+  const AUTHORITY_MODES=new Set([...V1_AUTHORITY_MODES,...V2_AUTHORITY_MODES]);
   let operationSequence=0;
 
   function text(value){ return String(value==null?'':value).trim(); }
@@ -41,6 +43,11 @@
     operationSequence=(operationSequence+1)%1000000;
     return `attendance_${Date.now().toString(36)}_${operationSequence.toString(36)}`;
   }
+  function authorityError(cause){
+    return Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없어 읽기 전용으로 전환했습니다.'),{
+      code:'operational-authority-unavailable',cause,
+    });
+  }
 
   function create(options){
     const branchId=text(options?.branchId);
@@ -52,7 +59,8 @@
     if(!legacy||typeof legacy.loadRange!=='function') throw new Error('V1 출석 저장소가 필요합니다.');
     if(!v2Store||typeof v2Store.readConfig!=='function') throw new Error('V2 출석 저장소가 필요합니다.');
 
-    let config={mode:'v1',generationId:'',branchId,valid:false};
+    const unknownConfig=()=>({mode:'unknown',generationId:'',branchId,epoch:0,revision:0,valid:false,compatibilityValid:false});
+    let config=unknownConfig();
     let readyPromise=null;
     let confirmedV2=false;
     const rangeVersions=new Map();
@@ -78,17 +86,34 @@
       if(diagnosticRows.length>MAX_DIAGNOSTICS) diagnosticRows.splice(0,diagnosticRows.length-MAX_DIAGNOSTICS);
       return row;
     }
+    function normalizeAuthority(value){
+      if(!value||typeof value!=='object'||Array.isArray(value)) throw authorityError();
+      const next=clone(value);
+      next.mode=text(next.mode);
+      next.generationId=text(next.generationId);
+      next.branchId=text(next.branchId);
+      next.epoch=Number(next.epoch);
+      next.revision=Number(next.revision);
+      next.valid=next.valid===true;
+      if(!next.valid||next.branchId!==branchId||!AUTHORITY_MODES.has(next.mode)
+        ||!Number.isSafeInteger(next.epoch)||next.epoch<0
+        ||!Number.isSafeInteger(next.revision)||next.revision<0
+        ||(next.mode!=='v1'&&!next.generationId)) throw authorityError();
+      return next;
+    }
     async function ready(){
       if(readyPromise) return readyPromise;
       readyPromise=(async()=>{
         try{
-          const next=await v2Store.readConfig();
-          config=next&&typeof next==='object'?clone(next):config;
+          const next=normalizeAuthority(await v2Store.readConfig());
+          config=next;
           if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
           return clone(config);
         }catch(error){
-          if(confirmedV2) throw new Error('V2 출석 전환 설정을 확인하지 못해 작업을 중단했습니다.');
-          config={mode:'v1',generationId:'',branchId,valid:false};
+          if(confirmedV2) throw Object.assign(new Error('V2 출석 전환 설정을 확인하지 못해 작업을 중단했습니다.'),{
+            code:'v2-operational-config-failed',cause:error,
+          });
+          config=unknownConfig();
           return clone(config);
         }
       })();
@@ -215,20 +240,21 @@
       const base={tabId:text(input?.tabId),dates:input?.dates||[],kind:`write-${kind}`};
 
       try{
-        const latest=await v2Store.readConfig();
-        config=latest&&typeof latest==='object'?clone(latest):config;
+        const latest=normalizeAuthority(await v2Store.readConfig());
+        config=latest;
         if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
       }catch(error){
-        if(confirmedV2) throw Object.assign(new Error('V2 출석 전환 설정을 확인하지 못해 저장을 중단했습니다.'),{
-          code:'v2-operational-config-failed',cause:error,
-        });
+        config=unknownConfig();
+        diagnostic({...base,outcome:'authority-unavailable',durationMs:nowDate().getTime()-started});
+        throw authorityError(error);
       }
+      if(!config.valid||!AUTHORITY_MODES.has(config.mode)) throw authorityError();
       if(config.compatibilityValid===false){
         diagnostic({...base,outcome:'pointer-mismatch',durationMs:nowDate().getTime()-started});
         throw pointerError(config.compatibilityCode);
       }
 
-      if(!V2_AUTHORITY_MODES.has(config.mode)){
+      if(V1_AUTHORITY_MODES.has(config.mode)){
         const legacyResult=await legacy[legacyMethod](mutator,input);
         const after=resultMap(legacyResult,outputField);
         let degraded=false;

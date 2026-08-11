@@ -8,7 +8,9 @@
 
   const V2_MODES=new Set(['v2-read','v2']);
   const V1_MODES=new Set(['v1','shadow','verify']);
+  const AUTHORITY_MODES=new Set([...V1_MODES,...V2_MODES]);
   const RETRYABLE_CODES=new Set(['cancelled','deadline-exceeded','internal','resource-exhausted','unavailable']);
+  const AMBIGUOUS_TERMINAL_CODES=new Set([...RETRYABLE_CODES,'data-loss','unknown']);
   const MAX_DIAGNOSTICS=80;
   let operationSequence=0;
 
@@ -67,6 +69,9 @@
   function configFingerprint(config){
     return [text(config?.branchId),text(config?.mode),text(config?.generationId),Number(config?.epoch)||0,Number(config?.revision)||0].join('|');
   }
+  function callableCode(error){
+    return text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
+  }
   function sameRebaseAuthority(left,right){
     return text(left?.branchId)===text(right?.branchId)
       &&text(left?.mode)===text(right?.mode)
@@ -103,7 +108,8 @@
     }
 
     const callable=typeof options.mutate==='function'?options.mutate:createCallable(options);
-    let config={branchId,mode:'v1',generationId:'',epoch:0,revision:0,valid:false};
+    const unknownConfig=()=>({branchId,mode:'unknown',generationId:'',epoch:0,revision:0,valid:false});
+    let config=unknownConfig();
     let readyPromise=null;
     let configUnsubscribe=null;
     let confirmedV2=false;
@@ -154,15 +160,39 @@
       };
     }
     function normalizeConfig(value){
-      const next=object(value)?clone(value):{};
-      next.branchId=text(next.branchId)||branchId;
-      next.mode=text(next.mode)||'v1';
+      if(!object(value)) fail('invalid-operational-config','운영 전환 설정을 확인할 수 없습니다.');
+      const next=clone(value);
+      next.branchId=text(next.branchId);
+      next.mode=text(next.mode);
       next.generationId=text(next.generationId);
-      next.epoch=Math.max(0,Number(next.epoch)||0);
-      next.revision=Math.max(0,Number(next.revision)||0);
-      next.valid=next.valid!==false;
+      next.epoch=Number(next.epoch);
+      next.revision=Number(next.revision);
+      next.valid=next.valid===true;
       if(next.branchId!==branchId) fail('invalid-operational-config','선택한 지점과 운영 설정이 다릅니다.');
+      if(!next.valid||!AUTHORITY_MODES.has(next.mode)
+        ||!Number.isSafeInteger(next.epoch)||next.epoch<0
+        ||!Number.isSafeInteger(next.revision)||next.revision<0
+        ||(next.mode!=='v1'&&!next.generationId)){
+        fail('invalid-operational-config','운영 전환 설정이 올바르지 않습니다.');
+      }
       return next;
+    }
+    function revokeAuthority(error){
+      const hadAuthority=config.valid===true;
+      config=unknownConfig();
+      pendingRuntimeConfig=null;
+      record('config','authority-unavailable',{},error);
+      if(hadAuthority) requestReload(config);
+    }
+    function assertReadableAuthority(){
+      if(confirmedV2&&!config.valid){
+        fail('v2-operational-config-failed','V2 운영 설정을 확인할 수 없어 작업을 중단했습니다.');
+      }
+    }
+    function assertWriteAuthority(){
+      if(!config.valid||!AUTHORITY_MODES.has(config.mode)){
+        fail('operational-authority-unavailable','운영 저장 권한을 확인할 수 없어 읽기 전용으로 전환했습니다.');
+      }
     }
     function requestReload(next){
       const fingerprint=configFingerprint(next);
@@ -175,6 +205,8 @@
       activeSelectionSignature='';
       cache={};
       currentSelection=null;
+      pendingMutations.clear();
+      pendingRuntimeConfig=null;
       [...activeControllers].forEach(controller=>controller.stop(true));
       activeControllers.clear();
       if(configUnsubscribe){
@@ -219,9 +251,9 @@
       configUnsubscribe=v2Store.subscribeConfig(
         value=>{
           try{ if(!disposed) acceptConfig(value,true); }
-          catch(error){ record('config','error',{},error); }
+          catch(error){ if(!disposed) revokeAuthority(error); }
         },
-        error=>record('config','error',{},error),
+        error=>{ if(!disposed) revokeAuthority(error); },
       );
     }
     async function ready(){
@@ -237,8 +269,8 @@
         }catch(error){
           if(error?.code==='operational-disposed') throw error;
           if(confirmedV2) throw Object.assign(new Error('V2 운영 설정을 확인할 수 없어 작업을 중단했습니다.'),{code:'v2-operational-config-failed'});
-          config={branchId,mode:'v1',generationId:'',epoch:0,revision:0,valid:false};
-          record('config','v1-fallback',{},error);
+          config=unknownConfig();
+          record('config','read-only-fallback',{},error);
           return clone(config);
         }
       })();
@@ -299,6 +331,7 @@
     async function loadSelection(input={}){
       await ready();
       assertActive();
+      assertReadableAuthority();
       if(reloadRequired) fail('operational-reload-required','운영 설정이 변경되어 화면을 새로고침해야 합니다.');
       const selection=normalizedSelection(input);
       const token=++loadVersion;
@@ -385,7 +418,7 @@
         try{return await callable(clone(request));}
         catch(error){
           lastError=error;
-          const code=text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
+          const code=callableCode(error);
           if(!RETRYABLE_CODES.has(code)||attempt+1>=maxMutationAttempts) throw error;
         }
       }
@@ -399,6 +432,7 @@
     async function transactionKeys(keys,mutator,meta={}){
       if(typeof mutator!=='function') throw new TypeError('transaction mutator is required');
       await ready();
+      assertWriteAuthority();
       if(V1_MODES.has(config.mode)) return transactionKeysOnce(keys,mutator,meta);
 
       let originalBefore=null;
@@ -414,7 +448,7 @@
       try{
         return await transactionKeysOnce(keys,captureIntent,attemptMeta);
       }catch(error){
-        const code=text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
+        const code=callableCode(error);
         if(code!=='aborted'||originalBefore===null||originalAfter===null) throw error;
         const next=await v2Store.readConfig();
         if(!sameRebaseAuthority(config,next)){
@@ -432,6 +466,7 @@
       if(typeof mutator!=='function') throw new TypeError('transaction mutator is required');
       await ready();
       assertActive();
+      assertWriteAuthority();
       if(reloadRequired) fail('operational-reload-required','운영 설정이 변경되어 화면을 새로고침해야 합니다.');
       if(V1_MODES.has(config.mode)){
         const selection=selectionForKeys(keys,meta);
@@ -495,9 +530,12 @@
         nextValues,removedKeys,
       };
       const started=nowDate().getTime();
-      pendingMutations.set(operationId,{...request,mode:config.mode});
+      const pendingRequest={...request,mode:config.mode};
+      pendingMutations.set(operationId,pendingRequest);
+      let responseReceived=false;
       try{
         const response=await runMutation(request,context,selection);
+        responseReceived=true;
         assertCurrent(context,selection);
         if(!acceptedResponse(response,request)) fail('invalid-operational-response','서버 저장 결과의 버전을 확인할 수 없습니다.');
         assertCurrent(context,selection);
@@ -520,7 +558,24 @@
         };
       }catch(error){
         pendingMutations.delete(operationId);
-          if(pendingRuntimeConfig&&!meta.rebaseConflict){
+        if(!responseReceived&&AMBIGUOUS_TERMINAL_CODES.has(callableCode(error))){
+          pendingRuntimeConfig=null;
+          try{
+            const next=normalizeConfig(await v2Store.readConfig());
+            pendingRuntimeConfig=null;
+            const authorityChanged=configFingerprint(next)!==configFingerprint({
+              branchId:pendingRequest.branchId,
+              mode:pendingRequest.mode,
+              generationId:pendingRequest.generationId,
+              epoch:pendingRequest.expectedEpoch,
+              revision:pendingRequest.beforeRevision,
+            });
+            acceptConfig(next,false);
+            if(authorityChanged) requestReload(next);
+          }catch(authorityError){
+            revokeAuthority(authorityError);
+          }
+        }else if(pendingRuntimeConfig&&!meta.rebaseConflict){
           const next=pendingRuntimeConfig;
           pendingRuntimeConfig=null;
           requestReload(next);
@@ -536,7 +591,8 @@
         async once(event,meta={}){
           if(event!=='value') fail('unsupported-event',`Unsupported event: ${event}`);
           await ready();
-          if(V1_MODES.has(config.mode)&&typeof legacyRoot.child==='function') return legacyRoot.child(key).once(event);
+          assertReadableAuthority();
+          if(!V2_MODES.has(config.mode)&&typeof legacyRoot.child==='function') return legacyRoot.child(key).once(event);
           if(!Object.prototype.hasOwnProperty.call(cache,key)) await loadSelection(selectionForKeys([key],meta));
           return new Snapshot(key,Object.prototype.hasOwnProperty.call(cache,key)?cache[key]:null);
         },
@@ -559,7 +615,8 @@
     async function once(event){
       if(event!=='value') fail('unsupported-event',`Unsupported event: ${event}`);
       await ready();
-      if(V1_MODES.has(config.mode)) return legacyRoot.once(event);
+      assertReadableAuthority();
+      if(!V2_MODES.has(config.mode)) return legacyRoot.once(event);
       const selection=currentSelection||options.initialSelection;
       if(!selection) fail('operational-selection-required','V2 운영 조회에는 선택한 탭과 데이터 범위가 필요합니다.');
       const loaded=await loadSelection(selection);
@@ -604,7 +661,8 @@
       const readyController=(async()=>{
         await ready();
         if(stopped||disposed||reloadRequired) return {stale:true};
-        if(V1_MODES.has(config.mode)&&typeof legacyRoot.subscribeSelectedBatches==='function'){
+        assertReadableAuthority();
+        if(!V2_MODES.has(config.mode)&&typeof legacyRoot.subscribeSelectedBatches==='function'){
           const guardedSubscriber={
             ...subscriber,
             next(batch){ if(!stopped&&!disposed&&!reloadRequired) subscriber.next(batch); },

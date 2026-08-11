@@ -292,6 +292,25 @@ test('existing main attendance update functions delegate through the runtime',()
   assert.match(source('js/data.js'),/function _updateLegacyAttGuestsMapTx/);
 });
 
+test('missing attendance operational dependencies keep main staff writes read only',async()=>{
+  let legacyWrites=0;
+  const context={
+    getMainScheduleLiveHandlers:()=>null,
+    getOperationalAttendanceRuntime:()=>null,
+    _attendanceOperationContext:()=>({tabId:'regular',courseType:'regular'}),
+    _updateLegacyAttendanceMapTx:async()=>{legacyWrites+=1;return {};},
+    _updateLegacyAttGuestsMapTx:async()=>{legacyWrites+=1;return {};},
+  };
+  vm.createContext(context);
+  vm.runInContext(`${functionBody('js/data.js','updateAttendanceMapTx')}\n${functionBody('js/data.js','updateAttGuestsMapTx')}`,context);
+
+  await assert.rejects(()=>context.updateAttendanceMapTx(map=>map),
+    error=>error?.code==='operational-authority-unavailable');
+  await assert.rejects(()=>context.updateAttGuestsMapTx(map=>map),
+    error=>error?.code==='operational-authority-unavailable');
+  assert.equal(legacyWrites,0);
+});
+
 test('single-entry helpers do not mutate visible maps before the gateway captures the previous value',()=>{
   const attendance=functionBody('js/data.js','setAttendanceEntryTx');
   const guests=functionBody('js/data.js','setAttGuestsEntryTx');

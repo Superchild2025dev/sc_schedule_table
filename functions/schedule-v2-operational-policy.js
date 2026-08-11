@@ -26,6 +26,10 @@ const MAX_KEYS=64;
 const MAX_DOCUMENT_ID_BYTES=1500;
 const MAX_REQUEST_BYTES=8*1024*1024;
 const MAX_VALUE_BYTES=6*1024*1024;
+const TERMINAL_RECOVERY_STATES=Object.freeze({
+  mirror:new Set(["error"]),
+  request:new Set(["error","conflict","cancelled","rejected"]),
+});
 const SAFE_ERROR_CODES=new Set([
   "aborted","already-exists","cancelled","data-loss","deadline-exceeded",
   "failed-precondition","internal","invalid-argument","not-found","out-of-range",
@@ -237,6 +241,21 @@ function validateRequestRecoveryCommand(input){
   return Object.freeze(result);
 }
 
+function validateTerminalRecoveryCommand(input){
+  const keys=["version","action","branchId","kind","operationId","expectedState"];
+  if(!plainObject(input)||input.version!==1||!exactKeys(input,keys)) fail("invalid-argument");
+  const action=text(input.action);
+  const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
+  const kind=text(input.kind);
+  const operationId=normalizeString(input.operationId,/^[A-Za-z0-9_-]{1,128}$/);
+  const expectedState=text(input.expectedState);
+  if(!["retry","resolve"].includes(action)||!BRANCH_IDS.has(branchId)||
+      !Object.prototype.hasOwnProperty.call(TERMINAL_RECOVERY_STATES,kind)||
+      !TERMINAL_RECOVERY_STATES[kind].has(expectedState)) fail("invalid-argument");
+  if(kind==="request") recoveryOperationId(operationId);
+  return Object.freeze({version:1,action,branchId,kind,operationId,expectedState});
+}
+
 function keyFamily(key){
   if(key==="swim_tab_list") return "tabs";
   if(key==="swim_students"||/^swim_stu_[A-Za-z0-9_-]+$/.test(key)||/^swim_bt_[A-Za-z0-9_-]+_stu$/.test(key)) return "student-roster";
@@ -389,6 +408,13 @@ function authorizeRequestRecovery(authInput,recoveryInput){
   });
 }
 
+function authorizeTerminalRecovery(authInput,recoveryInput){
+  const command=recoveryInput?.kind?recoveryInput:validateTerminalRecoveryCommand(recoveryInput);
+  const actor=authorizeBranchStaff(authInput,command.branchId);
+  if(actor.role!=="developer") fail("permission-denied");
+  return actor;
+}
+
 function requestRecoveryProcessorName(actorId){
   const normalized=text(actorId).toLowerCase();
   if(!/^[0-9a-f]{24}$/.test(normalized)) fail("failed-precondition");
@@ -443,6 +469,8 @@ module.exports={
   authorizeMutation,
   validateRequestRecoveryCommand,
   authorizeRequestRecovery,
+  validateTerminalRecoveryCommand,
+  authorizeTerminalRecovery,
   requestRecoveryProcessorName,
   redactedDiagnostic,
   keyFamily,

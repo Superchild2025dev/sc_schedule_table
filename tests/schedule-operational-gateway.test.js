@@ -29,6 +29,7 @@ function createEnvironment(mode,overrides={}){
     epoch:4,revision:31,valid:true,
   };
   let configListener=null;
+  let configErrorListener=null;
   let legacySubscriber=null;
   const mutationRequests=[];
   const readSelections=[];
@@ -80,16 +81,18 @@ function createEnvironment(mode,overrides={}){
   };
   const v2Store={
     async readConfig(){
+      const readIndex=calls.configReads++;
       const configured=Array.isArray(overrides.configSequence)
-        ?overrides.configSequence[Math.min(calls.configReads++,overrides.configSequence.length-1)]
+        ?overrides.configSequence[Math.min(readIndex,overrides.configSequence.length-1)]
         :config;
       if(overrides.configReadPromise) return overrides.configReadPromise;
       if(overrides.configError) throw new Error('config unavailable secret');
       return plain(configured);
     },
-    subscribeConfig(next){
+    subscribeConfig(next,error){
       configListener=next;next(plain(config));
-      return ()=>{calls.configUnsubscribes+=1;configListener=null;};
+      configErrorListener=error;
+      return ()=>{calls.configUnsubscribes+=1;configListener=null;configErrorListener=null;};
     },
     invalidate(){ calls.invalidations+=1; },
     async loadSelection(selection){
@@ -133,6 +136,13 @@ function createEnvironment(mode,overrides={}){
     calls.mutations+=1;calls.order.push('v2-write');
     mutationRequests.push(plain(request));
     if(overrides.mutationPromise) return overrides.mutationPromise;
+    if(overrides.commitThenLoseResponse){
+      if(mutationAttempt===1){
+        config={...config,revision:request.beforeRevision+1};
+        configListener?.(plain(config));
+      }
+      throw Object.assign(new Error('committed response lost'),{code:overrides.lostResponseCode||'functions/unavailable'});
+    }
     if(Array.isArray(overrides.mutationErrors)&&overrides.mutationErrors[mutationAttempt-1]){
       throw overrides.mutationErrors[mutationAttempt-1];
     }
@@ -157,6 +167,7 @@ function createEnvironment(mode,overrides={}){
   return {
     root,calls,mutationRequests,readSelections,mutationSelections,parityInputs,
     emitConfig(next){ config=plain(next);configListener?.(plain(config)); },
+    emitConfigError(error){ configErrorListener?.(error); },
     emitLegacyBatch(batch){ legacySubscriber?.next(plain(batch)); },
     setLoaded(tabId,value){ loadedRoots[tabId]=plain(value); },
     legacyData:()=>plain(legacyData),
@@ -213,6 +224,49 @@ test('a confirmed V2 session never falls back to V1 after a V2 read error',async
   assert.equal(env.calls.v2Reads,1);
 });
 
+test('an unreadable startup authority permits legacy reads but keeps schedule writes read only',async()=>{
+  const env=createEnvironment('v1',{configError:true});
+
+  const loaded=await env.root.loadSelection(selection);
+  assert.equal(loaded.primary,'v1');
+  await assert.rejects(()=>env.root.transactionKeys(['swim_students'],draft=>draft,{
+    operationType:'update-student',tabIds:['regular'],
+  }),error=>error?.code==='operational-authority-unavailable');
+
+  assert.equal(env.calls.legacyReads,1);
+  assert.equal(env.calls.legacyWrites,0);
+  assert.equal(env.root.currentConfig().valid,false);
+});
+
+test('malformed runtime authority never becomes an implicit writable V1 pointer',async()=>{
+  const invalidConfigs=[
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:4,revision:31,valid:false},
+    {branchId:'yongam',mode:'unknown',generationId:'',epoch:4,revision:31,valid:true},
+    {branchId:'gagyeong',mode:'v1',generationId:'',epoch:4,revision:31,valid:true},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:-1,revision:31,valid:true},
+  ];
+  for(const candidate of invalidConfigs){
+    const env=createEnvironment('v1',{configSequence:[candidate]});
+    await env.root.ready();
+    await assert.rejects(()=>env.root.transactionKeys(['swim_students'],draft=>draft,{
+      operationType:'update-student',tabIds:['regular'],
+    }),error=>error?.code==='operational-authority-unavailable',JSON.stringify(candidate));
+    assert.equal(env.calls.legacyWrites,0,JSON.stringify(candidate));
+  }
+});
+
+test('losing a valid V1 runtime subscription revokes legacy write authority',async()=>{
+  const env=createEnvironment('v1');
+  await env.root.ready();
+  env.emitConfigError(Object.assign(new Error('listener failed'),{code:'unavailable'}));
+
+  await assert.rejects(()=>env.root.transactionKeys(['swim_students'],draft=>draft,{
+    operationType:'update-student',tabIds:['regular'],
+  }),error=>error?.code==='operational-authority-unavailable');
+  assert.equal(env.calls.legacyWrites,0);
+  assert.equal(env.root.currentConfig().valid,false);
+});
+
 test('transactionKeys sends only the strict Task 2 request and keeps one operation id across retry',async()=>{
   const env=createEnvironment('v2-read',{transientMutationError:true,operationId:'stable_op_1'});
   await env.root.ready();
@@ -248,6 +302,34 @@ test('functions-prefixed transient callable codes retry with the same operation 
   assert.equal(env.mutationRequests.length,2);
   assert.equal(env.mutationRequests[0].operationId,'stable_prefixed_op');
   assert.equal(env.mutationRequests[1].operationId,'stable_prefixed_op');
+});
+
+test('a committed write with every callable response lost re-reads authority and requires one controlled reload',async()=>{
+  const env=createEnvironment('v2-read',{
+    commitThenLoseResponse:true,
+    operationId:'committed_lost_response',
+  });
+
+  await assert.rejects(
+    env.root.transactionKeys(['swim_students'],draft=>{
+      draft.swim_students=JSON.stringify([{id:'student-1',name:'서버에는 저장됨'}]);
+      return draft;
+    },{operationType:'update-student',tabIds:['regular']}),
+    error=>error?.code==='functions/unavailable',
+  );
+
+  assert.equal(env.calls.mutations,2);
+  assert.equal(env.calls.configReads,2);
+  assert.equal(env.calls.reloads,1);
+  assert.equal(env.calls.invalidations,1);
+  assert.equal(env.root.currentConfig().revision,32);
+  assert.deepEqual(env.mutationRequests[0],env.mutationRequests[1]);
+  await assert.rejects(
+    env.root.transactionKeys(['swim_students'],draft=>draft,{
+      operationType:'update-student',tabIds:['regular'],
+    }),
+    error=>error?.code==='operational-reload-required',
+  );
 });
 
 test('transaction preparation uses complete authoritative values for shared and global keys',async()=>{

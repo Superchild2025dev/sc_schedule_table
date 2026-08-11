@@ -116,10 +116,38 @@ assert.match(
 );
 assert.match(
   v2Rules,
+  /match \/scheduleV2\/\{branch\}\/recoveryResolutions\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "terminal recovery resolutions must remain server-only"
+);
+assert.match(
+  v2Rules,
   /match \/scheduleV2\/\{branch\}\/runtime\/operationalRecovery \{[\s\S]*?allow read, write: if false;/,
   "mirror recovery queues must remain server-only"
 );
 assert.doesNotMatch(v2Rules, /allow write: if (?!false)/, "no Schedule V2 browser write may be authorized");
+
+assert.match(
+  source,
+  /function hasLegacyScheduleAuthority\(branch\)[\s\S]*?runtime\/operational[\s\S]*?\.data\.branchId == branch[\s\S]*?\.data\.mode in \["v1", "shadow", "verify"\]/,
+  "tracked V1 writes require an explicit branch-scoped V1-family authority pointer"
+);
+assert.match(
+  source,
+  /function canWriteLegacyScheduleKey\(branch, docId\)[\s\S]*?!isTrackedLegacyScheduleKey\(docId\)[\s\S]*?hasLegacyScheduleAuthority\(branch\)[\s\S]*?activationFreezeAllowsLegacyWrites\(branch\)/,
+  "tracked V1 writes must be fenced by authority and activation freeze"
+);
+assert.match(
+  source,
+  /match \/scheduleStores\/\{branch\}\/\{document=\*\*\} \{[\s\S]*?allow write: if false;/,
+  "the recursive scheduleStores rule must not bypass the tracked-key fence"
+);
+assert.match(
+  source,
+  /match \/scheduleStores\/\{branch\}\/kv\/\{docId\} \{[\s\S]*?canWriteLegacyScheduleKey\(branch, docId\)[\s\S]*?match \/chunks\/\{chunkId\} \{[\s\S]*?canWriteLegacyScheduleKey\(branch, docId\)/,
+  "parent and chunk writes must use the same V1 fence"
+);
+assert.match(source,/runtime\/activationFreeze \{[\s\S]*?allow read, write: if false;/);
+assert.match(source,/runtime\/canonicalParity \{[\s\S]*?allow read, write: if false;/);
 
 assert.equal(firebaseConfig.firestore.rules, "firestore.rules");
 assert.equal(firebaseConfig.firestore.indexes, "firestore.indexes.json");

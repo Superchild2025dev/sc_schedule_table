@@ -102,6 +102,58 @@ service cloud.firestore {
         && isTeacherWritableScheduleKey(docId);
     }
 
+    function isTrackedLegacyScheduleKey(docId) {
+      return docId == "swim_tab_list"
+        || docId == "swim_students"
+        || docId == "swim_inst"
+        || docId == "swim_retire"
+        || docId == "swim_enroll"
+        || docId == "swim_hyuwon"
+        || docId == "swim_move"
+        || docId == "swim_reserve"
+        || docId == "swim_mark"
+        || docId == "swim_attendance"
+        || docId == "swim_att_guests"
+        || docId == "swim_day_snapshot"
+        || docId == "swim_disabled"
+        || docId == "swim_closed"
+        || docId == "swim_periods"
+        || docId == "swim_main_tab"
+        || docId == "swim_parent_tab"
+        || docId == "swim_teachers"
+        || docId == "swim_tab_folders"
+        || docId == "swim_archived_tabs"
+        || docId == "swim_age_year"
+        || docId == "swim_student_id_version"
+        || docId == "swim_ver"
+        || docId == "swim_retire_history"
+        || docId == "swim_desk_notes"
+        || docId.matches("^swim_stu_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_inst_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_[A-Za-z0-9_-]+_(stu|inst)$")
+        || docId.matches("^swim_bt_attendance_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_att_guests_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_day_snapshot_[A-Za-z0-9_-]+$")
+        || docId.matches("^zz_swim_day_snapshot__(regular|bt_[A-Za-z0-9_-]+)__[0-9]{4}-[0-9]{2}-[0-9]{2}$");
+    }
+
+    function hasLegacyScheduleAuthority(branch) {
+      return exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational)
+        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.branchId == branch
+        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.mode in ["v1", "shadow", "verify"];
+    }
+
+    function activationFreezeAllowsLegacyWrites(branch) {
+      return !exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze)
+        || get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze).data.active == false;
+    }
+
+    function canWriteLegacyScheduleKey(branch, docId) {
+      return !isTrackedLegacyScheduleKey(docId)
+        || (hasLegacyScheduleAuthority(branch)
+          && activationFreezeAllowsLegacyWrites(branch));
+    }
+
     function canReadScheduleV2Runtime(documentId) {
       return documentId in ["operational","attendance","scheduleSync"];
     }
@@ -125,6 +177,14 @@ service cloud.firestore {
     }
 
     match /scheduleV2/{branch}/runtime/operationalRecovery {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/activationFreeze {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/canonicalParity {
       allow read, write: if false;
     }
 
@@ -153,6 +213,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /scheduleV2/{branch}/recoveryResolutions/{document=**} {
+      allow read, write: if false;
+    }
+
     match /scheduleV2/{document=**} {
       allow read, write: if false;
     }
@@ -171,18 +235,20 @@ service cloud.firestore {
 
     match /scheduleStores/{branch}/{document=**} {
       allow read: if canReadSchedule(branch);
-      allow write: if canManageSchedule(branch);
+      allow write: if false;
     }
 
     match /scheduleStores/{branch}/kv/{docId} {
       allow read: if canReadSchedule(branch);
-      allow write: if canManageSchedule(branch)
-        || canTeacherWriteScheduleKey(branch, docId);
+      allow write: if (canManageSchedule(branch)
+          || canTeacherWriteScheduleKey(branch, docId))
+        && canWriteLegacyScheduleKey(branch, docId);
 
       match /chunks/{chunkId} {
         allow read: if canReadSchedule(branch);
-        allow write: if canManageSchedule(branch)
-          || canTeacherWriteScheduleKey(branch, docId);
+        allow write: if (canManageSchedule(branch)
+            || canTeacherWriteScheduleKey(branch, docId))
+          && canWriteLegacyScheduleKey(branch, docId);
       }
     }
 

@@ -16,6 +16,7 @@ if(emulatorEnabled){
   const root=path.join(__dirname,"..");
   const requireFunctions=createRequire(path.join(root,"functions","package.json"));
   const functions=require(path.join(root,"functions","index.js"));
+  const operationalModel=globalThis.SCV2OperationalModel;
   const {getFirestore}=requireFunctions("firebase-admin/firestore");
   const db=getFirestore();
   const developerAuth={uid:"schedule-v2-emulator",token:{email:"developer@scswim.local",email_verified:true}};
@@ -84,6 +85,37 @@ if(emulatorEnabled){
     return rows.sort((left,right)=>left.path.localeCompare(right.path));
   }
 
+  async function canonicalMismatchKeys(branchId,generationId){
+    const legacyRoot={};
+    const roots=await db.collection("scheduleStores").doc(branchId).collection("kv").get();
+    for(const doc of roots.docs){
+      const key=decodeURIComponent(doc.id.replace(/%2E/gi,"."));
+      if(operationalModel.domainForLegacyKey(key)) legacyRoot[key]=await readLegacyValue(branchId,key);
+    }
+    const collections={};
+    const names=[...new Set(Object.values(operationalModel.DOMAIN_COLLECTIONS).flat())];
+    for(const name of names){
+      const snapshot=await generationRef(branchId,generationId).collection(name).get();
+      collections[name]=snapshot.docs.map(doc=>{
+        const row=doc.data()||{};
+        delete row.branchId;
+        delete row.generationId;
+        delete row.operationalRevision;
+        delete row.lastOperationId;
+        if(name==="attendanceSnapshots") delete row.complete;
+        if(!row.id) row.id=decodeURIComponent(doc.id.replace(/%2E/gi,"."));
+        return row;
+      });
+    }
+    const left=operationalModel.trackedLegacyView(legacyRoot);
+    const right=operationalModel.trackedLegacyView(operationalModel.legacyRootFromCollections({
+      branchId,generationId,collections,
+    }));
+    return [...new Set([...Object.keys(left),...Object.keys(right)])]
+      .filter(key=>operationalModel.canonicalDigest(left[key])!==operationalModel.canonicalDigest(right[key]))
+      .sort();
+  }
+
   function assertLegacySnapshotUnchanged(before,after){
     assert.equal(
       isDeepStrictEqual(after,before),
@@ -104,9 +136,12 @@ if(emulatorEnabled){
     await writeLegacyValue(branchId,"swim_enroll",{});
     const defaults={
       swim_parent_tab:{tabId:"regular"},
-      swim_closed:[],swim_periods:[],swim_reserve:{},swim_teachers:[],
+      swim_closed:[],
+      swim_periods:[{month:8,start:"2026-08-03",end:"2026-08-29"}],
+      swim_reserve:{},swim_teachers:[],
       swim_tab_folders:[],swim_archived_tabs:[],swim_hyuwon:{},swim_move:{},
       swim_mark:{},swim_retire_history:[],swim_desk_notes:[],swim_disabled:{},
+      swim_attendance:{},swim_att_guests:{},swim_day_snapshot:{},
     };
     for(const [key,defaultValue] of Object.entries(defaults)){
       await writeLegacyValue(branchId,key,defaultValue);
@@ -219,6 +254,7 @@ if(emulatorEnabled){
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_inst")).length,2);
       assert.equal(Object.keys(await readLegacyValue(branchId,"swim_retire")).length,1);
       assert.equal((await generationRef(branchId,activeGenerationId).get()).get("status"),"ready");
+      assert.deepEqual(await canonicalMismatchKeys(branchId,activeGenerationId),[]);
 
       const rolledBack=await control(branchId,"rollback");
       assert.equal(rolledBack.mode,"v1");
