@@ -1296,58 +1296,199 @@
     if(!window.SCV2OperationalModel||typeof SCV2OperationalModel.domainForLegacyKey!=='function') return '';
     return SCV2OperationalModel.domainForLegacyKey(String(key||''));
   }
-  function operationalCompatibilityRoot(operationalRoot,legacyRoot){
+  function requestOperationalPageReload(details){
+    const fingerprint=[
+      String(details?.branchId||''),String(details?.mode||''),String(details?.generationId||''),
+      Math.max(0,Number(details?.epoch)||0),Math.max(0,Number(details?.revision)||0),
+    ].join('|');
+    const storageKey='sc_operational_reload_fingerprint';
+    try{
+      if(window.sessionStorage&&sessionStorage.getItem(storageKey)===fingerprint) return;
+      if(window.sessionStorage) sessionStorage.setItem(storageKey,fingerprint);
+    }catch(e){}
+    if(typeof window.SC_OPERATIONAL_RELOAD_HANDLER==='function'){
+      window.SC_OPERATIONAL_RELOAD_HANDLER(details);
+      return;
+    }
+    if(window.location&&typeof window.location.reload==='function') window.location.reload();
+  }
+  function operationalCompatibilityRoot(operationalRoot,legacyRoot,operationalBranchId){
     if(typeof Proxy!=='function') return operationalRoot;
-    function transactionMixed(keys,updateFn,meta){
+    const recoveryStorageKey=`sc_legacy_request_recovery_${String(operationalBranchId||'branch')}`;
+    const maxRecoveryAttempts=3;
+    let recoveryPromise=null;
+    function copy(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
+    function operationId(meta){
+      const supplied=String(meta?.operationId||'').trim();
+      if(supplied) return supplied;
+      if(window.crypto&&typeof window.crypto.randomUUID==='function') return window.crypto.randomUUID();
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,char=>{
+        const value=Math.floor(Math.random()*16);
+        return (char==='x'?value:(value&3)|8).toString(16);
+      });
+    }
+    function recoveryErrorCode(error){
+      const code=String(error?.code||'legacy-write-failed').toLowerCase()
+        .replace(/^firebase\//,'').replace(/^firestore\//,'').replace(/^functions\//,'');
+      return /^[a-z0-9._-]{1,80}$/.test(code)?code:'legacy-write-failed';
+    }
+    function readRecoveries(){
+      try{
+        const parsed=JSON.parse(localStorage.getItem(recoveryStorageKey)||'[]');
+        return Array.isArray(parsed)?parsed.filter(record=>
+          record&&record.version===1&&record.branchId===operationalBranchId
+          &&typeof record.operationId==='string'&&Array.isArray(record.keys)
+          &&record.nextValues&&typeof record.nextValues==='object'&&Array.isArray(record.removedKeys)
+        ):[];
+      }catch(e){ return []; }
+    }
+    function writeRecoveries(records){
+      try{
+        if(records.length) localStorage.setItem(recoveryStorageKey,JSON.stringify(records));
+        else localStorage.removeItem(recoveryStorageKey);
+        return true;
+      }catch(e){ return false; }
+    }
+    function upsertRecovery(record){
+      const records=readRecoveries().filter(item=>item.operationId!==record.operationId);
+      records.push(copy(record));
+      return writeRecoveries(records);
+    }
+    function removeRecovery(id){
+      return writeRecoveries(readRecoveries().filter(record=>record.operationId!==id));
+    }
+    function pendingLegacyRecoveries(){
+      return readRecoveries().map(record=>({
+        operationId:record.operationId,
+        operationType:String(record.operationType||''),
+        state:String(record.state||''),
+        keyCount:record.keys.length,
+        attempts:Math.max(0,Number(record.attempts)||0),
+        maxAttempts:maxRecoveryAttempts,
+        exhausted:Math.max(0,Number(record.attempts)||0)>=maxRecoveryAttempts,
+        lastErrorCode:String(record.lastErrorCode||''),
+      }));
+    }
+    async function applyLegacyRecovery(record){
+      if(record.state!=='pending-legacy'||Number(record.attempts)>=maxRecoveryAttempts) return null;
+      const attempt={
+        ...record,attempts:Math.max(0,Number(record.attempts)||0)+1,
+        updatedAt:new Date().toISOString(),lastErrorCode:'',
+      };
+      if(!upsertRecovery(attempt)){
+        throw Object.assign(new Error('요청 처리 복구 상태를 저장할 수 없습니다.'),{code:'legacy-recovery-storage-failed'});
+      }
+      try{
+        const result=await legacyRoot.transactionKeys(attempt.keys,current=>{
+          const next=current&&typeof current==='object'?current:{};
+          attempt.keys.forEach(key=>{
+            if(Object.prototype.hasOwnProperty.call(attempt.nextValues,key)) next[key]=copy(attempt.nextValues[key]);
+            else if(attempt.removedKeys.includes(key)) delete next[key];
+          });
+          return next;
+        },{
+          operationId:attempt.operationId,operationType:attempt.operationType,
+          phase:'legacy-request-recovery',
+        });
+        if(!result||result.committed!==true){
+          throw Object.assign(new Error('요청 처리 복구가 완료되지 않았습니다.'),{code:'legacy-recovery-not-committed'});
+        }
+        removeRecovery(attempt.operationId);
+        return result;
+      }catch(error){
+        upsertRecovery({...attempt,lastErrorCode:recoveryErrorCode(error),updatedAt:new Date().toISOString()});
+        throw error;
+      }
+    }
+    function resumePendingLegacyRecoveries(){
+      if(recoveryPromise) return recoveryPromise;
+      recoveryPromise=(async()=>{
+        const records=readRecoveries().filter(record=>
+          record.state==='pending-legacy'&&Number(record.attempts)<maxRecoveryAttempts
+        );
+        for(const record of records){
+          try{ await applyLegacyRecovery(record); }catch(e){}
+        }
+      })();
+      return recoveryPromise.finally(()=>{ recoveryPromise=null; });
+    }
+    async function transactionMixed(keys,updateFn,meta){
       const tracked=keys.filter(operationalDomain);
       const legacy=keys.filter(key=>!operationalDomain(key));
-      return Promise.resolve(operationalRoot.ready()).then(config=>{
-        if(!config||!['v2-read','v2'].includes(String(config.mode||''))){
-          return legacyRoot.transactionKeys(keys,updateFn);
-        }
-        return Promise.all(keys.map(key=>{
-          const owner=operationalDomain(key)?operationalRoot:legacyRoot;
-          return owner.child(key).once('value').then(snapshot=>[key,snapshot.val()]);
-        })).then(entries=>{
-          const before={};
-          entries.forEach(([key,value])=>{ if(value!==null&&value!==undefined) before[key]=value; });
-          const draft=JSON.parse(JSON.stringify(before));
-          const returned=updateFn(draft);
-          if(returned===undefined) return {committed:false,snapshot:new StoreSnapshot(null,null)};
-          const after=returned&&typeof returned==='object'?returned:draft;
-          return operationalRoot.transactionKeys(tracked,current=>{
-            const next=current&&typeof current==='object'?current:{};
-            tracked.forEach(key=>{
-              if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) next[key]=after[key];
-              else delete next[key];
-            });
-            return next;
-          },meta).then(primary=>{
-            if(!primary||primary.committed!==true) return primary;
-            return legacyRoot.transactionKeys(legacy,current=>{
-              const next=current&&typeof current==='object'?current:{};
-              legacy.forEach(key=>{
-                if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) next[key]=after[key];
-                else delete next[key];
-              });
-              return next;
-            }).then(recovery=>{
-              if(!recovery||recovery.committed!==true) return recovery;
-              const merged={};
-              const primaryValues=primary.snapshot&&typeof primary.snapshot.val==='function'?primary.snapshot.val()||{}:{};
-              const legacyValues=recovery.snapshot&&typeof recovery.snapshot.val==='function'?recovery.snapshot.val()||{}:{};
-              keys.forEach(key=>{
-                const source=operationalDomain(key)?primaryValues:legacyValues;
-                if(Object.prototype.hasOwnProperty.call(source,key)) merged[key]=source[key];
-              });
-              return Object.assign({},primary,{snapshot:new StoreSnapshot(null,merged)});
-            });
-          });
-        });
+      const config=await operationalRoot.ready();
+      if(!config||!['v2-read','v2'].includes(String(config.mode||''))){
+        return legacyRoot.transactionKeys(keys,updateFn);
+      }
+      await resumePendingLegacyRecoveries();
+      const entries=await Promise.all(keys.map(key=>{
+        const owner=operationalDomain(key)?operationalRoot:legacyRoot;
+        return owner.child(key).once('value').then(snapshot=>[key,snapshot.val()]);
+      }));
+      const before={};
+      entries.forEach(([key,value])=>{ if(value!==null&&value!==undefined) before[key]=value; });
+      const draft=copy(before);
+      const returned=updateFn(draft);
+      if(returned===undefined) return {committed:false,snapshot:new StoreSnapshot(null,null)};
+      const after=returned&&typeof returned==='object'?returned:draft;
+      const stableMeta={...(meta||{}),operationId:operationId(meta)};
+      const nextValues={};
+      const removedKeys=[];
+      legacy.forEach(key=>{
+        if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) nextValues[key]=copy(after[key]);
+        else removedKeys.push(key);
       });
+      const recoveryRecord={
+        version:1,branchId:operationalBranchId,operationId:stableMeta.operationId,
+        operationType:String(stableMeta.operationType||'edit-schedule'),state:'prepared',
+        keys:legacy.slice(),nextValues,removedKeys,attempts:0,lastErrorCode:'',
+        createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
+      };
+      if(!upsertRecovery(recoveryRecord)){
+        throw Object.assign(new Error('요청 처리 복구 상태를 저장할 수 없습니다.'),{code:'legacy-recovery-storage-failed'});
+      }
+      let primary;
+      try{
+        primary=await operationalRoot.transactionKeys(tracked,current=>{
+          const next=current&&typeof current==='object'?current:{};
+          tracked.forEach(key=>{
+            if(Object.prototype.hasOwnProperty.call(after,key)&&after[key]!==undefined&&after[key]!==null) next[key]=after[key];
+            else delete next[key];
+          });
+          return next;
+        },stableMeta);
+      }catch(error){
+        removeRecovery(recoveryRecord.operationId);
+        throw error;
+      }
+      if(!primary||primary.committed!==true){
+        removeRecovery(recoveryRecord.operationId);
+        return primary;
+      }
+      recoveryRecord.state='pending-legacy';
+      recoveryRecord.updatedAt=new Date().toISOString();
+      if(!upsertRecovery(recoveryRecord)){
+        throw Object.assign(new Error('요청 처리 복구 상태를 저장할 수 없습니다.'),{code:'legacy-recovery-storage-failed'});
+      }
+      const recovery=await applyLegacyRecovery(recoveryRecord);
+      const merged={};
+      const primaryValues=primary.snapshot&&typeof primary.snapshot.val==='function'?primary.snapshot.val()||{}:{};
+      const legacyValues=recovery.snapshot&&typeof recovery.snapshot.val==='function'?recovery.snapshot.val()||{}:{};
+      keys.forEach(key=>{
+        const source=operationalDomain(key)?primaryValues:legacyValues;
+        if(Object.prototype.hasOwnProperty.call(source,key)) merged[key]=source[key];
+      });
+      return Object.assign({},primary,{snapshot:new StoreSnapshot(null,merged)});
     }
     return new Proxy(operationalRoot,{
       get(target,property,receiver){
+        if(property==='ready'){
+          return (...args)=>Promise.resolve(target.ready(...args)).then(async config=>{
+            if(config&&['v2-read','v2'].includes(String(config.mode||''))) await resumePendingLegacyRecoveries();
+            return config;
+          });
+        }
+        if(property==='pendingLegacyRecoveries') return pendingLegacyRecoveries;
+        if(property==='retryPendingLegacyRecoveries') return resumePendingLegacyRecoveries;
         if(property==='child'){
           return key=>operationalDomain(key)?target.child(key):legacyRoot.child(key);
         }
@@ -1397,8 +1538,9 @@
       functions,
       defaultTabIds:['regular'],
       getBranchId:()=>String(window.SC_SELECTED_BRANCH||id),
+      onReloadRequired:requestOperationalPageReload,
     });
-    return operationalCompatibilityRoot(operationalRoot,legacyRoot);
+    return operationalCompatibilityRoot(operationalRoot,legacyRoot,id);
   }
   function subscribeSelectedRTDB(root,options){
     if(!root||typeof root.child!=='function') throw new Error('selected root is required');

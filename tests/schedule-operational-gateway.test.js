@@ -19,6 +19,7 @@ function createEnvironment(mode,overrides={}){
   const calls={
     legacyReads:0,legacyWrites:0,v2Reads:0,mutationReads:0,parity:0,mutations:0,
     invalidations:0,reloads:0,configUnsubscribes:0,legacySubscriptions:0,delegateStops:0,order:[],
+    reloadDetails:[],
   };
   let legacyData=plain(overrides.legacyData||{
     swim_students:JSON.stringify([{id:'student-1',name:'기존 이름',phone:'010-secret'}]),
@@ -28,6 +29,7 @@ function createEnvironment(mode,overrides={}){
     epoch:4,revision:31,valid:true,
   };
   let configListener=null;
+  let legacySubscriber=null;
   const mutationRequests=[];
   const readSelections=[];
   const mutationSelections=[];
@@ -69,6 +71,7 @@ function createEnvironment(mode,overrides={}){
     subscribeSelectedBatches(options){
       calls.legacySubscriptions+=1;
       calls.order.push('v1-subscribe');
+      legacySubscriber=options;
       const values={};
       (options.baseKeys||[]).forEach(key=>{ if(legacyData[key]!==undefined) values[key]=legacyData[key]; });
       options.next({initial:true,revision:1,values,removedKeys:[],changedKeys:Object.keys(values)});
@@ -143,11 +146,12 @@ function createEnvironment(mode,overrides={}){
     makeOperationId:()=>overrides.operationId||'op_1',
     now:()=>new Date('2026-08-11T03:00:00.000Z'),
     getBranchId:typeof overrides.getBranchId==='function'?overrides.getBranchId:()=>overrides.currentBranchId||'yongam',
-    onReloadRequired(){ calls.reloads+=1; },
+    onReloadRequired(details){ calls.reloads+=1;calls.reloadDetails.push(plain(details)); },
   });
   return {
     root,calls,mutationRequests,readSelections,mutationSelections,parityInputs,
     emitConfig(next){ config=plain(next);configListener?.(plain(config)); },
+    emitLegacyBatch(batch){ legacySubscriber?.next(plain(batch)); },
     setLoaded(tabId,value){ loadedRoots[tabId]=plain(value); },
     legacyData:()=>plain(legacyData),
   };
@@ -561,6 +565,52 @@ test('stopping a selected subscription before readiness prevents late V1 delegat
 
   assert.deepEqual(result,{stale:true});
   assert.equal(env.calls.legacySubscriptions,0);
+});
+
+test('a V1 to V2 authority change stops the live delegate and blocks its late batches',async()=>{
+  const env=createEnvironment('v1',{legacyData:{swim_students:'[]'}});
+  const batches=[];
+  const controller=env.root.subscribeSelectedBatches({
+    baseKeys:['swim_students'],next:batch=>batches.push(plain(batch)),
+  });
+  await controller.ready;
+  assert.equal(batches.length,1);
+
+  env.emitConfig({
+    branchId:'yongam',mode:'v2-read',generationId:'gen_2',epoch:5,revision:40,valid:true,
+  });
+  env.emitLegacyBatch({
+    initial:false,revision:2,values:{swim_students:'[{"id":"late-v1"}]'},
+    removedKeys:[],changedKeys:['swim_students'],
+  });
+
+  assert.equal(env.calls.reloads,1);
+  assert.equal(env.calls.delegateStops,1);
+  assert.equal(env.calls.configUnsubscribes,1);
+  assert.equal(batches.length,1);
+  assert.deepEqual(await controller.setActiveKeys(['swim_students']),{stale:true});
+});
+
+test('external generation epoch or revision changes request one idempotent controlled reload',async()=>{
+  const scenarios=[
+    {generationId:'gen_2',epoch:4,revision:31},
+    {generationId:'gen_1',epoch:5,revision:31},
+    {generationId:'gen_1',epoch:4,revision:32},
+  ];
+  for(const next of scenarios){
+    const env=createEnvironment('v2-read');
+    await env.root.ready();
+    const config={branchId:'yongam',mode:'v2-read',valid:true,...next};
+    env.emitConfig(config);
+    env.emitConfig(config);
+
+    assert.equal(env.calls.reloads,1,JSON.stringify(next));
+    assert.equal(env.calls.configUnsubscribes,1,JSON.stringify(next));
+    assert.deepEqual(env.calls.reloadDetails,[{
+      branchId:'yongam',mode:'v2-read',generationId:next.generationId,
+      epoch:next.epoch,revision:next.revision,
+    }]);
+  }
 });
 
 test('dispose cancels listeners and config subscription once',async()=>{

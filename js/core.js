@@ -252,8 +252,7 @@ async function _refreshFailedScheduleWrites(keys,meta){
       }
       if(typeof _queueRemoteScheduleRefresh==='function') _queueRemoteScheduleRefresh(originalKey);
     }catch(refreshError){
-      delete _dbCache[originalKey];
-      try{localStorage.removeItem(_lsKey(originalKey));}catch(e){}
+      // The authoritative state is unknown; retain the last visible, successfully read value.
     }
   }));
 }

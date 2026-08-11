@@ -174,6 +174,7 @@ function selectedFixture(){
       {id:'d_regular',legacyKey:'regular-disabled',tabId:'regular',payload:{disabled:true}},
       {id:'d_camp',legacyKey:'camp-disabled',tabId:'camp',payload:{disabled:true}},
     ],
+    scheduleSettings:[{id:'settings',mainTabId:'camp',parentTabId:'regular'}],
     retirementRecords:[{id:'h_regular',tabId:'regular',order:0,payload:{reason:'done'}}],
   };
   for(let index=0;index<35;index+=1){
@@ -231,6 +232,24 @@ test('selected roster and workflow reads exclude unrelated domains and placement
   assert.equal(firestore.documentReads.enrollments.includes('e_unrelated'),false);
   assert.ok(firestore.maxReadConcurrency.people<=30);
   assert.ok(firestore.maxReadConcurrency.enrollments<=30);
+});
+
+test('startup tab-list reads every tab while roster payload stays scoped to the selected tab',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const loaded=await store.loadSelection({
+    tabIds:['regular'],domains:['roster','calendar'],
+    keys:['swim_tab_list','swim_main_tab','swim_students','swim_inst'],
+  });
+
+  assert.deepEqual(JSON.parse(loaded.root.swim_tab_list).map(tab=>tab.id),['regular','camp']);
+  assert.equal(JSON.parse(loaded.root.swim_main_tab).tabId,'camp');
+  assert.equal(JSON.parse(loaded.root.swim_students).length,35);
+  assert.equal(JSON.parse(loaded.root.swim_inst)['월-1'],'김강사');
+  assert.deepEqual(loaded.collections.placements.map(row=>row.tabId),Array(35).fill('regular'));
+  assert.deepEqual(loaded.collections.teacherAssignments.map(row=>row.tabId),['regular']);
+  assert.equal(firestore.documentReads.people.includes('p_unrelated'),false);
+  assert.equal(firestore.documentReads.enrollments.includes('e_unrelated'),false);
 });
 
 test('selected V2 rows rebuild the stable legacy root through the operational model',async()=>{

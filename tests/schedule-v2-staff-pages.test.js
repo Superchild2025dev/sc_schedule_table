@@ -2,9 +2,66 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
+const vm=require('node:vm');
 
 const root=path.join(__dirname,'..');
 function read(relativePath){return fs.readFileSync(path.join(root,relativePath),'utf8');}
+function deferred(){
+  let resolve,reject;
+  const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
+  return {promise,resolve,reject};
+}
+function sourceFunction(relativePath,name){
+  const source=read(relativePath);
+  const start=source.indexOf(`async function ${name}(`);
+  const open=source.indexOf('{',start);
+  let depth=0;
+  for(let index=open;index<source.length;index+=1){
+    if(source[index]==='{') depth+=1;
+    else if(source[index]==='}'){
+      depth-=1;
+      if(depth===0) return source.slice(start,index+1);
+    }
+  }
+  throw new Error(`unterminated ${name}`);
+}
+function tick(){return new Promise(resolve=>setImmediate(resolve));}
+
+async function settingsFeedbackRace(staleFeedback){
+  const oldFeedback=deferred();
+  const feedbackCalls={gagyeong:0,yongam:0};
+  let renders=0;
+  const context={
+    Promise,console:{error(){},warn(){}},SETTINGS_KEY:'settings',TEACHERS_KEY:'teachers',FEEDBACK_KEY:'feedback',
+    settingsLoadSeqByBranch:{},settingsByBranch:{},teacherNamesByBranch:{},feedbackByBranch:{},settingsLoadFailedByBranch:{},
+    DEFAULT_TEACHERS:{gagyeong:[],yongam:[]},activeBranch:'gagyeong',
+    defaultSettings:branchId=>({branchId}),mergeSettings:(base,value)=>({...base,...value}),
+    parseStored:value=>typeof value==='string'?JSON.parse(value):value,
+    normalizeTeacherNames:value=>value,normalizeFeedbackList:value=>value,
+    clone:value=>JSON.parse(JSON.stringify(value)),toast(){},renderAll(){renders+=1;},
+    branchRoot(branchId){
+      return {child(key){return {once(){
+        if(key==='settings') return Promise.resolve({val:()=>JSON.stringify({loaded:branchId})});
+        if(key==='teachers') return Promise.resolve({val:()=>JSON.stringify([branchId])});
+        feedbackCalls[branchId]+=1;
+        if(branchId==='gagyeong'&&feedbackCalls[branchId]===1) return oldFeedback.promise;
+        return Promise.resolve({val:()=>JSON.stringify([{id:`${branchId}-latest`}])});
+      }};}};
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(`${sourceFunction('js/settings.js','loadBranchBundle')};this.loadBranchBundle=loadBranchBundle;`,context);
+
+  const first=context.loadBranchBundle('gagyeong');
+  await tick();
+  await context.loadBranchBundle('yongam');
+  await context.loadBranchBundle('gagyeong');
+  const rendersBeforeStale=renders;
+  if(staleFeedback instanceof Error) oldFeedback.reject(staleFeedback);
+  else oldFeedback.resolve({val:()=>JSON.stringify(staleFeedback)});
+  await first;
+  return {context,renders,rendersBeforeStale};
+}
 
 test('teacher and desk startup use selected schedule batches instead of whole V1 roots',()=>{
   for(const file of ['js/teacher.js','js/desk.js']){
@@ -40,4 +97,16 @@ test('parent referral and voice runtimes remain outside the operational schedule
   assert.doesNotMatch(parent,/schedule-v2-operational-store|schedule-operational-gateway/);
   assert.doesNotMatch(read('js/parent.js'),/SCOperationalSchedule|scheduleV2/);
   assert.doesNotMatch(read('js/referral.js'),/SCOperationalSchedule/);
+});
+
+test('rapid branch A to B to A ignores the first A feedback response after its await',async()=>{
+  const result=await settingsFeedbackRace([{id:'gagyeong-stale'}]);
+  assert.deepEqual(result.context.feedbackByBranch.gagyeong,[{id:'gagyeong-latest'}]);
+  assert.equal(result.renders,result.rendersBeforeStale);
+});
+
+test('rapid branch A to B to A ignores the first A feedback failure before fallback or render',async()=>{
+  const result=await settingsFeedbackRace(new Error('stale feedback failure'));
+  assert.deepEqual(result.context.feedbackByBranch.gagyeong,[{id:'gagyeong-latest'}]);
+  assert.equal(result.renders,result.rendersBeforeStale);
 });

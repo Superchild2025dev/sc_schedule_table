@@ -250,8 +250,11 @@
       return rows;
     }
     async function readRoster(ref,selection,collections){
+      const tabRead=selection.keys.includes('swim_tab_list')
+        ?ref.collection('tabs').get().then(snapshotRows)
+        :readDocsByIds(ref.collection('tabs'),selection.tabIds);
       const [tabs,placements,teacherAssignments]=await Promise.all([
-        readDocsByIds(ref.collection('tabs'),selection.tabIds),readTabCollection(ref,'placements',selection.tabIds),
+        tabRead,readTabCollection(ref,'placements',selection.tabIds),
         readTabCollection(ref,'teacherAssignments',selection.tabIds),
       ]);
       appendRows(collections,'tabs',tabs);appendRows(collections,'placements',placements);

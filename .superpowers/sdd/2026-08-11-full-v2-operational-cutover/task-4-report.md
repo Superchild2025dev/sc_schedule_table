@@ -115,3 +115,91 @@ Result: exit 0.
 ## Residual Note
 
 The full regression's two existing emulator availability checks remain skipped in this local environment. No Task 4 test or syntax check is skipped.
+
+## Review Remediation - 2026-08-11
+
+### Status
+
+FIXED
+
+### Review RED Evidence
+
+The direct review regression command was run before the production fixes:
+
+```powershell
+node --test --test-isolation=none tests/schedule-v2-operational-store.test.js tests/schedule-operational-gateway.test.js tests/schedule-v2-main-integration.test.js tests/schedule-v2-staff-pages.test.js
+```
+
+Result: 59 tests total, 50 passed, 9 failed.
+
+The nine expected failures proved all five review findings:
+
+- selected startup returned only the requested tab in `swim_tab_list`;
+- V1 delegates and config listeners survived a V1-to-V2 change, and `createBranchRef` supplied no controlled reload callback;
+- external generation, epoch, and revision changes had no complete one-shot page reload path;
+- a successful V2 mark followed by a failed V1 `swim_requests` phase had no durable retry or bounded recovery status;
+- refresh failure deleted the last good memory and local cache;
+- stale A-to-B-to-A settings feedback success and failure both replaced the latest A state.
+
+### Review GREEN Evidence
+
+Syntax checks were run for every relevant runtime:
+
+```powershell
+node --check js/firebase-store.js
+node --check js/schedule-operational-gateway.js
+node --check js/schedule-v2-operational-store.js
+node --check js/schedule-read-coordinator.js
+node --check js/schedule-key-selection.js
+node --check js/schedule-write-gateway.js
+node --check js/core.js
+node --check js/data.js
+node --check js/teacher.js
+node --check js/desk.js
+node --check js/settings.js
+```
+
+Result: all eleven commands exited 0.
+
+The combined Task 4 and direct operational contract suite was run:
+
+```powershell
+node --test --test-isolation=none tests/schedule-read-coordinator.test.js tests/schedule-write-gateway.test.js tests/schedule-write-boundary.test.js tests/schedule-v2-main-integration.test.js tests/schedule-v2-staff-pages.test.js tests/schedule-operational-gateway.test.js tests/schedule-v2-operational-store.test.js
+```
+
+Result: 79 tests total, 79 passed, 0 failed, 0 skipped.
+
+The full unit regression was run:
+
+```powershell
+$tests=Get-ChildItem tests -Filter *.test.js | ForEach-Object {$_.FullName}
+node --test --test-isolation=none $tests
+```
+
+Result: 508 tests total, 506 passed, 0 failed, 2 skipped. The skips remain the existing Firestore rules and Schedule V2 shadow emulator availability checks.
+
+Hygiene:
+
+```powershell
+git diff --check
+```
+
+Result: exit 0. Git reported only the repository's existing LF-to-CRLF checkout warnings.
+
+### Review Implementation Notes
+
+- An explicit `swim_tab_list` read now loads every tab document plus the stored main-tab pointer. Placements, teacher assignments, people, and enrollments remain scoped to selected tabs, and the real store test proves the unrelated roster references are never read.
+- Runtime authority, generation, epoch, or external revision changes make the old gateway root terminal. Config listeners, selected controllers, and V1 delegates stop immediately; guarded callbacks reject late batches; `createBranchRef` performs one reload per runtime fingerprint.
+- Mixed staff request processing persists the computed legacy phase before V2 mutation, retains the existing operation UUID, marks only the legacy phase pending after authoritative V2 success, and resumes that phase on root readiness without replaying V2. Attempts are capped at three. Exposed status contains operation metadata, counts, state, and safe error codes only.
+- A failed authoritative refresh now leaves `_dbCache`, local storage, and the visible timetable unchanged. A successful read that explicitly returns absence still removes the cached key and queues the normal refresh.
+- Settings rechecks the per-branch sequence after the feedback await and before the feedback fallback catch mutation, preventing stale A-to-B-to-A responses from assigning state or rendering.
+
+### Review Self-Review
+
+- Scope: the review findings were inside the consumed Task 3 store and gateway contracts, so the remediation includes only those two runtime modules, their two direct tests, the affected Task 4 files, and this report. The original pre-review scope audit above is superseded by this review-specific scope.
+- Authority: valid V2 sessions still never fall back to V1 for tracked reads or writes. The durable retry writes only the explicitly untracked legacy request payload.
+- Startup: V2 mode still performs no whole V1 schedule read. Attendance and history remain lazy, while full tab metadata does not widen roster payload reads.
+- Mutation boundary: pages still write through the existing shared gateways; no page writes directly to `scheduleV2`. Existing `set`, `remove`, one-key transaction, `transactionKeys`, and snapshot result shapes remain unchanged.
+- Stale and pending state: runtime changes stop old producers before reload, late batches are blocked, failed refreshes retain last-good state, and settings sequence checks guard both success and failure paths.
+- Compatibility: main, teacher, desk, settings, popup, tab, and table callers were not broadly rewritten. Parent, referral, voice, permissions, and Korean user-facing text remain unchanged.
+- Operations: no mode change, deployment, push, production access, or production data operation was performed.

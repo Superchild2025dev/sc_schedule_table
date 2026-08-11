@@ -116,7 +116,7 @@
     }
     function requestReload(next){
       const fingerprint=configFingerprint(next);
-      if(fingerprint===lastConfigNotification) return;
+      if(reloadRequired||fingerprint===lastConfigNotification) return;
       lastConfigNotification=fingerprint;
       reloadRequired=true;
       sessionVersion+=1;
@@ -125,6 +125,13 @@
       activeSelectionSignature='';
       cache={};
       currentSelection=null;
+      [...activeControllers].forEach(controller=>controller.stop(true));
+      activeControllers.clear();
+      if(configUnsubscribe){
+        const unsubscribe=configUnsubscribe;
+        configUnsubscribe=null;
+        unsubscribe();
+      }
       if(typeof v2Store.invalidate==='function') v2Store.invalidate();
       if(typeof options.onReloadRequired==='function'){
         options.onReloadRequired({
@@ -489,9 +496,9 @@
         return selectionForKeys(keys,subscriber);
       }
       async function readBatch(keys){
-        if(stopped||disposed) return {stale:true};
+        if(stopped||disposed||reloadRequired) return {stale:true};
         const loaded=await loadSelection(selectionForSubscription(keys));
-        if(stopped||disposed) return {stale:true};
+        if(stopped||disposed||reloadRequired) return {stale:true};
         const values={};
         const removedKeys=[];
         keys.forEach(key=>{
@@ -501,7 +508,7 @@
         return {stale:false,values,removedKeys,changedKeys:keys.slice()};
       }
       function publish(batch,initial){
-        if(batch.stale||stopped||disposed) return {stale:true};
+        if(batch.stale||stopped||disposed||reloadRequired) return {stale:true};
         subscriber.next({
           initial:!!initial,revision:++revision,values:batch.values,
           removedKeys:batch.removedKeys,changedKeys:batch.changedKeys,
@@ -514,10 +521,15 @@
       const baseKeys=unique(subscriber.baseKeys);
       const readyController=(async()=>{
         await ready();
-        if(stopped||disposed) return {stale:true};
+        if(stopped||disposed||reloadRequired) return {stale:true};
         if(V1_MODES.has(config.mode)&&typeof legacyRoot.subscribeSelectedBatches==='function'){
-          delegate=legacyRoot.subscribeSelectedBatches(subscriber);
-          if(stopped||disposed){ delegate?.stop?.();delegate=null;return {stale:true}; }
+          const guardedSubscriber={
+            ...subscriber,
+            next(batch){ if(!stopped&&!disposed&&!reloadRequired) subscriber.next(batch); },
+            error(error){ if(!stopped&&!disposed&&!reloadRequired&&typeof subscriber.error==='function') subscriber.error(error); },
+          };
+          delegate=legacyRoot.subscribeSelectedBatches(guardedSubscriber);
+          if(stopped||disposed||reloadRequired){ delegate?.stop?.();delegate=null;return {stale:true}; }
           return delegate.ready;
         }
         const baseBatch=await readBatch(baseKeys);
@@ -530,7 +542,7 @@
       })();
       function withDelegate(method,fallback){
         return (...args)=>readyController.then(result=>{
-          if(stopped||disposed||result?.stale) return {stale:true};
+          if(stopped||disposed||reloadRequired||result?.stale) return {stale:true};
           return delegate&&typeof delegate[method]==='function'?delegate[method](...args):fallback(...args);
         });
       }
@@ -539,20 +551,23 @@
         setActiveKeys:withDelegate('setActiveKeys',async keys=>{activeKeys=unique(keys);return emit(allKeys(baseKeys),false);}),
         setAuxiliaryKeys:withDelegate('setAuxiliaryKeys',async(owner,keys)=>{auxiliary.set(text(owner),unique(keys));return emit(allKeys(baseKeys),false);}),
         releaseAuxiliaryKeys(owner){
+          if(stopped||disposed||reloadRequired) return;
           if(delegate?.releaseAuxiliaryKeys) return delegate.releaseAuxiliaryKeys(owner);
           auxiliary.delete(text(owner));
         },
         waitForActive:withDelegate('waitForActive',async keys=>emit(unique(keys),false)),
-        stop(){
+        stop(skipInvalidation){
           if(stopped) return;
           stopped=true;loadVersion+=1;selectionGeneration+=1;
-          if(typeof v2Store.invalidate==='function') v2Store.invalidate();
+          if(!skipInvalidation&&typeof v2Store.invalidate==='function') v2Store.invalidate();
           if(delegate?.stop) delegate.stop();
           delegate=null;activeControllers.delete(controller);
         },
       };
       activeControllers.add(controller);
-      readyController.catch(error=>{ if(!stopped&&typeof subscriber.error==='function') subscriber.error(error); });
+      readyController.catch(error=>{
+        if(!stopped&&!reloadRequired&&typeof subscriber.error==='function') subscriber.error(error);
+      });
       return controller;
     }
     function currentConfig(){ return clone(config); }

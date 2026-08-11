@@ -2289,8 +2289,10 @@
       settingsLoadFailedByBranch[branchId]=false;
       try{
         const feedbackSnap=await branchRoot(branchId).child(FEEDBACK_KEY).once('value');
+        if(settingsLoadSeqByBranch[branchId]!==sequence) return;
         feedbackByBranch[branchId]=normalizeFeedbackList(parseStored(feedbackSnap.val()));
       }catch(feedbackError){
+        if(settingsLoadSeqByBranch[branchId]!==sequence) return;
         console.warn('feedback load failed',feedbackError);
         feedbackByBranch[branchId]=[];
       }
