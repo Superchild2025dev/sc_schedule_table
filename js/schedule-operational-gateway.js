@@ -397,19 +397,21 @@
       if(returned===undefined) return {committed:false,snapshot:new Snapshot(null,null)};
       const after=object(returned)?clone(returned):draft;
       const changed=model.changedLegacyKeys(before,after,keys);
-      if(!changed.length) return {committed:true,snapshot:new Snapshot(null,after),revision:config.revision};
+      const requireOperationManifest=meta.requireOperationManifest===true;
+      if(!changed.length&&!requireOperationManifest) return {committed:true,snapshot:new Snapshot(null,after),revision:config.revision};
+      const operationKeys=changed.length?changed:keys.slice();
       const operationId=text(meta.operationId)||text(makeOperationId());
       const operationType=text(meta.operationType)||'edit-schedule';
       if(!operationId||!operationType) fail('invalid-operational-operation','운영 작업 정보를 확인해 주세요.');
       const nextValues={};
       const removedKeys=[];
-      changed.forEach(key=>{
+      operationKeys.forEach(key=>{
         if(!Object.prototype.hasOwnProperty.call(after,key)||after[key]===undefined||after[key]===null) removedKeys.push(key);
         else nextValues[key]=clone(after[key]);
       });
       const request={
         branchId,generationId:context.generationId,expectedEpoch:context.epoch,
-        operationId,operationType,keys:changed,beforeRevision:context.revision,
+        operationId,operationType,keys:operationKeys,beforeRevision:context.revision,
         nextValues,removedKeys,
       };
       const started=nowDate().getTime();

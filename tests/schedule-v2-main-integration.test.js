@@ -13,12 +13,15 @@ const keySelection=require('../js/schedule-key-selection.js');
 function loadFirebaseStore(authenticated){
   const calls=[];
   const legacyFallback={child(){return legacyFallback;},once(){return Promise.resolve({val:()=>({})});}};
-  const kv={where(){return kv;},doc(){return {};}};
+  const kv={where(){return kv;},doc(){return {get:async()=>({exists:true,data:()=>({value:'{}',chunked:false})})};}};
   const db={collection(){return {doc(){return {collection(){return kv;}};}};}};
   function firestore(){return db;}
   firestore.FieldPath={documentId(){return 'document-id';}};
   firestore.FieldValue={serverTimestamp(){return 'timestamp';}};
-  const functions={httpsCallable(){return async()=>({data:{}});}};
+  const functions={httpsCallable(name){return async data=>{
+    calls.push({type:'callable',name,data:JSON.parse(JSON.stringify(data||{}))});
+    return {data:{state:'idle',code:''}};
+  };}};
   const reloads=[];
   const sessionValues=new Map();
   const context={console,Map,Set,Promise,Date,setTimeout,clearTimeout};
@@ -29,7 +32,15 @@ function loadFirebaseStore(authenticated){
   context.SC_SELECTED_BRANCH='gagyeong';
   context.SCV2OperationalModel=model;
   context.SCV2OperationalStore={create(options){calls.push({type:'store',options});return {marker:'v2-store'};}};
-  context.SCOperationalSchedule={create(options){calls.push({type:'gateway',options});return {marker:'operational',options};}};
+  context.SCOperationalSchedule={create(options){
+    calls.push({type:'gateway',options});
+    return {
+      marker:'operational',options,
+      subscribeSelectedBatches(){
+        return {ready:Promise.resolve({stale:false}),stop(){},setActiveKeys(){return Promise.resolve({stale:false});}};
+      },
+    };
+  }};
   context.sessionStorage={
     getItem:key=>sessionValues.has(key)?sessionValues.get(key):null,
     setItem:(key,value)=>sessionValues.set(key,String(value)),
@@ -59,7 +70,8 @@ function memoryStorage(values=new Map()){
 
 function sourceFunction(relativePath,name){
   const source=fs.readFileSync(path.join(projectRoot,relativePath),'utf8');
-  const start=source.indexOf(`async function ${name}(`);
+  const asyncStart=source.indexOf(`async function ${name}(`);
+  const start=asyncStart>=0?asyncStart:source.indexOf(`function ${name}(`);
   assert.notEqual(start,-1,`${name} source`);
   const open=source.indexOf('{',start);
   let depth=0;
@@ -71,63 +83,6 @@ function sourceFunction(relativePath,name){
     }
   }
   throw new Error(`unterminated ${name}`);
-}
-
-function createMixedRecoveryPage(shared){
-  const trackedValues=shared.trackedValues;
-  const legacyValues=shared.legacyValues;
-  const legacyRoot={
-    child(key){return {once(){return Promise.resolve({val:()=>legacyValues[key]??null});}};},
-    async transactionKeys(keys,updateFn,meta){
-      shared.legacyCalls.push({keys:[...keys],meta:meta?JSON.parse(JSON.stringify(meta)):null});
-      if(shared.legacyFailures>0){
-        shared.legacyFailures-=1;
-        throw Object.assign(new Error('legacy request update failed with private payload'),{code:'unavailable'});
-      }
-      const current={};
-      keys.forEach(key=>{if(Object.prototype.hasOwnProperty.call(legacyValues,key)) current[key]=legacyValues[key];});
-      const next=updateFn(current);
-      keys.forEach(key=>{
-        if(!next||next[key]===undefined||next[key]===null) delete legacyValues[key];
-        else legacyValues[key]=next[key];
-      });
-      return {committed:next!==undefined,snapshot:{val:()=>next}};
-    },
-  };
-  const operationalRoot={
-    async ready(){return {branchId:'gagyeong',mode:'v2-read',generationId:'gen_4',epoch:7,revision:12};},
-    currentConfig(){return {branchId:'gagyeong',mode:'v2-read',generationId:'gen_4',epoch:7,revision:12};},
-    child(key){return {once(){return Promise.resolve({val:()=>trackedValues[key]??null});}};},
-    async transactionKeys(keys,updateFn,meta){
-      shared.v2Calls.push({keys:[...keys],meta:JSON.parse(JSON.stringify(meta||{}))});
-      const current={};
-      keys.forEach(key=>{if(Object.prototype.hasOwnProperty.call(trackedValues,key)) current[key]=trackedValues[key];});
-      const next=updateFn(current);
-      keys.forEach(key=>{
-        if(!next||next[key]===undefined||next[key]===null) delete trackedValues[key];
-        else trackedValues[key]=next[key];
-      });
-      return {committed:next!==undefined,snapshot:{val:()=>next},revision:13,operationId:meta.operationId};
-    },
-  };
-  const context={console,Map,Set,Promise,Date,setTimeout,clearTimeout,Proxy,Reflect,localStorage:shared.storage};
-  context.window=context;
-  context.globalThis=context;
-  context.SC_DATA_BACKEND='rtdb';
-  context.SCAuth={};
-  context.SC_SELECTED_BRANCH='gagyeong';
-  context.SCV2OperationalModel=model;
-  context.SCV2OperationalStore={create(){return {};}};
-  context.SCOperationalSchedule={create(){return operationalRoot;}};
-  context.firebase={
-    firestore:Object.assign(()=>({}),{FieldPath:{documentId(){return 'document-id';}}}),
-    database(){return {ref(){return legacyRoot;}};},
-    auth(){return {currentUser:{uid:'staff'}};},
-    app(){return {functions(){return {};}};},
-  };
-  vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(projectRoot,'js','firebase-store.js'),'utf8'),context,{filename:'firebase-store.js'});
-  return context.SCFirebaseStore.createBranchRef({id:'gagyeong',fbPath:'schedule'});
 }
 
 test('createBranchRef keeps V1 before auth and creates the operational root after auth and branch selection',()=>{
@@ -161,21 +116,41 @@ test('createBranchRef wires a one-shot controlled reload for each runtime author
   assert.equal(env.reloads.length,2);
 });
 
-test('a mixed parent-request transaction never routes tracked schedule keys through V1 in V2 mode',async()=>{
+test('authenticated teacher and desk selected startup drain server recovery without calling ready',async()=>{
+  for(const [page,file] of [['teacher','js/teacher.js'],['desk','js/desk.js']]){
+    const env=loadFirebaseStore(true);
+    const root=env.context.SCFirebaseStore.createBranchRef({id:'gagyeong',fbPath:'schedule'});
+    Object.assign(env.context,{
+      _fb:root,_fbReady:true,_teacherAttendanceRootValues:{},REQUESTS:{},
+      parseStoredJSON:(key,value,fallback)=>value&&typeof value==='string'?JSON.parse(value):fallback,
+      teacherAttendanceStorageKeys:()=>({attendance:'swim_attendance',attGuests:'swim_att_guests'}),
+    });
+    env.context.SCFirebaseStore.subscribeSelectedRootBatches=(selectedRoot,options)=>
+      selectedRoot.subscribeSelectedBatches(options);
+    vm.runInContext(`${sourceFunction(file,'loadAllData')};this.startStaffData=loadAllData;`,env.context);
+    await env.context.startStaffData();
+    await new Promise(resolve=>setImmediate(resolve));
+
+    const request=env.calls.find(call=>call.type==='callable'&&call.name==='manageScheduleV2RequestRecovery');
+    assert.deepEqual(request.data,{
+      version:1,action:'drain',branchId:'gagyeong',operationId:'',
+    },page);
+  }
+});
+
+test('a mixed request transaction stages only non-PII intent before V2 and drains without a browser V1 write',async()=>{
   const calls=[];
-  const legacyValues={swim_requests:'{"req":{"status":"pending"}}'};
+  const storage=memoryStorage();
+  const legacyValues={swim_requests:'{"req":{"status":"pending","parent":{"name":"민감한이름","phone":"010-secret"}}}'};
+  let staged=null;
   const legacyRoot={
     child(key){return {once(){return Promise.resolve({val:()=>legacyValues[key]??null});}};},
     transactionKeys(keys,updateFn){
       calls.push({authority:'v1',keys:[...keys]});
-      const current={};
-      keys.forEach(key=>{if(Object.prototype.hasOwnProperty.call(legacyValues,key)) current[key]=legacyValues[key];});
-      const next=updateFn(current);
-      Object.assign(legacyValues,next||{});
-      return Promise.resolve({committed:next!==undefined,snapshot:{val:()=>next}});
+      throw new Error('browser must not write the request recovery phase');
     },
   };
-  const trackedValues={swim_mark:'{}'};
+  const trackedValues={swim_mark:'{"slot":{"type":"absent"}}'};
   const operationalRoot={
     async ready(){return {mode:'v2-read'};},
     currentConfig(){return {mode:'v2-read'};},
@@ -186,13 +161,14 @@ test('a mixed parent-request transaction never routes tracked schedule keys thro
       keys.forEach(key=>{if(Object.prototype.hasOwnProperty.call(trackedValues,key)) current[key]=trackedValues[key];});
       const next=updateFn(current);
       Object.assign(trackedValues,next||{});
-      return Promise.resolve({committed:next!==undefined,snapshot:{val:()=>next},revision:3});
+      return Promise.resolve({committed:next!==undefined,snapshot:{val:()=>next},revision:3,operationId:meta.operationId});
     },
+    subscribeSelectedBatches(){return {ready:Promise.resolve({stale:false}),stop(){}};},
   };
   const db={collection(){return {doc(){return {collection(){return {where(){return this;}};}};}};}};
   function firestore(){return db;}
   firestore.FieldPath={documentId(){return 'document-id';}};
-  const context={console,Map,Set,Promise,Date,setTimeout,clearTimeout,Proxy,Reflect,localStorage:memoryStorage()};
+  const context={console,Map,Set,Promise,Date,setTimeout,clearTimeout,Proxy,Reflect,localStorage:storage};
   context.window=context;
   context.globalThis=context;
   context.SC_DATA_BACKEND='rtdb';
@@ -205,7 +181,18 @@ test('a mixed parent-request transaction never routes tracked schedule keys thro
     firestore,
     database(){return {ref(){return legacyRoot;}};},
     auth(){return {currentUser:{uid:'staff'}};},
-    app(){return {functions(){return {};}};},
+    app(){return {functions(){return {httpsCallable(name){return async data=>{
+      assert.equal(name,'manageScheduleV2RequestRecovery');
+      calls.push({authority:'server-recovery',action:data.action,data:JSON.parse(JSON.stringify(data))});
+      if(data.action==='stage') staged=JSON.parse(JSON.stringify(data));
+      if(data.action==='drain'){
+        const requests=JSON.parse(legacyValues.swim_requests);
+        requests.req.status='accepted';
+        legacyValues.swim_requests=JSON.stringify(requests);
+        return {data:{operationId:data.operationId,state:'completed',attempts:1,code:''}};
+      }
+      return {data:{operationId:data.operationId,state:'staged',attempts:0,code:''}};
+    };}};}};},
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(projectRoot,'js','firebase-store.js'),'utf8'),context,{filename:'firebase-store.js'});
@@ -213,69 +200,23 @@ test('a mixed parent-request transaction never routes tracked schedule keys thro
 
   const result=await root.transactionKeys(['swim_requests','swim_mark'],current=>({
     ...current,
-    swim_requests:'{"req":{"status":"accepted"}}',
-    swim_mark:'{"slot":{"type":"absent"}}',
+    swim_requests:'{"req":{"status":"accepted","processedAt":"2026-08-11T03:00:00.000Z","parent":{"name":"민감한이름","phone":"010-secret"}}}',
+    swim_mark:'{}',
   }),{operationId:'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a',operationType:'absence-cancel'});
 
   assert.equal(result.committed,true);
-  assert.deepEqual(calls.map(call=>({authority:call.authority,keys:call.keys})),[
-    {authority:'v2',keys:['swim_mark']},
-    {authority:'v1',keys:['swim_requests']},
+  assert.deepEqual(calls.map(call=>call.action||call.authority),[
+    'stage','v2','drain',
   ]);
-  assert.equal(calls[0].meta.operationId,'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a');
-});
-
-test('a failed legacy request phase resumes after reload without replaying the successful V2 mutation',async()=>{
-  const shared={
-    storage:memoryStorage(),legacyFailures:1,legacyCalls:[],v2Calls:[],
-    trackedValues:{swim_mark:'{}'},
-    legacyValues:{swim_requests:'{"req":{"student":"민감한이름","status":"pending"}}'},
-  };
-  const meta={operationId:'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a',operationType:'absence-cancel'};
-  const first=createMixedRecoveryPage(shared);
-
-  await assert.rejects(first.transactionKeys(['swim_requests','swim_mark'],current=>({
-    ...current,
-    swim_requests:'{"req":{"student":"민감한이름","status":"accepted"}}',
-    swim_mark:'{"slot":{"type":"absent"}}',
-  }),meta),error=>error.code==='unavailable');
-
-  assert.equal(shared.v2Calls.length,1);
-  assert.equal(shared.legacyCalls.length,1);
-  assert.equal(shared.v2Calls[0].meta.operationId,meta.operationId);
-  const pending=first.pendingLegacyRecoveries();
-  assert.equal(pending.length,1);
-  assert.equal(pending[0].operationId,meta.operationId);
-  assert.equal(pending[0].attempts,1);
-  assert.equal(JSON.stringify(pending).includes('민감한이름'),false);
-
-  const reloaded=createMixedRecoveryPage(shared);
-  await reloaded.ready();
-
-  assert.equal(shared.v2Calls.length,1,'the accepted V2 mark must not be replayed');
-  assert.equal(shared.legacyCalls.length,2);
-  assert.equal(shared.legacyCalls[1].meta.operationId,meta.operationId);
-  assert.equal(JSON.parse(shared.legacyValues.swim_requests).req.status,'accepted');
-  assert.equal(reloaded.pendingLegacyRecoveries().length,0);
-});
-
-test('legacy request recovery attempts are bounded and expose only redacted status',async()=>{
-  const shared={
-    storage:memoryStorage(),legacyFailures:20,legacyCalls:[],v2Calls:[],
-    trackedValues:{swim_mark:'{}'},legacyValues:{swim_requests:'{"secret":"private"}'},
-  };
-  const first=createMixedRecoveryPage(shared);
-  await assert.rejects(first.transactionKeys(['swim_requests','swim_mark'],current=>({
-    ...current,swim_requests:'{"secret":"still-private"}',swim_mark:'{"done":true}',
-  }),{operationId:'4ad6f617-8234-4747-84bf-d7f6b81393b8',operationType:'request-process'}));
-  for(let index=0;index<5;index+=1) await createMixedRecoveryPage(shared).ready();
-
-  assert.equal(shared.v2Calls.length,1);
-  assert.equal(shared.legacyCalls.length,3);
-  const pending=createMixedRecoveryPage(shared).pendingLegacyRecoveries();
-  assert.equal(pending[0].attempts,3);
-  assert.equal(pending[0].exhausted,true);
-  assert.equal(JSON.stringify(pending).includes('private'),false);
+  assert.equal(staged.operationId,'95ecfe8a-7f08-42ef-9e99-f902d0ff6f5a');
+  assert.deepEqual(staged.intents,[{
+    requestId:'req',expectedStatus:'pending',expectedVersion:null,
+    patch:{status:'accepted',processedAt:'2026-08-11T03:00:00.000Z'},
+  }]);
+  assert.equal(JSON.stringify(staged).includes('민감한이름'),false);
+  assert.equal(JSON.stringify(staged).includes('010-secret'),false);
+  assert.equal([...storage.values.values()].some(value=>/민감한이름|010-secret|swim_requests/.test(value)),false);
+  assert.equal(JSON.parse(result.snapshot.val().swim_requests).req.status,'accepted');
 });
 
 test('V2 selected startup returns legacy values without a full V1 root read',async()=>{

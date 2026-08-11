@@ -11,10 +11,12 @@ const FUNCTIONS_DIR=path.dirname(INDEX_PATH);
 function triggerWrapper(options,handler){handler.__options=options;return handler;}
 
 function loadFunctions(){
-  const calls={mutate:[],recover:0};
+  const calls={mutate:[],recover:0,requestRecovery:[],recoverRequests:0};
   const writer={
     mutate:async request=>{calls.mutate.push(request);return {operationId:"op_api",committed:true};},
     recoverOperationalMirrors:async()=>{calls.recover+=1;return {applied:0,error:0};},
+    manageRequestRecovery:async request=>{calls.requestRecovery.push(request);return {state:"staged",code:""};},
+    recoverRequestPatches:async()=>{calls.recoverRequests+=1;return {completed:0,error:0};},
   };
   const db={collection(){return {doc(){return {collection(){return {doc(){return {};}};}};}};}};
   const localRequire=request=>{
@@ -55,6 +57,7 @@ test("exports the operational callable and bounded recovery schedule without cha
   assert.equal(typeof api.mutateScheduleV2Operational,"function");
   assert.equal(api.mutateScheduleV2Operational.__options.cors,true);
   assert.equal(typeof api.recoverScheduleV2OperationalMirrors,"function");
+  assert.equal(typeof api.manageScheduleV2RequestRecovery,"function");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.schedule,"every 5 minutes");
   assert.equal(api.recoverScheduleV2OperationalMirrors.__options.timeZone,"Asia/Seoul");
 
@@ -67,8 +70,12 @@ test("exports the operational callable and bounded recovery schedule without cha
   const request={auth:{uid:"uid"},data:{operationId:"op_api"}};
   assert.deepEqual(await api.mutateScheduleV2Operational(request),{operationId:"op_api",committed:true});
   assert.equal(fixture.calls.mutate[0],request);
+  const recoveryRequest={auth:{uid:"uid"},data:{version:1,action:"drain",branchId:"yongam",operationId:""}};
+  assert.deepEqual(await api.manageScheduleV2RequestRecovery(recoveryRequest),{state:"staged",code:""});
+  assert.equal(fixture.calls.requestRecovery[0],recoveryRequest);
   await api.recoverScheduleV2OperationalMirrors();
   assert.equal(fixture.calls.recover,1);
+  assert.equal(fixture.calls.recoverRequests,1);
 });
 
 test("loading function exports does not write or switch an operational runtime mode",()=>{
@@ -76,4 +83,6 @@ test("loading function exports does not write or switch an operational runtime m
   assert.equal(fixture.calls.options.db!==undefined,true);
   assert.equal(fixture.calls.mutate.length,0);
   assert.equal(fixture.calls.recover,0);
+  assert.equal(fixture.calls.requestRecovery.length,0);
+  assert.equal(fixture.calls.recoverRequests,0);
 });

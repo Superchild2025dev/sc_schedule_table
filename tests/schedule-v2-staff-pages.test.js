@@ -92,6 +92,13 @@ test('staff pages mutate schedules only through the shared write boundary',()=>{
   assert.match(read('js/settings.js'),/_settingsWrites\([^)]*\)\.transaction\(/);
 });
 
+test('browser recovery code persists no request queue or request payload',()=>{
+  const source=read('js/firebase-store.js');
+  assert.doesNotMatch(source,/sc_legacy_request_recovery|pendingLegacyRecoveries|retryPendingLegacyRecoveries/);
+  assert.doesNotMatch(source,/localStorage\.(?:setItem|removeItem)\([^\n]*recovery/i);
+  assert.match(source,/manageScheduleV2RequestRecovery/);
+});
+
 test('parent referral and voice runtimes remain outside the operational schedule bootstrap',()=>{
   const parent=read('parent.html');
   assert.doesNotMatch(parent,/schedule-v2-operational-store|schedule-operational-gateway/);

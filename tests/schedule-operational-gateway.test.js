@@ -555,6 +555,19 @@ test('a no-op verify transaction checks current parity without requiring a shado
   assert.equal(env.parityInputs[0].afterShadowRevision,8);
 });
 
+test('request recovery can require a committed manifest even when the tracked V2 value is unchanged',async()=>{
+  const env=createEnvironment('v2-read');
+  const result=await env.root.transactionKeys(
+    ['swim_students'],draft=>draft,
+    {operationId:'op_request_manifest',operationType:'update-student',requireOperationManifest:true,tabIds:['regular']},
+  );
+
+  assert.equal(result.committed,true);
+  assert.equal(env.calls.mutations,1);
+  assert.equal(env.mutationRequests[0].operationId,'op_request_manifest');
+  assert.deepEqual(env.mutationRequests[0].keys,['swim_students']);
+});
+
 test('stopping a selected subscription before readiness prevents late V1 delegate creation',async()=>{
   const gate=deferred();
   const env=createEnvironment('v1',{configReadPromise:gate.promise});

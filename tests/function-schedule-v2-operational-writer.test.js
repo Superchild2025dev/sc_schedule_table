@@ -124,6 +124,7 @@ const GENERATION="gen_1";
 
 function runtimePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operational`;}
 function manifestPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/operationalMutations/${operationId}`;}
+function requestRecoveryPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/requestRecoveries/${operationId}`;}
 function recoveryFencePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operationalRecovery`;}
 function legacyPath(key,branchId=BRANCH){
   return `scheduleStores/${branchId}/kv/${encodeURIComponent(key).replace(/\./g,"%2E")}`;
@@ -154,6 +155,25 @@ function request(overrides={}){
       ...overrides,
     },
   };
+}
+function requestRecoveryCommand(action="stage",overrides={}){
+  const base=action==="stage"?{
+    version:1,action,branchId:BRANCH,operationId:"op_request_1",operationType:"absence-cancel",
+    intents:[{
+      requestId:"req_1",expectedStatus:"pending",expectedVersion:null,
+      patch:{status:"accepted",processedAt:"2026-08-11T03:00:00.000Z",clearProcessing:true},
+    }],
+  }:{version:1,action,branchId:BRANCH,operationId:""};
+  return {...auth("yongam.desk@scswim.local"),data:{...base,...overrides}};
+}
+function committedManifest(operationId="op_request_1",overrides={}){
+  return {
+    operationId,branchId:BRANCH,generationId:GENERATION,status:"committed",
+    operationType:"absence-cancel",resultingRevision:32,...overrides,
+  };
+}
+function legacyRequests(requests,branchId=BRANCH){
+  return {key:"swim_requests",value:JSON.stringify(requests),chunked:false,branchId};
 }
 function change(id="placement-new"){
   return {type:"set",collection:"placements",id,value:{id,personId:"person-1",enrollmentId:"enrollment-1",tabId:"regular"}};
@@ -221,6 +241,183 @@ test("strict request schema rejects unknown fields operations keys and unverifie
   delete missingVerification.token.email_verified;
   assert.throws(()=>policy.authorizeMutation(missingVerification,request().data),error=>error.code==="permission-denied");
   assert.equal(policy.authorizeMutation(auth().auth,request().data).role,"developer");
+});
+
+test("request recovery commands use an exact non-PII versioned schema",()=>{
+  const command=policy.validateRequestRecoveryCommand(requestRecoveryCommand().data);
+  assert.equal(command.version,1);
+  assert.equal(command.intents[0].requestId,"req_1");
+  assert.equal(JSON.stringify(command).includes("name"),false);
+  for(const invalid of [
+    {...requestRecoveryCommand().data,version:2},
+    {...requestRecoveryCommand().data,rawRequest:{name:"private"}},
+    {...requestRecoveryCommand().data,intents:[{
+      requestId:"req_1",expectedStatus:"pending",expectedVersion:null,
+      patch:{status:"accepted",processedBy:"Private Name"},
+    }]},
+    {...requestRecoveryCommand().data,intents:[{
+      requestId:"../unsafe",expectedStatus:"pending",expectedVersion:null,patch:{status:"accepted"},
+    }]},
+    {...requestRecoveryCommand().data,intents:[{
+      requestId:"req_1",expectedStatus:"invented",expectedVersion:null,patch:{status:"accepted"},
+    }]},
+    {...requestRecoveryCommand().data,intents:[{
+      requestId:"req_1",expectedStatus:"pending",expectedVersion:null,patch:{status:"accepted"},
+    }]},
+    {...requestRecoveryCommand().data,intents:[{
+      requestId:"req_1",expectedStatus:"pending",expectedVersion:null,
+      patch:{status:"cancelled",processedAt:"2026-08-11T03:00:00.000Z",cancelledRequestId:"req_2"},
+    }]},
+  ]) assert.throws(()=>policy.validateRequestRecoveryCommand(invalid),error=>error.code==="invalid-argument");
+  assert.equal(policy.authorizeRequestRecovery(
+    requestRecoveryCommand().auth,command,
+  ).role,"desk");
+});
+
+test("committed linked recovery patches one request and preserves concurrent fields and unrelated requests",async()=>{
+  const operationId="op_request_preserve";
+  const db=new FakeFirestore({
+    [manifestPath(operationId)]:committedManifest(operationId),
+    [legacyPath("swim_requests")]:legacyRequests({
+      req_1:{status:"pending",memo:"newer parent field",parent:{name:"Private Student"}},
+      req_2:{status:"pending",memo:"unrelated"},
+    }),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  const result=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+  const stored=JSON.parse(db.value(legacyPath("swim_requests")).value);
+
+  assert.equal(result.state,"completed");
+  assert.equal(stored.req_1.status,"accepted");
+  assert.equal(stored.req_1.memo,"newer parent field");
+  assert.equal(stored.req_1.parent.name,"Private Student");
+  assert.deepEqual(stored.req_2,{status:"pending",memo:"unrelated"});
+  assert.equal(JSON.stringify(db.value(requestRecoveryPath(operationId))).includes("Private Student"),false);
+});
+
+test("a newer request status wins over a stale recovery precondition",async()=>{
+  const operationId="op_request_conflict";
+  const db=new FakeFirestore({
+    [manifestPath(operationId)]:committedManifest(operationId),
+    [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"rejected",memo:"newer staff update"}}),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  const result=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+
+  assert.equal(result.state,"conflict");
+  assert.deepEqual(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1,{
+    status:"rejected",memo:"newer staff update",
+  });
+});
+
+test("an ambiguous client response resumes from a committed V2 manifest",async()=>{
+  const operationId="op_request_ambiguous";
+  const db=new FakeFirestore({
+    [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"pending"}}),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  db.docs.set(manifestPath(operationId),committedManifest(operationId));
+
+  const resumed=await createWriter(db).manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+
+  assert.equal(resumed.state,"completed");
+  assert.equal(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1.status,"accepted");
+});
+
+test("an incomplete or absent V2 manifest never applies the V1 request patch",async()=>{
+  for(const manifest of [undefined,committedManifest("op_request_incomplete",{status:"committing"})]){
+    const operationId="op_request_incomplete";
+    const initial={
+      [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"pending"}}),
+      ...(manifest?{[manifestPath(operationId)]:manifest}:{}),
+    };
+    const db=new FakeFirestore(initial);
+    const writer=createWriter(db);
+    await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+    const result=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+
+    assert.equal(result.state,"waiting-primary");
+    assert.equal(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1.status,"pending");
+  }
+});
+
+test("v2 to v1 rollback still drains a recovery whose linked manifest committed",async()=>{
+  const operationId="op_request_rollback";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({mode:"v1",generationId:"",revision:32}),
+    [manifestPath(operationId)]:committedManifest(operationId),
+    [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"pending"}}),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  const result=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+
+  assert.equal(result.state,"completed");
+  assert.equal(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1.status,"accepted");
+});
+
+test("a failed atomic completion retries after lease expiry without duplicating the patch",async()=>{
+  const operationId="op_request_retry";
+  const clock=mutableClock();
+  const db=new FakeFirestore({
+    [manifestPath(operationId)]:committedManifest(operationId),
+    [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"pending",counter:1}}),
+  });
+  const writer=createWriter(db,{now:clock.now});
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  db.failLegacyTransactionAt=1;
+  const first=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+  assert.equal(first.state,"processing");
+  assert.equal(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1.status,"pending");
+
+  db.failLegacyTransactionAt=0;
+  clock.advance(5*60*1000);
+  const second=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+  const third=await writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId}));
+  const requestValue=JSON.parse(db.value(legacyPath("swim_requests")).value).req_1;
+  assert.equal(second.state,"completed");
+  assert.equal(third.state,"completed");
+  assert.equal(requestValue.status,"accepted");
+  assert.equal(requestValue.counter,1);
+  assert.equal(db.value(requestRecoveryPath(operationId)).attempts,2);
+});
+
+test("concurrent drain calls respect one live lease and one logical completion",async()=>{
+  const operationId="op_request_concurrent";
+  const db=new FakeFirestore({
+    [manifestPath(operationId)]:committedManifest(operationId),
+    [legacyPath("swim_requests")]:legacyRequests({req_1:{status:"pending"}}),
+  });
+  const writer=createWriter(db);
+  await writer.manageRequestRecovery(requestRecoveryCommand("stage",{operationId}));
+  const [left,right]=await Promise.all([
+    writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId})),
+    writer.manageRequestRecovery(requestRecoveryCommand("drain",{operationId})),
+  ]);
+
+  assert.ok([left.state,right.state].includes("completed"));
+  assert.equal(db.value(requestRecoveryPath(operationId)).attempts,1);
+  assert.equal(JSON.parse(db.value(legacyPath("swim_requests")).value).req_1.status,"accepted");
+});
+
+test("malformed stored request recovery records are rejected and scrubbed server-side",async()=>{
+  const operationId="op_request_corrupt";
+  const db=new FakeFirestore({
+    [requestRecoveryPath(operationId)]:{
+      version:1,branchId:BRANCH,operationId,state:"staged",attempts:0,
+      intents:[{requestId:"req_1",patch:{status:"accepted",name:"Private Name"}}],
+    },
+  });
+  const summary=await createWriter(db).recoverRequestPatches({branchId:BRANCH});
+  const stored=db.value(requestRecoveryPath(operationId));
+
+  assert.equal(summary.rejected,1);
+  assert.equal(stored.state,"rejected");
+  assert.equal(stored.code,"invalid-record");
+  assert.equal(JSON.stringify(stored).includes("Private Name"),false);
 });
 
 test("a duplicate operation id returns the stored result without applying twice",async()=>{

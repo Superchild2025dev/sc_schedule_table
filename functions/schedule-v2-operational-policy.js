@@ -75,6 +75,15 @@ const OPERATION_RULES=Object.freeze({
 const MAKEUP_OPERATION_TYPES=new Set([
   "makeup","makeup-update","makeup-cancel","set-makeup","sample-makeup","mandatory-makeup",
 ]);
+const REQUEST_RECOVERY_VERSION=1;
+const REQUEST_RECOVERY_OPERATION_TYPES=new Set(["absence-cancel","makeup-update","makeup-cancel","makeup"]);
+const REQUEST_RECOVERY_EXPECTED_STATUSES=new Set(["pending","processing","accepted"]);
+const REQUEST_RECOVERY_TARGET_STATUSES=new Set(["accepted","rejected","superseded","cancelled"]);
+const REQUEST_RECOVERY_PATCH_KEYS=new Set([
+  "status","processedAt","supersededBy","cancelledAt","cancelledBy","cancelledRequestId","clearProcessing",
+]);
+const MAX_REQUEST_RECOVERY_INTENTS=32;
+const MAX_REQUEST_RECOVERY_BYTES=64*1024;
 
 function fail(code){
   throw Object.assign(new Error(code),{code});
@@ -101,6 +110,94 @@ function jsonBytes(value){
 
 function encodedDocumentIdBytes(value){
   return Buffer.byteLength(encodeURIComponent(value).replace(/\./g,"%2E"),"utf8");
+}
+
+function exactKeys(value,keys){
+  const actual=Object.keys(value||{});
+  return actual.length===keys.length&&actual.every(key=>keys.includes(key));
+}
+
+function requestId(value){
+  return normalizeString(value,/^[A-Za-z0-9_-]{1,128}$/);
+}
+
+function isoTimestamp(value){
+  const normalized=text(value);
+  if(normalized.length<20||normalized.length>40||!Number.isFinite(Date.parse(normalized))) fail("invalid-argument");
+  return normalized;
+}
+
+function validateRequestRecoveryPatch(input){
+  if(!plainObject(input)||!Object.keys(input).length||Object.keys(input).some(key=>!REQUEST_RECOVERY_PATCH_KEYS.has(key))){
+    fail("invalid-argument");
+  }
+  const status=text(input.status);
+  if(!REQUEST_RECOVERY_TARGET_STATUSES.has(status)) fail("invalid-argument");
+  const patch={status};
+  if(Object.prototype.hasOwnProperty.call(input,"processedAt")) patch.processedAt=isoTimestamp(input.processedAt);
+  if(Object.prototype.hasOwnProperty.call(input,"supersededBy")) patch.supersededBy=requestId(input.supersededBy);
+  if(Object.prototype.hasOwnProperty.call(input,"cancelledAt")) patch.cancelledAt=isoTimestamp(input.cancelledAt);
+  if(Object.prototype.hasOwnProperty.call(input,"cancelledBy")){
+    if(input.cancelledBy!=="parent-approved") fail("invalid-argument");
+    patch.cancelledBy="parent-approved";
+  }
+  if(Object.prototype.hasOwnProperty.call(input,"cancelledRequestId")){
+    patch.cancelledRequestId=requestId(input.cancelledRequestId);
+  }
+  if(Object.prototype.hasOwnProperty.call(input,"clearProcessing")){
+    if(input.clearProcessing!==true) fail("invalid-argument");
+    patch.clearProcessing=true;
+  }
+  if(!patch.processedAt) fail("invalid-argument");
+  if(status==="superseded"&&!patch.supersededBy) fail("invalid-argument");
+  if(status==="cancelled"&&(!patch.cancelledAt||patch.cancelledBy!=="parent-approved"||!patch.cancelledRequestId)){
+    fail("invalid-argument");
+  }
+  return Object.freeze(patch);
+}
+
+function validateRequestRecoveryCommand(input){
+  if(!plainObject(input)||input.version!==REQUEST_RECOVERY_VERSION) fail("invalid-argument");
+  const action=text(input.action);
+  if(action==="drain"){
+    if(!exactKeys(input,["version","action","branchId","operationId"])) fail("invalid-argument");
+    const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
+    if(!BRANCH_IDS.has(branchId)) fail("invalid-argument");
+    const operationId=text(input.operationId);
+    if(operationId) requestId(operationId);
+    return Object.freeze({version:REQUEST_RECOVERY_VERSION,action,branchId,operationId});
+  }
+  if(action!=="stage"||!exactKeys(input,[
+    "version","action","branchId","operationId","operationType","intents",
+  ])) fail("invalid-argument");
+  const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
+  if(!BRANCH_IDS.has(branchId)) fail("invalid-argument");
+  const operationId=requestId(input.operationId);
+  const operationType=text(input.operationType);
+  if(!REQUEST_RECOVERY_OPERATION_TYPES.has(operationType)) fail("invalid-argument");
+  if(!Array.isArray(input.intents)||!input.intents.length||input.intents.length>MAX_REQUEST_RECOVERY_INTENTS){
+    fail("invalid-argument");
+  }
+  const seen=new Set();
+  const intents=input.intents.map(intent=>{
+    if(!plainObject(intent)||!exactKeys(intent,["requestId","expectedStatus","expectedVersion","patch"])){
+      fail("invalid-argument");
+    }
+    const id=requestId(intent.requestId);
+    if(seen.has(id)) fail("invalid-argument");
+    seen.add(id);
+    const expectedStatus=text(intent.expectedStatus)||"pending";
+    if(!REQUEST_RECOVERY_EXPECTED_STATUSES.has(expectedStatus)) fail("invalid-argument");
+    const expectedVersion=intent.expectedVersion;
+    if(expectedVersion!==null&&!safeInteger(expectedVersion)) fail("invalid-argument");
+    return Object.freeze({
+      requestId:id,expectedStatus,expectedVersion,
+      patch:validateRequestRecoveryPatch(intent.patch),
+    });
+  });
+  const result={version:REQUEST_RECOVERY_VERSION,action,branchId,operationId,operationType,intents};
+  if(jsonBytes(result)>MAX_REQUEST_RECOVERY_BYTES) fail("invalid-argument");
+  return Object.freeze(result);
 }
 
 function keyFamily(key){
@@ -169,25 +266,35 @@ function normalizeAuth(input){
   return input;
 }
 
-function authorizeMutation(authInput,mutationInput){
+function authorizeBranchStaff(authInput,branchId){
   const auth=normalizeAuth(authInput);
   if(!auth?.uid) fail("unauthenticated");
   const email=text(auth.token?.email).toLowerCase();
   if(!email||auth.token?.email_verified!==true) fail("permission-denied");
   const account=ACCOUNT_BY_EMAIL.get(email);
   if(!account||account.active===false) fail("permission-denied");
-  const mutation=mutationInput&&mutationInput.operationType?mutationInput:validateMutationRequest(mutationInput);
   const role=text(account.role);
   const branchIds=Array.isArray(account.branchIds)?account.branchIds.map(text):[];
   const crossBranchTeacher=role==="teacher"&&permissionManifest.teacherCrossBranchAccess===true;
-  if(!["developer","superAdmin"].includes(role)&&!crossBranchTeacher&&!branchIds.includes(mutation.branchId)){
+  if(!["developer","superAdmin"].includes(role)&&!crossBranchTeacher&&!branchIds.includes(branchId)){
     fail("permission-denied");
   }
+  if(!["developer","superAdmin","desk","teacher"].includes(role)) fail("permission-denied");
+  return Object.freeze({
+    email,role,branchIds:Object.freeze(branchIds.slice()),
+    teacherName:text(account.teacherName),permissions:Object.freeze((account.permissions||[]).slice()),
+  });
+}
+
+function authorizeMutation(authInput,mutationInput){
+  const mutation=mutationInput&&mutationInput.operationType?mutationInput:validateMutationRequest(mutationInput);
+  const actor=authorizeBranchStaff(authInput,mutation.branchId);
+  const role=actor.role;
+  const accountPermissions=actor.permissions;
   if(role==="teacher"){
     const operationRule=OPERATION_RULES[mutation.operationType];
     if(!operationRule?.teacher) fail("permission-denied");
-    const permissions=Array.isArray(account.permissions)?account.permissions.map(text):[];
-    if(MAKEUP_OPERATION_TYPES.has(mutation.operationType)&&!permissions.includes("editMakeup")){
+    if(MAKEUP_OPERATION_TYPES.has(mutation.operationType)&&!accountPermissions.includes("editMakeup")){
       fail("permission-denied");
     }
     const writable=mutation.keys.every(key=>
@@ -198,9 +305,14 @@ function authorizeMutation(authInput,mutationInput){
   }else if(!["developer","superAdmin","desk"].includes(role)){
     fail("permission-denied");
   }
-  return Object.freeze({
-    email,role,branchIds:Object.freeze(branchIds.slice()),
-    teacherName:text(account.teacherName),permissions:Object.freeze((account.permissions||[]).slice()),
+  return actor;
+}
+
+function authorizeRequestRecovery(authInput,recoveryInput){
+  const command=recoveryInput?.action?recoveryInput:validateRequestRecoveryCommand(recoveryInput);
+  if(command.action==="drain") return authorizeBranchStaff(authInput,command.branchId);
+  return authorizeMutation(authInput,{
+    branchId:command.branchId,operationType:command.operationType,keys:["swim_mark"],
   });
 }
 
@@ -245,6 +357,8 @@ module.exports={
   OPERATION_RULES,
   validateMutationRequest,
   authorizeMutation,
+  validateRequestRecoveryCommand,
+  authorizeRequestRecovery,
   redactedDiagnostic,
   keyFamily,
 };

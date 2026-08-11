@@ -2317,6 +2317,24 @@ exports.mutateScheduleV2Operational = onCall({
   }
 });
 
+exports.manageScheduleV2RequestRecovery = onCall({
+  cors: true,
+  serviceAccount: "45509278949-compute@developer.gserviceaccount.com",
+  timeoutSeconds: 120,
+  memory: "512MiB",
+}, async request => {
+  try {
+    return await scheduleV2OperationalWriter.manageRequestRecovery(request);
+  } catch (error) {
+    const allowed = new Set([
+      "aborted", "already-exists", "failed-precondition", "invalid-argument",
+      "not-found", "permission-denied", "resource-exhausted", "unauthenticated", "unavailable",
+    ]);
+    const code = String(error?.code || "").replace(/^functions\//, "");
+    throw new HttpsError(allowed.has(code) ? code : "internal", "Schedule V2 request recovery failed");
+  }
+});
+
 exports.recoverScheduleV2OperationalMirrors = onSchedule({
   schedule: "every 5 minutes",
   timeZone: "Asia/Seoul",
@@ -2326,6 +2344,7 @@ exports.recoverScheduleV2OperationalMirrors = onSchedule({
   memory: "1GiB",
 }, async () => {
   await scheduleV2OperationalWriter.recoverOperationalMirrors();
+  await scheduleV2OperationalWriter.recoverRequestPatches();
   return null;
 });
 
