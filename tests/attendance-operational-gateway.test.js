@@ -21,7 +21,7 @@ function loadGateway(options){
 }
 
 function fixture(mode,overrides={}){
-  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:[]};
+  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2ReadInputs:[],v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:[]};
   let legacyAttendance=plain(overrides.legacyAttendance||{'4시/월/1/1/2026-08-03':{s:'absent'}});
   let legacyGuests=plain(overrides.legacyGuests||{});
   let v2Attendance=plain(overrides.v2Attendance||legacyAttendance);
@@ -81,10 +81,12 @@ function fixture(mode,overrides={}){
         compatibilityCode:overrides.compatibilityValid===false?'attendance-pointer-mismatch':'',
       };
     },
-    async readRange(){
+    async readRange(input){
       calls.v2Reads+=1;calls.order.push('v2-read');
+      calls.v2ReadInputs.push(plain(input));
       if(overrides.v2ReadPromise) return overrides.v2ReadPromise;
       if(overrides.v2ReadError) throw new Error('v2 read failed');
+      if(overrides.v2ReadRange) return overrides.v2ReadRange(plain(input));
       const rows=rowsFromMaps();
       return {...rows,maps:{attendance:plain(v2Attendance),guests:plain(v2Guests),issues:[]}};
     },
@@ -157,7 +159,7 @@ test('v1 mode reads and writes only the legacy attendance map',async()=>{
   assert.equal(loaded.primary,'v1');
   assert.equal(saved.primary,'v1');
   assert.equal(saved.attendance[key].s,'present');
-  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:['legacy-read','legacy-write']});
+  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2ReadInputs:[],v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:['legacy-read','legacy-write']});
 });
 
 test('a compatibility pointer mismatch blocks a confirmed V2 save with redacted diagnostics',async()=>{
@@ -215,7 +217,85 @@ test('verify writes V1 first then awaits V2 and parity comparison',async()=>{
   assert.equal(result.primary,'v1');
   assert.equal(result.degraded,false);
   assert.deepEqual(env.calls.order,['legacy-write','v2-read','compare']);
+  assert.deepEqual(env.calls.v2ReadInputs,[{
+    generationId:'gen_1',tabId:'regular',courseType:'regular',dates:['2026-08-03'],
+  }]);
   assert.equal(env.calls.compares,1);
+});
+
+test('named current and archived regular tabs read one canonical regular map without bangteuk',async()=>{
+  const currentKey='4시/월/1/1/2026-08-03';
+  const archivedKey='5시/화/1/1/2026-08-04';
+  const bangteukKey='10시/월/1/1/2026-08-03';
+  const currentGuestKey='4시/월/1/2026-08-03';
+  const archivedGuestKey='5시/화/1/2026-08-04';
+  const bangteukGuestKey='10시/월/1/2026-08-03';
+  const env=fixture('v2',{
+    v2ReadRange(input){
+      assert.equal(input.courseType,'regular');
+      return {records:[],guests:[],maps:{
+        attendance:{
+          [currentKey]:{s:'present'},
+          [archivedKey]:{s:'absent'},
+        },
+        guests:{
+          [currentGuestKey]:[{gid:'current'}],
+          [archivedGuestKey]:[{gid:'archive'}],
+        },
+        issues:[],
+      }};
+    },
+  });
+
+  const current=await env.gateway.loadRange({
+    owner:'attendance-current',tabId:'august',courseType:'regular',
+    dates:['2026-08-03','2026-08-04'],
+  });
+  const archived=await env.gateway.loadRange({
+    owner:'attendance-archive',tabId:'july-archive',courseType:'regular',
+    dates:['2026-08-03','2026-08-04'],
+  });
+
+  for(const result of [current,archived]){
+    assert.deepEqual(plain(result.attendance),{
+      [currentKey]:{s:'present'},
+      [archivedKey]:{s:'absent'},
+    });
+    assert.deepEqual(plain(result.guests),{
+      [currentGuestKey]:[{gid:'current'}],
+      [archivedGuestKey]:[{gid:'archive'}],
+    });
+    assert.equal(result.attendance[bangteukKey],undefined);
+    assert.equal(result.guests[bangteukGuestKey],undefined);
+  }
+  assert.deepEqual(env.calls.v2ReadInputs.map(input=>({tabId:input.tabId,courseType:input.courseType})),[
+    {tabId:'august',courseType:'regular'},
+    {tabId:'july-archive',courseType:'regular'},
+  ]);
+});
+
+test('shadow and verify comparison reads retain the requested course type',async()=>{
+  for(const mode of ['shadow','verify']){
+    const env=fixture(mode);
+    await env.gateway.loadRange({
+      owner:`attendance-${mode}`,tabId:'august',courseType:'regular',dates:['2026-08-03'],
+    });
+    assert.deepEqual(env.calls.v2ReadInputs,[{
+      generationId:'gen_1',tabId:'august',courseType:'regular',dates:['2026-08-03'],
+    }]);
+  }
+});
+
+test('literal regular ownership is safely inferred but an ambiguous named tab is rejected',async()=>{
+  const safe=fixture('v2');
+  await safe.gateway.loadRange({owner:'attendance-safe',tabId:'regular',dates:['2026-08-03']});
+  assert.equal(safe.calls.v2ReadInputs[0].courseType,'regular');
+
+  const ambiguous=fixture('v2');
+  await assert.rejects(()=>ambiguous.gateway.loadRange({
+    owner:'attendance-ambiguous',tabId:'august',dates:['2026-08-03'],
+  }),error=>error?.code==='ambiguous-attendance-owner');
+  assert.equal(ambiguous.calls.v2Reads,0);
 });
 
 test('v2-read loads V2 and never mixes a failed range with V1',async()=>{

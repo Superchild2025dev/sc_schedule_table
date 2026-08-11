@@ -144,6 +144,14 @@
         ?collection.where('courseType','==','regular')
         :collection.where('tabId','==',tabId);
     }
+    function readCourseType(input){
+      const courseType=text(input?.courseType);
+      if(courseType==='regular'||courseType==='bangteuk') return courseType;
+      if(!courseType&&text(input?.tabId)==='regular') return 'regular';
+      throw Object.assign(new Error('출석 시간표의 수업 구분을 확인할 수 없어 조회를 중단했습니다.'),{
+        code:'ambiguous-attendance-owner',
+      });
+    }
     async function readConfig(){
       const [operationalSnapshot,attendanceSnapshot]=await Promise.all([
         operationalConfigRef.get(),attendanceConfigRef.get(),
@@ -203,7 +211,7 @@
       const generationId=requireGeneration(input?.generationId);
       const tabId=text(input?.tabId);
       if(!tabId) throw new Error('출석 시간표 탭이 필요합니다.');
-      const courseType=text(input?.courseType)||(tabId==='regular'?'regular':'bangteuk');
+      const courseType=readCourseType(input);
       const dates=rangeDates(input?.dates);
       const read=async name=>{
         let query=attendanceOwnerQuery(collectionRef(generationId,name),tabId,courseType);

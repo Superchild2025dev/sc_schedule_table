@@ -147,3 +147,51 @@ The final full unit regression reported 562 tests total, 560 passed, 0 failed, a
 - Context races: individual, guest, batch, newer range/tab, and cross-branch deferred responses have direct tests.
 - Mark state: failure and stale-response tests assert the prior/newer map remains visible, and real absence and mandatory-makeup callers render no success after rejection.
 - Scope: `git diff --name-only` contains no parent, notification, referral, or voice files. No permission, fallback, pointer, production, deploy, push, or mode changes were made.
+
+## Review Fix Round 2: Canonical Attendance Reads
+
+Finding 2 remains parked by user direction. The inactive parent portal, parent API, and notifications were not modified.
+
+### Round 2 RED Evidence
+
+The gateway and store tests were run before production changes:
+
+```powershell
+node --test --test-isolation=none tests/attendance-operational-gateway.test.js tests/attendance-v2-store.test.js
+```
+
+Result: 29 tests total, 24 passed and 5 expected failures. The failures showed that authoritative, shadow/verify, and post-write verification reads omitted `courseType`; named regular tabs could not obtain canonical shared ownership; and a named tab with omitted `courseType` silently selected the exact-tab path.
+
+### Round 2 GREEN Evidence
+
+Syntax and focused attendance checks:
+
+```powershell
+node --check js/attendance-operational-gateway.js
+node --check js/attendance-v2-store.js
+node --test --test-isolation=none tests/attendance-operational-gateway.test.js tests/attendance-v2-store.test.js tests/attendance-v2-main-integration.test.js tests/teacher-attendance-v2-integration.test.js tests/attendance-v2-operational-scenarios.test.js
+```
+
+Both syntax checks exited 0. The attendance-focused suite passed 61 tests with 0 failures and 0 skips.
+
+Full unit regression:
+
+```powershell
+npm.cmd run test:unit
+```
+
+The managed sandbox first blocked Node worker spawning with `EPERM`. The approved rerun completed with 566 tests total, 564 passed, 0 failed, and the same 2 pre-existing emulator availability skips.
+
+### Round 2 Implementation Notes
+
+- Every `v2Store.readRange` invocation in the attendance operational gateway now forwards the validated `courseType`, covering authoritative loads, shadow/verify comparisons, and post-write verification.
+- Named current and archived regular tabs pass `courseType=regular`, so the store selects the canonical shared regular attendance and guest owner. Bangteuk continues to use exact `tabId` ownership and remains isolated.
+- Omitted `courseType` is backward-safe only for the literal `regular` owner. Nonliteral or invalid ambiguous ownership fails closed with `ambiguous-attendance-owner` before a V2 query.
+- Gateway tests assert combined current and archived regular maps and guests, bangteuk exclusion, all comparison/verification request shapes, and omitted-domain behavior. Store tests retain direct query-level coverage.
+
+### Round 2 Self-Review
+
+- Read-path audit: the gateway contains three `v2Store.readRange` calls and all three receive `courseType`.
+- Refresh audit: main runtime refreshes preserve the original range object, including `courseType`; existing stale date/tab/branch tests remain green.
+- Ownership audit: regular uses the shared `courseType` query; bangteuk uses exact tab plus date filtering.
+- Scope audit: no parent, notification, referral, voice, permission, pointer, fallback, deployment, production, or mode files were changed.

@@ -324,6 +324,23 @@ test('regular range reads include every regular owner while bangteuk remains tab
   ]));
 });
 
+test('range reads infer literal regular ownership and reject ambiguous named tabs without courseType',async()=>{
+  const db=createFakeFirestore({
+    [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
+  });
+  const {store}=loadStore(db);
+  await store.readConfig();
+
+  await store.readRange({generationId:'gen_1',tabId:'regular',dates:['2026-08-03']});
+  db.queryLog.forEach(entry=>assert.deepEqual(entry.filters,[['courseType','==','regular']]));
+
+  db.queryLog.length=0;
+  await assert.rejects(()=>store.readRange({
+    generationId:'gen_1',tabId:'august',dates:['2026-08-03'],
+  }),error=>error?.code==='ambiguous-attendance-owner');
+  assert.equal(db.queryLog.length,0);
+});
+
 test('range reads reject more than ten unique dates',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},

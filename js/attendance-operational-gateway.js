@@ -28,6 +28,14 @@
       code:code||'attendance-pointer-mismatch',
     });
   }
+  function readCourseType(input){
+    const courseType=text(input?.courseType);
+    if(courseType==='regular'||courseType==='bangteuk') return courseType;
+    if(!courseType&&text(input?.tabId)==='regular') return 'regular';
+    throw Object.assign(new Error('출석 시간표의 수업 구분을 확인할 수 없어 조회를 중단했습니다.'),{
+      code:'ambiguous-attendance-owner',
+    });
+  }
   function operationId(){
     if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
     operationSequence=(operationSequence+1)%1000000;
@@ -130,10 +138,14 @@
       assertCurrentRange(token);
       const started=nowDate().getTime();
       const base={tabId:text(input?.tabId),dates:clone(input?.dates||[])};
+      const needsV2Read=V2_AUTHORITY_MODES.has(config.mode)||(
+        (config.mode==='shadow'||config.mode==='verify')&&config.generationId
+      );
+      const courseType=needsV2Read?readCourseType(input):'';
       if(V2_AUTHORITY_MODES.has(config.mode)){
         try{
           const result=await v2Store.readRange({
-            generationId:config.generationId,tabId:base.tabId,dates:base.dates,
+            generationId:config.generationId,tabId:base.tabId,courseType,dates:base.dates,
           });
           assertCurrentRange(token);
           const maps=v2Maps(result);
@@ -153,7 +165,7 @@
       if((config.mode==='shadow'||config.mode==='verify')&&config.generationId){
         try{
           const v2Result=await v2Store.readRange({
-            generationId:config.generationId,tabId:base.tabId,dates:base.dates,
+            generationId:config.generationId,tabId:base.tabId,courseType,dates:base.dates,
           });
           assertCurrentRange(token);
           const comparison=v2Store.compareRange({
@@ -185,7 +197,8 @@
     async function verifyAfterWrite(after,input,kind){
       if(config.mode!=='verify') return {ready:true};
       const result=await v2Store.readRange({
-        generationId:config.generationId,tabId:text(input?.tabId),dates:input?.dates||[],
+        generationId:config.generationId,tabId:text(input?.tabId),
+        courseType:readCourseType(input),dates:input?.dates||[],
       });
       return v2Store.compareRange({
         legacyAttendance:kind==='attendance'?after:objectMap(input?.attendance),
