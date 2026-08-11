@@ -38,8 +38,11 @@ test("the static-host release identity gate fails fast", () => {
   assert.match(block, /\[\[ ! "\$APPROVED_RELEASE_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
   assert.match(block, /if ! git checkout --detach "\$APPROVED_RELEASE_SHA"; then/);
   assert.match(block, /if \[ "\$ACTUAL_HEAD" != "\$APPROVED_RELEASE_SHA" \]; then/);
-  assert.match(block, /if \[\[ -n "\$\(git status --porcelain --untracked-files=all\)" \]\]; then/);
+  assert.match(block, /if ! WORKTREE_STATUS="\$\(git status --porcelain=v1 --untracked-files=all\)"; then/);
+  assert.match(block, /Cannot determine whether static deployment worktree is clean\./);
+  assert.match(block, /if \[\[ -n "\$WORKTREE_STATUS" \]\]; then/);
   assert.match(block, /exit 1/);
   assert.doesNotMatch(block, /test "\$\(git rev-parse HEAD\)"/);
   assert.doesNotMatch(block, /test -z "\$\(git status/);
+  assert.doesNotMatch(block, /\[\[ -n "\$\(git status/);
 });

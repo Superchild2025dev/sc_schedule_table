@@ -204,7 +204,11 @@ if [ "$ACTUAL_HEAD" != "$APPROVED_RELEASE_SHA" ]; then
   printf '%s\n' "Static HEAD $ACTUAL_HEAD does not match approved SHA $APPROVED_RELEASE_SHA." >&2
   exit 1
 fi
-if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+if ! WORKTREE_STATUS="$(git status --porcelain=v1 --untracked-files=all)"; then
+  printf '%s\n' 'Cannot determine whether static deployment worktree is clean.' >&2
+  exit 1
+fi
+if [[ -n "$WORKTREE_STATUS" ]]; then
   printf '%s\n' 'Static deployment worktree is not clean.' >&2
   exit 1
 fi
