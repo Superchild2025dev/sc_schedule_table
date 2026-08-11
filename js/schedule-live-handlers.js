@@ -8,13 +8,53 @@
 
   function clone(value){return value==null?value:JSON.parse(JSON.stringify(value));}
   function parse(value,fallback){try{return JSON.parse(value);}catch(error){return clone(fallback);}}
-  function stringify(value){return JSON.stringify(value);}
   function text(value){return String(value==null?'':value).trim();}
-  function metadata(input){return {
-    operationId:text(input.operationId),operationType:text(input.operationType),
-    tabIds:Array.isArray(input.tabIds)?input.tabIds.slice():[],
-    ...(input.requireOperationManifest?{requireOperationManifest:true}:{}),
-  };}
+  function rootValue(root,key,fallback){
+    const value=root?.[key];
+    if(value==null) return clone(fallback);
+    if(typeof value==='string') return parse(value,fallback);
+    return clone(value);
+  }
+  function tabKeys(tab){
+    const id=text(tab?.id)||'regular';
+    if(tab?.type==='bangteuk') return {students:`swim_bt_${id}_stu`,instructors:`swim_bt_${id}_inst`};
+    return {students:id==='regular'?'swim_students':`swim_stu_${id}`,instructors:id==='regular'?'swim_inst':`swim_inst_${id}`};
+  }
+  function slotKey(value){return [value?.t,value?.d,value?.l,value?.r].map(text).join('/');}
+  function studentDisplay(student,enroll){
+    if(student){
+      const raw=text(student.n||student.name);
+      const weekFive=student.btWeek5===true||/^[*＊]+\s*/.test(raw);
+      const name=raw.replace(/^[*＊]+\s*/, '').trim();
+      return `${student.layoutAdded?'(추가) ':''}${weekFive?'*':''}${name}${student.a||student.age||''}`;
+    }
+    return enroll?`${text(enroll.name||enroll.n)}${enroll.age||enroll.a||''}`:'';
+  }
+  function instructorDisplay(instructor){
+    if(typeof instructor==='string') return text(instructor);
+    if(!instructor||typeof instructor!=='object') return '';
+    let value=text(instructor.n||instructor.name);
+    if(instructor.lead) value='1)'+value;
+    if(instructor.youth) value+='(유아)';
+    if(instructor.btGroup) value+=`(${text(instructor.btGroup)} 방특)`;
+    else if(instructor.bt||instructor.bangteuk||instructor.btTabId||instructor.cls==='bt'||instructor.cls==='bangteuk') value+='(방특)';
+    if(instructor.cls==='elma'||instructor.elma) value+='(엘/마)';
+    else if(instructor.cls==='elite') value+='(엘리트)';
+    else if(instructor.cls==='master') value+='(마스터)';
+    return value;
+  }
+  function metadata(input){
+    const supplied=input?.transactionMetadata;
+    if(supplied!=null&&(typeof supplied!=='object'||Array.isArray(supplied))){
+      throw new TypeError('transaction metadata must be an object');
+    }
+    return {
+      ...(supplied||{}),
+      operationId:text(input?.operationId),operationType:text(input?.operationType),
+      tabIds:Array.isArray(input?.tabIds)?input.tabIds.slice():[],
+      ...(input?.requireOperationManifest?{requireOperationManifest:true}:{}),
+    };
+  }
   function slotMatches(student,slotKey){
     const [time,day,lane,seat]=text(slotKey).split('/');
     return student?.t===time&&student?.d===day
@@ -136,113 +176,52 @@
   function create(options={}){
     const gateway=options.gateway;
     if(!gateway||typeof gateway.transactionKeys!=='function') throw new TypeError('operational gateway is required');
-    const transaction=(keys,operation,mutator)=>gateway.transactionKeys(keys,mutator,metadata(operation));
     const contextTransaction=(keys,operation,mutator)=>{
-      if(typeof options.transactionContext!=='function'||typeof mutator!=='function') return null;
+      if(typeof options.transactionContext!=='function'){
+        return Promise.reject(new TypeError('live transaction context is required'));
+      }
+      if(typeof mutator!=='function'){
+        return Promise.reject(new TypeError('live transaction context mutator is required'));
+      }
       return options.transactionContext(keys,mutator,metadata(operation));
     };
-    const mapUpdate=(key,operation,update)=>transaction([key],operation,root=>{
-      const map=parse(root[key],{});update(map);root[key]=stringify(map);return root;
-    });
-    const listUpdate=(key,operation,update)=>transaction([key],operation,root=>{
-      const list=parse(root[key],[]);update(list);root[key]=stringify(list);return root;
-    });
-    function registerStudent(input){return listUpdate(input.key,input,list=>list.push(clone(input.student)));}
+    function registerStudent(input){return contextTransaction([input.key],input,input.mutateContext);}
     function replaceScheduledStudents(input){
-      const contextual=contextTransaction(input.keys,input,input.mutateContext);
-      if(contextual) return contextual;
-      return transaction(input.keys,input,root=>{
-      const enroll=parse(root[input.enrollKey],{});
-      const retire=parse(root[input.retireKey],{});
-      if(input.slotKey&&input.retireEntry) retire[input.slotKey]=clone(input.retireEntry);
-      if(input.slotKey&&input.enrollEntry) enroll[input.slotKey]=clone(input.enrollEntry);
-      const next=applyFutureStudentState({
-        students:parse(root[input.studentKey],[]),enroll,retire,
-        hyuwon:parse(root[input.hyuwonKey],{}),
-        todayStr:input.todayStr,periodMonth:input.periodMonth,
-        isBangteukSlotKey:input.isBangteukSlotKey,sameStudent:input.sameStudent,
-        normalizeBangteukStudent:input.normalizeBangteukStudent,
-        parseBangteukWeek5Name:input.parseBangteukWeek5Name,
-      });
-      root[input.studentKey]=stringify(next.students);root[input.enrollKey]=stringify(next.enroll);
-      root[input.retireKey]=stringify(next.retire);root[input.hyuwonKey]=stringify(next.hyuwon);
-      const cleanupKeys=Array.isArray(input.cleanupKeys)?input.cleanupKeys:[];
-      const slotKeys=Array.isArray(input.slotKeys)&&input.slotKeys.length?input.slotKeys:[input.slotKey];
-      cleanupKeys.forEach(key=>{
-        const values=parse(root[key],{});
-        Object.keys(values).forEach(entryKey=>{
-          const matches=slotKeys.some(slotKey=>text(slotKey)&&(entryKey===text(slotKey)||entryKey.startsWith(text(slotKey)+'/')));
-          const date=text(entryKey.split('/').pop());
-          const directSlot=slotKeys.some(slotKey=>entryKey===text(slotKey));
-          if(matches&&(directSlot||!date||date>=text(input.todayStr))) delete values[entryKey];
-        });
-        root[key]=stringify(values);
-      });
-      return root;
-    });}
-    function moveStudent(input){return listUpdate(input.key,input,list=>{
-      const student=list.find(item=>text(item?.sid)===text(input.sid));
-      if(!student) throw Object.assign(new Error('student not found'),{code:'not-found'});
-      Object.assign(student,clone(input.destination));
-    });}
-    function updateTeachers(input){return transaction(input.keys,input,root=>{
-      Object.entries(input.assignments||{}).forEach(([key,updates])=>{
-        const teachers=parse(root[key],{});Object.entries(updates||{}).forEach(([slot,value])=>{teachers[slot]=clone(value);});root[key]=stringify(teachers);
-      });return root;
-    });}
+      return contextTransaction(input.keys,input,input.mutateContext);
+    }
+    function moveStudent(input){return contextTransaction([input.key],input,input.mutateContext);}
+    function updateTeachers(input){return contextTransaction(input.keys,input,input.mutateContext);}
     function setReservations(input){
-      const contextual=contextTransaction(input.keys||[input.key],input,input.mutateContext);
-      if(contextual) return contextual;
-      let changedValue;
-      return transaction(input.keys||[input.key],input,root=>{
-        if(typeof input.mutate==='function'){
-          const key=input.key||input.keys?.[0];
-          const value=parse(root[key],input.fallback||{});
-          const next=input.mutate(value);
-          if(next===undefined) return undefined;
-          changedValue=clone(next);
-          root[key]=stringify(next);
-          return root;
-        }
-      Object.entries(input.values||{}).forEach(([key,value])=>{root[key]=stringify(value);});return root;
-      }).then(result=>changedValue===undefined?result:changedValue);
+      return contextTransaction(input.keys||[input.key],input,input.mutateContext);
     }
     function addWaitlistEntry(input){
-      const contextual=contextTransaction([input.key],input,input.mutateContext);
-      if(contextual) return contextual;
-      return mapUpdate(input.key,input,map=>{
-      const entries=Array.isArray(map[input.slotKey])?map[input.slotKey]:[];entries.push(clone(input.entry));map[input.slotKey]=entries;
-      });
+      return contextTransaction([input.key],input,input.mutateContext);
     }
-    function setClassMark(input){return mapUpdate(input.key,input,map=>{map[input.markKey]=clone(input.mark);});}
-    function clearClassMark(input){return mapUpdate(input.key,input,map=>{delete map[input.markKey];});}
+    function setClassMark(input){return contextTransaction([input.key],input,input.mutateContext);}
+    function clearClassMark(input){return contextTransaction([input.key],input,input.mutateContext);}
     function updateAttendance(input){
-      const runtime=typeof options.getAttendanceRuntime==='function'?options.getAttendanceRuntime():null;
-      if(runtime&&typeof input.mutator==='function'){
-        return input.guests===true
-          ?runtime.updateGuests(input.mutator,input.context||{})
-          :runtime.updateAttendance(input.mutator,input.context||{});
+      const context=input?.context||{};
+      const runtime=typeof options.getAttendanceRuntime==='function'?options.getAttendanceRuntime(context):null;
+      if(!runtime||typeof runtime.updateAttendance!=='function'||typeof runtime.updateGuests!=='function'){
+        return Promise.reject(new TypeError('live attendance runtime is required'));
       }
-      const contextual=contextTransaction(input.keys||[input.key],input,input.mutateContext);
-      if(contextual) return contextual;
-      return transaction(input.keys,input,root=>{
-      Object.entries(input.values||{}).forEach(([key,value])=>{root[key]=stringify(value);});return root;
-      });
+      if(typeof input.mutator!=='function'){
+        return Promise.reject(new TypeError('live attendance runtime mutator is required'));
+      }
+      return input.guests===true
+        ?runtime.updateGuests(input.mutator,context)
+        :runtime.updateAttendance(input.mutator,context);
     }
     function createSnapshot(input){
       const writer=options.snapshotWriter;if(!writer||typeof writer.createOnly!=='function') throw new TypeError('attendance snapshot writer is required');
       return writer.createOnly(input);
     }
-    function updateCalendar(input){return transaction(input.keys,input,root=>{
-      Object.entries(input.values||{}).forEach(([key,value])=>{root[key]=stringify(value);});return root;
-    });}
+    function updateCalendar(input){return contextTransaction(input.keys,input,input.mutateContext);}
     function updateTabs(input){
-      const contextual=contextTransaction(input.keys,input,input.mutateContext);
-      return contextual||updateCalendar(input);
+      return contextTransaction(input.keys,input,input.mutateContext);
     }
     function updateManualRecords(input){
-      const contextual=contextTransaction(input.keys,input,input.mutateContext);
-      return contextual||updateCalendar(input);
+      return contextTransaction(input.keys,input,input.mutateContext);
     }
     async function prepareExportView(input){
       const loaded=await gateway.loadSelection(clone(input.selection));
@@ -255,9 +234,35 @@
       const source=input?.source;
       if(!view?.root||!source||typeof source.cloneNode!=='function') throw new TypeError('prepared operational export view is required');
       const table=source.cloneNode(true);
+      const tab=view.exportTab||rootValue(view.root,'swim_tab_list',[]).find(item=>text(item?.id)===text(view.tabId))||{id:view.tabId,type:'regular'};
+      const keys=tabKeys(tab);
+      const students=rootValue(view.root,keys.students,[]);
+      const studentsBySlot={};
+      students.forEach(student=>{const key=slotKey(student);if(key!=='///') studentsBySlot[key]=clone(student);});
+      const exportData={
+        studentsBySlot,
+        instructors:rootValue(view.root,keys.instructors,{}),
+        enroll:rootValue(view.root,'swim_enroll',{}),
+        retire:rootValue(view.root,'swim_retire',{}),
+        hyuwon:rootValue(view.root,'swim_hyuwon',{}),
+        marks:rootValue(view.root,'swim_mark',{}),
+        requests:rootValue(view.root,'swim_requests',{}),
+        waitlist:rootValue(view.root,'swim_reserve',{}),
+      };
+      Array.from(table.querySelectorAll('[data-t][data-day][data-lane][data-ri]')).forEach(cell=>{
+        const key=[cell.dataset.t,cell.dataset.day,cell.dataset.lane,cell.dataset.ri].map(text).join('/');
+        const value=studentDisplay(exportData.studentsBySlot[key],exportData.enroll[key]);
+        cell.textContent=value;
+        cell.setAttribute('data-operational-export-text',value);
+      });
+      Array.from(table.querySelectorAll('[data-inst-key]')).forEach(cell=>{
+        const value=instructorDisplay(exportData.instructors[text(cell.dataset.instKey)]);
+        cell.textContent=value;
+        cell.setAttribute('data-operational-export-text',value);
+      });
       table.setAttribute('data-operational-export-primary',text(view.primary));
       table.setAttribute('data-operational-export-tab',text(view.tabId));
-      return {table,tab:clone(view.exportTab),root:clone(view.root),primary:text(view.primary)};
+      return {table,tab:clone(tab),root:clone(view.root),primary:text(view.primary),exportData};
     }
     return Object.freeze({registerStudent,replaceScheduledStudents,moveStudent,updateTeachers,setReservations,addWaitlistEntry,
       setClassMark,clearClassMark,updateAttendance,createSnapshot,updateCalendar,updateTabs,updateManualRecords,prepareExportView,renderExportTable});

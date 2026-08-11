@@ -649,7 +649,7 @@ function updateTabSettingsTx(keys,mutator,meta){
   const handlers=typeof getMainScheduleLiveHandlers==='function'?getMainScheduleLiveHandlers():null;
   if(handlers){
     return handlers.updateTabs({
-      keys,operationType:'update-tabs',tabIds:[String(_activeTab||'regular')],...(meta||{}),
+      keys,operationType:'update-tabs',tabIds:[String(_activeTab||'regular')],transactionMetadata:meta||{},
       mutateContext:ctx=>{
         const root={};
         keys.forEach(key=>{root[key]=JSON.stringify(ctx.get(key,[]));});

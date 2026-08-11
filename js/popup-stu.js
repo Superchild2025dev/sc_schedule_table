@@ -1766,7 +1766,10 @@ async function handleSave(e, ctx){
       const attKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attendance'):STORAGE_KEYS.ATTENDANCE;
       const handlers=typeof getMainScheduleLiveHandlers==='function'?getMainScheduleLiveHandlers():null;
       const replaceTransaction=(keys,mutateContext,meta)=>handlers
-        ?handlers.replaceScheduledStudents({keys,operationType:'replace-student',tabIds:[String(_activeTab||'regular')],...meta,mutateContext})
+        ?handlers.replaceScheduledStudents({
+          keys,operationType:'replace-student',tabIds:[String(_activeTab||'regular')],
+          transactionMetadata:meta,mutateContext,
+        })
         :updateScheduleTx(keys,mutateContext,meta);
       await replaceTransaction([
         stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,

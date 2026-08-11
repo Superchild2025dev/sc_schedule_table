@@ -7,6 +7,11 @@ const ROOT=path.join(__dirname,"..");
 require(path.join(ROOT,"js","schedule-time.js"));
 require(path.join(ROOT,"js","schedule-schema-v2.js"));
 require(path.join(ROOT,"js","schedule-v2-operational-model.js"));
+require(path.join(ROOT,"js","schedule-v2-store.js"));
+require(path.join(ROOT,"js","attendance-v2-model.js"));
+require(path.join(ROOT,"js","attendance-v2-store.js"));
+require(path.join(ROOT,"js","attendance-operational-gateway.js"));
+require(path.join(ROOT,"js","attendance-main-runtime.js"));
 
 const schema=globalThis.SCScheduleSchemaV2;
 const model=globalThis.SCV2OperationalModel;
@@ -15,6 +20,10 @@ const gatewayApi=require(path.join(ROOT,"js","schedule-operational-gateway.js"))
 const liveHandlersApi=require(path.join(ROOT,"js","schedule-live-handlers.js"));
 const snapshotWriterApi=require(path.join(ROOT,"js","attendance-snapshot-writer.js"));
 const operational=require(path.join(ROOT,"functions","schedule-v2-operational-writer.js"));
+const attendanceStoreApi=globalThis.SCV2AttendanceStore;
+const attendanceGatewayApi=globalThis.SCOperationalAttendance;
+const attendanceRuntimeApi=globalThis.SCMainAttendanceRuntime;
+const attendanceModel=globalThis.SCV2AttendanceModel;
 
 const COLLECTIONS=Object.freeze(Object.values(model.DOMAIN_COLLECTIONS).flat());
 const NOW=new Date("2026-08-11T03:00:00.000Z");
@@ -423,6 +432,13 @@ function createOperationalSystem(options={}){
   });
   const management=loadManagement(db);
   let operationSequence=0;
+  const coordinationEvents=new Map();
+
+  function recordCoordination(branchId,event){
+    const events=coordinationEvents.get(branchId)||[];
+    events.push(clone(event));
+    coordinationEvents.set(branchId,events);
+  }
 
   function gateway(branchId){
     const v2Store=storeApi.create({db,branchId,model});
@@ -441,7 +457,71 @@ function createOperationalSystem(options={}){
       write:(key,value,meta)=>operationalGateway.child(key).set(value,meta),
       normalize:value=>clone(value),
     });
-    return liveHandlersApi.create({gateway:operationalGateway,snapshotWriter});
+    const transactionContext=(keys,mutator,meta)=>{
+      let abortReason="";
+      const touched=new Set();
+      const allowed=new Set(keys);
+      return operationalGateway.transactionKeys(keys,root=>{
+        const context={
+          get(key,fallback){
+            if(!allowed.has(key)) throw new Error(`transaction key missing: ${key}`);
+            try{return JSON.parse(root[key]);}
+            catch(error){return clone(fallback);}
+          },
+          set(key,value){
+            if(!allowed.has(key)) throw new Error(`transaction key missing: ${key}`);
+            root[key]=JSON.stringify(clone(value));touched.add(key);
+          },
+          abort(reason){abortReason=String(reason||"");},
+        };
+        const result=mutator(context);
+        if(result===undefined) return undefined;
+        return root;
+      },meta).then(result=>{
+        if(!result?.committed) throw new Error(abortReason||"transaction aborted");
+        recordCoordination(branchId,{
+          branch:"transaction-context",keys:[...keys],operationId:meta?.operationId,
+          operationType:meta?.operationType,touched:[...touched],metadata:meta,
+        });
+        return result;
+      });
+    };
+    const attendanceStore=attendanceStoreApi.create({
+      db,branchId,now:()=>cloneDate(NOW),
+      mutate:data=>writer.mutate(developerRequest(data)),
+    });
+    const legacyAttendance={
+      async loadRange(){return {attendance:{},guests:{}};},
+      async updateAttendance(){throw new Error("V1 attendance path is not expected in V2-read scenario");},
+      async updateGuests(){throw new Error("V1 attendance path is not expected in V2-read scenario");},
+    };
+    const attendanceGateway=attendanceGatewayApi.create({
+      branchId,legacy:legacyAttendance,v2Store:attendanceStore,model:attendanceModel,now:()=>cloneDate(NOW),
+    });
+    const attendanceRuntimes=new Map();
+    const getAttendanceRuntime=context=>{
+      const tabId=String(context?.tabId||"regular");
+      recordCoordination(branchId,{
+        branch:"attendance-runtime",tabId,courseType:context?.courseType,
+        operationId:context?.operationId,operationType:context?.operationType,
+      });
+      if(attendanceRuntimes.has(tabId)) return attendanceRuntimes.get(tabId);
+      let maps={attendance:{},guests:{}};
+      const runtime=attendanceRuntimeApi.create({
+        branchId,gateway:attendanceGateway,prepareKeys:async()=>{},
+        getMaps:()=>clone(maps),setMaps:next=>{maps=clone(next);},
+      });
+      const ready=runtime.ready();
+      const liveRuntime={
+        async updateAttendance(mutator,input){await ready;return runtime.updateAttendance(mutator,input);},
+        async updateGuests(mutator,input){await ready;return runtime.updateGuests(mutator,input);},
+      };
+      attendanceRuntimes.set(tabId,liveRuntime);
+      return liveRuntime;
+    };
+    return liveHandlersApi.create({
+      gateway:operationalGateway,snapshotWriter,transactionContext,getAttendanceRuntime,
+    });
   }
   async function transition(branchId,action){
     const runtime=db.value(runtimePath(branchId,"operational"));
@@ -456,6 +536,7 @@ function createOperationalSystem(options={}){
     legacyValues:branchId=>legacyValues(db,branchId),
     runtime:(branchId,name="operational")=>db.value(runtimePath(branchId,name)),
     manifest:(branchId,operationId)=>db.value(mutationPath(branchId,operationId)),
+    coordinationTrace:branchId=>clone(coordinationEvents.get(branchId)||[]),
   };
 }
 

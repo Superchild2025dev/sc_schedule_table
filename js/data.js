@@ -2729,7 +2729,7 @@ function _updateDeskNotesTx(mutator,meta,silent){
   const handlers=getMainScheduleLiveHandlers();
   if(handlers){
     return handlers.updateManualRecords({
-      keys:[STORAGE_KEYS.DESK_NOTES],operationType:'update-records',tabIds:[String(_activeTab||'regular')],...(meta||{}),
+      keys:[STORAGE_KEYS.DESK_NOTES],operationType:'update-records',tabIds:[String(_activeTab||'regular')],transactionMetadata:meta||{},
       mutateContext:ctx=>{
         const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
         const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
@@ -4151,7 +4151,19 @@ function setMarkEntryTx(markKey,val,meta){
   const handlers=getMainScheduleLiveHandlers();
   const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
   if(handlers&&(mode==='v2-read'||mode==='v2')){
-    return handlers.setClassMark({key:STORAGE_KEYS.MARK,markKey,mark:val,...(meta||{})}).then(()=>{
+    return handlers.setClassMark({
+      key:STORAGE_KEYS.MARK,markKey,mark:val,
+      operationId:meta?.operationId,operationType:meta?.operationType,
+      tabIds:Array.isArray(meta?.tabIds)?meta.tabIds:[],
+      requireOperationManifest:meta?.requireOperationManifest===true,
+      transactionMetadata:meta||{},
+      mutateContext:ctx=>{
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        marks[markKey]=val;
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        return true;
+      },
+    }).then(()=>{
       MARK_MAP={...(MARK_MAP||{}),[markKey]:val};
       return MARK_MAP;
     });
@@ -4162,7 +4174,19 @@ function clearMarkEntryTx(markKey,meta){
   const handlers=getMainScheduleLiveHandlers();
   const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
   if(handlers&&(mode==='v2-read'||mode==='v2')){
-    return handlers.clearClassMark({key:STORAGE_KEYS.MARK,markKey,...(meta||{})}).then(()=>{
+    return handlers.clearClassMark({
+      key:STORAGE_KEYS.MARK,markKey,
+      operationId:meta?.operationId,operationType:meta?.operationType,
+      tabIds:Array.isArray(meta?.tabIds)?meta.tabIds:[],
+      requireOperationManifest:meta?.requireOperationManifest===true,
+      transactionMetadata:meta||{},
+      mutateContext:ctx=>{
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        delete marks[markKey];
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        return true;
+      },
+    }).then(()=>{
       const next={...(MARK_MAP||{})};delete next[markKey];MARK_MAP=next;
       return MARK_MAP;
     });

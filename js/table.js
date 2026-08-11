@@ -1599,6 +1599,7 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
         if(_btPairPreview) td.classList.add('bt-preview-active');
         if(pairStart[1]>=4&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
+        td.dataset.instKey=iKey;
         // [v117] cls(엘/마/엘리트/마스터)에 따라 라벨 동적
         const _cls=getInstCls(elmaInst);
         const _lbl=getInstClsLabel(_cls)||'(엘/마)';
@@ -1621,6 +1622,7 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
         if(_btPreviewInst) td.classList.add('bt-preview-active');
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
+        td.dataset.instKey=iKey;
         // [v117] cls(엘/마/엘리트/마스터)에 따라 라벨 동적
         const _cls=getInstCls(inst);
         const _lbl=getInstClsLabel(_cls)||'(엘/마)';
@@ -1637,6 +1639,7 @@ function buildInstRow(t, rows, hasSat, DAYS, HAS_NUM, LANE_COUNT, SAT_TIME_LABEL
         if(_btPreviewInst) td.classList.add('bt-preview-active');
         if(li===LANE_COUNT-1&&di<DAYS.length-1){td.classList.add('day-sep');if(_isTodayDay(day))td.classList.add('day-sep-today');}
         const iKey=t+'/'+day+'/'+(li+1);
+        td.dataset.instKey=iKey;
         td.innerHTML=instCellHTML(instDisplay(inst)+(_btPreviewInst&&inst?_btPreviewLabel:''),iKey);
         td.style.fontWeight='700';td.style.fontSize='11px';
         td.addEventListener('click',function(){if(_attendanceMode) return; openInstPopup(this,t,day,_lane);});
@@ -3465,10 +3468,16 @@ function _excelBadgeText(kind,name,ds){
   if(kind==='pending-cancel'&&md) return '취소요청'+md;
   return '';
 }
-function _excelSlotBadgeEntries(slotKey,day,todayStr){
+function _excelPreparedData(prepared){
+  return prepared&&prepared.primary==='v2'&&prepared.exportData?prepared.exportData:null;
+}
+function _excelSlotBadgeEntries(slotKey,day,todayStr,prepared){
   const p=String(slotKey||'').split('/');
   if(p.length<4) return [];
   const [t,d,l,r]=p;
+  const preparedData=_excelPreparedData(prepared);
+  const marks=preparedData?preparedData.marks:MARK_MAP;
+  const requests=preparedData?preparedData.requests:REQUESTS;
   const rows=[];
   const add=(kind,name,ds)=>{
     const text=_excelBadgeText(kind,name,ds);
@@ -3479,7 +3488,8 @@ function _excelSlotBadgeEntries(slotKey,day,todayStr){
     const allDates=[...(classDates.cur||[]),...(classDates.next||[])];
     allDates.forEach(date=>{
       if(date.closed||date.ds<todayStr) return;
-      const mark=typeof getMark==='function'?getMark(slotKey,date.ds):(MARK_MAP&&MARK_MAP[slotKey+'/'+date.ds]);
+      const mark=preparedData?marks?.[slotKey+'/'+date.ds]
+        :(typeof getMark==='function'?getMark(slotKey,date.ds):(marks&&marks[slotKey+'/'+date.ds]));
       if(!mark) return;
       if(mark.type==='bogang'||mark.type==='sample') add(mark.type,mark.type==='bogang'&&typeof bogangDisplayName==='function'?bogangDisplayName(mark):mark.n,date.ds);
       else if(mark.type==='absent'){
@@ -3488,7 +3498,7 @@ function _excelSlotBadgeEntries(slotKey,day,todayStr){
       }
     });
   }catch(e){}
-  Object.values(REQUESTS||{}).forEach(req=>{
+  Object.values(requests||{}).forEach(req=>{
     if(req.type!=='bogang') return;
     if(req.status&&req.status!=='pending') return;
     const tg=req.target;
@@ -3499,11 +3509,11 @@ function _excelSlotBadgeEntries(slotKey,day,todayStr){
   });
   return rows.sort((a,b)=>(a.ds||'').localeCompare(b.ds||''));
 }
-function _excelBadgeDisplayForSlot(slotKey,day,todayStr){
-  return _excelSlotBadgeEntries(slotKey,day,todayStr).map(row=>row.text).join('\n');
+function _excelBadgeDisplayForSlot(slotKey,day,todayStr,prepared){
+  return _excelSlotBadgeEntries(slotKey,day,todayStr,prepared).map(row=>row.text).join('\n');
 }
-function _excelBadgeFillKind(slotKey,day,todayStr){
-  const entries=_excelSlotBadgeEntries(slotKey,day,todayStr);
+function _excelBadgeFillKind(slotKey,day,todayStr,prepared){
+  const entries=_excelSlotBadgeEntries(slotKey,day,todayStr,prepared);
   const colored=entries.find(row=>row.kind==='bogang'||row.kind==='sample'||row.kind==='pending-bogang'||row.kind==='absent-request');
   if(!colored) return '';
   if(colored.kind==='absent-request') return 'pending';
@@ -3521,12 +3531,14 @@ function _excelApplyBadgeOnlyStyle(style,kind){
   }
   return style;
 }
-function _excelSlotMemoLines(slotKey,day,todayStr){
+function _excelSlotMemoLines(slotKey,day,todayStr,prepared){
   const lines=[];
   if(!slotKey) return lines;
   const p=String(slotKey).split('/');
   const [t,d,l,r]=p;
-  const stu=(p.length>=4&&typeof getStu==='function')?getStu(t,d,l,r):null;
+  const preparedData=_excelPreparedData(prepared);
+  const stu=preparedData?(preparedData.studentsBySlot?.[slotKey]||null)
+    :((p.length>=4&&typeof getStu==='function')?getStu(t,d,l,r):null);
   if(stu){
     if(stu.p) _excelAddLine(lines,'전화: '+stu.p);
     if(stu.g) _excelAddLine(lines,'반: '+stu.g);
@@ -3536,19 +3548,24 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
     if(stu.isNew) _excelAddLine(lines,'신규');
     if(stu.reenroll) _excelAddLine(lines,'재등록');
   }
-  const ret=RETIRE_MAP&&RETIRE_MAP[slotKey];
+  const retire=preparedData?preparedData.retire:RETIRE_MAP;
+  const enroll=preparedData?preparedData.enroll:ENROLL_MAP;
+  const leave=preparedData?preparedData.hyuwon:HYUWON_MAP;
+  const marks=preparedData?preparedData.marks:MARK_MAP;
+  const requests=preparedData?preparedData.requests:REQUESTS;
+  const ret=retire&&retire[slotKey];
   const retDs=typeof ret==='string'?ret:ret?.ds;
   if(retDs){
     const kind=(typeof _retireReservationKindLabel==='function')?_retireReservationKindLabel(ret,slotKey,stu):'제외/퇴원';
     const name=(typeof _scheduleReservationName==='function')?_scheduleReservationName(ret,stu):(ret?.name||stu?.n||'');
     _excelAddLine(lines,kind+': '+[name,_excelMd(retDs)].filter(Boolean).join(' '));
   }
-  const enr=ENROLL_MAP&&ENROLL_MAP[slotKey];
+  const enr=enroll&&enroll[slotKey];
   if(enr){
     const name=(typeof _scheduleReservationName==='function')?_scheduleReservationName(enr):(enr.name||enr.n||'');
     _excelAddLine(lines,'등록: '+[name,_excelMd(enr.ds)+'부터'].filter(Boolean).join(' ')+(enr.isNew?' / 신규':''));
   }
-  const hy=HYUWON_MAP&&HYUWON_MAP[slotKey];
+  const hy=leave&&leave[slotKey];
   if(hy){
     if(Array.isArray(hy.dates)&&hy.dates.length) _excelAddLine(lines,'휴원: '+hy.dates.map(_excelMd).filter(Boolean).join(', '));
     else if(hy.from||hy.to) _excelAddLine(lines,'휴원: '+[_excelMd(hy.from),_excelMd(hy.to)].filter(Boolean).join('~'));
@@ -3558,7 +3575,8 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
     const allDates=[...(classDates.cur||[]),...(classDates.next||[])];
     allDates.forEach(date=>{
       if(date.closed||date.ds<todayStr) return;
-      const mark=typeof getMark==='function'?getMark(slotKey,date.ds):(MARK_MAP&&MARK_MAP[slotKey+'/'+date.ds]);
+      const mark=preparedData?marks?.[slotKey+'/'+date.ds]
+        :(typeof getMark==='function'?getMark(slotKey,date.ds):(marks&&marks[slotKey+'/'+date.ds]));
       if(!mark) return;
       const dl=_excelMd(date.ds);
       if(mark.type==='absent'){
@@ -3576,7 +3594,7 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
       }
     });
   }catch(e){}
-  Object.values(REQUESTS||{}).forEach(req=>{
+  Object.values(requests||{}).forEach(req=>{
     if(req.type==='bogang'&&(!req.status||req.status==='pending')){
       const tg=req.target;
       if(tg&&tg.t===t&&tg.d===d&&parseInt(tg.l,10)===parseInt(l,10)&&parseInt(tg.r,10)===parseInt(r,10)&&tg.ds>=todayStr){
@@ -3593,36 +3611,45 @@ function _excelSlotMemoLines(slotKey,day,todayStr){
   });
   return lines;
 }
-function _excelCellMemoLines(origCell,todayStr){
+function _excelCellMemoLines(origCell,todayStr,prepared,renderedCell){
   const lines=[];
-  origCell.querySelectorAll('.cb').forEach(badge=>{
-    const label=badge.textContent.trim();
-    const tip=_excelTextFromHtml(badge.dataset.tip||'');
-    _excelAddLine(lines,tip&&tip!==label?`${label}: ${tip}`:label);
-  });
-  origCell.querySelectorAll('.inst-reserve-badge').forEach(badge=>{
-    const tip=_excelTextFromHtml(badge.dataset.reserveTip||'');
-    _excelAddLine(lines,tip?'대기자: '+tip:'대기자 '+badge.textContent.trim());
-  });
+  const preparedData=_excelPreparedData(prepared);
+  if(!preparedData){
+    origCell.querySelectorAll('.cb').forEach(badge=>{
+      const label=badge.textContent.trim();
+      const tip=_excelTextFromHtml(badge.dataset.tip||'');
+      _excelAddLine(lines,tip&&tip!==label?`${label}: ${tip}`:label);
+    });
+    origCell.querySelectorAll('.inst-reserve-badge').forEach(badge=>{
+      const tip=_excelTextFromHtml(badge.dataset.reserveTip||'');
+      _excelAddLine(lines,tip?'대기자: '+tip:'대기자 '+badge.textContent.trim());
+    });
+  }else{
+    const instKey=renderedCell?.dataset?.instKey||origCell?.dataset?.instKey;
+    (preparedData.waitlist?.[instKey]||[]).forEach(entry=>{
+      _excelAddLine(lines,'대기자: '+[entry?.n||entry?.name,entry?.p||entry?.phone,entry?.date||entry?.d,entry?.memo||entry?.m].filter(Boolean).join(' '));
+    });
+  }
   if(origCell.classList.contains('stu-cell')||origCell.classList.contains('stu-clickable')){
     const {t,day,lane,ri}=origCell.dataset||{};
     if(t&&day&&lane&&ri){
-      _excelSlotMemoLines(`${t}/${day}/${lane}/${ri}`,day,todayStr).forEach(line=>_excelAddLine(lines,line));
+      _excelSlotMemoLines(`${t}/${day}/${lane}/${ri}`,day,todayStr,prepared).forEach(line=>_excelAddLine(lines,line));
     }
   }
   return lines;
 }
-function _excelCleanCellForExport(cloneCell,origCell,todayStr){
+function _excelCleanCellForExport(cloneCell,origCell,todayStr,prepared){
   cloneCell.querySelectorAll('.cb,.cell-badges,.inst-reserve-badge,.att-add-inst,.att-icon,.att-tag').forEach(el=>el.remove());
   if(origCell.classList.contains('stu-cell')||origCell.classList.contains('stu-clickable')){
     const {t,day,lane,ri}=origCell.dataset||{};
     if(t&&day&&lane&&ri){
       const slotKey=`${t}/${day}/${lane}/${ri}`;
-      const base=_excelStudentDisplayForSlot(slotKey);
-      const badges=_excelBadgeDisplayForSlot(slotKey,day,todayStr);
+      const rendered=cloneCell.getAttribute('data-operational-export-text');
+      const base=rendered===null?_excelStudentDisplayForSlot(slotKey):rendered;
+      const badges=_excelBadgeDisplayForSlot(slotKey,day,todayStr,prepared);
       cloneCell.textContent=[base,badges].filter(Boolean).join('\n');
       if(!base&&badges){
-        const fillKind=_excelBadgeFillKind(slotKey,day,todayStr);
+        const fillKind=_excelBadgeFillKind(slotKey,day,todayStr,prepared);
         if(fillKind) cloneCell.setAttribute('data-excel-badge-fill',fillKind);
       }
       return;
@@ -3793,9 +3820,9 @@ async function exportExcel(){
   const cloneCells=Array.from(clone.querySelectorAll('th,td'));
   cloneCells.forEach((cell,i)=>{
     const orig=origCells[i]||cell;
-    const comments=_excelCellMemoLines(orig,todayStr);
+    const comments=_excelCellMemoLines(orig,todayStr,prepared,cell);
     if(comments.length) cell.setAttribute('data-excel-comment',comments.join('\n'));
-    _excelCleanCellForExport(cell,orig,todayStr);
+    _excelCleanCellForExport(cell,orig,todayStr,prepared);
   });
   const ws=XLSX.utils.table_to_sheet(clone,{raw:true});
   const colWidths=[];
@@ -3825,7 +3852,7 @@ async function exportExcel(){
   wb.Workbook.Views=[{RTL:false}];
   const today=getToday();
   const ds=today.getFullYear()+String(today.getMonth()+1).padStart(2,'0')+String(today.getDate()).padStart(2,'0');
-  const activeTab=(typeof _tabById==='function')?_tabById(_activeTab):null;
+  const activeTab=prepared?.tab||((typeof _tabById==='function')?_tabById(_activeTab):null);
   const tabName=activeTab?.name||'시간표';
   XLSX.utils.book_append_sheet(wb,ws,_excelSafeSheetName(tabName));
   XLSX.writeFile(wb,'슈퍼차일드_'+_excelSafeFilePart(tabName)+'_'+ds+'.xlsx',{cellStyles:true,bookSST:true});
