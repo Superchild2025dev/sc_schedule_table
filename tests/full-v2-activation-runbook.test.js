@@ -11,6 +11,28 @@ const firebaseTools = JSON.parse(fs.readFileSync(
   path.join(root, "tools", "firebase-test", "package.json"), "utf8"
 ));
 
+function extractGitStatusFailureBranch(block) {
+  const lines = block.split(/\r?\n/);
+  const start = lines.indexOf(
+    'if ! WORKTREE_STATUS="$(git status --porcelain=v1 --untracked-files=all)"; then'
+  );
+  const end = lines.indexOf("fi", start);
+
+  assert.notEqual(start, -1, "guarded git-status assignment is missing");
+  assert.notEqual(end, -1, "guarded git-status failure branch is incomplete");
+  return lines.slice(start, end + 1).join("\n");
+}
+
+function assertGitStatusFailureTerminates(block) {
+  const branch = extractGitStatusFailureBranch(block);
+  assert.equal(branch, [
+    'if ! WORKTREE_STATUS="$(git status --porcelain=v1 --untracked-files=all)"; then',
+    "  printf '%s\\n' 'Cannot determine whether static deployment worktree is clean.' >&2",
+    "  exit 1",
+    "fi"
+  ].join("\n"), "a git-status command failure must terminate with exit code 1");
+}
+
 test("the V2 activation runbook pins the reviewed release and Firebase CLI", () => {
   const cliVersion = firebaseTools.devDependencies["firebase-tools"];
 
@@ -41,8 +63,25 @@ test("the static-host release identity gate fails fast", () => {
   assert.match(block, /if ! WORKTREE_STATUS="\$\(git status --porcelain=v1 --untracked-files=all\)"; then/);
   assert.match(block, /Cannot determine whether static deployment worktree is clean\./);
   assert.match(block, /if \[\[ -n "\$WORKTREE_STATUS" \]\]; then/);
-  assert.match(block, /exit 1/);
+  assertGitStatusFailureTerminates(block);
   assert.doesNotMatch(block, /test "\$\(git rev-parse HEAD\)"/);
   assert.doesNotMatch(block, /test -z "\$\(git status/);
   assert.doesNotMatch(block, /\[\[ -n "\$\(git status/);
+});
+
+test("the git-status failure regression rejects removal of its branch-specific exit", () => {
+  const staticBlock = runbook.match(/```bash\n([\s\S]*?)\n```/);
+
+  assert.ok(staticBlock, "static-host deployment block is missing");
+  const block = staticBlock[1];
+  const mutatedBlock = block.replace(
+    /(if ! WORKTREE_STATUS="\$\(git status --porcelain=v1 --untracked-files=all\)"; then\r?\n  printf '%s\\n' 'Cannot determine whether static deployment worktree is clean\.' >&2\r?\n)  exit 1(\r?\nfi)/,
+    "$1$2"
+  );
+
+  assert.notEqual(mutatedBlock, block, "the branch-specific exit mutation was not applied");
+  assert.throws(
+    () => assertGitStatusFailureTerminates(mutatedBlock),
+    /git-status command failure must terminate with exit code 1/
+  );
 });
