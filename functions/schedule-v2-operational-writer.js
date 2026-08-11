@@ -195,6 +195,9 @@ function baseManifest(input,counts,chunkCount){
 }
 
 function assertWriteSizes(input,changes,counts,chunkCount){
+  for(const key of input.request.keys||[]){
+    if(Buffer.byteLength(safeDocId(key),"utf8")>MAX_DOCUMENT_ID_BYTES) fail("invalid-argument");
+  }
   for(const change of changes){
     const documentId=safeDocId(change.id);
     if(Buffer.byteLength(documentId,"utf8")>MAX_DOCUMENT_ID_BYTES) fail("invalid-argument");
@@ -429,10 +432,11 @@ function snapshotRows(snapshot){
   return rows;
 }
 
-async function readGenerationCollections(db,branchId,generationId){
+async function readGenerationCollections(db,branchId,generationId,heartbeat=async()=>{}){
   const ref=generationRef(db,branchId,generationId);
   const collections={};
   for(const collection of COLLECTIONS){
+    await heartbeat();
     collections[collection]=snapshotRows(await ref.collection(collection).get());
   }
   return collections;
@@ -545,7 +549,7 @@ async function resolveRecoveryValuesDefault(input){
   const runtime=runtimeSnapshot.data()||{};
   assertRecoveryRevision(runtime,input.manifest);
   const collections=modelCollections(await readGenerationCollections(
-    input.db,input.branchId,input.manifest.generationId,
+    input.db,input.branchId,input.manifest.generationId,input.heartbeat,
   ));
   const root=model.legacyRootFromCollections({
     branchId:input.branchId,generationId:input.manifest.generationId,collections,
@@ -553,7 +557,7 @@ async function resolveRecoveryValuesDefault(input){
   if(!root) fail("failed-precondition");
   const values={};
   input.manifest.keys.forEach(key=>{
-    if(!input.manifest.removedKeys.includes(key)&&Object.prototype.hasOwnProperty.call(root,key)){
+    if(Object.prototype.hasOwnProperty.call(root,key)){
       values[key]=root[key];
     }
   });
@@ -565,10 +569,22 @@ function leaseExpiry(value){
   return Number.isFinite(expiry)?expiry:0;
 }
 
+function freshRecoveryNow(input){
+  return normalizeNow(typeof input.clock==="function"?input.clock():new Date());
+}
+
+function recoverySourceRevision(manifest){
+  return Number(manifest.recoverySourceRevision??manifest.resultingRevision??0);
+}
+
+function renewedLeaseUntil(now){
+  return new Date(now.getTime()+RECOVERY_LEASE_MS).toISOString();
+}
+
 function assertRecoveryRevision(runtime,manifest){
   if(text(runtime.activeOperationId)) fail("failed-precondition");
   if(text(runtime.generationId)!==text(manifest.generationId)) fail("failed-precondition");
-  if(Number(runtime.revision||0)!==Number(manifest.resultingRevision||0)) fail("failed-precondition");
+  if(Number(runtime.revision||0)!==recoverySourceRevision(manifest)) fail("failed-precondition");
 }
 
 function releasedFence(fence,input){
@@ -591,6 +607,8 @@ function manifestWithRecoveryState(manifest,state,input){
 
 async function claimRecovery(input,manifestDocument){
   return input.db.runTransaction(async tx=>{
+    const now=freshRecoveryNow(input);
+    const timedInput={...input,now};
     const runtimeDocument=runtimeRef(input.db,input.branchId);
     const fenceDocument=recoveryFenceRef(input.db,input.branchId);
     const runtimeSnapshot=await tx.get(runtimeDocument);
@@ -600,101 +618,136 @@ async function claimRecovery(input,manifestDocument){
     const manifest=snapshot.data()||{};
     if(manifest.status!=="committed") fail("failed-precondition");
     if(["applied","not-required","superseded"].includes(manifest.recoveryState)) return null;
+    if(!Array.isArray(manifest.keys)||manifest.keys.some(key=>
+      Buffer.byteLength(safeDocId(key),"utf8")>MAX_DOCUMENT_ID_BYTES
+    )) fail("invalid-argument");
     const runtime=runtimeSnapshot.data()||{};
     const fence=fenceSnapshot.exists?fenceSnapshot.data()||{}:{};
     const operationLeaseActive=manifest.recoveryState==="processing"&&
-      leaseExpiry(manifest.recoveryLeaseUntil)>input.now.getTime();
+      leaseExpiry(manifest.recoveryLeaseUntil)>now.getTime();
     if(operationLeaseActive) return null;
-    const fenceLeaseActive=leaseExpiry(fence.recoveryLeaseUntil)>input.now.getTime();
+    const fenceLeaseActive=leaseExpiry(fence.recoveryLeaseUntil)>now.getTime();
     if(fenceLeaseActive&&text(fence.operationId)!==input.operationId) return {blocked:true};
 
     const expiredProcessing=manifest.recoveryState==="processing";
     const attempts=Math.max(0,Number(manifest.recoveryAttempts||0))+(expiredProcessing?1:0);
     if(attempts>=MAX_RECOVERY_ATTEMPTS){
-      const exhausted=manifestWithRecoveryState(manifest,"error",input);
+      const exhausted=manifestWithRecoveryState(manifest,"error",timedInput);
       exhausted.recoveryAttempts=MAX_RECOVERY_ATTEMPTS;
-      exhausted.recoveryFailedAt=input.now.toISOString();
+      exhausted.recoveryFailedAt=now.toISOString();
       tx.set(manifestDocument,exhausted,{merge:false});
-      if(text(fence.operationId)===input.operationId) tx.set(fenceDocument,releasedFence(fence,input),{merge:false});
+      if(text(fence.operationId)===input.operationId){
+        tx.set(fenceDocument,releasedFence(fence,timedInput),{merge:false});
+      }
       return {terminal:true,recoveryState:"error"};
     }
 
     const resultingRevision=Number(manifest.resultingRevision||0);
-    const appliedRevision=Math.max(0,Number(fence.appliedRevision||0)||0);
     const runtimeRevision=Math.max(0,Number(runtime.revision||0)||0);
-    if(appliedRevision>resultingRevision||runtimeRevision>resultingRevision){
-      tx.set(manifestDocument,manifestWithRecoveryState(manifest,"superseded",input),{merge:false});
-      if(text(fence.operationId)===input.operationId) tx.set(fenceDocument,releasedFence(fence,input),{merge:false});
-      return {terminal:true,recoveryState:"superseded"};
-    }
-    if(text(runtime.activeOperationId)||runtimeRevision!==resultingRevision||
+    if(text(runtime.activeOperationId)||runtimeRevision<resultingRevision||
         text(runtime.generationId)!==text(manifest.generationId)) return {blocked:true};
     const leaseId=crypto.randomUUID();
-    const leaseUntil=new Date(input.now.getTime()+RECOVERY_LEASE_MS).toISOString();
+    const leaseUntil=renewedLeaseUntil(now);
     const next={
       ...manifest,recoveryState:"processing",recoveryLeaseId:leaseId,
       recoveryLeaseUntil:leaseUntil,recoveryAttempts:attempts,
-      recoveryStartedAt:input.now.toISOString(),updatedAt:serverTime(input),
+      recoverySourceRevision:runtimeRevision,
+      recoveryStartedAt:now.toISOString(),updatedAt:serverTime(timedInput),
     };
     tx.set(manifestDocument,next,{merge:false});
     tx.set(fenceDocument,{
       ...fence,branchId:input.branchId,operationId:input.operationId,
-      resultingRevision,recoveryLeaseId:leaseId,recoveryLeaseUntil:leaseUntil,
-      updatedAt:serverTime(input),
+      operationResultingRevision:resultingRevision,sourceRevision:runtimeRevision,
+      resultingRevision:runtimeRevision,recoveryLeaseId:leaseId,recoveryLeaseUntil:leaseUntil,
+      updatedAt:serverTime(timedInput),
     },{merge:false});
     return {...next,recoveryLeaseId:leaseId};
   });
 }
 
-async function finishRecovery(input,manifestDocument,claim,state,error){
-  const diagnostic=error?policy.redactedDiagnostic(error,{
-    branchId:input.branchId,operationId:input.operationId,
-    operationType:claim.operationType,keyCount:claim.keys.length,
-    changeCount:claim.changeCount,now:input.now,
-  }):null;
+function ownsLiveRecoveryLease(input,manifest,fence,claim,now){
+  return manifest.recoveryState==="processing"&&
+    text(manifest.recoveryLeaseId)===claim.recoveryLeaseId&&
+    text(fence.recoveryLeaseId)===claim.recoveryLeaseId&&
+    text(fence.operationId)===input.operationId&&
+    Number(fence.sourceRevision??fence.resultingRevision??0)===recoverySourceRevision(claim)&&
+    leaseExpiry(manifest.recoveryLeaseUntil)>now.getTime()&&
+    leaseExpiry(fence.recoveryLeaseUntil)>now.getTime();
+}
+
+async function renewRecoveryLease(input,manifestDocument,claim){
   return input.db.runTransaction(async tx=>{
+    const now=freshRecoveryNow(input);
+    const timedInput={...input,now};
+    const runtimeDocument=runtimeRef(input.db,input.branchId);
+    const fenceDocument=recoveryFenceRef(input.db,input.branchId);
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const fenceSnapshot=await tx.get(fenceDocument);
+    const manifestSnapshot=await tx.get(manifestDocument);
+    const runtime=runtimeSnapshot.data()||{};
+    const fence=fenceSnapshot.data()||{};
+    const manifest=manifestSnapshot.data()||{};
+    assertRecoveryRevision(runtime,claim);
+    if(!ownsLiveRecoveryLease(input,manifest,fence,claim,now)) fail("failed-precondition");
+    const leaseUntil=renewedLeaseUntil(now);
+    tx.set(manifestDocument,{
+      ...manifest,recoveryLeaseUntil:leaseUntil,updatedAt:serverTime(timedInput),
+    },{merge:false});
+    tx.set(fenceDocument,{
+      ...fence,recoveryLeaseUntil:leaseUntil,updatedAt:serverTime(timedInput),
+    },{merge:false});
+    return leaseUntil;
+  });
+}
+
+async function finishRecovery(input,manifestDocument,claim,state,error){
+  return input.db.runTransaction(async tx=>{
+    const now=freshRecoveryNow(input);
+    const timedInput={...input,now};
     const runtimeDocument=runtimeRef(input.db,input.branchId);
     const fenceDocument=recoveryFenceRef(input.db,input.branchId);
     const runtimeSnapshot=await tx.get(runtimeDocument);
     const fenceSnapshot=await tx.get(fenceDocument);
     const snapshot=await tx.get(manifestDocument);
     const current=snapshot.data()||{};
-    if(text(current.recoveryLeaseId)!==claim.recoveryLeaseId) return current.recoveryState;
     const fence=fenceSnapshot.data()||{};
-    const ownsFence=text(fence.recoveryLeaseId)===claim.recoveryLeaseId&&
-      text(fence.operationId)===input.operationId;
+    if(!ownsLiveRecoveryLease(input,current,fence,claim,now)) return current.recoveryState;
     let finalState=state;
     if(state==="applied"){
       const runtime=runtimeSnapshot.data()||{};
       const exactRevision=!text(runtime.activeOperationId)&&
         text(runtime.generationId)===text(claim.generationId)&&
-        Number(runtime.revision||0)===Number(claim.resultingRevision||0);
-      if(!ownsFence||!exactRevision){
-        finalState=Number(runtime.revision||0)>Number(claim.resultingRevision||0)?"superseded":"error";
-      }
+        Number(runtime.revision||0)===recoverySourceRevision(claim);
+      if(!exactRevision) finalState="error";
+      else if(recoverySourceRevision(claim)>Number(claim.resultingRevision||0)) finalState="superseded";
     }
     const attempts=finalState==="error"
       ?Math.min(MAX_RECOVERY_ATTEMPTS,Math.max(0,Number(current.recoveryAttempts||0))+1)
       :Math.max(0,Number(current.recoveryAttempts||0));
-    const next=manifestWithRecoveryState(current,finalState,input);
+    const next=manifestWithRecoveryState(current,finalState,timedInput);
     next.recoveryAttempts=attempts;
-    if(finalState==="applied"){
-      next.recoveryAppliedAt=serverTime(input);
+    if(["applied","superseded"].includes(finalState)){
+      next.recoveryCoveredAtRevision=recoverySourceRevision(claim);
+      if(finalState==="applied") next.recoveryAppliedAt=serverTime(timedInput);
       delete next.diagnostic;
     }else if(finalState==="error"){
-      next.recoveryFailedAt=input.now.toISOString();
-      next.diagnostic=diagnostic;
+      next.recoveryFailedAt=now.toISOString();
+      next.diagnostic=policy.redactedDiagnostic(error,{
+        branchId:input.branchId,operationId:input.operationId,
+        operationType:claim.operationType,keyCount:claim.keys.length,
+        changeCount:claim.changeCount,now,
+      });
     }
     tx.set(manifestDocument,next,{merge:false});
-    if(ownsFence){
-      const nextFence=releasedFence(fence,input);
-      if(finalState==="applied"){
-        nextFence.appliedRevision=Number(claim.resultingRevision||0);
-        nextFence.appliedOperationId=input.operationId;
-        nextFence.appliedAt=serverTime(input);
-      }
-      tx.set(fenceDocument,nextFence,{merge:false});
+    const nextFence=releasedFence(fence,timedInput);
+    if(["applied","superseded"].includes(finalState)){
+      nextFence.appliedRevision=Math.max(
+        Number(fence.appliedRevision||0),recoverySourceRevision(claim),
+      );
+      nextFence.appliedOperationId=input.operationId;
+      nextFence.appliedAt=serverTime(timedInput);
     }
+    tx.set(fenceDocument,nextFence,{merge:false});
     return finalState;
   });
 }
@@ -704,6 +757,8 @@ async function writeRecoveryKey(input,claim,key,values,manifestDocument){
   const fenceDocument=recoveryFenceRef(input.db,input.branchId);
   const ref=legacyKeyRef(input.db,input.branchId,key);
   return input.db.runTransaction(async tx=>{
+    const now=freshRecoveryNow(input);
+    const timedInput={...input,now};
     const runtimeSnapshot=await tx.get(runtimeDocument);
     const fenceSnapshot=await tx.get(fenceDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
@@ -711,24 +766,25 @@ async function writeRecoveryKey(input,claim,key,values,manifestDocument){
     const fence=fenceSnapshot.data()||{};
     const manifest=manifestSnapshot.data()||{};
     assertRecoveryRevision(runtimeSnapshot.data()||{},claim);
-    if(text(fence.recoveryLeaseId)!==claim.recoveryLeaseId||
-        text(fence.operationId)!==input.operationId||
-        Number(fence.resultingRevision||0)!==Number(claim.resultingRevision||0)||
-        leaseExpiry(fence.recoveryLeaseUntil)<=input.now.getTime()||
-        text(manifest.recoveryLeaseId)!==claim.recoveryLeaseId||manifest.recoveryState!=="processing"){
-      fail("failed-precondition");
-    }
-    if(claim.removedKeys.includes(key)){
-      deleteLegacyValue(tx,input,key,previous.exists?previous.data()||{}:null);
-    }else{
-      if(!Object.prototype.hasOwnProperty.call(values,key)) fail("failed-precondition");
-      writeLegacyValue(tx,input,key,values[key],previous.exists?previous.data()||{}:null);
-    }
+    if(!ownsLiveRecoveryLease(input,manifest,fence,claim,now)) fail("failed-precondition");
+    if(Object.prototype.hasOwnProperty.call(values,key)){
+      writeLegacyValue(tx,timedInput,key,values[key],previous.exists?previous.data()||{}:null);
+    }else deleteLegacyValue(tx,timedInput,key,previous.exists?previous.data()||{}:null);
+    const leaseUntil=renewedLeaseUntil(now);
+    tx.set(manifestDocument,{
+      ...manifest,recoveryLeaseUntil:leaseUntil,updatedAt:serverTime(timedInput),
+    },{merge:false});
+    tx.set(fenceDocument,{
+      ...fence,recoveryLeaseUntil:leaseUntil,updatedAt:serverTime(timedInput),
+    },{merge:false});
   });
 }
 
 async function applyV1Recovery(rawInput){
-  const input={...rawInput,now:normalizeNow(rawInput.now)};
+  const clock=typeof rawInput.clock==="function"?rawInput.clock:
+    (typeof rawInput.now==="function"?rawInput.now:()=>new Date());
+  const initialNow=typeof rawInput.now==="function"?rawInput.now():(rawInput.now??clock());
+  const input={...rawInput,clock,now:normalizeNow(initialNow)};
   if(!input.db||!BRANCH_IDS.includes(text(input.branchId))||!text(input.operationId)) fail("invalid-argument");
   const manifestDocument=mutationRef(input.db,input.branchId,input.operationId);
   const claim=await claimRecovery(input,manifestDocument);
@@ -739,11 +795,18 @@ async function applyV1Recovery(rawInput){
     return {operationId:input.operationId,recoveryState:text(snapshot.data()?.recoveryState)||"pending"};
   }
   input.manifest=claim;
+  input.heartbeat=()=>renewRecoveryLease(input,manifestDocument,claim);
   try{
-    const values=input.legacyValues||await input.resolveRecoveryValues(input);
+    await input.heartbeat();
+    const plannedValuesAreCurrent=
+      recoverySourceRevision(claim)===Number(claim.resultingRevision||0)&&plainObject(input.legacyValues);
+    const values=plannedValuesAreCurrent?input.legacyValues:await input.resolveRecoveryValues(input);
+    if(!plainObject(values)) fail("failed-precondition");
+    await input.heartbeat();
     for(const key of claim.keys){
       await writeRecoveryKey(input,claim,key,values,manifestDocument);
     }
+    await input.heartbeat();
     const recoveryState=await finishRecovery(input,manifestDocument,claim,"applied");
     return {operationId:input.operationId,recoveryState};
   }catch(error){
@@ -830,7 +893,7 @@ function createOperationalWriter(options={}){
     if(commitResult.recoveryState!=="pending") return commitResult;
     const recovery=await applyV1Recovery({
       db:options.db,branchId:request.branchId,operationId:request.operationId,
-      legacyValues:plan.legacyValues,resolveRecoveryValues,now:now(),serverTimestamp,
+      legacyValues:plan.legacyValues,resolveRecoveryValues,clock:now,now:now(),serverTimestamp,
     });
     return {...commitResult,recoveryState:recovery.recoveryState};
   }
@@ -850,7 +913,7 @@ function createOperationalWriter(options={}){
         }
         const result=await applyV1Recovery({
           db:options.db,branchId,operationId:manifest.operationId,
-          resolveRecoveryValues,now:recoveryNow,serverTimestamp,
+          resolveRecoveryValues,clock:now,now:recoveryNow,serverTimestamp,
         });
         if(result.recoveryState==="applied") summary.applied+=1;
         else if(result.recoveryState==="error") summary.error+=1;

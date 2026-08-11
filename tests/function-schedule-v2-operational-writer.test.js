@@ -67,6 +67,7 @@ class FakeFirestore{
     this.failTransactionAt=0;
     this.failLegacyTransactionAt=0;
     this.legacyTransactions=0;
+    this.afterTransaction=null;
   }
   collection(name){return new CollectionRef(this,String(name));}
   batch(){
@@ -108,6 +109,7 @@ class FakeFirestore{
       throw Object.assign(new Error("transaction interrupted"),{code:"unavailable"});
     }
     this.apply(operations);
+    if(typeof this.afterTransaction==="function") await this.afterTransaction(attempt);
     return result;
   }
   value(path){return clone(this.docs.get(path));}
@@ -123,11 +125,21 @@ const GENERATION="gen_1";
 function runtimePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operational`;}
 function manifestPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/operationalMutations/${operationId}`;}
 function recoveryFencePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operationalRecovery`;}
+function legacyPath(key,branchId=BRANCH){
+  return `scheduleStores/${branchId}/kv/${encodeURIComponent(key).replace(/\./g,"%2E")}`;
+}
 function generationPath(collection,id,branchId=BRANCH,generationId=GENERATION){
   return `scheduleV2/${branchId}/generations/${generationId}/${collection}/${id}`;
 }
 function runtime(overrides={}){
   return {branchId:BRANCH,mode:"v2-read",generationId:GENERATION,epoch:4,revision:31,...overrides};
+}
+function mutableClock(start=NOW){
+  let current=start.getTime();
+  return {
+    now:()=>new Date(current),
+    advance:milliseconds=>{current+=milliseconds;return new Date(current);},
+  };
 }
 function auth(email="developer@scswim.local",extra={}){
   return {auth:{uid:`uid:${email}`,token:{email,email_verified:true,...extra}}};
@@ -382,6 +394,28 @@ test("oversized V2 document IDs values and manifests fail before the first write
   }
 });
 
+test("a 1609-byte encoded legacy key is rejected before planning or any V2 write",async()=>{
+  const key=`swim_bt_attendance_${"a".repeat(1590)}`;
+  assert.equal(Buffer.byteLength(encodeURIComponent(key).replace(/\./g,"%2E"),"utf8"),1609);
+  const db=new FakeFirestore({[runtimePath()]:runtime()});
+  let planningCalls=0;
+  const writer=createWriter(db,{
+    deriveChanges:async()=>{
+      planningCalls+=1;
+      return {changes:[change("must-not-write")],collections:{},legacyValues:{[key]:{}}};
+    },
+  });
+
+  await assert.rejects(()=>writer.mutate(request({
+    operationId:"op_oversized_legacy_key",operationType:"attendance",
+    keys:[key],nextValues:{[key]:{}},
+  })),error=>error.code==="invalid-argument");
+  assert.equal(planningCalls,0);
+  assert.equal(db.transactions.length,0);
+  assert.equal(db.value(manifestPath("op_oversized_legacy_key")),undefined);
+  assert.equal(db.value(generationPath("placements","must-not-write")),undefined);
+});
+
 test("V1 mirror failure preserves the V2 commit and leaves recoverable redacted state",async()=>{
   const privateName="Private Student Name";
   const privatePhone="01012345678";
@@ -442,7 +476,7 @@ test("out-of-order recovery never applies an older revision over a newer branch 
   });
   const recover=operationId=>operational.applyV1Recovery({
     db,branchId:BRANCH,operationId,now:NOW,serverTimestamp:()=>"server-time",
-    resolveRecoveryValues:async()=>({swim_students:operationId}),
+    clock:()=>NOW,resolveRecoveryValues:async()=>({swim_students:"op_new"}),
   });
 
   assert.equal((await recover("op_new")).recoveryState,"applied");
@@ -452,6 +486,198 @@ test("out-of-order recovery never applies an older revision over a newer branch 
   assert.equal(db.value("scheduleStores/yongam/kv/swim_students").value,"op_new");
   assert.equal(db.value(manifestPath("op_old")).recoveryState,"superseded");
   assert.equal(db.value(recoveryFencePath()).appliedRevision,33);
+});
+
+test("a newer disjoint-key mirror does not discard older pending key coverage",async()=>{
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:33}),
+    [manifestPath("op_key_a_old")]:{
+      operationId:"op_key_a_old",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"error",recoveryAttempts:1,
+    },
+    [manifestPath("op_key_b_new")]:{
+      operationId:"op_key_b_new",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:33,keys:["swim_mark"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const clock=mutableClock();
+  const recover=(operationId,values)=>operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,clock:clock.now,now:clock.now(),
+    serverTimestamp:()=>"server-time",resolveRecoveryValues:async()=>values,
+  });
+
+  assert.equal((await recover("op_key_b_new",{swim_mark:"B-current"})).recoveryState,"applied");
+  const older=await recover("op_key_a_old",{swim_students:"A-current"});
+
+  assert.equal(older.recoveryState,"superseded");
+  assert.equal(db.value(legacyPath("swim_students")).value,"A-current");
+  assert.equal(db.value(legacyPath("swim_mark")).value,"B-current");
+  assert.equal(db.value(manifestPath("op_key_a_old")).recoveryCoveredAtRevision,33);
+});
+
+test("overlapping older coverage is rebuilt from the current fenced V2 revision",async()=>{
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:33}),
+    [manifestPath("op_overlap_old")]:{
+      operationId:"op_overlap_old",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"error",recoveryAttempts:1,
+    },
+    [manifestPath("op_overlap_new")]:{
+      operationId:"op_overlap_new",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:33,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const clock=mutableClock();
+  const recover=(operationId,legacyValues)=>operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,clock:clock.now,now:clock.now(),
+    serverTimestamp:()=>"server-time",...(legacyValues?{legacyValues}:{}),
+    resolveRecoveryValues:async()=>({swim_students:"current-revision-value"}),
+  });
+  await recover("op_overlap_new");
+  const writesBeforeOlder=db.legacyTransactions;
+
+  const older=await recover("op_overlap_old",{swim_students:"stale-planned-value"});
+
+  assert.equal(older.recoveryState,"superseded");
+  assert.equal(db.legacyTransactions,writesBeforeOlder+1);
+  assert.equal(db.value(legacyPath("swim_students")).value,"current-revision-value");
+  assert.equal(db.value(manifestPath("op_overlap_old")).recoveryCoveredAtRevision,33);
+});
+
+test("multi-key partial failure retries every uncovered key from the current revision",async()=>{
+  const oldOperation="op_partial_old";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath(oldOperation)]:{
+      operationId:oldOperation,branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students","swim_mark"],removedKeys:[],
+      recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const clock=mutableClock();
+  db.failLegacyTransactionAt=2;
+  const first=await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId:oldOperation,clock:clock.now,now:clock.now(),
+    serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"A-old",swim_mark:"B-old"}),
+  });
+  assert.equal(first.recoveryState,"error");
+  assert.equal(db.value(legacyPath("swim_students")).value,"A-old");
+  assert.equal(db.value(legacyPath("swim_mark")),undefined);
+
+  db.failLegacyTransactionAt=0;
+  db.docs.set(runtimePath(),runtime({revision:33}));
+  db.docs.set(manifestPath("op_partial_new"),{
+    operationId:"op_partial_new",branchId:BRANCH,generationId:GENERATION,status:"committed",
+    resultingRevision:33,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+  });
+  await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId:"op_partial_new",clock:clock.now,now:clock.now(),
+    serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"A-current"}),
+  });
+
+  const retried=await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId:oldOperation,clock:clock.now,now:clock.now(),
+    serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"A-current",swim_mark:"B-current"}),
+  });
+  assert.equal(retried.recoveryState,"superseded");
+  assert.equal(db.value(legacyPath("swim_students")).value,"A-current");
+  assert.equal(db.value(legacyPath("swim_mark")).value,"B-current");
+  assert.equal(db.value(manifestPath(oldOperation)).recoveryCoveredAtRevision,33);
+});
+
+test("a live worker renews both leases and cannot be reclaimed after the original expiry",async()=>{
+  const operationId="op_live_lease";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath(operationId)]:{
+      operationId,branchId:BRANCH,generationId:GENERATION,status:"committed",resultingRevision:32,
+      keys:["swim_students","swim_mark"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const clock=mutableClock();
+  let releaseFirstKey;
+  let firstKeyReached;
+  const firstKey=new Promise(resolve=>{firstKeyReached=resolve;});
+  const waitForRelease=new Promise(resolve=>{releaseFirstKey=resolve;});
+  let paused=false;
+  db.afterTransaction=async attempt=>{
+    if(!paused&&attempt.operations.some(operation=>operation.ref.path.startsWith("scheduleStores/"))){
+      paused=true;
+      firstKeyReached();
+      await waitForRelease;
+    }
+  };
+  const firstPromise=operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,clock:clock.now,now:clock.now(),serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>{
+      clock.advance(3*60*1000);
+      return {swim_students:"worker",swim_mark:"worker"};
+    },
+  });
+  await firstKey;
+  assert.equal(Date.parse(db.value(manifestPath(operationId)).recoveryLeaseUntil),NOW.getTime()+7*60*1000);
+  assert.equal(Date.parse(db.value(recoveryFencePath()).recoveryLeaseUntil),NOW.getTime()+7*60*1000);
+  clock.advance(2*60*1000);
+
+  const contender=await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,clock:clock.now,now:clock.now(),serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"intruder",swim_mark:"intruder"}),
+  });
+  releaseFirstKey();
+  const firstResult=await firstPromise;
+
+  assert.equal(contender.recoveryState,"processing");
+  assert.equal(firstResult.recoveryState,"applied");
+  assert.equal(db.value(legacyPath("swim_students")).value,"worker");
+  assert.equal(db.value(legacyPath("swim_mark")).value,"worker");
+  const renewalTransactions=db.transactions.filter(attempt=>{
+    const paths=attempt.operations.map(operation=>operation.ref.path);
+    return paths.includes(manifestPath(operationId))&&paths.includes(recoveryFencePath())&&
+      attempt.operations.some(operation=>operation.value?.recoveryState==="processing"&&operation.value?.recoveryLeaseUntil);
+  });
+  assert.ok(renewalTransactions.length>=4);
+});
+
+test("lease ownership loss aborts remaining keys and finalization without stale writes",async()=>{
+  const operationId="op_lost_lease";
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath(operationId)]:{
+      operationId,branchId:BRANCH,generationId:GENERATION,status:"committed",resultingRevision:32,
+      keys:["swim_students","swim_mark"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const clock=mutableClock();
+  let replaced=false;
+  db.afterTransaction=async attempt=>{
+    if(replaced||!attempt.operations.some(operation=>operation.ref.path.startsWith("scheduleStores/"))) return;
+    replaced=true;
+    const leaseUntil=new Date(clock.now().getTime()+4*60*1000).toISOString();
+    db.docs.set(manifestPath(operationId),{
+      ...db.value(manifestPath(operationId)),recoveryState:"processing",
+      recoveryLeaseId:"replacement-lease",recoveryLeaseUntil:leaseUntil,
+    });
+    db.docs.set(recoveryFencePath(),{
+      ...db.value(recoveryFencePath()),operationId,recoveryLeaseId:"replacement-lease",
+      recoveryLeaseUntil:leaseUntil,
+    });
+  };
+
+  const result=await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,clock:clock.now,now:clock.now(),serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"first",swim_mark:"must-not-write"}),
+  });
+
+  assert.equal(result.recoveryState,"processing");
+  assert.equal(db.value(legacyPath("swim_students")).value,"first");
+  assert.equal(db.value(legacyPath("swim_mark")),undefined);
+  const manifest=db.value(manifestPath(operationId));
+  assert.equal(manifest.recoveryLeaseId,"replacement-lease");
+  assert.equal(manifest.recoveryState,"processing");
+  assert.equal(manifest.recoveryAppliedAt,undefined);
 });
 
 test("a concurrent stale recovery revalidates the runtime before any V1 write or finalize",async()=>{

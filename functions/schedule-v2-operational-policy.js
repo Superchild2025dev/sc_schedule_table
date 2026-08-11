@@ -16,6 +16,7 @@ const ACCOUNT_BY_EMAIL=new Map((permissionManifest.accounts||[]).map(account=>[
 const TEACHER_EXACT_KEYS=new Set(permissionManifest.teacherWritableExactKeys||[]);
 const TEACHER_PATTERNS=(permissionManifest.teacherWritablePatterns||[]).map(pattern=>new RegExp(pattern));
 const MAX_KEYS=64;
+const MAX_DOCUMENT_ID_BYTES=1500;
 const MAX_REQUEST_BYTES=8*1024*1024;
 const MAX_VALUE_BYTES=6*1024*1024;
 const SAFE_ERROR_CODES=new Set([
@@ -98,6 +99,10 @@ function jsonBytes(value){
   catch(error){fail("invalid-argument");}
 }
 
+function encodedDocumentIdBytes(value){
+  return Buffer.byteLength(encodeURIComponent(value).replace(/\./g,"%2E"),"utf8");
+}
+
 function keyFamily(key){
   if(key==="swim_tab_list") return "tabs";
   if(key==="swim_students"||/^swim_stu_[A-Za-z0-9_-]+$/.test(key)||/^swim_bt_[A-Za-z0-9_-]+_stu$/.test(key)) return "student-roster";
@@ -142,6 +147,7 @@ function validateMutationRequest(input){
   const keys=input.keys.map(key=>text(key));
   const keySet=new Set(keys);
   if(keySet.size!==keys.length||keys.some(key=>!key||!model.domainForLegacyKey(key))) fail("invalid-argument");
+  if(keys.some(key=>encodedDocumentIdBytes(key)>MAX_DOCUMENT_ID_BYTES)) fail("invalid-argument");
   if(keys.some(key=>!operationRule.families.has(keyFamily(key)))) fail("invalid-argument");
   const removedKeys=input.removedKeys.map(key=>text(key));
   if(new Set(removedKeys).size!==removedKeys.length||removedKeys.some(key=>!keySet.has(key))) fail("invalid-argument");
