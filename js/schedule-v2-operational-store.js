@@ -108,6 +108,18 @@
     if(dateRange.end&&date>dateRange.end) return false;
     return true;
   }
+  function mutationAttendanceSelection(selection,model){
+    const attendanceKeys=selection.keys.filter(key=>model.domainForLegacyKey(key)==='attendance');
+    const dailyDates=attendanceKeys.map(key=>{
+      const match=key.match(/^zz_swim_day_snapshot__(?:regular|bt_[A-Za-z0-9_-]+)__(\d{4}-\d{2}-\d{2})$/);
+      return match?match[1]:'';
+    }).filter(Boolean);
+    const hasBundledKey=attendanceKeys.some(key=>!/^zz_swim_day_snapshot__/.test(key));
+    return {
+      ...selection,
+      dateRange:hasBundledKey||!dailyDates.length?null:{start:'',end:'',dates:unique(dailyDates)},
+    };
+  }
   function rosterKeysForTab(tab){
     const id=text(tab?.id)||'regular';
     if(tab?.type==='bangteuk') return [`swim_bt_${id}_stu`,`swim_bt_${id}_inst`];
@@ -302,7 +314,9 @@
           const sharedCollections=selection.keys.flatMap(key=>SHARED_KEY_COLLECTIONS[key]||[]);
           if(sharedCollections.length) tasks.push(readCollections(ref,sharedCollections,collections));
           if(selection.keys.some(key=>model.domainForLegacyKey(key)==='attendance')){
-            tasks.push(readAttendance(ref,{...selection,tabIds:selectedTabs},collections));
+            tasks.push(readAttendance(ref,{
+              ...mutationAttendanceSelection(selection,model),tabIds:selectedTabs,
+            },collections));
           }
         }else{
           if(selection.domains.includes('roster')) tasks.push(readRoster(ref,selection,collections));
@@ -360,27 +374,56 @@
           &&!['pending','processing','running'].includes(state.status);
         const advanced=input.requireShadowAdvance!==true||state.requestedRevision>baseline;
         if(settled&&advanced){
-          if(state.mismatchCount) fail('v2-operational-shadow-mismatch','V2 그림자 데이터가 일치하지 않습니다.');
           return state;
         }
         if(Date.now()-started>=verifyTimeoutMs) fail('v2-operational-shadow-timeout','V2 그림자 동기화를 기다리는 시간이 초과되었습니다.');
         await sleep(verifyPollMs);
       }
     }
-    async function verifyParity(input={}){
-      const selection=normalizeSelection(input.selection||input,model);
-      await waitForShadow(input);
-      const values=object(input.values)?input.values:{};
-      const keys=unique(input.keys?.length?input.keys:selection.keys);
+    async function parityMismatches(selection,keys,values,config){
       const loaded=keys.length
-        ?await loadMutation({...selection,keys,config:input.config})
-        :await loadSelection({...selection,config:input.config});
+        ?await loadMutation({...selection,keys,config})
+        :await loadSelection({...selection,config});
       const comparedKeys=keys.length?keys:Object.keys(loaded.root);
       const mismatched=comparedKeys.filter(key=>
         model.canonicalDigest(parseLegacyValue(values[key]))!==model.canonicalDigest(parseLegacyValue(loaded.root[key]))
       );
-      if(mismatched.length) fail('v2-operational-parity-mismatch','V1과 V2 운영 데이터가 일치하지 않습니다.');
-      return {matches:true,keyCount:comparedKeys.length};
+      return {mismatched,keyCount:comparedKeys.length};
+    }
+    async function verifyParity(input={}){
+      const selection=normalizeSelection(input.selection||input,model);
+      const values=object(input.values)?input.values:{};
+      const keys=unique(input.keys?.length?input.keys:selection.keys);
+      if(input.requireShadowAdvance!==true){
+        await waitForShadow(input);
+        const compared=await parityMismatches(selection,keys,values,input.config);
+        if(compared.mismatched.length) fail('v2-operational-parity-mismatch','V1과 V2 운영 데이터가 일치하지 않습니다.');
+        return {matches:true,keyCount:compared.keyCount};
+      }
+
+      const started=Date.now();
+      const baseline=Math.max(0,Number(input.afterShadowRevision)||0);
+      let sawAdvancedSettled=false;
+      let lastCheckedState='';
+      while(true){
+        const state=await readShadowState();
+        const settled=state.appliedRevision>=state.requestedRevision
+          &&state.pendingKeys.length===0&&state.inFlightKeys.length===0
+          &&!['pending','processing','running'].includes(state.status);
+        const advanced=state.requestedRevision>baseline;
+        const stateSignature=[state.status,state.requestedRevision,state.appliedRevision,state.pendingKeys.join(','),state.inFlightKeys.join(',')].join('|');
+        if(settled&&advanced&&stateSignature!==lastCheckedState){
+          sawAdvancedSettled=true;
+          lastCheckedState=stateSignature;
+          const compared=await parityMismatches(selection,keys,values,input.config);
+          if(!compared.mismatched.length) return {matches:true,keyCount:compared.keyCount};
+        }
+        if(Date.now()-started>=verifyTimeoutMs){
+          if(sawAdvancedSettled) fail('v2-operational-parity-mismatch','V1과 V2 운영 데이터가 일치하지 않습니다.');
+          fail('v2-operational-shadow-timeout','V2 그림자 동기화를 기다리는 시간이 초과되었습니다.');
+        }
+        await sleep(verifyPollMs);
+      }
     }
     function invalidate(){ selectionVersion+=1; }
     function diagnostics(limit){

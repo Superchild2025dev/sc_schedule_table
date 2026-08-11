@@ -5,6 +5,7 @@ const path=require('node:path');
 require(path.join(__dirname,'..','js','schedule-v2-operational-model.js'));
 const model=globalThis.SCV2OperationalModel;
 const storeApi=require(path.join(__dirname,'..','js','schedule-v2-operational-store.js'));
+const gatewayApi=require(path.join(__dirname,'..','js','schedule-operational-gateway.js'));
 
 function plain(value){ return JSON.parse(JSON.stringify(value)); }
 function deferred(){
@@ -99,6 +100,7 @@ function createFirestore(input={}){
   };
   const shadowRef={
     async get(){
+      if(typeof input.onShadowRead==='function') input.onShadowRead(shadowReads+1,rows);
       const state=shadowStates[Math.min(shadowReads,shadowStates.length-1)];
       shadowReads+=1;
       return {id:'scheduleSync',exists:true,data:()=>plain(state)};
@@ -148,23 +150,26 @@ function selectedFixture(){
       {id:'m_regular',tabId:'regular',legacyKey:'regular-mark',layer:'primary',payload:{color:'blue'}},
       {id:'m_camp',tabId:'camp',legacyKey:'camp-mark',layer:'primary',payload:{color:'red'}},
     ],
-    attendanceRecords:[{
-      id:'a_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',
-      personId:'p_0',enrollmentId:'e_0',legacyKey:'att-1',payload:{state:'present'},
-    }],
-    attendanceGuests:[{
-      id:'g_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',
-      legacyKey:'guest-1',order:0,payload:{name:'게스트'},
-    }],
-    attendanceSnapshots:[{
-      id:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',createdAt:'2026-08-11T01:00:00.000Z',
-    }],
-    attendanceSnapshotStudents:[{
-      id:'snap_student',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',order:0,payload:{name:'기록 원생'},
-    }],
-    attendanceSnapshotTeachers:[{
-      id:'snap_teacher',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',slotKey:'월-1',payload:'김강사',
-    }],
+    attendanceRecords:[
+      {id:'a_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',personId:'p_0',enrollmentId:'e_0',legacyKey:'att-1',payload:{state:'present'}},
+      {id:'a_regular_b',tabId:'regular',courseType:'regular',date:'2026-08-12',personId:'p_1',enrollmentId:'e_1',legacyKey:'att-2',payload:{state:'late'}},
+    ],
+    attendanceGuests:[
+      {id:'g_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',legacyKey:'guest-1',order:0,payload:{name:'게스트'}},
+      {id:'g_regular_b',tabId:'regular',courseType:'regular',date:'2026-08-12',legacyKey:'guest-2',order:0,payload:{name:'다음 날 게스트'}},
+    ],
+    attendanceSnapshots:[
+      {id:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',createdAt:'2026-08-11T01:00:00.000Z'},
+      {id:'snap_regular_b',tabId:'regular',courseType:'regular',date:'2026-08-12',createdAt:'2026-08-12T01:00:00.000Z'},
+    ],
+    attendanceSnapshotStudents:[
+      {id:'snap_student',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',order:0,payload:{name:'기록 원생'}},
+      {id:'snap_student_b',snapshotId:'snap_regular_b',tabId:'regular',courseType:'regular',date:'2026-08-12',order:0,payload:{name:'다음 날 원생'}},
+    ],
+    attendanceSnapshotTeachers:[
+      {id:'snap_teacher',snapshotId:'snap_regular',tabId:'regular',courseType:'regular',date:'2026-08-11',slotKey:'월-1',payload:'김강사'},
+      {id:'snap_teacher_b',snapshotId:'snap_regular_b',tabId:'regular',courseType:'regular',date:'2026-08-12',slotKey:'화-1',payload:'이강사'},
+    ],
     disabledSlots:[
       {id:'d_regular',legacyKey:'regular-disabled',tabId:'regular',payload:{disabled:true}},
       {id:'d_camp',legacyKey:'camp-disabled',tabId:'camp',payload:{disabled:true}},
@@ -280,6 +285,60 @@ test('attendance-only reads use selected tab metadata without widening person or
   assert.equal(JSON.parse(loaded.root.swim_day_snapshot)['2026-08-11'].students[0].name,'기록 원생');
 });
 
+test('bundled attendance mutation ignores a display date range and preserves every backing date in the callable payload',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const requests=[];
+  const legacyRoot={
+    async once(){ return {val:()=>({})}; },
+    async transactionKeys(){ throw new Error('V1 write is not expected'); },
+  };
+  const gateway=gatewayApi.create({
+    branchId:'yongam',legacyRoot,v2Store:store,model,makeOperationId:()=> 'attendance_op_1',
+    async mutate(request){
+      requests.push(plain(request));
+      return {operationId:request.operationId,committed:true,revision:request.beforeRevision+1,recoveryState:'applied'};
+    },
+  });
+
+  await gateway.transactionKeys(
+    ['swim_attendance','swim_att_guests','swim_day_snapshot'],
+    draft=>{
+      const records=JSON.parse(draft.swim_attendance);
+      records['att-1'].state='edited';
+      draft.swim_attendance=JSON.stringify(records);
+      const guests=JSON.parse(draft.swim_att_guests);
+      guests['guest-1'][0].name='수정 게스트';
+      draft.swim_att_guests=JSON.stringify(guests);
+      const snapshots=JSON.parse(draft.swim_day_snapshot);
+      snapshots['2026-08-11'].students[0].name='수정 원생';
+      draft.swim_day_snapshot=JSON.stringify(snapshots);
+      return draft;
+    },
+    {operationType:'edit-attendance',tabIds:['regular'],dateRange:{dates:['2026-08-11']}},
+  );
+
+  assert.equal(requests.length,1);
+  const next=requests[0].nextValues;
+  assert.equal(JSON.parse(next.swim_attendance)['att-2'].state,'late');
+  assert.equal(JSON.parse(next.swim_att_guests)['guest-2'][0].name,'다음 날 게스트');
+  assert.equal(JSON.parse(next.swim_day_snapshot)['2026-08-12'].students[0].name,'다음 날 원생');
+  gateway.dispose();
+});
+
+test('an explicit daily snapshot mutation scopes itself to the date embedded in its key',async()=>{
+  const firestore=createFirestore({collections:selectedFixture()});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const key='zz_swim_day_snapshot__regular__2026-08-11';
+  const loaded=await store.loadMutation({
+    tabIds:['regular'],keys:[key],dateRange:{dates:['2026-08-12']},
+  });
+
+  assert.equal(JSON.parse(loaded.root[key]).students[0].name,'기록 원생');
+  assert.deepEqual(loaded.collections.attendanceSnapshots.map(row=>row.date),['2026-08-11']);
+  assert.deepEqual(loaded.collections.attendanceSnapshotStudents.map(row=>row.date),['2026-08-11']);
+});
+
 test('mutation loads complete shared values while keeping tab-owned roster values scoped',async()=>{
   const firestore=createFirestore({collections:selectedFixture()});
   const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
@@ -326,6 +385,23 @@ test('verify parity compares legacy JSON values canonically',async()=>{
   assert.equal(result.keyCount,1);
 });
 
+test('selected parity is not rejected by an unrelated global shadow mismatch count',async()=>{
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[{status:'idle',requestedRevision:8,appliedRevision:8,pendingKeys:[],inFlightKeys:[],mismatchCount:3}],
+    collections:selectedFixture(),
+  });
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+
+  const result=await store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'blue'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],
+  });
+
+  assert.equal(result.matches,true);
+});
+
 test('verify parity waits for delayed shadow completion before comparing selected keys',async()=>{
   const collections=selectedFixture();
   const firestore=createFirestore({
@@ -347,6 +423,95 @@ test('verify parity waits for delayed shadow completion before comparing selecte
 
   assert.equal(result.matches,true);
   assert.ok(firestore.shadowReads>=2);
+});
+
+test('an unrelated settled shadow revision cannot cause a premature mismatch before selected parity arrives',async()=>{
+  const collections=selectedFixture();
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[
+      {status:'idle',requestedRevision:9,appliedRevision:9,pendingKeys:[],inFlightKeys:[],mismatchCount:0},
+      {status:'pending',requestedRevision:10,appliedRevision:9,pendingKeys:['swim_mark'],inFlightKeys:[],mismatchCount:0},
+      {status:'idle',requestedRevision:10,appliedRevision:10,pendingKeys:[],inFlightKeys:[],mismatchCount:0},
+    ],
+    collections,
+    onShadowRead(read,rows){
+      if(read===3) rows.classMarks.find(row=>row.id==='m_regular').payload.color='green';
+    },
+  });
+  const store=storeApi.create({
+    db:firestore.db,branchId:'yongam',model,verifyPollMs:1,verifyTimeoutMs:20,sleep:()=>new Promise(resolve=>setImmediate(resolve)),
+  });
+
+  const result=await store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'green'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],afterShadowRevision:8,requireShadowAdvance:true,
+  });
+
+  assert.equal(result.matches,true);
+  assert.ok(firestore.shadowReads>=3);
+});
+
+test('verify parity succeeds when the expected selected values appear after delayed shadow work',async()=>{
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[
+      {status:'pending',requestedRevision:9,appliedRevision:8,pendingKeys:['swim_mark'],inFlightKeys:[],mismatchCount:0},
+      {status:'idle',requestedRevision:9,appliedRevision:9,pendingKeys:[],inFlightKeys:[],mismatchCount:0},
+    ],
+    collections:selectedFixture(),
+    onShadowRead(read,rows){
+      if(read===2) rows.classMarks.find(row=>row.id==='m_regular').payload.color='green';
+    },
+  });
+  const store=storeApi.create({
+    db:firestore.db,branchId:'yongam',model,verifyPollMs:1,verifyTimeoutMs:20,sleep:()=>new Promise(resolve=>setImmediate(resolve)),
+  });
+
+  const result=await store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'green'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],afterShadowRevision:8,requireShadowAdvance:true,
+  });
+
+  assert.equal(result.matches,true);
+  assert.ok(firestore.shadowReads>=2);
+});
+
+test('verify parity reports bounded mismatch after advanced shadow work never reaches expected values',async()=>{
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[{status:'idle',requestedRevision:9,appliedRevision:9,pendingKeys:[],inFlightKeys:[],mismatchCount:0}],
+    collections:selectedFixture(),
+  });
+  const store=storeApi.create({
+    db:firestore.db,branchId:'yongam',model,verifyPollMs:1,verifyTimeoutMs:5,sleep:()=>new Promise(resolve=>setImmediate(resolve)),
+  });
+
+  await assert.rejects(store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'never'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],afterShadowRevision:8,requireShadowAdvance:true,
+  }),error=>error.code==='v2-operational-parity-mismatch');
+  assert.ok(firestore.shadowReads>=2);
+});
+
+test('verify parity reports a bounded shadow timeout when the local write never advances shadow state',async()=>{
+  const firestore=createFirestore({
+    runtime:{branchId:'yongam',mode:'verify',generationId:'gen_1',epoch:4,revision:31},
+    shadowStates:[{status:'idle',requestedRevision:8,appliedRevision:8,pendingKeys:[],inFlightKeys:[],mismatchCount:0}],
+    collections:selectedFixture(),
+  });
+  const store=storeApi.create({
+    db:firestore.db,branchId:'yongam',model,verifyPollMs:1,verifyTimeoutMs:5,sleep:()=>new Promise(resolve=>setImmediate(resolve)),
+  });
+
+  await assert.rejects(store.verifyParity({
+    selection:{tabIds:['regular'],domains:['workflow'],keys:['swim_mark']},
+    values:{swim_mark:JSON.stringify({'regular-mark':{color:'green'},'camp-mark':{color:'red'}})},
+    keys:['swim_mark'],afterShadowRevision:8,requireShadowAdvance:true,
+  }),error=>error.code==='v2-operational-shadow-timeout');
 });
 
 test('verify parity reports a true selected projection mismatch after shadow settles',async()=>{

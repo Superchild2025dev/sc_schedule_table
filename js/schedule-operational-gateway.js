@@ -349,15 +349,22 @@
       if(V1_MODES.has(config.mode)){
         const selection=selectionForKeys(keys,meta);
         let shadowState=null;
+        let transactionBefore=null;
+        const trackedMutator=current=>{
+          transactionBefore=clone(object(current)?current:{});
+          return mutator(current);
+        };
         if(config.mode==='verify'){
           if(typeof v2Store.readShadowState!=='function') fail('v2-parity-unavailable','V2 일치 검증 기능을 사용할 수 없습니다.');
           shadowState=await v2Store.readShadowState();
         }
-        const result=await legacyRoot.transactionKeys(keys,mutator);
+        const result=await legacyRoot.transactionKeys(keys,config.mode==='verify'?trackedMutator:mutator);
         if(config.mode==='verify'&&result?.committed){
           const values=object(result.snapshot?.val?.())?result.snapshot.val():{};
+          const changed=model.changedLegacyKeys(transactionBefore||{},values,keys);
           await verify(values,selection,keys,{
-            afterShadowRevision:Math.max(0,Number(shadowState?.requestedRevision)||0),requireShadowAdvance:true,
+            afterShadowRevision:Math.max(0,Number(shadowState?.requestedRevision)||0),
+            requireShadowAdvance:changed.length>0,
           });
         }
         return result;

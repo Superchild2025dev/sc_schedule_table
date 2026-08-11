@@ -524,12 +524,31 @@ test('verify compares only the selected projection and passes the pre-write shad
     },
   });
   await env.root.loadSelection({tabIds:['regular'],domains:['roster'],keys:['swim_students']});
-  await env.root.transactionKeys(['swim_students'],draft=>draft,{operationType:'update-student',tabIds:['regular']});
+  await env.root.transactionKeys(['swim_students'],draft=>{
+    draft.swim_students=JSON.stringify([{id:'student-1',name:'changed'}]);
+    return draft;
+  },{operationType:'update-student',tabIds:['regular']});
 
   assert.deepEqual(env.parityInputs[0].keys,['swim_students']);
   assert.deepEqual(Object.keys(env.parityInputs[0].values),['swim_students']);
   assert.equal(env.parityInputs[1].afterShadowRevision,8);
   assert.equal(env.parityInputs[1].requireShadowAdvance,true);
+});
+
+test('a no-op verify transaction checks current parity without requiring a shadow revision advance',async()=>{
+  const env=createEnvironment('verify',{
+    legacyData:{swim_students:JSON.stringify([{id:'student-1'}])},
+    shadowState:{requestedRevision:8,appliedRevision:8,status:'idle'},
+  });
+
+  const result=await env.root.transactionKeys(
+    ['swim_students'],draft=>draft,{operationType:'update-student',tabIds:['regular']},
+  );
+
+  assert.equal(result.committed,true);
+  assert.equal(env.calls.parity,1);
+  assert.equal(env.parityInputs[0].requireShadowAdvance,false);
+  assert.equal(env.parityInputs[0].afterShadowRevision,8);
 });
 
 test('stopping a selected subscription before readiness prevents late V1 delegate creation',async()=>{

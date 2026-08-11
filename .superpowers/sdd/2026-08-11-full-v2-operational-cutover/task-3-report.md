@@ -208,3 +208,67 @@ git diff --cached --check
 ```
 
 No deployment, push, production-data access, or production mode change was performed.
+
+---
+
+## Second Independent Review Remediation
+
+Date: 2026-08-11
+
+The two remaining P1 findings were reproduced and fixed without changing the mode matrix, callable request contract, retry operation IDs, stale-response fences, SDK order, lifecycle behavior, diagnostics content, permissions, or production configuration.
+
+### Second Review RED Evidence
+
+Initial command:
+
+```powershell
+node --test --test-isolation=none tests/schedule-v2-operational-store.test.js tests/schedule-operational-gateway.test.js
+```
+
+Result before implementation: 40 tests total, 35 passed, 5 failed, 0 skipped.
+
+The five expected failures proved that:
+
+- a bundled attendance edit prepared from date A omitted date B from `swim_attendance`;
+- an explicit daily snapshot key incorrectly obeyed a conflicting caller `dateRange` instead of its embedded date;
+- a no-op verify transaction incorrectly required a shadow revision advance;
+- one unrelated settled shadow revision caused an immediate selected-parity mismatch;
+- a persistent mismatch was reported after one comparison instead of bounded polling.
+
+An additional selected-scope regression was then run independently:
+
+```powershell
+node --test --test-isolation=none --test-name-pattern="selected parity is not rejected" tests/schedule-v2-operational-store.test.js
+```
+
+Result before implementation: 1 test total, 0 passed, 1 failed. A matching selected projection was incorrectly rejected by an unrelated global `mismatchCount`.
+
+### Second Review Resolution
+
+1. Authoritative attendance mutation selection now distinguishes bundled and daily keys. Bundled record, guest, and snapshot keys ignore display `dateRange` and reconstruct the complete backing date scope for their exact owned tabs. Only `zz_swim_day_snapshot__...__YYYY-MM-DD` keys are scoped, and their date is derived from the key rather than caller display state.
+2. Verify mode captures the selected V1 values immediately before the existing mutator runs and compares them with the committed snapshot. No-op transactions verify current settled selected parity without requiring advancement. Changed transactions capture the pre-write shadow revision, then poll bounded settled states and compare authoritative selected values. An unrelated revision can trigger a comparison but cannot produce a verdict while expected selected values are absent; delayed matching parity succeeds, persistent advanced mismatch ends with `v2-operational-parity-mismatch`, and no advancement ends with `v2-operational-shadow-timeout`.
+3. Global shadow mismatch counts no longer override an equivalent selected projection. Verify verdicts remain scoped to the requested keys and contain no payload data in diagnostics.
+
+### Second Review GREEN Evidence
+
+Syntax and focused suite:
+
+```powershell
+node --check js/schedule-v2-operational-store.js
+node --check js/schedule-operational-gateway.js
+node --test --test-isolation=none tests/schedule-v2-operational-store.test.js tests/schedule-operational-gateway.test.js tests/schedule-v2-store.test.js
+```
+
+Result: both syntax checks exited 0. Focused tests: 48 total, 48 passed, 0 failed, 0 skipped.
+
+The new focused coverage includes a real store-plus-gateway two-date mutation proving that edits to date A preserve date B in callable `nextValues` for records, guests, and bundled snapshots; embedded daily-date selection; no-op verify; unrelated revision advancement; delayed expected selected parity; unrelated global mismatch state; bounded true mismatch; and bounded no-advance timeout.
+
+Complete unit regression:
+
+```powershell
+node --test --test-isolation=none tests/*.test.js
+```
+
+Result: 488 tests total, 486 passed, 0 failed, 2 skipped. The skips remain the existing Firestore rules emulator and Schedule V2 shadow emulator availability checks.
+
+No deployment, push, production-data access, or production mode change was performed.
