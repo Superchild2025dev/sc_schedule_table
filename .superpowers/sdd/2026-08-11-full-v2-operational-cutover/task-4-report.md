@@ -362,3 +362,61 @@ Result: exit 0. Git emitted only the repository's LF-to-CRLF checkout notices.
 - Operations: active candidates exclude exhausted and terminal errors, pagination is ordered and bounded, terminal retention is cleanup- and TTL-compatible, all queue states are countable, and request recovery scheduling is isolated from mirror failures.
 - Compatibility: the Task 2 mutation callable body remains unchanged. Staff startup draining, V2 startup scoping, V1 rollback recovery, no-V1-fallback authority, lazy attendance/history, cache and stale-response protections, settings sequencing, and the single `_scheduleWrites` boundary remain covered by the focused and full suites.
 - Scope: this round changes only the functions entry point, operational policy/writer modules, the desk boundary adapter, four direct/integration test files, and this report. Parent, referral, voice, permissions, Korean UX, production mode, deployment, push, and production access remain untouched.
+
+## Fourth Review Remediation - Firestore Recovery Query Indexes
+
+### Status
+
+FIXED
+
+### RED Evidence
+
+The static index regression was added before the index definitions and run with:
+
+```powershell
+node --test --test-isolation=none tests/firestore-indexes.test.js
+```
+
+Result: 1 test total, 0 passed, 1 failed. The assertion reported zero exact matches for the required `requestRecoveries` collection-scope index with `state ASC` followed by `updatedAt ASC`.
+
+### GREEN Evidence
+
+The same static regression was rerun after adding the two definitions:
+
+```powershell
+node --test --test-isolation=none tests/firestore-indexes.test.js
+```
+
+Result: 1 test total, 1 passed, 0 failed, 0 skipped.
+
+The static configuration proof and relevant request-recovery function suites were run together:
+
+```powershell
+node --test --test-isolation=none tests/firestore-indexes.test.js tests/firestore-rules-security.test.js tests/function-schedule-v2-operational-writer.test.js tests/function-schedule-v2-operational-api.test.js
+```
+
+Result: 57 tests total, 57 passed, 0 failed, 0 skipped.
+
+The Firebase JSON files were parsed independently and their deployment shape was checked:
+
+```powershell
+node -e "const fs=require('node:fs'); const firebase=JSON.parse(fs.readFileSync('firebase.json','utf8')); const indexes=JSON.parse(fs.readFileSync('firestore.indexes.json','utf8')); if(firebase.firestore?.indexes!=='firestore.indexes.json'||!Array.isArray(indexes.indexes)||!Array.isArray(indexes.fieldOverrides)) process.exit(1); console.log('firebase.json and firestore.indexes.json parsed; index configuration shape valid')"
+```
+
+Result: exit 0 with both files parsed and the index configuration shape accepted.
+
+The full unit regression was run:
+
+```powershell
+$tests = Get-ChildItem tests -Filter *.test.js | ForEach-Object { $_.FullName }
+node --test --test-isolation=none $tests
+```
+
+Result: 538 tests total, 536 passed, 0 failed, 2 skipped. The skips remain the existing Firestore rules and Schedule V2 shadow emulator availability checks.
+
+### Implementation and Deployment Notes
+
+- `firestore.indexes.json` now declares exactly one collection-scope `requestRecoveries` composite for `state ASC, updatedAt ASC` and exactly one for `state ASC, expiresAt ASC`.
+- The static test parses the checked-in JSON, verifies the exact collection group, `COLLECTION` query scope, and ordered fields, and rejects equivalent duplicate index signatures.
+- `firebase.json` already referenced `firestore.indexes.json`, so it was not changed. Firestore rules and request-recovery logic were not changed.
+- Deployment order is mandatory: deploy the Firestore indexes first, wait until both new indexes report `READY`, and only then deploy functions that execute these recovery queries. No deployment, mode change, push, production access, or production data operation was performed.
