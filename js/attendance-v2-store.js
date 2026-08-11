@@ -139,6 +139,11 @@
       if(!ATTENDANCE_COLLECTIONS.includes(name)) throw new Error('허용되지 않은 V2 출석 컬렉션입니다.');
       return generationRef(generationId).collection(name);
     }
+    function attendanceOwnerQuery(collection,tabId,courseType){
+      return text(courseType)==='regular'
+        ?collection.where('courseType','==','regular')
+        :collection.where('tabId','==',tabId);
+    }
     async function readConfig(){
       const [operationalSnapshot,attendanceSnapshot]=await Promise.all([
         operationalConfigRef.get(),attendanceConfigRef.get(),
@@ -198,19 +203,26 @@
       const generationId=requireGeneration(input?.generationId);
       const tabId=text(input?.tabId);
       if(!tabId) throw new Error('출석 시간표 탭이 필요합니다.');
+      const courseType=text(input?.courseType)||(tabId==='regular'?'regular':'bangteuk');
       const dates=rangeDates(input?.dates);
-      const read=name=>collectionRef(generationId,name)
-        .where('tabId','==',tabId).where('date','in',dates).get();
+      const read=async name=>{
+        let query=attendanceOwnerQuery(collectionRef(generationId,name),tabId,courseType);
+        if(courseType!=='regular') query=query.where('date','in',dates);
+        return query.get();
+      };
       const [recordSnapshot,guestSnapshot]=await Promise.all([
         read('attendanceRecords'),read('attendanceGuests'),
       ]);
-      const records=snapshotRows(recordSnapshot);
-      const guests=snapshotRows(guestSnapshot);
+      const selected=new Set(dates);
+      const records=snapshotRows(recordSnapshot).filter(row=>selected.has(text(row.date)));
+      const guests=snapshotRows(guestSnapshot).filter(row=>selected.has(text(row.date)));
       return {branchId,generationId,tabId,dates:dates.slice(),records,guests,maps:model().mapsFromRows(records,guests)};
     }
-    async function readWholeMap(kind,tabId,generationId){
+    async function readWholeMap(kind,tabId,courseType,generationId){
       const collection=kind==='attendance'?'attendanceRecords':'attendanceGuests';
-      const rows=snapshotRows(await collectionRef(generationId,collection).where('tabId','==',tabId).get());
+      const rows=snapshotRows(await attendanceOwnerQuery(
+        collectionRef(generationId,collection),tabId,courseType,
+      ).get());
       const maps=model().mapsFromRows(kind==='attendance'?rows:[],kind==='guests'?rows:[]);
       if(maps.issues?.length) throw Object.assign(new Error('V2 출석 데이터 형식을 확인할 수 없습니다.'),{code:'invalid-attendance-data'});
       return clone(kind==='attendance'?maps.attendance:maps.guests);
@@ -257,7 +269,7 @@
       const tabId=text(input?.tabId);
       const courseType=text(input?.courseType);
       const key=storageKey(kind,tabId,courseType);
-      const fullMap=await readWholeMap(kind,tabId,latest.generationId);
+      const fullMap=await readWholeMap(kind,tabId,courseType,latest.generationId);
       const nextMap=applyVisibleChanges(fullMap,input?.before,input?.after);
       const id=text(input?.operationId)||defaultOperationId();
       const operationType=text(input?.operationType)||(

@@ -109,3 +109,41 @@ Result: exit 0.
 ## Residual Note
 
 The full regression retains the two pre-existing emulator availability skips. No Task 5 focused test or syntax check is skipped.
+
+## Review Fixes: Findings 1, 3, 4, and 5
+
+Finding 2 remains parked by user direction. The inactive parent portal, parent API, and notifications were not modified.
+
+Review-fix files: `index.html`, `teacher.html`, `js/attendance-v2-store.js`, `js/attendance-operational-gateway.js`, `js/attendance-main-runtime.js`, `js/attendance-snapshot-writer.js`, `js/mark-map-transaction.js`, `js/data.js`, `js/teacher.js`, `js/popup-stu.js`, `js/table.js`, `tests/attendance-v2-store.test.js`, `tests/attendance-v2-main-integration.test.js`, `tests/attendance-snapshot-writer.test.js`, and `tests/mark-map-transaction.test.js`.
+
+### Review RED Evidence
+
+- Shared regular ownership: `tests/attendance-v2-store.test.js` ran 12 tests with 10 passing and 2 expected failures. The strict request omitted the archived regular row, and a regular range query returned only the selected regular tab.
+- Snapshot caller migration: the new direct service test initially failed because `js/attendance-snapshot-writer.js` did not exist. A later caller-level RED caught both main and teacher debounce functions updating `DAY_SNAPSHOT` before authoritative completion.
+- Attendance response fencing: `tests/attendance-v2-main-integration.test.js` ran 12 tests with 10 passing and 2 expected failures. Deferred successes from an older date/tab and an older branch replaced newer visible state instead of rejecting.
+- Main mark commit fencing: the new direct transaction test initially failed because `js/mark-map-transaction.js` did not exist. Source and caller tests also captured eager `MARK_MAP` mutation and immediate success rendering before transaction completion.
+
+### Review GREEN Evidence
+
+Syntax checks covered the five attendance/mark modules plus `data.js`, `teacher.js`, `popup-stu.js`, and `table.js`; every check exited 0.
+
+The expanded focused command covered store, gateway, main runtime, teacher integration, operational scenarios, snapshots, marks, and the operational reader. Result: 91 tests passed, 0 failed, 0 skipped.
+
+The final full unit regression reported 562 tests total, 560 passed, 0 failed, and the same 2 pre-existing emulator availability skips.
+
+### Review Implementation Notes
+
+- Regular attendance and guests now resolve their shared backing owner through `courseType=regular`, load rows across current and archived regular tab IDs, and serialize the complete shared map before applying a visible patch. Bangteuk remains exact-tab scoped and uses its separate keys.
+- `SCAttendanceSnapshotWriter` is the single create-only day snapshot service used by main and teacher callers. It performs an authoritative existence read, derives a deterministic opaque operation ID from branch/scope/date plus a creation digest, awaits `attendance-snapshot` completion, and updates cache only after success.
+- Main and teacher snapshot retries reuse the same operation ID for the same creation. Historical snapshot edits and deletes now fail with `attendance-snapshot-immutable`; the old success copy and write calls were removed.
+- Attendance individual, guest, and batch responses are fenced by owner, tab, date range, branch, generation, epoch, and revision. A newer same-owner load supersedes the response across runtime instances, including branch changes; stale success refreshes the latest authoritative owner and never calls the old `setMaps`.
+- Main mark helpers no longer mutate `MARK_MAP` before a transaction. `SCMarkMapTransaction` applies only the committed snapshot, rejects superseded responses, refreshes after stale completion, and leaves visible state unchanged for stale, permission, or network failures.
+- Absence confirmation/cancel, regular makeup/cancel, sample, and mandatory-makeup popup callers await commit before rendering or success copy and pass their configured strict operation types.
+
+### Review Self-Review
+
+- Shared ownership: current regular and archived regular records survive a regular patch; bangteuk records are excluded from the shared request and remain tab isolated.
+- Snapshot ordering: browser callers perform no pre-commit cache assignment; server header/children fencing and completion-last behavior remain covered by the existing interruption/resume tests.
+- Context races: individual, guest, batch, newer range/tab, and cross-branch deferred responses have direct tests.
+- Mark state: failure and stale-response tests assert the prior/newer map remains visible, and real absence and mandatory-makeup callers render no success after rejection.
+- Scope: `git diff --name-only` contains no parent, notification, referral, or voice files. No permission, fallback, pointer, production, deploy, push, or mode changes were made.

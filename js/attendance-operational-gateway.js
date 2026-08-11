@@ -87,6 +87,14 @@
       try{return await readyPromise;}catch(error){readyPromise=null;throw error;}
     }
     function mode(){ return config.mode; }
+    function context(input={}){
+      return {
+        owner:text(input.owner)||'attendance-main',tabId:text(input.tabId),
+        dateRange:(Array.isArray(input.dates)?input.dates:[]).map(text).filter(Boolean).sort(),
+        branchId,generationId:text(config.generationId),epoch:Number(config.epoch)||0,
+        revision:Number(config.revision)||0,
+      };
+    }
     function beginRange(owner){
       const key=text(owner)||'attendance';
       const version=(rangeVersions.get(key)||0)+1;
@@ -222,7 +230,7 @@
           }
         }
         diagnostic({...base,outcome:degraded?'degraded':'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-        return {[outputField]:after,primary:'v1',degraded,changed};
+        return {[outputField]:after,primary:'v1',degraded,changed,context:context(input)};
       }
 
       const after=await applyMutator(before,mutator);
@@ -230,16 +238,17 @@
       const changed=diff.upserts.length+diff.deletes.length;
       if(!changed){
         diagnostic({...base,outcome:'ok',recordCount:0,durationMs:nowDate().getTime()-started});
-        return {[outputField]:after,primary:'v2',degraded:false,changed:0};
+        return {[outputField]:after,primary:'v2',degraded:false,changed:0,context:context(input)};
       }
       try{
-        await v2Store.mutateMap({
+        const response=await v2Store.mutateMap({
           kind,tabId:text(input?.tabId),courseType:text(input?.courseType),before,after,
           operationId:text(input?.operationId)||operationId(),
           operationType:text(input?.operationType)||(
             kind==='guests'?'attendance-guest':(changed>1?'attendance-batch':'attendance-update')
           ),
         });
+        if(Number.isSafeInteger(Number(response?.revision))) config.revision=Number(response.revision);
       }catch(error){
         diagnostic({...base,outcome:error?.code?.startsWith?.('attendance-pointer-')?'pointer-mismatch':'v2-error',durationMs:nowDate().getTime()-started});
         if(error?.code==='attendance-pointer-mismatch'||error?.code==='attendance-pointer-missing') throw error;
@@ -248,7 +257,7 @@
         });
       }
       diagnostic({...base,outcome:'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-      return {[outputField]:after,primary:'v2',degraded:false,changed};
+      return {[outputField]:after,primary:'v2',degraded:false,changed,context:context(input)};
     }
     function updateAttendance(mutator,input){ return updateMap('attendance',mutator,input); }
     function updateGuests(mutator,input){ return updateMap('guests',mutator,input); }
@@ -265,6 +274,7 @@
     return Object.freeze({
       ready,
       mode,
+      context,
       loadRange,
       updateAttendance,
       updateGuests,

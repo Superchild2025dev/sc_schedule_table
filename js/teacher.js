@@ -458,30 +458,33 @@ function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')
 function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _teacherWrites.set('swim_requests',JSON.stringify(REQUESTS),{label:'요청 처리'}); }
 function saveAttendance(){ const key=teacherAttendanceStorageKeys().attendance; if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue(key,ATTENDANCE); return _teacherWrites.set(key,JSON.stringify(ATTENDANCE),{label:'출석 체크'}); }
 function saveAttGuests(){ const key=teacherAttendanceStorageKeys().attGuests; if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue(key,ATT_GUESTS); return _teacherWrites.set(key,JSON.stringify(ATT_GUESTS),{label:'출석부 추가'}); }
-function teacherSnapshotOperationId(ds,scope){
+let _teacherAttendanceSnapshotWriter=null;
+let _teacherAttendanceSnapshotWriterBranch='';
+function getTeacherAttendanceSnapshotWriter(){
   const branch=getBranchInfo();
-  return ['attendance_snapshot',branch?.id||'branch',scope||teacherDaySnapshotScope(),String(ds||'')]
-    .join('_').replace(/[^A-Za-z0-9_-]/g,'_').slice(0,128);
+  if(!branch||!window.SCAttendanceSnapshotWriter||!_teacherWrites||!_fb) return null;
+  if(_teacherAttendanceSnapshotWriter&&_teacherAttendanceSnapshotWriterBranch===branch.id){
+    return _teacherAttendanceSnapshotWriter;
+  }
+  _teacherAttendanceSnapshotWriter=SCAttendanceSnapshotWriter.create({
+    branchId:branch.id,
+    async read(key){ return (await _fb.child(key).once('value')).val(); },
+    write(key,value,meta){ return _teacherWrites.set(key,value,meta); },
+    normalize(value,key){ return normalizeStoredValue(key,value); },
+    cache(date,value,input){ cacheTeacherDaySnapshot(date,value,input?.scope); },
+  });
+  _teacherAttendanceSnapshotWriterBranch=branch.id;
+  return _teacherAttendanceSnapshotWriter;
 }
-async function saveDaySnapshot(ds){
+async function saveDaySnapshot(ds,snapshotValue){
   const date=String(ds||'');
-  const snapshot=DAY_SNAPSHOT[date];
+  const snapshot=snapshotValue||DAY_SNAPSHOT[date];
   const key=teacherDaySnapshotKey(date);
   if(!date||!snapshot) return Promise.resolve(false);
   if(!_canWriteTeacherKey(key,'출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다'));
-  const existing=parseStoredJSON(key,(await _fb.child(key).once('value')).val(),null);
-  if(isTeacherDaySnapshot(existing)){
-    if(JSON.stringify(existing)===JSON.stringify(snapshot)) return false;
-    throw Object.assign(new Error('이미 생성된 출석부 스냅샷은 변경할 수 없습니다.'),{
-      code:'attendance-snapshot-immutable',
-    });
-  }
-  const normalized=normalizeStoredValue(key,snapshot);
-  cacheTeacherDaySnapshot(date,normalized);
-  return _teacherWrites.set(key,JSON.stringify(normalized),{
-    label:'출석부 스냅샷',operationType:'attendance-snapshot',
-    operationId:teacherSnapshotOperationId(date),
-  });
+  const writer=getTeacherAttendanceSnapshotWriter();
+  if(!writer) throw new Error('출석부 스냅샷 저장 연결을 준비하지 못했습니다.');
+  return writer.createOnly({scope:teacherDaySnapshotScope(),date,snapshot});
 }
 function _updateLegacyTeacherAttendanceMapTx(mutator,input){
   const key=teacherAttendanceStorageKeys().attendance;
@@ -1537,6 +1540,7 @@ function teacherAttendanceOperationContext(){
   const storage=teacherAttendanceStorageKeys();
   const weekDates=getWeekDates(_attWeekStart||getMondayOf(new Date()));
   return {
+    owner:'attendance-teacher',
     tabId:storage.tabId,
     courseType:storage.courseType,
     dates:weekDates.map(item=>item.ds),
@@ -1585,12 +1589,12 @@ function ensureTodaySnapshot(){
     const existing=await ensureTeacherDaySnapshotLoaded(today);
     if(existing&&existing.date===today) return;
     if(scope!==teacherDaySnapshotScope()) return;
-    DAY_SNAPSHOT[today]={
+    const snapshot={
       date:today,
       students:JSON.parse(JSON.stringify(STUDENTS)),
       inst:JSON.parse(JSON.stringify(INST_MAP)),
     };
-    try{await saveDaySnapshot(today);}catch(e){console.warn('snapshot save failed',e);}
+    try{await saveDaySnapshot(today,snapshot);}catch(e){console.warn('snapshot save failed',e);}
   },500);
 }
 

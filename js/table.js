@@ -652,13 +652,11 @@ async function _saveEditModal(){
   if(!newName){toast('이름을 입력하세요','err');return;}
 
   if(usingSnapshot){
-    const arr=snapshot.students||[];
-    const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-    if(idx>=0){arr[idx].n=newName; arr[idx].a=newAge;}
-    else arr.push({n:newName, a:newAge, t, d, l:li, r:ri});
-    snapshot.students=arr;
-    saveDaySnapshot(ds,tabId,snapshot);
-    toast('과거 시간표 저장','ok');
+    const error=Object.assign(new Error('이미 생성된 출석부 스냅샷은 변경할 수 없습니다.'),{
+      code:'attendance-snapshot-immutable',
+    });
+    toast(error.message,'err');
+    return;
   } else {
     toast('운영 시간표 원생 수정은 시간표에서 해주세요','err');
     return;
@@ -671,23 +669,18 @@ async function _deleteEditModal(){
   if(window.SCAuth && !SCAuth.requirePermission('attendanceCheck','출석부 학생 삭제')) return;
   if(!requireAttendanceDataReady('출석부')) return;
   if(!_editModalCtx) return;
-  if(!confirm('이 학생을 삭제하시겠습니까?')) return;
   const {slotKey, usingSnapshot, snapshot, ds, tabId}=_editModalCtx;
-  const [t,d,l,r]=slotKey.split('/');
-  const li=parseInt(l), ri=parseInt(r);
   if(usingSnapshot){
-    const arr=snapshot.students||[];
-    const idx=arr.findIndex(s=>s.t===t&&s.d===d&&s.l===li&&s.r===ri);
-    if(idx>=0) arr.splice(idx,1);
-    snapshot.students=arr;
-    saveDaySnapshot(ds,tabId,snapshot);
-  } else {
-    toast('운영 시간표 원생 삭제는 시간표에서 해주세요','err');
+    const error=Object.assign(new Error('이미 생성된 출석부 스냅샷은 삭제할 수 없습니다.'),{
+      code:'attendance-snapshot-immutable',
+    });
+    toast(error.message,'err');
     return;
   }
-  _closeEditModal();
-  buildTable();
-  toast('삭제 완료','ok');
+  if(!confirm('이 학생을 삭제하시겠습니까?')) return;
+  const [t,d,l,r]=slotKey.split('/');
+  const li=parseInt(l), ri=parseInt(r);
+  toast('운영 시간표 원생 삭제는 시간표에서 해주세요','err');
 }
 
 function toggleAttendanceMode(){
@@ -1065,12 +1058,12 @@ function _ensureTodaySnapshot(){
       : DAY_SNAPSHOT[today];
     if(existing&&existing.date===today) return;
     if(activeTabId!==_activeTab) return;
-    DAY_SNAPSHOT[today]={
+    const snapshot={
       date:today,
       students:JSON.parse(JSON.stringify(STUDENTS)),
       inst:JSON.parse(JSON.stringify(INST_MAP)),
     };
-    try{saveDaySnapshot(today,targetTabId);}catch(e){console.warn('snapshot save failed',e);}
+    try{await saveDaySnapshot(today,targetTabId,snapshot);}catch(e){console.warn('snapshot save failed',e);}
   },500);
 }
 

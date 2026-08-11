@@ -3791,7 +3791,32 @@ function saveMove()     { saveJSON(STORAGE_KEYS.MOVE,     MOVE_MAP); }
 function saveRequests() { saveJSON(STORAGE_KEYS.REQUESTS, REQUESTS); }
 function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDANCE); }
 function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
-function saveDaySnapshot(ds,tabId,snapshotValue){
+let _mainAttendanceSnapshotWriter=null;
+let _mainAttendanceSnapshotWriterBranch='';
+function getMainAttendanceSnapshotWriter(){
+  const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
+  if(!branch||!window.SCAttendanceSnapshotWriter||!_scheduleWrites||!_fb) return null;
+  if(_mainAttendanceSnapshotWriter&&_mainAttendanceSnapshotWriterBranch===branch.id){
+    return _mainAttendanceSnapshotWriter;
+  }
+  _mainAttendanceSnapshotWriter=SCAttendanceSnapshotWriter.create({
+    branchId:branch.id,
+    async read(key){
+      const snapshot=await _fb.child(key).once('value');
+      return snapshot?.val?.()??null;
+    },
+    write(key,value,meta){ return _scheduleWrites.set(key,value,{...meta,originalKey:key}); },
+    normalize(value,key){ return normalizeStoredScheduleValue(key,value); },
+    cache(date,value,input){
+      if(typeof cacheAttendanceDaySnapshot==='function'){
+        cacheAttendanceDaySnapshot(input?.tabId,date,value);
+      }
+    },
+  });
+  _mainAttendanceSnapshotWriterBranch=branch.id;
+  return _mainAttendanceSnapshotWriter;
+}
+async function saveDaySnapshot(ds,tabId,snapshotValue){
   const date=String(ds||'');
   const snapshot=snapshotValue||DAY_SNAPSHOT[date];
   if(!date||!snapshot) return false;
@@ -3799,11 +3824,12 @@ function saveDaySnapshot(ds,tabId,snapshotValue){
     ? (typeof _tabById==='function'?_tabById(tabId):null)
     : (typeof getAttendanceBasisTabForDate==='function'?getAttendanceBasisTabForDate(date):null);
   const targetTabId=basisTab?.id||tabId||_activeTab;
-  if(typeof cacheAttendanceDaySnapshot==='function') cacheAttendanceDaySnapshot(targetTabId,date,snapshot);
-  const key=typeof getAttendanceDaySnapshotStorageKey==='function'
-    ? getAttendanceDaySnapshotStorageKey(targetTabId,date)
-    : _attendanceStorageKey('daySnapshot',targetTabId);
-  return saveJSON(key,snapshot);
+  const writer=getMainAttendanceSnapshotWriter();
+  if(!writer) throw new Error('출석부 스냅샷 저장 연결을 준비하지 못했습니다.');
+  const scope=typeof _attendanceDaySnapshotScope==='function'
+    ?_attendanceDaySnapshotScope(targetTabId)
+    :(basisTab?.type==='bangteuk'?'bt_'+targetTabId:'regular');
+  return writer.createOnly({scope,date,snapshot,tabId:targetTabId});
 }
 
 function _cacheJSONOnly(key,val){
@@ -4049,16 +4075,34 @@ function updateReserveMapTx(mutator){
 function updateHyuwonMapTx(mutator){
   return _txJSONMap(STORAGE_KEYS.休원,HYUWON_MAP,next=>{HYUWON_MAP=next;},mutator);
 }
-function updateMarkMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.MARK,MARK_MAP,next=>{MARK_MAP=next;},mutator);
+let _mainMarkMapTransaction=null;
+function getMainMarkMapTransaction(){
+  if(_mainMarkMapTransaction) return _mainMarkMapTransaction;
+  if(!window.SCMarkMapTransaction) throw new Error('마크 저장 연결을 준비하지 못했습니다.');
+  _mainMarkMapTransaction=SCMarkMapTransaction.create({
+    read(){ return MARK_MAP; },
+    transact(mutator,meta){
+      return _txJSONMap(STORAGE_KEYS.MARK,MARK_MAP,()=>{},mutator,{
+        operationType:meta?.operationType||'makeup-update',...(meta||{}),
+      });
+    },
+    apply(next){ MARK_MAP=next||{}; },
+    refresh(error,meta){
+      if(typeof _refreshFailedScheduleWrites==='function'){
+        return _refreshFailedScheduleWrites([STORAGE_KEYS.MARK],meta||{},error);
+      }
+    },
+  });
+  return _mainMarkMapTransaction;
 }
-function setMarkEntryTx(markKey,val){
-  MARK_MAP[markKey]=val;
-  return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; });
+function updateMarkMapTx(mutator,meta){
+  return getMainMarkMapTransaction().mutate(mutator,meta);
 }
-function clearMarkEntryTx(markKey){
-  delete MARK_MAP[markKey];
-  return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
+function setMarkEntryTx(markKey,val,meta){
+  return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; },meta);
+}
+function clearMarkEntryTx(markKey,meta){
+  return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; },meta);
 }
 const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
 function _attendanceLegacyEntryDate(key){
@@ -4096,6 +4140,7 @@ function _attendanceOperationContext(){
     ?_attendanceSnapshotDatesForView()
     :(ds?[ds]:[]);
   return {
+    owner:'attendance-main',
     tabId:String(tab?.id||_activeTab||'regular'),
     courseType:tab?.type==='bangteuk'?'bangteuk':'regular',
     dates:[...new Set((dates||[]).filter(Boolean))],
@@ -4292,8 +4337,8 @@ function absentMarkLabel(mark){
 function absentMarkBadgeText(mark,dl){
   return isParentAbsentRequestMark(mark)?`⏳신청 ${dl}`:dl;
 }
-function setMark(slotKey,ds,val){ setMarkEntryTx(slotKey+'/'+ds,val).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
-function clearMark(slotKey,ds){ clearMarkEntryTx(slotKey+'/'+ds).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
+function setMark(slotKey,ds,val,meta){ return setMarkEntryTx(slotKey+'/'+ds,val,meta); }
+function clearMark(slotKey,ds,meta){ return clearMarkEntryTx(slotKey+'/'+ds,meta); }
 
 /* ──── Cross-file shared state ──── */
 let _pendingSync=false;

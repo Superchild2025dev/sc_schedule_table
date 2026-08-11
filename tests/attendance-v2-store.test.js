@@ -203,6 +203,66 @@ test('attendance mutation uses the strict callable, preserves unseen dates, and 
   assert.equal(db.commits.length,0);
 });
 
+test('regular mutations preserve current and archived regular rows while excluding bangteuk',async()=>{
+  const currentKey='4시/월/1/1/2026-08-03';
+  const archivedKey='5시/화/1/1/2026-07-07';
+  const bangteukKey='9시/수/1/1/2026-08-05';
+  const currentGuestKey='4시/월/1/2026-08-03';
+  const archivedGuestKey='5시/화/1/2026-07-07';
+  const bangteukGuestKey='9시/수/1/2026-08-05';
+  const requests=[];
+  const db=createFakeFirestore({
+    [operationalConfigPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:8,revision:21},
+    [configPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam'},
+  });
+  const mutate=async request=>{
+    requests.push(plain(request));
+    return {operationId:request.operationId,committed:true,revision:22,changeCount:1,recoveryState:'not-required'};
+  };
+  const {model,store}=loadStore(db,'yongam',{mutate});
+  for(const [tabId,courseType,legacyKey,raw] of [
+    ['august','regular',currentKey,{s:'absent'}],
+    ['july-archive','regular',archivedKey,{s:'present',by:'archive'}],
+    ['summer','bangteuk',bangteukKey,{s:'present',by:'camp'}],
+  ]){
+    const row=model.recordFromLegacy({tabId,courseType,legacyKey,raw});
+    db.docs.set(rowPath('attendanceRecords',row.id),plain(row));
+  }
+  for(const [tabId,courseType,legacyKey,raw] of [
+    ['august','regular',currentGuestKey,{gid:'current',n:'Current'}],
+    ['july-archive','regular',archivedGuestKey,{gid:'archive',n:'Archive'}],
+    ['summer','bangteuk',bangteukGuestKey,{gid:'camp',n:'Camp'}],
+  ]){
+    const row=model.guestFromLegacy({tabId,courseType,legacyKey,raw,index:0});
+    db.docs.set(rowPath('attendanceGuests',row.id),plain(row));
+  }
+
+  await store.readConfig();
+  await store.mutateMap({
+    kind:'attendance',tabId:'august',courseType:'regular',
+    before:{[currentKey]:{s:'absent'}},after:{[currentKey]:{s:'present'}},
+    operationId:'regular_shared_1',operationType:'attendance-update',
+  });
+  await store.mutateMap({
+    kind:'guests',tabId:'august',courseType:'regular',
+    before:{[currentGuestKey]:[{gid:'current',n:'Current'}]},
+    after:{[currentGuestKey]:[{gid:'current',n:'Current',s:'present'}]},
+    operationId:'regular_shared_guests_1',operationType:'attendance-guest',
+  });
+
+  assert.equal(requests.length,2);
+  assert.deepEqual(JSON.parse(requests[0].nextValues.swim_attendance),{
+    [currentKey]:{s:'present'},
+    [archivedKey]:{s:'present',by:'archive'},
+  });
+  assert.equal(JSON.parse(requests[0].nextValues.swim_attendance)[bangteukKey],undefined);
+  assert.deepEqual(JSON.parse(requests[1].nextValues.swim_att_guests),{
+    [currentGuestKey]:[{gid:'current',n:'Current',s:'present'}],
+    [archivedGuestKey]:[{gid:'archive',n:'Archive'}],
+  });
+  assert.equal(JSON.parse(requests[1].nextValues.swim_att_guests)[bangteukGuestKey],undefined);
+});
+
 test('operational generation stays authoritative when compatibility metadata becomes invalid',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
@@ -233,24 +293,34 @@ test('runtime config writes contain no Firestore-unsupported undefined values',a
   assert.equal(stored.branchId,'yongam');
 });
 
-test('week query requests only the selected tab and dates',async()=>{
+test('regular range reads include every regular owner while bangteuk remains tab-scoped',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
-    [rowPath('attendanceRecords','att_1')]:{id:'att_1',tabId:'regular',date:'2026-08-03',legacyKey:'4시/월/1/1/2026-08-03',payload:{s:'present'}},
-    [rowPath('attendanceRecords','att_other')]:{id:'att_other',tabId:'summer',date:'2026-08-03',legacyKey:'10시/월/1/1/2026-08-03',payload:{s:'present'}},
-    [rowPath('attendanceGuests','guest_1')]:{id:'guest_1',tabId:'regular',date:'2026-08-04',legacyKey:'4시/화/1/2026-08-04',order:0,payload:{n:'추가'}},
+    [rowPath('attendanceRecords','att_1')]:{id:'att_1',tabId:'august',courseType:'regular',date:'2026-08-03',legacyKey:'4시/월/1/1/2026-08-03',payload:{s:'present'}},
+    [rowPath('attendanceRecords','att_archive')]:{id:'att_archive',tabId:'july-archive',courseType:'regular',date:'2026-08-04',legacyKey:'5시/화/1/1/2026-08-04',payload:{s:'absent'}},
+    [rowPath('attendanceRecords','att_other')]:{id:'att_other',tabId:'summer',courseType:'bangteuk',date:'2026-08-03',legacyKey:'10시/월/1/1/2026-08-03',payload:{s:'present'}},
+    [rowPath('attendanceGuests','guest_1')]:{id:'guest_1',tabId:'july-archive',courseType:'regular',date:'2026-08-04',legacyKey:'4시/화/1/2026-08-04',order:0,payload:{n:'추가'}},
   });
   const {store}=loadStore(db);
   await store.readConfig();
   const result=await store.readRange({
-    generationId:'gen_1',tabId:'regular',dates:['2026-08-03','2026-08-04'],
+    generationId:'gen_1',tabId:'august',courseType:'regular',dates:['2026-08-03','2026-08-04'],
   });
 
-  assert.deepEqual(plain(result.records.map(row=>row.id)),['att_1']);
+  assert.deepEqual(plain(result.records.map(row=>row.id)),['att_1','att_archive']);
   assert.deepEqual(plain(result.guests.map(row=>row.id)),['guest_1']);
   assert.equal(db.queryLog.length,2);
   db.queryLog.forEach(entry=>assert.deepEqual(entry.filters,[
-    ['tabId','==','regular'],['date','in',['2026-08-03','2026-08-04']],
+    ['courseType','==','regular'],
+  ]));
+
+  db.queryLog.length=0;
+  const bangteuk=await store.readRange({
+    generationId:'gen_1',tabId:'summer',courseType:'bangteuk',dates:['2026-08-03'],
+  });
+  assert.deepEqual(plain(bangteuk.records.map(row=>row.id)),['att_other']);
+  db.queryLog.forEach(entry=>assert.deepEqual(entry.filters,[
+    ['tabId','==','summer'],['date','in',['2026-08-03']],
   ]));
 });
 
