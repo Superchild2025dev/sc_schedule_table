@@ -177,12 +177,37 @@ detached release prepared in the identity gate:
 ```bash
 # Pending: run only after the controlled operator shell has passed
 # Assert-DeploymentIdentity for this exact SHA and recorded its evidence.
+set -euo pipefail
+
 APPROVED_RELEASE_SHA='<recorded 40-character approved SHA>'
-cd /var/www/schedule
-git fetch --tags origin
-git checkout --detach "$APPROVED_RELEASE_SHA"
-test "$(git rev-parse HEAD)" = "$APPROVED_RELEASE_SHA"
-test -z "$(git status --porcelain --untracked-files=all)"
+if [[ ! "$APPROVED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '%s\n' 'Approved release SHA must be 40 lowercase hexadecimal characters.' >&2
+  exit 1
+fi
+if ! cd /var/www/schedule; then
+  printf '%s\n' 'Static deployment worktree is unavailable.' >&2
+  exit 1
+fi
+if ! git fetch --tags origin; then
+  printf '%s\n' 'Cannot fetch the approved release reference.' >&2
+  exit 1
+fi
+if ! git checkout --detach "$APPROVED_RELEASE_SHA"; then
+  printf '%s\n' 'Cannot detach at the approved release SHA.' >&2
+  exit 1
+fi
+if ! ACTUAL_HEAD="$(git rev-parse HEAD)"; then
+  printf '%s\n' 'Cannot resolve static deployment HEAD.' >&2
+  exit 1
+fi
+if [ "$ACTUAL_HEAD" != "$APPROVED_RELEASE_SHA" ]; then
+  printf '%s\n' "Static HEAD $ACTUAL_HEAD does not match approved SHA $APPROVED_RELEASE_SHA." >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  printf '%s\n' 'Static deployment worktree is not clean.' >&2
+  exit 1
+fi
 ```
 
 Reload the staff timetable and Settings pages. Confirm that the new static
