@@ -64,6 +64,9 @@ class FakeFirestore{
     this.transactions=[];
     this.batches=[];
     this.failBatchAt=0;
+    this.failTransactionAt=0;
+    this.failLegacyTransactionAt=0;
+    this.legacyTransactions=0;
   }
   collection(name){return new CollectionRef(this,String(name));}
   batch(){
@@ -95,6 +98,15 @@ class FakeFirestore{
     };
     this.transactions.push(attempt);
     const result=await visitor(tx);
+    if(operations.some(operation=>operation.ref.path.startsWith("scheduleStores/"))){
+      this.legacyTransactions+=1;
+      if(this.failLegacyTransactionAt===this.legacyTransactions){
+        throw Object.assign(new Error("private payload must not leak"),{code:"unavailable"});
+      }
+    }
+    if(this.failTransactionAt===this.transactions.length){
+      throw Object.assign(new Error("transaction interrupted"),{code:"unavailable"});
+    }
     this.apply(operations);
     return result;
   }
@@ -110,6 +122,7 @@ const GENERATION="gen_1";
 
 function runtimePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operational`;}
 function manifestPath(operationId,branchId=BRANCH){return `scheduleV2/${branchId}/operationalMutations/${operationId}`;}
+function recoveryFencePath(branchId=BRANCH){return `scheduleV2/${branchId}/runtime/operationalRecovery`;}
 function generationPath(collection,id,branchId=BRANCH,generationId=GENERATION){
   return `scheduleV2/${branchId}/generations/${generationId}/${collection}/${id}`;
 }
@@ -158,9 +171,30 @@ test("permission manifest keeps developer and desk boundaries while limiting tea
   assert.equal(policy.authorizeMutation(teacher,request({
     operationType:"absence-confirmation",keys:["swim_mark"],nextValues:{swim_mark:{}},
   }).data).role,"teacher");
-  assert.equal(policy.authorizeMutation(teacher,request({
-    operationType:"makeup",keys:["swim_mark"],nextValues:{swim_mark:{}},
+  const makeupOperations=[
+    "makeup","makeup-update","makeup-cancel","set-makeup","sample-makeup","mandatory-makeup",
+  ];
+  for(const operationType of makeupOperations){
+    assert.equal(policy.authorizeMutation(teacher,request({
+      operationType,keys:["swim_mark"],nextValues:{swim_mark:{}},
+    }).data).role,"teacher");
+  }
+  const yongamTeacher=auth("yongam.lee1@scswim.local").auth;
+  assert.equal(policy.authorizeMutation(yongamTeacher,request({
+    branchId:"gagyeong",operationType:"attendance",keys:["swim_attendance"],
+    nextValues:{swim_attendance:{}},
   }).data).role,"teacher");
+  assert.equal(policy.authorizeMutation(yongamTeacher,request({
+    branchId:"gagyeong",operationType:"absence-confirmation",keys:["swim_mark"],
+    nextValues:{swim_mark:{}},
+  }).data).role,"teacher");
+  for(const branchId of ["yongam","gagyeong"]){
+    for(const operationType of makeupOperations){
+      assert.throws(()=>policy.authorizeMutation(yongamTeacher,request({
+        branchId,operationType,keys:["swim_mark"],nextValues:{swim_mark:{}},
+      }).data),error=>error.code==="permission-denied");
+    }
+  }
   assert.throws(()=>policy.authorizeMutation(teacher,request().data),error=>error.code==="permission-denied");
   assert.throws(()=>policy.authorizeMutation(null,request().data),error=>error.code==="unauthenticated");
 });
@@ -171,6 +205,10 @@ test("strict request schema rejects unknown fields operations keys and unverifie
   assert.throws(()=>policy.validateMutationRequest({...request().data,keys:["customerVoice"],nextValues:{customerVoice:{}}}),error=>error.code==="invalid-argument");
   assert.throws(()=>policy.validateMutationRequest({...request().data,keys:["swim_closed"]}),error=>error.code==="invalid-argument");
   assert.throws(()=>policy.authorizeMutation(auth("developer@scswim.local",{email_verified:false}).auth,request().data),error=>error.code==="permission-denied");
+  const missingVerification=auth().auth;
+  delete missingVerification.token.email_verified;
+  assert.throws(()=>policy.authorizeMutation(missingVerification,request().data),error=>error.code==="permission-denied");
+  assert.equal(policy.authorizeMutation(auth().auth,request().data).role,"developer");
 });
 
 test("a duplicate operation id returns the stored result without applying twice",async()=>{
@@ -295,11 +333,60 @@ test("a resumed fenced operation preserves its original manifest counts",async()
   assert.deepEqual(db.value(manifestPath(operationId)).deletedDocumentRefs,["placements/already-deleted"]);
 });
 
+test("retry after the last V2 chunk preserves the original immutable manifest summary",async()=>{
+  const operationId="op_finalize_retry";
+  const fingerprint="fingerprint-finalize-retry";
+  const db=new FakeFirestore({[runtimePath()]:runtime()});
+  db.failTransactionAt=2;
+
+  await assert.rejects(()=>operational.commitV2Mutation({
+    db,request:request({operationId}).data,
+    actor:{email:"developer@scswim.local",role:"developer"},
+    changes:[change("written-before-finalize")],now:NOW,
+    serverTimestamp:()=>"server-time",fingerprint,
+  }),error=>error.code==="unavailable");
+  const interrupted=db.value(manifestPath(operationId));
+  assert.equal(interrupted.status,"committing");
+  assert.equal(interrupted.completedChunks,1);
+  assert.equal(interrupted.chunkCount,1);
+
+  db.failTransactionAt=0;
+  const result=await operational.commitV2Mutation({
+    db,request:request({operationId}).data,
+    actor:{email:"developer@scswim.local",role:"developer"},changes:[],now:NOW,
+    serverTimestamp:()=>"server-time",fingerprint,
+  });
+  const manifest=db.value(manifestPath(operationId));
+  assert.equal(result.changeCount,1);
+  assert.equal(result.setCount,1);
+  assert.equal(manifest.chunkCount,1);
+  assert.equal(manifest.completedChunks,1);
+  assert.deepEqual(manifest.changedDocumentRefs,["placements/written-before-finalize"]);
+});
+
+test("oversized V2 document IDs values and manifests fail before the first write",async()=>{
+  const cases=[
+    ["document-id",[change("가".repeat(200))]],
+    ["document-value",[{...change("oversized-value"),value:{payload:"x".repeat(950000)}}]],
+    ["manifest",Array.from({length:2000},(_,index)=>change(`${String(index).padStart(4,"0")}-${"x".repeat(470)}`))],
+  ];
+  for(const [name,changes] of cases){
+    const db=new FakeFirestore({[runtimePath()]:runtime()});
+    await assert.rejects(()=>operational.commitV2Mutation({
+      db,request:request({operationId:`op_size_${name}`}).data,
+      actor:{email:"developer@scswim.local",role:"developer"},changes,now:NOW,
+      serverTimestamp:()=>"server-time",fingerprint:`fingerprint-${name}`,
+    }),error=>["invalid-argument","resource-exhausted"].includes(error.code),name);
+    assert.equal(db.transactions.length,0,name);
+    assert.equal(db.writeCountFor(`op_size_${name}`),0,name);
+  }
+});
+
 test("V1 mirror failure preserves the V2 commit and leaves recoverable redacted state",async()=>{
   const privateName="Private Student Name";
   const privatePhone="01012345678";
   const db=new FakeFirestore({[runtimePath()]:runtime()});
-  db.failBatchAt=1;
+  db.failLegacyTransactionAt=1;
   const writer=createWriter(db,{resolveRecoveryValues:async()=>({swim_students:JSON.stringify([{n:privateName,p:privatePhone}])})});
   const result=await writer.mutate(request({operationId:"op_mirror_error"}));
 
@@ -341,8 +428,126 @@ test("recovery retries update V1 with FirestoreKVRoot encoding and delete stale 
   assert.equal(db.value(manifestPath(operationId)).recoveryState,"applied");
 });
 
+test("out-of-order recovery never applies an older revision over a newer branch mirror",async()=>{
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:33}),
+    [manifestPath("op_old")]:{
+      operationId:"op_old",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+    [manifestPath("op_new")]:{
+      operationId:"op_new",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:33,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const recover=operationId=>operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId,now:NOW,serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:operationId}),
+  });
+
+  assert.equal((await recover("op_new")).recoveryState,"applied");
+  const stale=await recover("op_old");
+
+  assert.notEqual(stale.recoveryState,"applied");
+  assert.equal(db.value("scheduleStores/yongam/kv/swim_students").value,"op_new");
+  assert.equal(db.value(manifestPath("op_old")).recoveryState,"superseded");
+  assert.equal(db.value(recoveryFencePath()).appliedRevision,33);
+});
+
+test("a concurrent stale recovery revalidates the runtime before any V1 write or finalize",async()=>{
+  let releaseOld;
+  let oldResolved;
+  const oldReachedResolver=new Promise(resolve=>{oldResolved=resolve;});
+  const waitForRelease=new Promise(resolve=>{releaseOld=resolve;});
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath("op_old_concurrent")]:{
+      operationId:"op_old_concurrent",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+    },
+  });
+  const oldPromise=operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId:"op_old_concurrent",now:NOW,serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>{oldResolved();await waitForRelease;return {swim_students:"old"};},
+  });
+  await oldReachedResolver;
+  db.docs.set(runtimePath(),runtime({revision:33}));
+  db.docs.set(manifestPath("op_new_concurrent"),{
+    operationId:"op_new_concurrent",branchId:BRANCH,generationId:GENERATION,status:"committed",
+    resultingRevision:33,keys:["swim_students"],removedKeys:[],recoveryState:"pending",recoveryAttempts:0,
+  });
+  const blocked=await operational.applyV1Recovery({
+    db,branchId:BRANCH,operationId:"op_new_concurrent",now:NOW,serverTimestamp:()=>"server-time",
+    resolveRecoveryValues:async()=>({swim_students:"new"}),
+  });
+  assert.equal(blocked.recoveryState,"pending");
+  releaseOld();
+  const stale=await oldPromise;
+  assert.notEqual(stale.recoveryState,"applied");
+  assert.equal(db.value("scheduleStores/yongam/kv/swim_students"),undefined);
+  assert.notEqual(db.value(manifestPath("op_old_concurrent")).recoveryState,"applied");
+});
+
+test("an active branch recovery fence blocks a new V2 mutation before document writes",async()=>{
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [recoveryFencePath()]:{
+      branchId:BRANCH,operationId:"op_recovering",resultingRevision:32,
+      recoveryLeaseId:"persistent-lease",
+      recoveryLeaseUntil:new Date(NOW.getTime()+60000).toISOString(),
+    },
+  });
+  await assert.rejects(()=>operational.commitV2Mutation({
+    db,request:request({operationId:"op_blocked_by_recovery",beforeRevision:32}).data,
+    actor:{email:"developer@scswim.local",role:"developer"},changes:[change("blocked")],
+    now:NOW,serverTimestamp:()=>"server-time",fingerprint:"fingerprint-blocked",
+  }),error=>error.code==="aborted");
+  assert.equal(db.value(generationPath("placements","blocked")),undefined);
+  assert.equal(db.value(runtimePath()).revision,32);
+});
+
+test("expired processing recovery leases are reclaimed and remain bounded",async()=>{
+  const expired=new Date(NOW.getTime()-1000).toISOString();
+  const future=new Date(NOW.getTime()+60000).toISOString();
+  const db=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath("expired-processing")]:{
+      operationId:"expired-processing",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"processing",
+      recoveryLeaseId:"dead-worker",recoveryLeaseUntil:expired,recoveryAttempts:2,
+    },
+    [manifestPath("active-processing")]:{
+      operationId:"active-processing",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"processing",
+      recoveryLeaseId:"live-worker",recoveryLeaseUntil:future,recoveryAttempts:2,
+    },
+  });
+  const writer=createWriter(db);
+  const status=await writer.readOperationalStatus(BRANCH);
+  assert.equal(status.recoveryProcessingCount,2);
+
+  const summary=await writer.recoverOperationalMirrors({perBranchLimit:5});
+  assert.equal(summary.applied,1);
+  assert.equal(db.value(manifestPath("expired-processing")).recoveryState,"applied");
+  assert.equal(db.value(manifestPath("expired-processing")).recoveryAttempts,3);
+  assert.equal(db.value(manifestPath("active-processing")).recoveryState,"processing");
+
+  const cappedDb=new FakeFirestore({
+    [runtimePath()]:runtime({revision:32}),
+    [manifestPath("capped-processing")]:{
+      operationId:"capped-processing",branchId:BRANCH,generationId:GENERATION,status:"committed",
+      resultingRevision:32,keys:["swim_students"],removedKeys:[],recoveryState:"processing",
+      recoveryLeaseId:"last-dead-worker",recoveryLeaseUntil:expired,recoveryAttempts:9,
+    },
+  });
+  const capped=await createWriter(cappedDb).recoverOperationalMirrors({perBranchLimit:5});
+  assert.equal(capped.applied,0);
+  assert.equal(cappedDb.value(manifestPath("capped-processing")).recoveryState,"error");
+  assert.equal(cappedDb.value(manifestPath("capped-processing")).recoveryAttempts,10);
+});
+
 test("recovery is bounded per branch and never infers from incomplete operations",async()=>{
-  const initial={[runtimePath()]:runtime({revision:40})};
+  const initial={[runtimePath()]:runtime({revision:38})};
   for(let index=0;index<7;index+=1){
     initial[manifestPath(`pending-${index}`)]={
       operationId:`pending-${index}`,branchId:BRANCH,generationId:GENERATION,
@@ -357,10 +562,12 @@ test("recovery is bounded per branch and never infers from incomplete operations
   const db=new FakeFirestore(initial);
   const summary=await createWriter(db).recoverOperationalMirrors({perBranchLimit:5});
 
-  assert.equal(summary.applied,5);
+  assert.deepEqual(summary,{applied:0,error:0,skipped:5});
   assert.equal(db.value(manifestPath("incomplete")).status,"committing");
   assert.equal(db.value(manifestPath("incomplete")).recoveryState,"pending");
-  assert.equal([...db.docs.values()].filter(value=>value?.recoveryState==="applied").length,5);
+  assert.equal([...db.docs.values()].filter(value=>
+    ["applied","superseded"].includes(value?.recoveryState)
+  ).length,5);
 });
 
 test("recovery skips a committed mirror while a newer V2 operation is incomplete",async()=>{
@@ -399,10 +606,16 @@ test("operational status reports complete pending and error recovery counts",asy
       status:"committed",recoveryState:"error",resultingRevision:20+index,
     };
   }
+  for(let index=0;index<2;index+=1){
+    initial[manifestPath(`status-processing-${index}`)]={
+      status:"committed",recoveryState:"processing",resultingRevision:30+index,
+    };
+  }
   const status=await operational.readOperationalStatus({db:new FakeFirestore(initial),branchId:BRANCH});
 
   assert.equal(status.recoveryPendingCount,12);
   assert.equal(status.recoveryErrorCount,3);
+  assert.equal(status.recoveryProcessingCount,2);
   assert.equal(status.revision,50);
 });
 

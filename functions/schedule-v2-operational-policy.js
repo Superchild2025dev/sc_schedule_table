@@ -71,6 +71,9 @@ const OPERATION_RULES=Object.freeze({
   "sample-makeup":rule(["mark"],true),
   "mandatory-makeup":rule(["mark"],true),
 });
+const MAKEUP_OPERATION_TYPES=new Set([
+  "makeup","makeup-update","makeup-cancel","set-makeup","sample-makeup","mandatory-makeup",
+]);
 
 function fail(code){
   throw Object.assign(new Error(code),{code});
@@ -164,7 +167,7 @@ function authorizeMutation(authInput,mutationInput){
   const auth=normalizeAuth(authInput);
   if(!auth?.uid) fail("unauthenticated");
   const email=text(auth.token?.email).toLowerCase();
-  if(!email||auth.token?.email_verified===false) fail("permission-denied");
+  if(!email||auth.token?.email_verified!==true) fail("permission-denied");
   const account=ACCOUNT_BY_EMAIL.get(email);
   if(!account||account.active===false) fail("permission-denied");
   const mutation=mutationInput&&mutationInput.operationType?mutationInput:validateMutationRequest(mutationInput);
@@ -177,6 +180,10 @@ function authorizeMutation(authInput,mutationInput){
   if(role==="teacher"){
     const operationRule=OPERATION_RULES[mutation.operationType];
     if(!operationRule?.teacher) fail("permission-denied");
+    const permissions=Array.isArray(account.permissions)?account.permissions.map(text):[];
+    if(MAKEUP_OPERATION_TYPES.has(mutation.operationType)&&!permissions.includes("editMakeup")){
+      fail("permission-denied");
+    }
     const writable=mutation.keys.every(key=>
       (TEACHER_EXACT_KEYS.has(key)||TEACHER_PATTERNS.some(pattern=>pattern.test(key)))&&
       ["attendance","mark"].includes(keyFamily(key))

@@ -15,6 +15,8 @@ const DOCUMENT_CHUNK_SIZE=400;
 const LEGACY_CHUNK_THRESHOLD=650000;
 const LEGACY_CHUNK_SIZE=600000;
 const MAX_DOCUMENT_CHANGES=2000;
+const MAX_DOCUMENT_ID_BYTES=1500;
+const MAX_ESTIMATED_DOCUMENT_BYTES=900000;
 const MAX_RECOVERY_ATTEMPTS=10;
 const DEFAULT_RECOVERY_LIMIT=10;
 const RECOVERY_LEASE_MS=4*60*1000;
@@ -48,6 +50,11 @@ function plainObject(value){
 
 function safeDocId(value){
   return encodeURIComponent(text(value)).replace(/\./g,"%2E");
+}
+
+function estimatedBytes(value){
+  try{return Buffer.byteLength(JSON.stringify(value),"utf8");}
+  catch(error){fail("invalid-argument");}
 }
 
 function canonical(value){
@@ -84,6 +91,10 @@ function runtimeRef(db,branchId){
 
 function mutationRef(db,branchId,operationId){
   return db.collection(ROOT_COLLECTION).doc(branchId).collection("operationalMutations").doc(operationId);
+}
+
+function recoveryFenceRef(db,branchId){
+  return db.collection(ROOT_COLLECTION).doc(branchId).collection("runtime").doc("operationalRecovery");
 }
 
 function generationRef(db,branchId,generationId){
@@ -183,6 +194,47 @@ function baseManifest(input,counts,chunkCount){
   };
 }
 
+function assertWriteSizes(input,changes,counts,chunkCount){
+  for(const change of changes){
+    const documentId=safeDocId(change.id);
+    if(Buffer.byteLength(documentId,"utf8")>MAX_DOCUMENT_ID_BYTES) fail("invalid-argument");
+    if(change.type==="set"){
+      const stored={
+        ...change.value,
+        branchId:input.request.branchId,
+        generationId:input.request.generationId,
+        operationalRevision:input.request.beforeRevision+1,
+        lastOperationId:input.request.operationId,
+      };
+      if(estimatedBytes(stored)>MAX_ESTIMATED_DOCUMENT_BYTES) fail("resource-exhausted");
+    }
+  }
+  const manifestEstimate={
+    ...baseManifest(input,counts,chunkCount),
+    completedChunks:chunkCount,
+    startedAt:input.now.toISOString(),
+    updatedAt:input.now.toISOString(),
+    committedAt:input.now.toISOString(),
+    result:{
+      operationId:input.request.operationId,committed:true,
+      revision:input.request.beforeRevision+1,...counts,recoveryState:"pending",
+    },
+  };
+  if(estimatedBytes(manifestEstimate)>MAX_ESTIMATED_DOCUMENT_BYTES) fail("resource-exhausted");
+}
+
+function assertFinalManifestSize(input,manifest,counts){
+  const estimate={
+    ...manifest,status:"committed",recoveryState:"pending",
+    committedAt:input.now.toISOString(),updatedAt:input.now.toISOString(),
+    result:{
+      operationId:input.request.operationId,committed:true,
+      revision:input.request.beforeRevision+1,...counts,recoveryState:"pending",
+    },
+  };
+  if(estimatedBytes(estimate)>MAX_ESTIMATED_DOCUMENT_BYTES) fail("resource-exhausted");
+}
+
 async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
   const {db,request,fingerprint}=input;
   const operationId=request.operationId;
@@ -191,10 +243,12 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
   await db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
+    const recoveryFenceSnapshot=await tx.get(recoveryFenceRef(db,request.branchId));
     const currentManifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(currentManifest,fingerprint);
     if(currentManifest?.status==="committed") return;
     assertRuntime(runtimeSnapshot.data()||{},request,operationId);
+    if(leaseExpiry(recoveryFenceSnapshot.data()?.recoveryLeaseUntil)>input.now.getTime()) fail("aborted");
 
     const documentSnapshots=[];
     for(const change of changes){
@@ -227,11 +281,9 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
       }
     });
     const manifest={
-      ...baseManifest(input,counts,chunkCount),
-      ...(currentManifest||{}),
+      ...(currentManifest||baseManifest(input,counts,chunkCount)),
       status:"committing",
       recoveryState:"blocked",
-      chunkCount,
       completedChunks:chunkIndex+1,
       updatedAt:nowValue,
       startedAt:currentManifest?.startedAt||nowValue,
@@ -249,10 +301,12 @@ async function reserveEmptyMutation(input,counts){
   await db.runTransaction(async tx=>{
     const runtimeSnapshot=await tx.get(runtimeDocument);
     const manifestSnapshot=await tx.get(manifestDocument);
+    const recoveryFenceSnapshot=await tx.get(recoveryFenceRef(db,request.branchId));
     const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
     assertManifestFingerprint(manifest,fingerprint);
     if(manifest?.status==="committed") return;
     assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    if(leaseExpiry(recoveryFenceSnapshot.data()?.recoveryLeaseUntil)>input.now.getTime()) fail("aborted");
     const nowValue=serverTime(input);
     tx.set(manifestDocument,{
       ...baseManifest(input,counts,0),
@@ -326,20 +380,44 @@ async function commitV2Mutation(rawInput){
     .map(change=>`${change.collection}/${safeDocId(change.id)}`);
   const counts=changeCounts(changes);
   const chunkCount=Math.ceil(changes.length/DOCUMENT_CHUNK_SIZE);
+  assertWriteSizes(input,changes,counts,chunkCount);
   const existing=await mutationRef(input.db,input.request.branchId,input.request.operationId).get();
+  let manifest=null;
   if(existing.exists){
-    const manifest=existing.data()||{};
+    manifest=existing.data()||{};
     assertManifestFingerprint(manifest,input.fingerprint);
     if(manifest.status==="committed") return resultFromManifest(manifest);
+    if(estimatedBytes(manifest)>MAX_ESTIMATED_DOCUMENT_BYTES) fail("resource-exhausted");
+    if(manifest.status!=="committing") fail("failed-precondition");
+    assertFinalManifestSize(input,manifest,{
+      changeCount:Number(manifest.changeCount||0),
+      setCount:Number(manifest.setCount||0),
+      deleteCount:Number(manifest.deleteCount||0),
+    });
+    const completedChunks=Math.max(0,Number(manifest.completedChunks||0)||0);
+    const originalChunkCount=Math.max(0,Number(manifest.chunkCount||0)||0);
+    if(completedChunks===originalChunkCount){
+      return finalizeMutation(input,counts,originalChunkCount);
+    }
+    if(completedChunks+chunkCount!==originalChunkCount) fail("failed-precondition");
+    input.changedDocumentRefs=clone(manifest.changedDocumentRefs||[]);
+    input.deletedDocumentRefs=clone(manifest.deletedDocumentRefs||[]);
   }
 
   if(!changes.length) await reserveEmptyMutation(input,counts);
-  for(let offset=0,chunkIndex=0;offset<changes.length;offset+=DOCUMENT_CHUNK_SIZE,chunkIndex+=1){
+  const completedChunks=manifest?Math.max(0,Number(manifest.completedChunks||0)||0):0;
+  const targetChunkCount=manifest?Math.max(0,Number(manifest.chunkCount||0)||0):chunkCount;
+  const originalCounts=manifest?{
+    changeCount:Number(manifest.changeCount||0),
+    setCount:Number(manifest.setCount||0),
+    deleteCount:Number(manifest.deleteCount||0),
+  }:counts;
+  for(let offset=0,chunkIndex=completedChunks;offset<changes.length;offset+=DOCUMENT_CHUNK_SIZE,chunkIndex+=1){
     await commitChangeChunk(
-      input,changes.slice(offset,offset+DOCUMENT_CHUNK_SIZE),chunkIndex,chunkCount,counts,
+      input,changes.slice(offset,offset+DOCUMENT_CHUNK_SIZE),chunkIndex,targetChunkCount,originalCounts,
     );
   }
-  return finalizeMutation(input,counts,chunkCount);
+  return finalizeMutation(input,originalCounts,targetChunkCount);
 }
 
 function snapshotRows(snapshot){
@@ -465,9 +543,7 @@ function deleteLegacyValue(batch,input,key,previousItem){
 async function resolveRecoveryValuesDefault(input){
   const runtimeSnapshot=await runtimeRef(input.db,input.branchId).get();
   const runtime=runtimeSnapshot.data()||{};
-  if(text(runtime.activeOperationId)&&text(runtime.activeOperationId)!==input.operationId){
-    fail("failed-precondition");
-  }
+  assertRecoveryRevision(runtime,input.manifest);
   const collections=modelCollections(await readGenerationCollections(
     input.db,input.branchId,input.manifest.generationId,
   ));
@@ -484,26 +560,88 @@ async function resolveRecoveryValuesDefault(input){
   return values;
 }
 
+function leaseExpiry(value){
+  const expiry=Date.parse(text(value));
+  return Number.isFinite(expiry)?expiry:0;
+}
+
+function assertRecoveryRevision(runtime,manifest){
+  if(text(runtime.activeOperationId)) fail("failed-precondition");
+  if(text(runtime.generationId)!==text(manifest.generationId)) fail("failed-precondition");
+  if(Number(runtime.revision||0)!==Number(manifest.resultingRevision||0)) fail("failed-precondition");
+}
+
+function releasedFence(fence,input){
+  const next={...fence,branchId:input.branchId,updatedAt:serverTime(input)};
+  delete next.recoveryLeaseId;
+  delete next.recoveryLeaseUntil;
+  delete next.operationId;
+  delete next.resultingRevision;
+  return next;
+}
+
+function manifestWithRecoveryState(manifest,state,input){
+  const next={...manifest,recoveryState:state,updatedAt:serverTime(input)};
+  delete next.recoveryLeaseId;
+  delete next.recoveryLeaseUntil;
+  if(state==="superseded") next.recoverySupersededAt=input.now.toISOString();
+  next.result={...(plainObject(manifest.result)?manifest.result:{}),recoveryState:state};
+  return next;
+}
+
 async function claimRecovery(input,manifestDocument){
   return input.db.runTransaction(async tx=>{
-    const runtimeSnapshot=await tx.get(runtimeRef(input.db,input.branchId));
+    const runtimeDocument=runtimeRef(input.db,input.branchId);
+    const fenceDocument=recoveryFenceRef(input.db,input.branchId);
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const fenceSnapshot=await tx.get(fenceDocument);
     const snapshot=await tx.get(manifestDocument);
     if(!snapshot.exists) fail("not-found");
     const manifest=snapshot.data()||{};
     if(manifest.status!=="committed") fail("failed-precondition");
-    if(manifest.recoveryState==="applied"||manifest.recoveryState==="not-required") return null;
-    const activeOperationId=text(runtimeSnapshot.data()?.activeOperationId);
-    if(activeOperationId&&activeOperationId!==input.operationId) return {blocked:true};
-    const leaseUntil=Date.parse(text(manifest.recoveryLeaseUntil));
-    if(manifest.recoveryState==="processing"&&Number.isFinite(leaseUntil)&&leaseUntil>input.now.getTime()) return null;
-    if(Number(manifest.recoveryAttempts||0)>=MAX_RECOVERY_ATTEMPTS) return null;
+    if(["applied","not-required","superseded"].includes(manifest.recoveryState)) return null;
+    const runtime=runtimeSnapshot.data()||{};
+    const fence=fenceSnapshot.exists?fenceSnapshot.data()||{}:{};
+    const operationLeaseActive=manifest.recoveryState==="processing"&&
+      leaseExpiry(manifest.recoveryLeaseUntil)>input.now.getTime();
+    if(operationLeaseActive) return null;
+    const fenceLeaseActive=leaseExpiry(fence.recoveryLeaseUntil)>input.now.getTime();
+    if(fenceLeaseActive&&text(fence.operationId)!==input.operationId) return {blocked:true};
+
+    const expiredProcessing=manifest.recoveryState==="processing";
+    const attempts=Math.max(0,Number(manifest.recoveryAttempts||0))+(expiredProcessing?1:0);
+    if(attempts>=MAX_RECOVERY_ATTEMPTS){
+      const exhausted=manifestWithRecoveryState(manifest,"error",input);
+      exhausted.recoveryAttempts=MAX_RECOVERY_ATTEMPTS;
+      exhausted.recoveryFailedAt=input.now.toISOString();
+      tx.set(manifestDocument,exhausted,{merge:false});
+      if(text(fence.operationId)===input.operationId) tx.set(fenceDocument,releasedFence(fence,input),{merge:false});
+      return {terminal:true,recoveryState:"error"};
+    }
+
+    const resultingRevision=Number(manifest.resultingRevision||0);
+    const appliedRevision=Math.max(0,Number(fence.appliedRevision||0)||0);
+    const runtimeRevision=Math.max(0,Number(runtime.revision||0)||0);
+    if(appliedRevision>resultingRevision||runtimeRevision>resultingRevision){
+      tx.set(manifestDocument,manifestWithRecoveryState(manifest,"superseded",input),{merge:false});
+      if(text(fence.operationId)===input.operationId) tx.set(fenceDocument,releasedFence(fence,input),{merge:false});
+      return {terminal:true,recoveryState:"superseded"};
+    }
+    if(text(runtime.activeOperationId)||runtimeRevision!==resultingRevision||
+        text(runtime.generationId)!==text(manifest.generationId)) return {blocked:true};
     const leaseId=crypto.randomUUID();
+    const leaseUntil=new Date(input.now.getTime()+RECOVERY_LEASE_MS).toISOString();
     const next={
       ...manifest,recoveryState:"processing",recoveryLeaseId:leaseId,
-      recoveryLeaseUntil:new Date(input.now.getTime()+RECOVERY_LEASE_MS).toISOString(),
+      recoveryLeaseUntil:leaseUntil,recoveryAttempts:attempts,
       recoveryStartedAt:input.now.toISOString(),updatedAt:serverTime(input),
     };
     tx.set(manifestDocument,next,{merge:false});
+    tx.set(fenceDocument,{
+      ...fence,branchId:input.branchId,operationId:input.operationId,
+      resultingRevision,recoveryLeaseId:leaseId,recoveryLeaseUntil:leaseUntil,
+      updatedAt:serverTime(input),
+    },{merge:false});
     return {...next,recoveryLeaseId:leaseId};
   });
 }
@@ -515,25 +653,77 @@ async function finishRecovery(input,manifestDocument,claim,state,error){
     changeCount:claim.changeCount,now:input.now,
   }):null;
   return input.db.runTransaction(async tx=>{
+    const runtimeDocument=runtimeRef(input.db,input.branchId);
+    const fenceDocument=recoveryFenceRef(input.db,input.branchId);
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const fenceSnapshot=await tx.get(fenceDocument);
     const snapshot=await tx.get(manifestDocument);
     const current=snapshot.data()||{};
     if(text(current.recoveryLeaseId)!==claim.recoveryLeaseId) return current.recoveryState;
-    const attempts=state==="error"
+    const fence=fenceSnapshot.data()||{};
+    const ownsFence=text(fence.recoveryLeaseId)===claim.recoveryLeaseId&&
+      text(fence.operationId)===input.operationId;
+    let finalState=state;
+    if(state==="applied"){
+      const runtime=runtimeSnapshot.data()||{};
+      const exactRevision=!text(runtime.activeOperationId)&&
+        text(runtime.generationId)===text(claim.generationId)&&
+        Number(runtime.revision||0)===Number(claim.resultingRevision||0);
+      if(!ownsFence||!exactRevision){
+        finalState=Number(runtime.revision||0)>Number(claim.resultingRevision||0)?"superseded":"error";
+      }
+    }
+    const attempts=finalState==="error"
       ?Math.min(MAX_RECOVERY_ATTEMPTS,Math.max(0,Number(current.recoveryAttempts||0))+1)
       :Math.max(0,Number(current.recoveryAttempts||0));
-    const next={...current,recoveryState:state,recoveryAttempts:attempts,updatedAt:serverTime(input)};
-    delete next.recoveryLeaseId;
-    delete next.recoveryLeaseUntil;
-    if(state==="applied"){
+    const next=manifestWithRecoveryState(current,finalState,input);
+    next.recoveryAttempts=attempts;
+    if(finalState==="applied"){
       next.recoveryAppliedAt=serverTime(input);
       delete next.diagnostic;
-    }else{
+    }else if(finalState==="error"){
       next.recoveryFailedAt=input.now.toISOString();
       next.diagnostic=diagnostic;
     }
-    next.result={...(plainObject(current.result)?current.result:{}),recoveryState:state};
     tx.set(manifestDocument,next,{merge:false});
-    return state;
+    if(ownsFence){
+      const nextFence=releasedFence(fence,input);
+      if(finalState==="applied"){
+        nextFence.appliedRevision=Number(claim.resultingRevision||0);
+        nextFence.appliedOperationId=input.operationId;
+        nextFence.appliedAt=serverTime(input);
+      }
+      tx.set(fenceDocument,nextFence,{merge:false});
+    }
+    return finalState;
+  });
+}
+
+async function writeRecoveryKey(input,claim,key,values,manifestDocument){
+  const runtimeDocument=runtimeRef(input.db,input.branchId);
+  const fenceDocument=recoveryFenceRef(input.db,input.branchId);
+  const ref=legacyKeyRef(input.db,input.branchId,key);
+  return input.db.runTransaction(async tx=>{
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const fenceSnapshot=await tx.get(fenceDocument);
+    const manifestSnapshot=await tx.get(manifestDocument);
+    const previous=await tx.get(ref);
+    const fence=fenceSnapshot.data()||{};
+    const manifest=manifestSnapshot.data()||{};
+    assertRecoveryRevision(runtimeSnapshot.data()||{},claim);
+    if(text(fence.recoveryLeaseId)!==claim.recoveryLeaseId||
+        text(fence.operationId)!==input.operationId||
+        Number(fence.resultingRevision||0)!==Number(claim.resultingRevision||0)||
+        leaseExpiry(fence.recoveryLeaseUntil)<=input.now.getTime()||
+        text(manifest.recoveryLeaseId)!==claim.recoveryLeaseId||manifest.recoveryState!=="processing"){
+      fail("failed-precondition");
+    }
+    if(claim.removedKeys.includes(key)){
+      deleteLegacyValue(tx,input,key,previous.exists?previous.data()||{}:null);
+    }else{
+      if(!Object.prototype.hasOwnProperty.call(values,key)) fail("failed-precondition");
+      writeLegacyValue(tx,input,key,values[key],previous.exists?previous.data()||{}:null);
+    }
   });
 }
 
@@ -543,6 +733,7 @@ async function applyV1Recovery(rawInput){
   const manifestDocument=mutationRef(input.db,input.branchId,input.operationId);
   const claim=await claimRecovery(input,manifestDocument);
   if(claim?.blocked) return {operationId:input.operationId,recoveryState:"pending"};
+  if(claim?.terminal) return {operationId:input.operationId,recoveryState:claim.recoveryState};
   if(!claim) {
     const snapshot=await manifestDocument.get();
     return {operationId:input.operationId,recoveryState:text(snapshot.data()?.recoveryState)||"pending"};
@@ -551,36 +742,31 @@ async function applyV1Recovery(rawInput){
   try{
     const values=input.legacyValues||await input.resolveRecoveryValues(input);
     for(const key of claim.keys){
-      const ref=legacyKeyRef(input.db,input.branchId,key);
-      const previous=await ref.get();
-      const batch=input.db.batch();
-      if(claim.removedKeys.includes(key)){
-        deleteLegacyValue(batch,input,key,previous.exists?previous.data()||{}:null);
-      }else{
-        if(!Object.prototype.hasOwnProperty.call(values,key)) fail("failed-precondition");
-        writeLegacyValue(batch,input,key,values[key],previous.exists?previous.data()||{}:null);
-      }
-      await batch.commit();
+      await writeRecoveryKey(input,claim,key,values,manifestDocument);
     }
-    await finishRecovery(input,manifestDocument,claim,"applied");
-    return {operationId:input.operationId,recoveryState:"applied"};
+    const recoveryState=await finishRecovery(input,manifestDocument,claim,"applied");
+    return {operationId:input.operationId,recoveryState};
   }catch(error){
     const safeError=normalizedError(error);
-    await finishRecovery(input,manifestDocument,claim,"error",safeError);
-    return {operationId:input.operationId,recoveryState:"error"};
+    const recoveryState=await finishRecovery(input,manifestDocument,claim,"error",safeError);
+    return {operationId:input.operationId,recoveryState};
   }
 }
 
-async function recoveryCandidates(db,branchId,limit){
+async function recoveryCandidates(db,branchId,limit,now){
   const collection=db.collection(ROOT_COLLECTION).doc(branchId).collection("operationalMutations");
-  const snapshots=await Promise.all(["pending","error"].map(state=>
+  const snapshots=await Promise.all(["pending","error","processing"].map(state=>
     collection.where("status","==","committed").where("recoveryState","==",state).limit(limit).get()
   ));
   const byId=new Map();
-  snapshots.forEach(snapshot=>snapshot.forEach(doc=>byId.set(doc.id,doc.data()||{})));
+  snapshots.forEach(snapshot=>snapshot.forEach(doc=>byId.set(doc.id,{
+    ...(doc.data()||{}),operationId:text(doc.data()?.operationId)||doc.id,
+  })));
   return [...byId.values()]
     .filter(manifest=>Number(manifest.recoveryAttempts||0)<MAX_RECOVERY_ATTEMPTS)
-    .sort((left,right)=>Number(left.resultingRevision||0)-Number(right.resultingRevision||0))
+    .filter(manifest=>manifest.recoveryState!=="processing"||
+      leaseExpiry(manifest.recoveryLeaseUntil)<=now.getTime())
+    .sort((left,right)=>Number(right.resultingRevision||0)-Number(left.resultingRevision||0))
     .slice(0,limit);
 }
 
@@ -598,8 +784,8 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     const snapshot=await query.get();
     return Math.max(0,Number(snapshot.size||snapshot.docs?.length||0)||0);
   }
-  const [recoveryPendingCount,recoveryErrorCount]=await Promise.all([
-    countState("pending"),countState("error"),
+  const [recoveryPendingCount,recoveryErrorCount,recoveryProcessingCount]=await Promise.all([
+    countState("pending"),countState("error"),countState("processing"),
   ]);
   return {
     branchId:input.branchId,
@@ -609,6 +795,7 @@ async function readOperationalStatus(rawInput,maybeBranchId){
     revision:Math.max(0,Number(runtimeSnapshot.data()?.revision||0)||0),
     recoveryPendingCount,
     recoveryErrorCount,
+    recoveryProcessingCount,
   };
 }
 
@@ -654,7 +841,8 @@ function createOperationalWriter(options={}){
     ));
     const summary={applied:0,error:0,skipped:0};
     for(const branchId of BRANCH_IDS){
-      const candidates=await recoveryCandidates(options.db,branchId,perBranchLimit);
+      const recoveryNow=normalizeNow(now());
+      const candidates=await recoveryCandidates(options.db,branchId,perBranchLimit,recoveryNow);
       for(const manifest of candidates){
         if(manifest.status!=="committed"){
           summary.skipped+=1;
@@ -662,7 +850,7 @@ function createOperationalWriter(options={}){
         }
         const result=await applyV1Recovery({
           db:options.db,branchId,operationId:manifest.operationId,
-          resolveRecoveryValues,now:now(),serverTimestamp,
+          resolveRecoveryValues,now:recoveryNow,serverTimestamp,
         });
         if(result.recoveryState==="applied") summary.applied+=1;
         else if(result.recoveryState==="error") summary.error+=1;
