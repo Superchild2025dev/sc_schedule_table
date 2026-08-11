@@ -132,6 +132,18 @@
       setMaps(next);
       return clone(next.guests);
     }
+    async function setManyAttendance(input){
+      const currentMaps=getMaps();
+      const result=await gateway.setManyAttendance({
+        ...(input||{}),before:clone(objectMap(currentMaps?.attendance)),
+      });
+      const next={
+        attendance:clone(objectMap(result?.attendance)),
+        guests:clone(objectMap(currentMaps?.guests)),
+      };
+      setMaps(next);
+      return clone(next.attendance);
+    }
     function release(owner){
       const key=text(owner)||'attendance-main';
       loadVersions.set(key,(loadVersions.get(key)||0)+1);
@@ -145,6 +157,7 @@
       loadRanges,
       updateAttendance,
       updateGuests,
+      setManyAttendance,
       release,
     });
   }

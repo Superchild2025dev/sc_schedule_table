@@ -3,6 +3,7 @@
 
   const MAX_DIAGNOSTICS=80;
   const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
+  let operationSequence=0;
 
   function text(value){ return String(value==null?'':value).trim(); }
   function clone(value){
@@ -21,6 +22,16 @@
     const error=new Error('이전 출석 조회 결과는 더 이상 사용하지 않습니다.');
     error.code='stale-attendance-range';
     return error;
+  }
+  function pointerError(code){
+    return Object.assign(new Error('출석 전환 설정과 운영 전환 설정이 일치하지 않아 저장을 중단했습니다.'),{
+      code:code||'attendance-pointer-mismatch',
+    });
+  }
+  function operationId(){
+    if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
+    operationSequence=(operationSequence+1)%1000000;
+    return `attendance_${Date.now().toString(36)}_${operationSequence.toString(36)}`;
   }
 
   function create(options){
@@ -163,69 +174,6 @@
       const returned=await mutator(draft);
       return clone(objectMap(returned&&typeof returned==='object'?returned:draft));
     }
-    function applyChangedKeys(current,before,after){
-      const draft=clone(objectMap(current));
-      const diff=model.diffLegacyMaps(before,after);
-      diff.upserts.forEach(change=>{ draft[change.legacyKey]=clone(change.raw); });
-      diff.deletes.forEach(legacyKey=>{ delete draft[legacyKey]; });
-      return draft;
-    }
-    function recordMeta(input,legacyKey,raw){
-      if(typeof input?.recordMeta==='function') return input.recordMeta(legacyKey,raw)||{};
-      return input?.recordMetaByKey?.[legacyKey]||{};
-    }
-    async function writeV2Attendance(before,after,input){
-      const diff=model.diffLegacyMaps(before,after);
-      const changes=[];
-      diff.upserts.forEach(change=>{
-        const meta=recordMeta(input,change.legacyKey,change.raw);
-        const row=model.recordFromLegacy({
-          tabId:text(input?.tabId),
-          courseType:text(input?.courseType),
-          legacyKey:change.legacyKey,
-          raw:change.raw,
-          ...meta,
-        });
-        if(row?.ok===false) throw new Error('출석 V2 변환 오류가 있어 저장을 중단했습니다.');
-        changes.push({type:'set',collection:'attendanceRecords',id:row.id,legacyKey:change.legacyKey,row});
-      });
-      diff.deletes.forEach(legacyKey=>changes.push({
-        type:'delete',collection:'attendanceRecords',
-        id:model.recordId(text(input?.tabId),legacyKey),legacyKey,
-      }));
-      if(changes.length) await v2Store.writeRecordBatch(changes,config.generationId);
-      return {changed:changes.length,diff};
-    }
-    function existingGuestRows(input,legacyKey,beforeList){
-      const supplied=(Array.isArray(input?.v2GuestRows)?input.v2GuestRows:[])
-        .filter(row=>text(row?.legacyKey)===legacyKey);
-      if(supplied.length) return supplied;
-      return (Array.isArray(beforeList)?beforeList:[]).map((raw,index)=>model.guestFromLegacy({
-        tabId:text(input?.tabId),courseType:text(input?.courseType),legacyKey,raw,index,
-      })).filter(row=>row&&row.ok!==false);
-    }
-    async function writeV2Guests(before,after,input){
-      const diff=model.diffLegacyMaps(before,after);
-      const groups=[
-        ...diff.upserts.map(change=>({legacyKey:change.legacyKey,list:change.raw})),
-        ...diff.deletes.map(legacyKey=>({legacyKey,list:[]})),
-      ];
-      for(const group of groups){
-        if(!Array.isArray(group.list)) throw new Error('추가 원생 출석 목록 형식이 올바르지 않습니다.');
-        const rows=group.list.map((raw,index)=>model.guestFromLegacy({
-          tabId:text(input?.tabId),courseType:text(input?.courseType),
-          legacyKey:group.legacyKey,raw,index,
-        }));
-        if(rows.some(row=>row?.ok===false)) throw new Error('추가 원생 V2 변환 오류가 있어 저장을 중단했습니다.');
-        await v2Store.replaceGuestGroup({
-          generationId:config.generationId,
-          legacyKey:group.legacyKey,
-          rows,
-          existingRows:existingGuestRows(input,group.legacyKey,objectMap(before)[group.legacyKey]),
-        });
-      }
-      return {changed:groups.length,diff};
-    }
     async function verifyAfterWrite(after,input,kind){
       if(config.mode!=='verify') return {ready:true};
       const result=await v2Store.readRange({
@@ -242,19 +190,31 @@
       const started=nowDate().getTime();
       const before=clone(objectMap(input?.before));
       const legacyMethod=kind==='attendance'?'updateAttendance':'updateGuests';
-      const writeV2=kind==='attendance'?writeV2Attendance:writeV2Guests;
       const outputField=kind==='attendance'?'attendance':'guests';
       const base={tabId:text(input?.tabId),dates:input?.dates||[],kind:`write-${kind}`};
+
+      try{
+        const latest=await v2Store.readConfig();
+        config=latest&&typeof latest==='object'?clone(latest):config;
+        if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+      }catch(error){
+        if(confirmedV2) throw Object.assign(new Error('V2 출석 전환 설정을 확인하지 못해 저장을 중단했습니다.'),{
+          code:'v2-operational-config-failed',cause:error,
+        });
+      }
+      if(config.compatibilityValid===false){
+        diagnostic({...base,outcome:'pointer-mismatch',durationMs:nowDate().getTime()-started});
+        throw pointerError(config.compatibilityCode);
+      }
 
       if(!V2_AUTHORITY_MODES.has(config.mode)){
         const legacyResult=await legacy[legacyMethod](mutator,input);
         const after=resultMap(legacyResult,outputField);
         let degraded=false;
-        let changed=0;
+        const diff=model.diffLegacyMaps(before,after);
+        const changed=diff.upserts.length+diff.deletes.length;
         if((config.mode==='shadow'||config.mode==='verify')&&config.generationId){
           try{
-            const write=await writeV2(before,after,input);
-            changed=write.changed;
             const comparison=await verifyAfterWrite(after,input,kind);
             degraded=!comparison?.ready;
           }catch(error){
@@ -266,29 +226,36 @@
       }
 
       const after=await applyMutator(before,mutator);
-      let changed=0;
+      const diff=model.diffLegacyMaps(before,after);
+      const changed=diff.upserts.length+diff.deletes.length;
+      if(!changed){
+        diagnostic({...base,outcome:'ok',recordCount:0,durationMs:nowDate().getTime()-started});
+        return {[outputField]:after,primary:'v2',degraded:false,changed:0};
+      }
       try{
-        const write=await writeV2(before,after,input);
-        changed=write.changed;
+        await v2Store.mutateMap({
+          kind,tabId:text(input?.tabId),courseType:text(input?.courseType),before,after,
+          operationId:text(input?.operationId)||operationId(),
+          operationType:text(input?.operationType)||(
+            kind==='guests'?'attendance-guest':(changed>1?'attendance-batch':'attendance-update')
+          ),
+        });
       }catch(error){
-        diagnostic({...base,outcome:'v2-error',durationMs:nowDate().getTime()-started});
-        throw new Error('V2 출석 데이터를 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.');
+        diagnostic({...base,outcome:error?.code?.startsWith?.('attendance-pointer-')?'pointer-mismatch':'v2-error',durationMs:nowDate().getTime()-started});
+        if(error?.code==='attendance-pointer-mismatch'||error?.code==='attendance-pointer-missing') throw error;
+        throw Object.assign(new Error('V2 출석 데이터를 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.'),{
+          code:error?.code||'v2-attendance-write-failed',cause:error,
+        });
       }
-      let degraded=false;
-      if(config.mode==='v2-read'){
-        try{
-          await legacy[legacyMethod](current=>applyChangedKeys(current,before,after),input);
-        }catch(error){
-          degraded=true;
-        }
-      }
-      diagnostic({...base,outcome:degraded?'backup-error':'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-      return {[outputField]:after,primary:'v2',degraded,changed};
+      diagnostic({...base,outcome:'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
+      return {[outputField]:after,primary:'v2',degraded:false,changed};
     }
     function updateAttendance(mutator,input){ return updateMap('attendance',mutator,input); }
     function updateGuests(mutator,input){ return updateMap('guests',mutator,input); }
     function setManyAttendance(input){
-      return updateAttendance(()=>clone(objectMap(input?.after)),input);
+      return updateAttendance(()=>clone(objectMap(input?.after)),{
+        ...(input||{}),operationType:text(input?.operationType)||'attendance-batch',
+      });
     }
     function diagnostics(limit){
       const count=Math.max(0,Math.min(MAX_DIAGNOSTICS,Number(limit)||MAX_DIAGNOSTICS));

@@ -3,14 +3,14 @@
 
   const MODES=Object.freeze(['v1','shadow','verify','v2-read','v2']);
   const MAX_RANGE_DATES=10;
-  const MAX_BATCH_CHANGES=450;
+  const MAX_BATCH_CHANGES=400;
   const ATTENDANCE_COLLECTIONS=Object.freeze(['attendanceRecords','attendanceGuests']);
+  const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
+  const RETRYABLE_CODES=new Set(['cancelled','deadline-exceeded','internal','resource-exhausted','unavailable']);
+  let operationSequence=0;
 
   function text(value){ return String(value==null?'':value).trim(); }
-  function clone(value){
-    if(value==null) return value;
-    return JSON.parse(JSON.stringify(value));
-  }
+  function clone(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
   function baseStore(){
     const store=global.SCScheduleV2Store;
     if(!store||typeof store.safeDocId!=='function') throw new Error('SCScheduleV2Store is required');
@@ -21,26 +21,61 @@
     if(!value||typeof value.compareLegacyRows!=='function') throw new Error('SCV2AttendanceModel is required');
     return value;
   }
-  function defaultConfig(branchId){
+  function attendanceDefault(branchId){
     return {mode:'v1',generationId:'',branchId:text(branchId),valid:false};
   }
+  function defaultConfig(branchId){
+    return {
+      mode:'v1',generationId:'',branchId:text(branchId),epoch:0,revision:0,
+      valid:false,compatibilityValid:false,compatibilityCode:'attendance-pointer-missing',
+    };
+  }
   function normalizeConfig(raw,branchId,exists){
+    const branch=text(branchId);
+    if(!exists||!raw||typeof raw!=='object') return attendanceDefault(branch);
+    const mode=text(raw.mode);
+    const generationId=text(raw.generationId);
+    const storedBranch=text(raw.branchId);
+    const valid=MODES.includes(mode)&&storedBranch===branch&&(mode==='v1'||!!generationId);
+    if(!valid) return attendanceDefault(branch);
+    return {mode,generationId:mode==='v1'?'':generationId,branchId:branch,valid:true};
+  }
+  function normalizeOperationalConfig(raw,branchId,exists){
     const branch=text(branchId);
     if(!exists||!raw||typeof raw!=='object') return defaultConfig(branch);
     const mode=text(raw.mode);
     const generationId=text(raw.generationId);
-    const storedBranch=text(raw.branchId);
-    const validMode=MODES.includes(mode);
-    const validBranch=storedBranch===branch;
-    const validGeneration=mode==='v1'||!!generationId;
-    if(!validMode||!validBranch||!validGeneration) return defaultConfig(branch);
-    return {mode,generationId:mode==='v1'?'':generationId,branchId:branch,valid:true};
+    const epoch=Number(raw.epoch);
+    const revision=Number(raw.revision);
+    const valid=MODES.includes(mode)&&text(raw.branchId)===branch
+      &&(mode==='v1'||!!generationId)
+      &&Number.isSafeInteger(epoch)&&epoch>=0
+      &&Number.isSafeInteger(revision)&&revision>=0;
+    if(!valid) return defaultConfig(branch);
+    return {mode,generationId:mode==='v1'?'':generationId,branchId:branch,epoch,revision,valid:true};
+  }
+  function combinedConfig(operational,attendance,branchId){
+    const authoritative=operational?.valid?operational:defaultConfig(branchId);
+    const compatibilityValid=!!(
+      authoritative.valid&&attendance?.valid
+      &&attendance.branchId===authoritative.branchId
+      &&attendance.mode===authoritative.mode
+      &&attendance.generationId===authoritative.generationId
+    );
+    return {
+      mode:authoritative.mode,generationId:authoritative.generationId,
+      branchId:authoritative.branchId,epoch:Number(authoritative.epoch)||0,
+      revision:Number(authoritative.revision)||0,valid:authoritative.valid===true,
+      compatibilityValid,
+      compatibilityCode:compatibilityValid?'':(
+        attendance?.valid?'attendance-pointer-mismatch':'attendance-pointer-missing'
+      ),
+    };
   }
   function snapshotRows(snapshot){
     const rows=[];
-    if(!snapshot||typeof snapshot.forEach!=='function') return rows;
-    snapshot.forEach(doc=>{
-      const value=doc&&typeof doc.data==='function'?(doc.data()||{}):{};
+    snapshot?.forEach?.(doc=>{
+      const value=doc?.data?.()||{};
       rows.push({...value,id:text(value.id)||text(doc?.id)});
     });
     return rows;
@@ -52,6 +87,11 @@
       return counts;
     },{});
   }
+  function defaultOperationId(){
+    if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
+    operationSequence=(operationSequence+1)%1000000;
+    return `attendance_${Date.now().toString(36)}_${operationSequence.toString(36)}`;
+  }
 
   function create(options){
     const db=options?.db;
@@ -60,9 +100,30 @@
     if(!branchId) throw new Error('지점 정보가 필요합니다.');
     const safeDocId=baseStore().safeDocId;
     const branchRef=db.collection('scheduleV2').doc(safeDocId(branchId));
-    const configRef=branchRef.collection('runtime').doc('attendance');
+    const runtimeRef=branchRef.collection('runtime');
+    const attendanceConfigRef=runtimeRef.doc('attendance');
+    const operationalConfigRef=runtimeRef.doc('operational');
+    let attendanceConfig=attendanceDefault(branchId);
+    let operationalConfig=defaultConfig(branchId);
     let activeConfig=defaultConfig(branchId);
+    const maxMutationAttempts=Math.max(1,Math.min(3,Number(options?.maxMutationAttempts||2)||2));
+    const mutateCallable=createMutateCallable(options);
 
+    function createMutateCallable(input){
+      if(typeof input?.mutate==='function') return input.mutate;
+      const functions=input?.functions||(
+        global.firebase&&typeof global.firebase.app==='function'
+          ?global.firebase.app().functions('asia-northeast3')
+          :null
+      );
+      if(!functions||typeof functions.httpsCallable!=='function') return async()=>{
+        throw Object.assign(new Error('V2 operational callable is unavailable.'),{
+          code:'operational-callable-unavailable',
+        });
+      };
+      const invoke=functions.httpsCallable('mutateScheduleV2Operational');
+      return async request=>(await invoke(request))?.data;
+    }
     function generationRef(generationId){
       return branchRef.collection('generations').doc(safeDocId(generationId));
     }
@@ -79,32 +140,48 @@
       return generationRef(generationId).collection(name);
     }
     async function readConfig(){
-      const snapshot=await configRef.get();
-      activeConfig=normalizeConfig(snapshot?.data?.(),branchId,!!snapshot?.exists);
+      const [operationalSnapshot,attendanceSnapshot]=await Promise.all([
+        operationalConfigRef.get(),attendanceConfigRef.get(),
+      ]);
+      operationalConfig=normalizeOperationalConfig(
+        operationalSnapshot?.data?.(),branchId,!!operationalSnapshot?.exists,
+      );
+      attendanceConfig=normalizeConfig(
+        attendanceSnapshot?.data?.(),branchId,!!attendanceSnapshot?.exists,
+      );
+      activeConfig=combinedConfig(operationalConfig,attendanceConfig,branchId);
       return clone(activeConfig);
     }
     function subscribeConfig(next,error){
-      return configRef.onSnapshot(snapshot=>{
-        activeConfig=normalizeConfig(snapshot?.data?.(),branchId,!!snapshot?.exists);
-        if(typeof next==='function') next(clone(activeConfig));
+      let operationalReady=false;
+      let attendanceReady=false;
+      function publish(){
+        if(!operationalReady||!attendanceReady) return;
+        activeConfig=combinedConfig(operationalConfig,attendanceConfig,branchId);
+        next?.(clone(activeConfig));
+      }
+      const stopOperational=operationalConfigRef.onSnapshot(snapshot=>{
+        operationalConfig=normalizeOperationalConfig(snapshot?.data?.(),branchId,!!snapshot?.exists);
+        operationalReady=true;publish();
       },error);
+      const stopAttendance=attendanceConfigRef.onSnapshot(snapshot=>{
+        attendanceConfig=normalizeConfig(snapshot?.data?.(),branchId,!!snapshot?.exists);
+        attendanceReady=true;publish();
+      },error);
+      return ()=>{stopOperational?.();stopAttendance?.();};
     }
     async function setConfig(config){
-      const requested={
-        mode:text(config?.mode),
-        generationId:text(config?.generationId),
-        branchId,
-      };
-      const normalized=normalizeConfig(requested,branchId,true);
+      const normalized=normalizeConfig({
+        mode:text(config?.mode),generationId:text(config?.generationId),branchId,
+      },branchId,true);
       if(!normalized.valid) throw new Error('올바른 V2 출석 전환 설정이 아닙니다.');
-      await configRef.set({
-        mode:normalized.mode,
-        generationId:normalized.generationId,
-        branchId:normalized.branchId,
-        updatedAt:new Date().toISOString(),
+      await attendanceConfigRef.set({
+        mode:normalized.mode,generationId:normalized.generationId,
+        branchId:normalized.branchId,updatedAt:new Date().toISOString(),
       },{merge:true});
-      activeConfig=normalized;
-      return clone(activeConfig);
+      attendanceConfig=normalized;
+      activeConfig=combinedConfig(operationalConfig,attendanceConfig,branchId);
+      return clone(normalized);
     }
     function rangeDates(values){
       const dates=[];
@@ -122,127 +199,113 @@
       const tabId=text(input?.tabId);
       if(!tabId) throw new Error('출석 시간표 탭이 필요합니다.');
       const dates=rangeDates(input?.dates);
-      const filters=collection=>collection
-        .where('tabId','==',tabId)
-        .where('date','in',dates)
-        .get();
+      const read=name=>collectionRef(generationId,name)
+        .where('tabId','==',tabId).where('date','in',dates).get();
       const [recordSnapshot,guestSnapshot]=await Promise.all([
-        filters(collectionRef(generationId,'attendanceRecords')),
-        filters(collectionRef(generationId,'attendanceGuests')),
+        read('attendanceRecords'),read('attendanceGuests'),
       ]);
       const records=snapshotRows(recordSnapshot);
       const guests=snapshotRows(guestSnapshot);
-      return {
-        branchId,generationId,tabId,dates:dates.slice(),records,guests,
-        maps:model().mapsFromRows(records,guests),
-      };
+      return {branchId,generationId,tabId,dates:dates.slice(),records,guests,maps:model().mapsFromRows(records,guests)};
     }
-    function storedRow(row,generationId){
-      return {...clone(row),branchId,generationId};
+    async function readWholeMap(kind,tabId,generationId){
+      const collection=kind==='attendance'?'attendanceRecords':'attendanceGuests';
+      const rows=snapshotRows(await collectionRef(generationId,collection).where('tabId','==',tabId).get());
+      const maps=model().mapsFromRows(kind==='attendance'?rows:[],kind==='guests'?rows:[]);
+      if(maps.issues?.length) throw Object.assign(new Error('V2 출석 데이터 형식을 확인할 수 없습니다.'),{code:'invalid-attendance-data'});
+      return clone(kind==='attendance'?maps.attendance:maps.guests);
     }
-    async function setRecord(record){
-      const generationId=requireGeneration(record?.generationId);
-      const id=text(record?.id);
-      if(!id) throw new Error('출석 문서 ID가 필요합니다.');
-      const ref=collectionRef(generationId,'attendanceRecords').doc(safeDocId(id));
-      await db.runTransaction(async transaction=>{
-        transaction.set(ref,storedRow(record,generationId),{merge:false});
-      });
-      return storedRow(record,generationId);
+    function applyVisibleChanges(current,before,after){
+      const next=clone(current||{});
+      const diff=model().diffLegacyMaps(before||{},after||{});
+      diff.upserts.forEach(change=>{next[change.legacyKey]=clone(change.raw);});
+      diff.deletes.forEach(key=>{delete next[key];});
+      return next;
     }
-    async function deleteRecord(recordId,generation){
-      const generationId=requireGeneration(generation);
-      const id=text(recordId);
-      if(!id) throw new Error('삭제할 출석 문서 ID가 필요합니다.');
-      const ref=collectionRef(generationId,'attendanceRecords').doc(safeDocId(id));
-      await db.runTransaction(async transaction=>{ transaction.delete(ref); });
-      return {id,generationId,deleted:true};
+    function storageKey(kind,tabId,courseType){
+      const bangteuk=text(courseType)==='bangteuk';
+      if(kind==='attendance') return bangteuk?`swim_bt_attendance_${tabId}`:'swim_attendance';
+      if(kind==='guests') return bangteuk?`swim_bt_att_guests_${tabId}`:'swim_att_guests';
+      throw Object.assign(new Error('Invalid attendance mutation kind.'),{code:'invalid-attendance-kind'});
     }
-    async function replaceGuestGroup(input){
-      const generationId=requireGeneration(input?.generationId);
-      const rows=Array.isArray(input?.rows)?input.rows:[];
-      const existingRows=Array.isArray(input?.existingRows)?input.existingRows:null;
-      if(!existingRows) throw new Error('기존 추가 원생 목록이 필요합니다.');
-      const desiredIds=new Set(rows.map(row=>text(row?.id)).filter(Boolean));
-      const batch=db.batch();
-      existingRows.forEach(row=>{
-        const id=text(row?.id);
-        if(id&&!desiredIds.has(id)) batch.delete(collectionRef(generationId,'attendanceGuests').doc(safeDocId(id)));
-      });
-      rows.forEach(row=>{
-        const id=text(row?.id);
-        if(!id) throw new Error('추가 원생 문서 ID가 필요합니다.');
-        batch.set(
-          collectionRef(generationId,'attendanceGuests').doc(safeDocId(id)),
-          storedRow(row,generationId),
-          {merge:false}
-        );
-      });
-      await batch.commit();
-      return {generationId,written:rows.length,deleted:existingRows.filter(row=>!desiredIds.has(text(row?.id))).length};
+    function callableCode(error){
+      return text(error?.code).toLowerCase()
+        .replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
     }
-    async function writeRecordBatch(changes,generation){
-      const list=Array.isArray(changes)?changes:[];
-      if(list.length>MAX_BATCH_CHANGES) throw new Error('출석 일괄 변경은 한 번에 450개까지만 가능합니다.');
-      const generationId=requireGeneration(generation);
-      if(!list.length) return {generationId,written:0,deleted:0};
-      const batch=db.batch();
-      let written=0;
-      let deleted=0;
-      list.forEach(change=>{
-        const collection=text(change?.collection);
-        const id=text(change?.id||change?.row?.id);
-        if(!id) throw new Error('출석 일괄 변경 문서 ID가 필요합니다.');
-        const ref=collectionRef(generationId,collection).doc(safeDocId(id));
-        if(change?.type==='delete'){
-          batch.delete(ref);deleted+=1;
-        }else{
-          batch.set(ref,storedRow(change?.row||change?.value||{},generationId),{merge:false});written+=1;
+    async function invokeMutation(request){
+      let lastError;
+      for(let attempt=0;attempt<maxMutationAttempts;attempt+=1){
+        try{return await mutateCallable(clone(request));}
+        catch(error){
+          lastError=error;
+          if(!RETRYABLE_CODES.has(callableCode(error))||attempt+1>=maxMutationAttempts) throw error;
         }
+      }
+      throw lastError;
+    }
+    async function mutateMap(input){
+      const latest=await readConfig();
+      if(!latest.valid||!V2_AUTHORITY_MODES.has(latest.mode)){
+        throw Object.assign(new Error('V2 운영 출석 저장이 활성화되지 않았습니다.'),{code:'v2-attendance-inactive'});
+      }
+      if(!latest.compatibilityValid){
+        throw Object.assign(new Error('출석 전환 설정과 운영 전환 설정이 일치하지 않아 저장을 중단했습니다.'),{
+          code:latest.compatibilityCode||'attendance-pointer-mismatch',
+        });
+      }
+      const kind=text(input?.kind);
+      const tabId=text(input?.tabId);
+      const courseType=text(input?.courseType);
+      const key=storageKey(kind,tabId,courseType);
+      const fullMap=await readWholeMap(kind,tabId,latest.generationId);
+      const nextMap=applyVisibleChanges(fullMap,input?.before,input?.after);
+      const id=text(input?.operationId)||defaultOperationId();
+      const operationType=text(input?.operationType)||(
+        kind==='guests'?'attendance-guest':'attendance-update'
+      );
+      const request={
+        branchId,generationId:latest.generationId,expectedEpoch:latest.epoch,
+        operationId:id,operationType,keys:[key],beforeRevision:latest.revision,
+        nextValues:{[key]:JSON.stringify(nextMap)},removedKeys:[],
+      };
+      const response=await invokeMutation(request);
+      if(!response||response.committed!==true||text(response.operationId)!==id
+        ||Number(response.revision)!==latest.revision+1){
+        throw Object.assign(new Error('Invalid V2 operational response.'),{code:'invalid-operational-response'});
+      }
+      operationalConfig={...operationalConfig,revision:Number(response.revision)};
+      activeConfig={...activeConfig,revision:Number(response.revision)};
+      return clone(response);
+    }
+    async function directWriteDisabled(){
+      throw Object.assign(new Error('V2 attendance writes require the operational callable.'),{
+        code:'direct-v2-write-disabled',
       });
-      await batch.commit();
-      return {generationId,written,deleted};
     }
     function compareRange(input){
       const comparison=model().compareLegacyRows({
         attendance:input?.legacyAttendance||input?.attendance,
         guests:input?.legacyGuests||input?.guestMap||input?.guestsMap||input?.guests,
         records:input?.records,
-        guestRows:input?.guestRows||input?.v2Guests||(
-          Array.isArray(input?.guests)?input.guests:[]
-        ),
+        guestRows:input?.guestRows||input?.v2Guests||(Array.isArray(input?.guests)?input.guests:[]),
       });
-      const diagnostic={
-        branchId,
-        mode:activeConfig.mode,
-        ready:comparison.ready,
-        mismatchCount:comparison.mismatchCount,
-        counts:clone(comparison.counts),
+      return {...comparison,diagnostic:{
+        branchId,mode:activeConfig.mode,ready:comparison.ready,
+        mismatchCount:comparison.mismatchCount,counts:clone(comparison.counts),
         issueTypes:issueTypeCounts(comparison.issues),
-      };
-      return {...comparison,diagnostic};
+      }};
     }
 
     return Object.freeze({
-      readConfig,
-      subscribeConfig,
-      setConfig,
-      readRange,
-      setRecord,
-      deleteRecord,
-      replaceGuestGroup,
-      writeRecordBatch,
-      compareRange,
-      currentConfig(){ return clone(activeConfig); },
+      readConfig,subscribeConfig,setConfig,readRange,mutateMap,compareRange,
+      setRecord:directWriteDisabled,deleteRecord:directWriteDisabled,
+      replaceGuestGroup:directWriteDisabled,writeRecordBatch:directWriteDisabled,
+      currentConfig(){return clone(activeConfig);},
     });
   }
 
   global.SCV2AttendanceStore=Object.freeze({
-    MODES,
-    MAX_RANGE_DATES,
-    MAX_BATCH_CHANGES,
-    ATTENDANCE_COLLECTIONS,
-    normalizeConfig,
-    create,
+    MODES,MAX_RANGE_DATES,MAX_BATCH_CHANGES,ATTENDANCE_COLLECTIONS,
+    normalizeConfig,normalizeOperationalConfig,create,
   });
 })(typeof window!=='undefined'?window:globalThis);

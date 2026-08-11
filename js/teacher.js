@@ -454,19 +454,34 @@ function subscribeChanges(){
 function _canWriteTeacherKey(key,label){
   return !(window.SCAuth && !SCAuth.requireWriteKey(key,label||'저장'));
 }
-function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); MARK_MAP=normalizeStoredValue('swim_mark',MARK_MAP); return _teacherWrites.set('swim_mark',JSON.stringify(MARK_MAP),{label:'보강/결석 처리'}); }
+function saveMark(){ if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); MARK_MAP=normalizeStoredValue('swim_mark',MARK_MAP); return _teacherWrites.set('swim_mark',JSON.stringify(MARK_MAP),{label:'보강/결석 처리',operationType:'makeup-update'}); }
 function saveRequests(){ if(!_canWriteTeacherKey('swim_requests','요청 처리')) return Promise.reject(new Error('저장 권한이 없습니다')); REQUESTS=normalizeStoredValue('swim_requests',REQUESTS); return _teacherWrites.set('swim_requests',JSON.stringify(REQUESTS),{label:'요청 처리'}); }
 function saveAttendance(){ const key=teacherAttendanceStorageKeys().attendance; if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다')); ATTENDANCE=normalizeStoredValue(key,ATTENDANCE); return _teacherWrites.set(key,JSON.stringify(ATTENDANCE),{label:'출석 체크'}); }
 function saveAttGuests(){ const key=teacherAttendanceStorageKeys().attGuests; if(!_canWriteTeacherKey(key,'출석부 추가')) return Promise.reject(new Error('저장 권한이 없습니다')); ATT_GUESTS=normalizeStoredValue(key,ATT_GUESTS); return _teacherWrites.set(key,JSON.stringify(ATT_GUESTS),{label:'출석부 추가'}); }
-function saveDaySnapshot(ds){
+function teacherSnapshotOperationId(ds,scope){
+  const branch=getBranchInfo();
+  return ['attendance_snapshot',branch?.id||'branch',scope||teacherDaySnapshotScope(),String(ds||'')]
+    .join('_').replace(/[^A-Za-z0-9_-]/g,'_').slice(0,128);
+}
+async function saveDaySnapshot(ds){
   const date=String(ds||'');
   const snapshot=DAY_SNAPSHOT[date];
   const key=teacherDaySnapshotKey(date);
   if(!date||!snapshot) return Promise.resolve(false);
   if(!_canWriteTeacherKey(key,'출석부 스냅샷')) return Promise.reject(new Error('저장 권한이 없습니다'));
+  const existing=parseStoredJSON(key,(await _fb.child(key).once('value')).val(),null);
+  if(isTeacherDaySnapshot(existing)){
+    if(JSON.stringify(existing)===JSON.stringify(snapshot)) return false;
+    throw Object.assign(new Error('이미 생성된 출석부 스냅샷은 변경할 수 없습니다.'),{
+      code:'attendance-snapshot-immutable',
+    });
+  }
   const normalized=normalizeStoredValue(key,snapshot);
   cacheTeacherDaySnapshot(date,normalized);
-  return _teacherWrites.set(key,JSON.stringify(normalized),{label:'출석부 스냅샷'});
+  return _teacherWrites.set(key,JSON.stringify(normalized),{
+    label:'출석부 스냅샷',operationType:'attendance-snapshot',
+    operationId:teacherSnapshotOperationId(date),
+  });
 }
 function _updateLegacyTeacherAttendanceMapTx(mutator,input){
   const key=teacherAttendanceStorageKeys().attendance;
@@ -485,12 +500,13 @@ function _updateLegacyTeacherAttendanceMapTx(mutator,input){
     return ATTENDANCE;
   });
 }
-function updateAttendanceMapTx(mutator){
+function updateAttendanceMapTx(mutator,meta){
   const key=teacherAttendanceStorageKeys().attendance;
   if(!_canWriteTeacherKey(key,'출석 체크')) return Promise.reject(new Error('저장 권한이 없습니다'));
   const runtime=getTeacherOperationalAttendanceRuntime();
-  if(!runtime) return _updateLegacyTeacherAttendanceMapTx(mutator,teacherAttendanceOperationContext());
-  return runtime.updateAttendance(mutator,teacherAttendanceOperationContext());
+  const context={...teacherAttendanceOperationContext(),...(meta||{})};
+  if(!runtime) return _updateLegacyTeacherAttendanceMapTx(mutator,context);
+  return runtime.updateAttendance(mutator,context);
 }
 function _updateLegacyTeacherAttGuestsMapTx(mutator,input){
   const key=teacherAttendanceStorageKeys().attGuests;
@@ -516,7 +532,7 @@ function updateAttGuestsMapTx(mutator){
   if(!runtime) return _updateLegacyTeacherAttGuestsMapTx(mutator,teacherAttendanceOperationContext());
   return runtime.updateGuests(mutator,teacherAttendanceOperationContext());
 }
-function updateMarkTx(mutator){
+function updateMarkTx(mutator,meta){
   if(!_canWriteTeacherKey('swim_mark','보강/결석 처리')) return Promise.reject(new Error('저장 권한이 없습니다'));
   if(!_fbReady) return Promise.reject('not ready');
   let abortReason='';
@@ -527,7 +543,7 @@ function updateMarkTx(mutator){
     if(next===undefined) return;
     root[key]=JSON.stringify(normalizeStoredValue(key,next));
     return root;
-  }).then(res=>{
+  },{operationType:meta?.operationType||'makeup-update',...(meta||{})}).then(res=>{
     if(!res.committed) throw new Error(abortReason||'mark transaction aborted');
     MARK_MAP=parseStoredJSON(key,(res.snapshot.val()||{})[key],{});
     return MARK_MAP;
@@ -1933,7 +1949,7 @@ async function markAllPresentToday(){
         }
       });
       return att;
-    });
+    },{operationType:'attendance-batch'});
     if(cnt===0){toast('체크할 학생이 없습니다','err');return;}
     recordTeacherAudit({
       label:'선생님 출석 일괄 체크',

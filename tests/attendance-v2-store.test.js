@@ -111,7 +111,14 @@ function createFakeFirestore(seed={}){
   return db;
 }
 
-function loadStore(db,branchId='yongam'){
+function loadStore(db,branchId='yongam',options={}){
+  const compatibility=db.docs.get(configPath(branchId));
+  if(compatibility&&!db.docs.has(operationalConfigPath(branchId))){
+    db.docs.set(operationalConfigPath(branchId),{
+      mode:compatibility.mode,generationId:compatibility.generationId,
+      branchId:compatibility.branchId,epoch:1,revision:0,
+    });
+  }
   const context={window:{},console,Date,setTimeout,clearTimeout};
   vm.createContext(context);
   for(const file of ['schedule-time.js','schedule-schema-v2.js','attendance-v2-model.js','schedule-v2-store.js','attendance-v2-store.js']){
@@ -119,12 +126,15 @@ function loadStore(db,branchId='yongam'){
   }
   return {
     model:context.window.SCV2AttendanceModel,
-    store:context.window.SCV2AttendanceStore.create({db,branchId}),
+    store:context.window.SCV2AttendanceStore.create({db,branchId,...options}),
   };
 }
 
 function configPath(branch='yongam'){
   return `scheduleV2/${branch}/runtime/attendance`;
+}
+function operationalConfigPath(branch='yongam'){
+  return `scheduleV2/${branch}/runtime/operational`;
 }
 function rowPath(collection,id,generation='gen_1',branch='yongam'){
   return `scheduleV2/${branch}/generations/${generation}/${collection}/${id}`;
@@ -135,11 +145,65 @@ test('missing runtime config fails closed to v1',async()=>{
   const {store}=loadStore(db);
 
   assert.deepEqual(plain(await store.readConfig()),{
-    mode:'v1',generationId:'',branchId:'yongam',valid:false,
+    mode:'v1',generationId:'',branchId:'yongam',epoch:0,revision:0,valid:false,
+    compatibilityValid:false,compatibilityCode:'attendance-pointer-missing',
   });
 });
 
-test('invalid config and a stale generation cannot activate V2 reads',async()=>{
+test('operational config is authoritative and reports a compatibility pointer mismatch',async()=>{
+  const db=createFakeFirestore({
+    [operationalConfigPath()]:{mode:'v2',generationId:'gen_operational',branchId:'yongam',epoch:8,revision:21},
+    [configPath()]:{mode:'v2-read',generationId:'gen_attendance',branchId:'yongam'},
+  });
+  const {store}=loadStore(db);
+
+  assert.deepEqual(plain(await store.readConfig()),{
+    mode:'v2',generationId:'gen_operational',branchId:'yongam',epoch:8,revision:21,
+    valid:true,compatibilityValid:false,compatibilityCode:'attendance-pointer-mismatch',
+  });
+});
+
+test('attendance mutation uses the strict callable, preserves unseen dates, and retries one stable request',async()=>{
+  const visibleKey='4시/월/1/1/2026-08-03';
+  const unseenKey='4시/월/1/1/2026-08-04';
+  const requests=[];
+  const db=createFakeFirestore({
+    [operationalConfigPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:8,revision:21},
+    [configPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam'},
+  });
+  const mutate=async request=>{
+    requests.push(plain(request));
+    if(requests.length===1) throw Object.assign(new Error('retry'),{code:'unavailable'});
+    return {operationId:'attendance_op_1',committed:true,revision:22,changeCount:1,recoveryState:'not-required'};
+  };
+  const {model,store}=loadStore(db,'yongam',{mutate});
+  for(const [legacyKey,raw] of [[visibleKey,{s:'absent'}],[unseenKey,{s:'present'}]]){
+    const row=model.recordFromLegacy({tabId:'regular',courseType:'regular',legacyKey,raw});
+    db.docs.set(rowPath('attendanceRecords',row.id),plain(row));
+  }
+  await store.readConfig();
+  const result=await store.mutateMap({
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[visibleKey]:{s:'absent'}},after:{[visibleKey]:{s:'present'}},
+    operationId:'attendance_op_1',operationType:'attendance-update',
+  });
+
+  assert.equal(result.revision,22);
+  assert.equal(requests.length,2);
+  assert.deepEqual(requests[1],requests[0]);
+  assert.deepEqual(requests[0],{
+    branchId:'yongam',generationId:'gen_1',expectedEpoch:8,
+    operationId:'attendance_op_1',operationType:'attendance-update',
+    keys:['swim_attendance'],beforeRevision:21,
+    nextValues:{swim_attendance:JSON.stringify({
+      [visibleKey]:{s:'present'},[unseenKey]:{s:'present'},
+    })},removedKeys:[],
+  });
+  assert.equal(db.transactions.length,0);
+  assert.equal(db.commits.length,0);
+});
+
+test('operational generation stays authoritative when compatibility metadata becomes invalid',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
   });
@@ -152,7 +216,8 @@ test('invalid config and a stale generation cannot activate V2 reads',async()=>{
 
   db.docs.set(configPath(),{mode:'v2-read',generationId:'',branchId:'yongam'});
   assert.deepEqual(plain(await store.readConfig()),{
-    mode:'v1',generationId:'',branchId:'yongam',valid:false,
+    mode:'v2-read',generationId:'gen_1',branchId:'yongam',epoch:1,revision:0,valid:true,
+    compatibilityValid:false,compatibilityCode:'attendance-pointer-missing',
   });
 });
 
@@ -201,7 +266,7 @@ test('range reads reject more than ten unique dates',async()=>{
   assert.equal(db.queryLog.length,0);
 });
 
-test('one attendance change writes one deterministic document in a transaction',async()=>{
+test('direct attendance document writes are disabled in the browser store',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
   });
@@ -210,19 +275,12 @@ test('one attendance change writes one deterministic document in a transaction',
   const row=model.recordFromLegacy({
     tabId:'regular',courseType:'regular',legacyKey:'4시/월/1/1/2026-08-03',raw:{s:'present'},
   });
-  await store.setRecord(row);
-
-  assert.equal(db.transactions.length,1);
-  assert.equal(db.transactions[0].length,1);
-  assert.deepEqual(plain(db.docs.get(rowPath('attendanceRecords',row.id))),{
-    ...plain(row),branchId:'yongam',generationId:'gen_1',
-  });
-
-  await store.deleteRecord(row.id);
-  assert.equal(db.docs.has(rowPath('attendanceRecords',row.id)),false);
+  await assert.rejects(()=>store.setRecord(row),error=>error?.code==='direct-v2-write-disabled');
+  await assert.rejects(()=>store.deleteRecord(row.id),error=>error?.code==='direct-v2-write-disabled');
+  assert.equal(db.transactions.length,0);
 });
 
-test('guest replacement deletes stale rows and writes only the new group',async()=>{
+test('direct guest replacement is disabled in the browser store',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
     [rowPath('attendanceGuests','guest_stale')]:{id:'guest_stale',tabId:'regular',date:'2026-08-03',legacyKey:'4시/월/1/2026-08-03',payload:{gid:'stale'}},
@@ -233,14 +291,14 @@ test('guest replacement deletes stale rows and writes only the new group',async(
     tabId:'regular',courseType:'regular',legacyKey:'4시/월/1/2026-08-03',index:0,
     raw:{gid:'new_guest',n:'새원생'},
   });
-  await store.replaceGuestGroup({rows:[row],existingRows:[{id:'guest_stale'}]});
-
-  assert.equal(db.docs.has(rowPath('attendanceGuests','guest_stale')),false);
-  assert.equal(db.docs.has(rowPath('attendanceGuests',row.id)),true);
-  assert.equal(db.commits.length,1);
+  await assert.rejects(
+    ()=>store.replaceGuestGroup({rows:[row],existingRows:[{id:'guest_stale'}]}),
+    error=>error?.code==='direct-v2-write-disabled',
+  );
+  assert.equal(db.commits.length,0);
 });
 
-test('record batches reject oversized changes before writing',async()=>{
+test('direct record batches are disabled before writing',async()=>{
   const db=createFakeFirestore({
     [configPath()]:{mode:'v2-read',generationId:'gen_1',branchId:'yongam'},
   });
@@ -250,7 +308,7 @@ test('record batches reject oversized changes before writing',async()=>{
     type:'delete',collection:'attendanceRecords',id:`att_${index}`,
   }));
 
-  await assert.rejects(()=>store.writeRecordBatch(changes),/450개/);
+  await assert.rejects(()=>store.writeRecordBatch(changes),error=>error?.code==='direct-v2-write-disabled');
   assert.equal(db.commits.length,0);
 });
 

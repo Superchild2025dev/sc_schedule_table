@@ -41,6 +41,7 @@ function createSystem(options={}){
   const branchId=options.branchId||"yongam";
   let mode=options.mode||"v1";
   let failV2Read=false;
+  const operations=[];
   const state={legacy:{},v2:{}};
   for(const layer of ["legacy","v2"]){
     for(const tabId of ["regular","summer"]){
@@ -87,7 +88,7 @@ function createSystem(options={}){
   }
   const v2Store={
     async readConfig(){
-      return {mode,generationId:mode==="v1"?"":"gen_ready",branchId,valid:true};
+      return {mode,generationId:mode==="v1"?"":"gen_ready",branchId,epoch:3,revision:9,valid:true,compatibilityValid:true};
     },
     async readRange(input){
       if(failV2Read) throw new Error("forced V2 read failure");
@@ -109,6 +110,19 @@ function createSystem(options={}){
       if(!input.rows.length) delete target[input.legacyKey];
       return {written:input.rows.length};
     },
+    async mutateMap(input){
+      operations.push(plain(input));
+      const target=tab("v2",input.tabId)[input.kind];
+      const diff=modules.model.diffLegacyMaps(input.before,input.after);
+      diff.upserts.forEach(change=>{target[change.legacyKey]=plain(change.raw);});
+      diff.deletes.forEach(legacyKey=>{delete target[legacyKey];});
+      if(mode==="v2-read"){
+        const backup=tab("legacy",input.tabId)[input.kind];
+        diff.upserts.forEach(change=>{backup[change.legacyKey]=plain(change.raw);});
+        diff.deletes.forEach(legacyKey=>{delete backup[legacyKey];});
+      }
+      return {operationId:input.operationId,committed:true,revision:10,recoveryState:"applied"};
+    },
     compareRange(input){
       const comparison=modules.model.compareLegacyRows({
         attendance:input.legacyAttendance,
@@ -123,7 +137,7 @@ function createSystem(options={}){
     return modules.gateway.create({branchId,legacy,v2Store,model:modules.model});
   }
   return {
-    branchId,state,gateway,
+    branchId,state,gateway,operations,
     setMode(next){ mode=next; },
     failReads(value){ failV2Read=!!value; },
     snapshot(){ return plain(state); },
@@ -150,20 +164,22 @@ test("V1 attendance converts to V2 with exact parity",()=>{
   assert.equal(result.mismatchCount,0);
 });
 
-test("shadow mode keeps one regular attendance check identical in V1 and V2",async()=>{
+test("shadow mode writes V1 without a direct browser V2 mirror",async()=>{
   const system=createSystem({mode:"shadow",legacy:{regular:{attendance:{[mondayKey]:{s:"absent"}},guests:{}}}});
   const gateway=system.gateway();
   await gateway.ready();
   await gateway.updateAttendance(map=>({...map,[mondayKey]:{s:"present"}}),{
     ...mondayRange,before:{[mondayKey]:{s:"absent"}},
   });
-  assert.deepEqual(system.state.legacy.regular.attendance,system.state.v2.regular.attendance);
+  assert.equal(system.state.legacy.regular.attendance[mondayKey].s,"present");
+  assert.deepEqual(system.state.v2.regular.attendance,{});
+  assert.equal(system.operations.length,0);
 });
 
 test("bangteuk batch checks never modify regular attendance",async()=>{
   const regular={[mondayKey]:{s:"present"}};
   const system=createSystem({
-    mode:"shadow",
+    mode:"v2",
     legacy:{
       regular:{attendance:regular,guests:{}},
       summer:{attendance:{[summerKey]:{s:"absent"}},guests:{}},
@@ -181,9 +197,31 @@ test("bangteuk batch checks never modify regular attendance",async()=>{
   assert.equal(system.state.v2.summer.attendance[summerKey].s,"present");
 });
 
+test("regular and bangteuk individual and batch writes stay in distinct operational domains",async()=>{
+  const regular={[mondayKey]:{s:"absent"}};
+  const summer={[summerKey]:{s:"absent"}};
+  const system=createSystem({mode:"v2",v2:{regular:{attendance:regular,guests:{}},summer:{attendance:summer,guests:{}}}});
+  const gateway=system.gateway();
+  await gateway.ready();
+  await gateway.updateAttendance(map=>({...map,[mondayKey]:{s:"present"}}),{
+    ...mondayRange,before:regular,operationId:"regular_one",
+  });
+  await gateway.setManyAttendance({
+    owner:"teacher",tabId:"summer",courseType:"bangteuk",dates:["2026-08-03"],
+    before:summer,after:{[summerKey]:{s:"present"}},operationId:"bangteuk_batch",
+  });
+
+  assert.equal(system.state.v2.regular.attendance[mondayKey].s,"present");
+  assert.equal(system.state.v2.summer.attendance[summerKey].s,"present");
+  assert.deepEqual(system.operations.map(item=>[item.tabId,item.courseType,item.operationType]),[
+    ["regular","regular","attendance-update"],
+    ["summer","bangteuk","attendance-batch"],
+  ]);
+});
+
 test("two devices checking different students preserve both changes",async()=>{
   const initial={[mondayKey]:{s:"absent"},[mondayOtherKey]:{s:"absent"}};
-  const system=createSystem({mode:"shadow",legacy:{regular:{attendance:initial,guests:{}}}});
+  const system=createSystem({mode:"v2",v2:{regular:{attendance:initial,guests:{}}}});
   const first=system.gateway();
   const second=system.gateway();
   await Promise.all([first.ready(),second.ready()]);
@@ -193,9 +231,9 @@ test("two devices checking different students preserve both changes",async()=>{
   await second.updateAttendance(map=>({...map,[mondayOtherKey]:{s:"present"}}),{
     ...mondayRange,before:plain(initial),
   });
-  assert.equal(system.state.legacy.regular.attendance[mondayKey].s,"present");
-  assert.equal(system.state.legacy.regular.attendance[mondayOtherKey].s,"present");
-  assert.deepEqual(system.state.v2.regular.attendance,system.state.legacy.regular.attendance);
+  assert.equal(system.state.v2.regular.attendance[mondayKey].s,"present");
+  assert.equal(system.state.v2.regular.attendance[mondayOtherKey].s,"present");
+  assert.deepEqual(system.state.legacy.regular.attendance,{});
 });
 
 test("guest attendance can be added, checked, and deleted in both stores",async()=>{
@@ -279,8 +317,8 @@ test("rollback from v2-read reloads the V1 backup with the latest check",async()
 });
 
 test("branch-scoped attendance systems never share changes",async()=>{
-  const gagyeong=createSystem({branchId:"gagyeong",mode:"shadow"});
-  const yongam=createSystem({branchId:"yongam",mode:"shadow"});
+  const gagyeong=createSystem({branchId:"gagyeong",mode:"v2"});
+  const yongam=createSystem({branchId:"yongam",mode:"v2"});
   const gateway=gagyeong.gateway();
   await gateway.ready();
   await gateway.updateAttendance(map=>({...map,[mondayKey]:{s:"present"}}),{

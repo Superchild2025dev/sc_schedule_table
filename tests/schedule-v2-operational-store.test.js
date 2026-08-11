@@ -358,6 +358,20 @@ test('an explicit daily snapshot mutation scopes itself to the date embedded in 
   assert.deepEqual(loaded.collections.attendanceSnapshotStudents.map(row=>row.date),['2026-08-11']);
 });
 
+test('incomplete snapshot headers and their children stay invisible until completion',async()=>{
+  const collections=selectedFixture();
+  collections.attendanceSnapshots.find(row=>row.id==='snap_regular_b').complete=false;
+  const firestore=createFirestore({collections});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+  const loaded=await store.loadSelection({
+    tabIds:['regular'],domains:['attendance'],dateRange:{dates:['2026-08-12']},
+  });
+
+  assert.deepEqual(loaded.collections.attendanceSnapshots,[]);
+  assert.deepEqual(loaded.collections.attendanceSnapshotStudents,[]);
+  assert.deepEqual(loaded.collections.attendanceSnapshotTeachers,[]);
+});
+
 test('mutation loads complete shared values while keeping tab-owned roster values scoped',async()=>{
   const firestore=createFirestore({collections:selectedFixture()});
   const store=storeApi.create({db:firestore.db,branchId:'yongam',model});

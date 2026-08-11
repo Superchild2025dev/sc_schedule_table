@@ -278,7 +278,7 @@
       appendRows(collections,'tabs',tabs);
       appendRows(collections,'attendanceRecords',records.filter(row=>dateMatches(row,selection.dateRange)));
       appendRows(collections,'attendanceGuests',guests.filter(row=>dateMatches(row,selection.dateRange)));
-      const selectedSnapshots=snapshots.filter(row=>dateMatches(row,selection.dateRange));
+      const selectedSnapshots=snapshots.filter(row=>row.complete!==false&&dateMatches(row,selection.dateRange));
       appendRows(collections,'attendanceSnapshots',selectedSnapshots);
       const snapshotIds=selectedSnapshots.map(row=>row.id);
       const [students,teachers]=await Promise.all([

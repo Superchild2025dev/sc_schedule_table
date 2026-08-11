@@ -32,6 +32,9 @@ const REQUEST_RECOVERY_CODES=new Set(["","primary-pending","primary-expired","ma
 const BRANCH_IDS=Object.freeze(["gagyeong","yongam"]);
 const COLLECTIONS=Object.freeze(Object.values(model.DOMAIN_COLLECTIONS).flat());
 const COLLECTION_SET=new Set(COLLECTIONS);
+const SNAPSHOT_COLLECTIONS=new Set([
+  "attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers",
+]);
 const SAFE_ERROR_CODES=new Set([
   "aborted","already-exists","cancelled","data-loss","deadline-exceeded",
   "failed-precondition","internal","invalid-argument","not-found","out-of-range",
@@ -203,6 +206,9 @@ function baseManifest(input,counts,chunkCount){
     chunkCount,
     changedDocumentRefs:input.changedDocumentRefs,
     deletedDocumentRefs:input.deletedDocumentRefs,
+    snapshotHeaderIds:input.snapshotHeaderIds,
+    snapshotCompletionCount:input.snapshotHeaderIds.length,
+    completedSnapshotHeaders:0,
     ...counts,
   };
 }
@@ -275,6 +281,10 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
       const current=snapshot.exists?snapshot.data()||{}:null;
       const currentRevision=Number(current?.operationalRevision||0);
       const sameOperation=text(current?.lastOperationId)===operationId&&currentRevision===request.beforeRevision+1;
+      if(SNAPSHOT_COLLECTIONS.has(change.collection)){
+        if(request.operationType!=="attendance-snapshot"||change.type==="delete") fail("failed-precondition");
+        if(snapshot.exists&&!sameOperation) fail("failed-precondition");
+      }
       if(currentRevision>request.beforeRevision&&!sameOperation) fail("failed-precondition");
       if(Object.prototype.hasOwnProperty.call(change,"beforeExists")&&!sameOperation){
         if(change.beforeExists!==snapshot.exists) fail("aborted");
@@ -336,6 +346,43 @@ async function reserveEmptyMutation(input,counts){
   });
 }
 
+async function completeSnapshotHeaders(input,chunkCount){
+  const ids=input.snapshotHeaderIds||[];
+  if(!ids.length) return;
+  const {db,request,fingerprint}=input;
+  const runtimeDocument=runtimeRef(db,request.branchId);
+  const manifestDocument=mutationRef(db,request.branchId,request.operationId);
+  await db.runTransaction(async tx=>{
+    const runtimeSnapshot=await tx.get(runtimeDocument);
+    const manifestSnapshot=await tx.get(manifestDocument);
+    const manifest=manifestSnapshot.exists?manifestSnapshot.data()||{}:null;
+    assertManifestFingerprint(manifest,fingerprint);
+    if(manifest?.status==="committed") return;
+    assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
+    if(!manifest||manifest.status!=="committing"||Number(manifest.completedChunks||0)!==chunkCount){
+      fail("failed-precondition");
+    }
+    if(Number(manifest.completedSnapshotHeaders||0)===ids.length) return;
+    const headers=[];
+    for(const id of ids){
+      const ref=generationRef(db,request.branchId,request.generationId)
+        .collection("attendanceSnapshots").doc(safeDocId(id));
+      const snapshot=await tx.get(ref);
+      const value=snapshot.exists?snapshot.data()||{}:null;
+      if(!value||text(value.lastOperationId)!==request.operationId
+        ||Number(value.operationalRevision)!==request.beforeRevision+1){
+        fail("failed-precondition");
+      }
+      headers.push({ref,value});
+    }
+    const nowValue=serverTime(input);
+    headers.forEach(({ref,value})=>tx.set(ref,{...value,complete:true},{merge:false}));
+    tx.set(manifestDocument,{
+      ...manifest,completedSnapshotHeaders:ids.length,updatedAt:nowValue,
+    },{merge:false});
+  });
+}
+
 async function finalizeMutation(input,counts,chunkCount){
   const {db,request,fingerprint}=input;
   const runtimeDocument=runtimeRef(db,request.branchId);
@@ -348,6 +395,9 @@ async function finalizeMutation(input,counts,chunkCount){
     if(manifest?.status==="committed") return resultFromManifest(manifest);
     assertRuntime(runtimeSnapshot.data()||{},request,request.operationId);
     if(!manifest||manifest.status!=="committing"||Number(manifest.completedChunks||0)!==chunkCount) fail("failed-precondition");
+    if(Number(manifest.completedSnapshotHeaders||0)!==Number(manifest.snapshotCompletionCount||0)){
+      fail("failed-precondition");
+    }
 
     const recoveryState=text(runtimeSnapshot.data()?.mode)==="v2-read"?"pending":"not-required";
     const resultCounts={
@@ -386,8 +436,18 @@ async function commitV2Mutation(rawInput){
   if(!input.db||typeof input.db.runTransaction!=="function"||!plainObject(input.request)) fail("invalid-argument");
   input.now=normalizeNow(input.now);
   input.fingerprint=text(input.fingerprint)||requestFingerprint(input.request);
-  const changes=(Array.isArray(input.changes)?input.changes:[]).map(normalizeChange);
+  const changes=(Array.isArray(input.changes)?input.changes:[]).map(normalizeChange).map(change=>{
+    if(input.request.operationType==="attendance-snapshot"
+      &&change.collection==="attendanceSnapshots"&&change.type==="set"){
+      return {...change,value:{...change.value,complete:false}};
+    }
+    return change;
+  });
   if(changes.length>MAX_DOCUMENT_CHANGES) fail("resource-exhausted");
+  input.snapshotHeaderIds=changes
+    .filter(change=>change.collection==="attendanceSnapshots"&&change.type==="set")
+    .map(change=>change.id);
+  if(input.snapshotHeaderIds.length>DOCUMENT_CHUNK_SIZE) fail("resource-exhausted");
   input.changedDocumentRefs=changes
     .filter(change=>change.type==="set")
     .map(change=>`${change.collection}/${safeDocId(change.id)}`);
@@ -412,7 +472,9 @@ async function commitV2Mutation(rawInput){
     });
     const completedChunks=Math.max(0,Number(manifest.completedChunks||0)||0);
     const originalChunkCount=Math.max(0,Number(manifest.chunkCount||0)||0);
+    input.snapshotHeaderIds=clone(manifest.snapshotHeaderIds||[]);
     if(completedChunks===originalChunkCount){
+      await completeSnapshotHeaders(input,originalChunkCount);
       return finalizeMutation(input,counts,originalChunkCount);
     }
     if(completedChunks+chunkCount!==originalChunkCount) fail("failed-precondition");
@@ -433,6 +495,7 @@ async function commitV2Mutation(rawInput){
       input,changes.slice(offset,offset+DOCUMENT_CHUNK_SIZE),chunkIndex,targetChunkCount,originalCounts,
     );
   }
+  await completeSnapshotHeaders(input,targetChunkCount);
   return finalizeMutation(input,originalCounts,targetChunkCount);
 }
 
@@ -464,6 +527,7 @@ function modelCollections(storedCollections){
       delete value.generationId;
       delete value.operationalRevision;
       delete value.lastOperationId;
+      if(name==="attendanceSnapshots") delete value.complete;
       return value;
     });
   });

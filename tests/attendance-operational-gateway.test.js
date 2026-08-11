@@ -21,7 +21,7 @@ function loadGateway(options){
 }
 
 function fixture(mode,overrides={}){
-  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,compares:0,order:[]};
+  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:[]};
   let legacyAttendance=plain(overrides.legacyAttendance||{'4시/월/1/1/2026-08-03':{s:'absent'}});
   let legacyGuests=plain(overrides.legacyGuests||{});
   let v2Attendance=plain(overrides.v2Attendance||legacyAttendance);
@@ -74,7 +74,12 @@ function fixture(mode,overrides={}){
   const v2Store={
     async readConfig(){
       if(overrides.configError) throw new Error('config failed');
-      return {mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',valid:true};
+      return {
+        mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',
+        epoch:7,revision:12,valid:true,
+        compatibilityValid:overrides.compatibilityValid!==false,
+        compatibilityCode:overrides.compatibilityValid===false?'attendance-pointer-mismatch':'',
+      };
     },
     async readRange(){
       calls.v2Reads+=1;calls.order.push('v2-read');
@@ -100,6 +105,25 @@ function fixture(mode,overrides={}){
       const key=input.legacyKey||input.rows[0]?.legacyKey||input.existingRows[0]?.legacyKey;
       if(key) v2Guests[key]=input.rows.map(row=>plain(row.payload));
       return {written:input.rows.length};
+    },
+    async mutateMap(input){
+      calls.operationalMutations.push(plain(input));calls.order.push('operational-mutation');
+      if(overrides.operationalWriteError||overrides.v2WriteError) throw Object.assign(new Error('operational failed'),{code:'failed-precondition'});
+      const diff=model.diffLegacyMaps(input.before,input.after);
+      const apply=current=>{
+        const next=plain(current);
+        diff.upserts.forEach(change=>{next[change.legacyKey]=plain(change.raw);});
+        diff.deletes.forEach(legacyKey=>{delete next[legacyKey];});
+        return next;
+      };
+      if(input.kind==='attendance'){
+        v2Attendance=apply(v2Attendance);
+        if(mode==='v2-read') legacyAttendance=apply(legacyAttendance);
+      }else{
+        v2Guests=apply(v2Guests);
+        if(mode==='v2-read') legacyGuests=apply(legacyGuests);
+      }
+      return {operationId:input.operationId,committed:true,revision:13,changeCount:Object.keys(input.after||{}).length,recoveryState:'applied'};
     },
     compareRange(input){
       calls.compares+=1;calls.order.push('compare');
@@ -133,10 +157,40 @@ test('v1 mode reads and writes only the legacy attendance map',async()=>{
   assert.equal(loaded.primary,'v1');
   assert.equal(saved.primary,'v1');
   assert.equal(saved.attendance[key].s,'present');
-  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,compares:0,order:['legacy-read','legacy-write']});
+  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:['legacy-read','legacy-write']});
 });
 
-test('shadow keeps V1 authoritative when V2 mirroring fails',async()=>{
+test('a compatibility pointer mismatch blocks a confirmed V2 save with redacted diagnostics',async()=>{
+  const env=fixture('v2',{compatibilityValid:false});
+  await env.gateway.ready();
+
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present',n:'private'}}),{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-pointer-mismatch');
+
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,0);
+  assert.doesNotMatch(JSON.stringify(env.gateway.diagnostics()),/private/);
+});
+
+test('confirmed V2 attendance uses one idempotent operational mutation request',async()=>{
+  const env=fixture('v2');
+  await env.gateway.ready();
+  const result=await env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:{[key]:{s:'absent'}},operationId:'attendance_regular_1',
+  });
+
+  assert.equal(result.primary,'v2');
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,1);
+  assert.deepEqual(env.calls.operationalMutations[0],{
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[key]:{s:'absent'}},after:{[key]:{s:'present'}},
+    operationId:'attendance_regular_1',operationType:'attendance-update',
+  });
+});
+
+test('shadow keeps V1 authoritative without direct browser V2 mirroring',async()=>{
   const env=fixture('shadow',{v2WriteError:true});
   await env.gateway.ready();
   const result=await env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
@@ -144,10 +198,11 @@ test('shadow keeps V1 authoritative when V2 mirroring fails',async()=>{
   });
 
   assert.equal(result.attendance[key].s,'present');
-  assert.equal(result.degraded,true);
+  assert.equal(result.degraded,false);
   assert.equal(result.primary,'v1');
   assert.equal(env.calls.legacyAttendanceWrites,1);
-  assert.equal(env.calls.v2Batches,1);
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,0);
 });
 
 test('verify writes V1 first then awaits V2 and parity comparison',async()=>{
@@ -159,7 +214,7 @@ test('verify writes V1 first then awaits V2 and parity comparison',async()=>{
 
   assert.equal(result.primary,'v1');
   assert.equal(result.degraded,false);
-  assert.deepEqual(env.calls.order,['legacy-write','v2-write','v2-read','compare']);
+  assert.deepEqual(env.calls.order,['legacy-write','v2-read','compare']);
   assert.equal(env.calls.compares,1);
 });
 
@@ -171,14 +226,15 @@ test('v2-read loads V2 and never mixes a failed range with V1',async()=>{
   assert.equal(env.calls.legacyLoads,0);
 });
 
-test('v2-read writes V2 before its V1 backup and blocks backup after V2 failure',async()=>{
+test('v2-read uses the callable recovery path and blocks recovery after V2 failure',async()=>{
   const success=fixture('v2-read');
   await success.gateway.ready();
   const result=await success.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
     ...range,before:{[key]:{s:'absent'}},
   });
   assert.equal(result.primary,'v2');
-  assert.deepEqual(success.calls.order,['v2-write','legacy-write']);
+  assert.deepEqual(success.calls.order,['operational-mutation']);
+  assert.equal(success.calls.legacyAttendanceWrites,0);
 
   const failed=fixture('v2-read',{v2WriteError:true});
   await failed.gateway.ready();
@@ -236,7 +292,7 @@ test('v2 mode does not read or write the V1 attendance map',async()=>{
   });
 
   assert.equal(env.calls.v2Reads,1);
-  assert.equal(env.calls.v2Batches,1);
+  assert.equal(env.calls.operationalMutations.length,1);
   assert.equal(env.calls.legacyLoads,0);
   assert.equal(env.calls.legacyAttendanceWrites,0);
 });
