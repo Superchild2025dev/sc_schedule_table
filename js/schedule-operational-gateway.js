@@ -8,6 +8,7 @@
 
   const V2_MODES=new Set(['v2-read','v2']);
   const V1_MODES=new Set(['v1','shadow','verify']);
+  const GENERATION_ID_RE=/^[A-Za-z0-9_-]{1,128}$/;
   const AUTHORITY_MODES=new Set([...V1_MODES,...V2_MODES]);
   const RETRYABLE_CODES=new Set(['cancelled','deadline-exceeded','internal','resource-exhausted','unavailable']);
   const AMBIGUOUS_TERMINAL_CODES=new Set([...RETRYABLE_CODES,'data-loss','unknown']);
@@ -17,6 +18,7 @@
   function text(value){ return String(value==null?'':value).trim(); }
   function clone(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
   function object(value){ return !!value&&typeof value==='object'&&!Array.isArray(value); }
+  function owns(value,key){ return Object.prototype.hasOwnProperty.call(value,key); }
   function unique(values){ return [...new Set((Array.isArray(values)?values:[]).map(text).filter(Boolean))]; }
   function fail(code,message){ throw Object.assign(new Error(message||code),{code}); }
   function sameValue(left,right){
@@ -161,12 +163,23 @@
     }
     function normalizeConfig(value){
       if(!object(value)) fail('invalid-operational-config','운영 전환 설정을 확인할 수 없습니다.');
+      const required=['branchId','mode','generationId','epoch','revision','valid'];
+      if(required.some(key=>!owns(value,key))
+        ||typeof value.branchId!=='string'||typeof value.mode!=='string'
+        ||typeof value.generationId!=='string'
+        ||typeof value.epoch!=='number'||typeof value.revision!=='number'
+        ||typeof value.valid!=='boolean'
+        ||value.branchId!==text(value.branchId)||value.mode!==text(value.mode)
+        ||value.generationId!==text(value.generationId)
+        ||(value.generationId!==''&&!GENERATION_ID_RE.test(value.generationId))){
+        fail('invalid-operational-config','운영 전환 설정이 올바르지 않습니다.');
+      }
       const next=clone(value);
       next.branchId=text(next.branchId);
       next.mode=text(next.mode);
       next.generationId=text(next.generationId);
-      next.epoch=Number(next.epoch);
-      next.revision=Number(next.revision);
+      next.epoch=value.epoch;
+      next.revision=value.revision;
       next.valid=next.valid===true;
       if(next.branchId!==branchId) fail('invalid-operational-config','선택한 지점과 운영 설정이 다릅니다.');
       if(!next.valid||!AUTHORITY_MODES.has(next.mode)

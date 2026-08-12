@@ -108,7 +108,10 @@ function getOperationalAttendanceRuntime(){
       return _updateLegacyAttGuestsMapTx(mutator,input);
     },
   };
-  const gateway=SCOperationalAttendance.create({branchId:branch.id,legacy,v2Store});
+  const gateway=SCOperationalAttendance.create({
+    branchId:branch.id,legacy,v2Store,
+    onReloadRequired:window.SC_REQUEST_OPERATIONAL_PAGE_RELOAD,
+  });
   _operationalAttendanceRuntime=SCMainAttendanceRuntime.create({
     branchId:branch.id,
     gateway,

@@ -138,9 +138,20 @@ service cloud.firestore {
     }
 
     function hasLegacyScheduleAuthority(branch) {
+      let authority = get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data;
       return exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational)
-        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.branchId == branch
-        && get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data.mode in ["v1", "shadow", "verify"];
+        && authority.keys().hasAll(["branchId", "mode", "generationId", "epoch", "revision"])
+        && authority.branchId is string
+        && authority.branchId == branch
+        && authority.mode is string
+        && authority.mode in ["v1", "shadow", "verify"]
+        && authority.generationId is string
+        && (authority.generationId == "" || authority.generationId.matches("^[A-Za-z0-9_-]{1,128}$"))
+        && (authority.mode == "v1" || authority.generationId.matches("^[A-Za-z0-9_-]{1,128}$"))
+        && authority.epoch is int
+        && authority.epoch >= 0
+        && authority.revision is int
+        && authority.revision >= 0;
     }
 
     function activationFreezeAllowsLegacyWrites(branch) {

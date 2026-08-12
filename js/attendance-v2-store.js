@@ -6,11 +6,15 @@
   const MAX_BATCH_CHANGES=400;
   const ATTENDANCE_COLLECTIONS=Object.freeze(['attendanceRecords','attendanceGuests']);
   const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
+  const GENERATION_ID_RE=/^[A-Za-z0-9_-]{1,128}$/;
   const RETRYABLE_CODES=new Set(['cancelled','deadline-exceeded','internal','resource-exhausted','unavailable']);
+  const AMBIGUOUS_TERMINAL_CODES=new Set([...RETRYABLE_CODES,'data-loss','unknown']);
   let operationSequence=0;
 
   function text(value){ return String(value==null?'':value).trim(); }
   function clone(value){ return value==null?value:JSON.parse(JSON.stringify(value)); }
+  function object(value){ return !!value&&typeof value==='object'&&!Array.isArray(value); }
+  function owns(value,key){ return Object.prototype.hasOwnProperty.call(value,key); }
   function baseStore(){
     const store=global.SCScheduleV2Store;
     if(!store||typeof store.safeDocId!=='function') throw new Error('SCScheduleV2Store is required');
@@ -32,7 +36,13 @@
   }
   function normalizeConfig(raw,branchId,exists){
     const branch=text(branchId);
-    if(!exists||!raw||typeof raw!=='object') return attendanceDefault(branch);
+    const required=['mode','generationId','branchId'];
+    if(!exists||!object(raw)||required.some(key=>!owns(raw,key))
+      ||typeof raw.mode!=='string'||typeof raw.generationId!=='string'
+      ||typeof raw.branchId!=='string'
+      ||raw.mode!==text(raw.mode)||raw.generationId!==text(raw.generationId)
+      ||raw.branchId!==text(raw.branchId)
+      ||(raw.generationId!==''&&!GENERATION_ID_RE.test(raw.generationId))) return attendanceDefault(branch);
     const mode=text(raw.mode);
     const generationId=text(raw.generationId);
     const storedBranch=text(raw.branchId);
@@ -42,11 +52,18 @@
   }
   function normalizeOperationalConfig(raw,branchId,exists){
     const branch=text(branchId);
-    if(!exists||!raw||typeof raw!=='object') return defaultConfig(branch);
+    const required=['mode','generationId','branchId','epoch','revision'];
+    if(!exists||!object(raw)||required.some(key=>!owns(raw,key))
+      ||typeof raw.mode!=='string'||typeof raw.generationId!=='string'
+      ||typeof raw.branchId!=='string'
+      ||typeof raw.epoch!=='number'||typeof raw.revision!=='number'
+      ||raw.mode!==text(raw.mode)||raw.generationId!==text(raw.generationId)
+      ||raw.branchId!==text(raw.branchId)
+      ||(raw.generationId!==''&&!GENERATION_ID_RE.test(raw.generationId))) return defaultConfig(branch);
     const mode=text(raw.mode);
     const generationId=text(raw.generationId);
-    const epoch=Number(raw.epoch);
-    const revision=Number(raw.revision);
+    const epoch=raw.epoch;
+    const revision=raw.revision;
     const valid=MODES.includes(mode)&&text(raw.branchId)===branch
       &&(mode==='v1'||!!generationId)
       &&Number.isSafeInteger(epoch)&&epoch>=0
@@ -91,6 +108,13 @@
     if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
     operationSequence=(operationSequence+1)%1000000;
     return `attendance_${Date.now().toString(36)}_${operationSequence.toString(36)}`;
+  }
+  function authorityFingerprint(value){
+    return [
+      text(value?.branchId),text(value?.mode),text(value?.generationId),
+      typeof value?.epoch==='number'?value.epoch:'invalid',
+      typeof value?.revision==='number'?value.revision:'invalid',
+    ].join('|');
   }
 
   function create(options){
@@ -252,13 +276,32 @@
       return text(error?.code).toLowerCase()
         .replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
     }
-    async function invokeMutation(request){
+    async function invokeMutation(request,startedAuthority){
       let lastError;
+      let sawAmbiguousFailure=false;
       for(let attempt=0;attempt<maxMutationAttempts;attempt+=1){
         try{return await mutateCallable(clone(request));}
         catch(error){
           lastError=error;
-          if(!RETRYABLE_CODES.has(callableCode(error))||attempt+1>=maxMutationAttempts) throw error;
+          const code=callableCode(error);
+          const retryable=RETRYABLE_CODES.has(code);
+          sawAmbiguousFailure=sawAmbiguousFailure||AMBIGUOUS_TERMINAL_CODES.has(code);
+          if(retryable&&attempt+1<maxMutationAttempts) continue;
+          if(sawAmbiguousFailure){
+            let latest;
+            try{ latest=await readConfig(); }
+            catch(authorityError){
+              throw Object.assign(new Error('Attendance authority could not be reconciled after an ambiguous save.'),{
+                code:'attendance-authority-unavailable',cause:error,authorityCause:authorityError,
+              });
+            }
+            if(authorityFingerprint(latest)!==authorityFingerprint(startedAuthority)){
+              throw Object.assign(new Error('Attendance authority changed after an ambiguous save.'),{
+                code:'attendance-authority-changed',cause:error,authority:clone(latest),
+              });
+            }
+          }
+          throw error;
         }
       }
       throw lastError;
@@ -288,7 +331,7 @@
         operationId:id,operationType,keys:[key],beforeRevision:latest.revision,
         nextValues:{[key]:JSON.stringify(nextMap)},removedKeys:[],
       };
-      const response=await invokeMutation(request);
+      const response=await invokeMutation(request,latest);
       if(!response||response.committed!==true||text(response.operationId)!==id
         ||Number(response.revision)!==latest.revision+1){
         throw Object.assign(new Error('Invalid V2 operational response.'),{code:'invalid-operational-response'});

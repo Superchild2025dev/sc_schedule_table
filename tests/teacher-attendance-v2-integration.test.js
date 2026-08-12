@@ -47,6 +47,8 @@ test('teacher attendance runtime is created only after branch Firebase setup',()
   assert.match(runtime,/firebase\.firestore\(\)/);
   assert.match(runtime,/SCV2AttendanceStore\.create/);
   assert.match(runtime,/SCOperationalAttendance\.create/);
+  assert.match(runtime,/onReloadRequired/);
+  assert.match(runtime,/SC_REQUEST_OPERATIONAL_PAGE_RELOAD/);
   assert.match(runtime,/SCMainAttendanceRuntime\.create/);
 });
 

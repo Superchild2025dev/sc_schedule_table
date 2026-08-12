@@ -128,9 +128,15 @@ assert.doesNotMatch(v2Rules, /allow write: if (?!false)/, "no Schedule V2 browse
 
 assert.match(
   source,
-  /function hasLegacyScheduleAuthority\(branch\)[\s\S]*?runtime\/operational[\s\S]*?\.data\.branchId == branch[\s\S]*?\.data\.mode in \["v1", "shadow", "verify"\]/,
+  /function hasLegacyScheduleAuthority\(branch\)[\s\S]*?runtime\/operational[\s\S]*?authority\.branchId == branch[\s\S]*?authority\.mode in \["v1", "shadow", "verify"\]/,
   "tracked V1 writes require an explicit branch-scoped V1-family authority pointer"
 );
+assert.match(source,/hasAll\(\["branchId", "mode", "generationId", "epoch", "revision"\]\)/);
+assert.match(source,/authority\.branchId is string/);
+assert.match(source,/authority\.generationId is string/);
+assert.match(source,/authority\.generationId\.matches\("\^\[A-Za-z0-9_-\]\{1,128\}\$"\)/);
+assert.match(source,/authority\.epoch is int[\s\S]*?authority\.epoch >= 0/);
+assert.match(source,/authority\.revision is int[\s\S]*?authority\.revision >= 0/);
 assert.match(
   source,
   /function canWriteLegacyScheduleKey\(branch, docId\)[\s\S]*?!isTrackedLegacyScheduleKey\(docId\)[\s\S]*?hasLegacyScheduleAuthority\(branch\)[\s\S]*?activationFreezeAllowsLegacyWrites\(branch\)/,

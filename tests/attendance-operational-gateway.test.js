@@ -111,7 +111,12 @@ function fixture(mode,overrides={}){
     },
     async mutateMap(input){
       calls.operationalMutations.push(plain(input));calls.order.push('operational-mutation');
-      if(overrides.operationalWriteError||overrides.v2WriteError) throw Object.assign(new Error('operational failed'),{code:'failed-precondition'});
+      if(overrides.operationalWriteError){
+        throw overrides.operationalWriteError===true
+          ?Object.assign(new Error('operational failed'),{code:'failed-precondition'})
+          :overrides.operationalWriteError;
+      }
+      if(overrides.v2WriteError) throw Object.assign(new Error('operational failed'),{code:'failed-precondition'});
       const diff=model.diffLegacyMaps(input.before,input.after);
       const apply=current=>{
         const next=plain(current);
@@ -137,6 +142,7 @@ function fixture(mode,overrides={}){
   const gateway=loadGateway({
     branchId:'yongam',legacy,v2Store,model,
     now:()=>new Date('2026-08-07T03:00:00.000Z'),
+    onReloadRequired:overrides.onReloadRequired,
   });
   return {
     gateway,calls,
@@ -352,6 +358,31 @@ test('v2-read uses the callable recovery path and blocks recovery after V2 failu
     ...range,before:{[key]:{s:'absent'}},
   }),/V2 출석 데이터를 저장하지 못했습니다/);
   assert.equal(failed.calls.legacyAttendanceWrites,0);
+});
+
+test('a lost attendance response with changed authority requests one controlled reload',async()=>{
+  const reloads=[];
+  const authority={
+    mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:7,revision:13,
+    valid:true,compatibilityValid:true,compatibilityCode:'',
+  };
+  const env=fixture('v2',{
+    onReloadRequired:value=>reloads.push(plain(value)),
+    operationalWriteError:Object.assign(new Error('response lost'),{
+      code:'attendance-authority-changed',authority,
+    }),
+  });
+  await env.gateway.ready();
+
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-reload-required');
+
+  assert.deepEqual(reloads,[authority]);
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>map,{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-reload-required');
+  assert.equal(reloads.length,1);
 });
 
 test('v2-read backup patches attendance without deleting legacy dates outside the loaded range',async()=>{

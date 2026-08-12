@@ -244,6 +244,14 @@ test('malformed runtime authority never becomes an implicit writable V1 pointer'
     {branchId:'yongam',mode:'unknown',generationId:'',epoch:4,revision:31,valid:true},
     {branchId:'gagyeong',mode:'v1',generationId:'',epoch:4,revision:31,valid:true},
     {branchId:'yongam',mode:'v1',generationId:'',epoch:-1,revision:31,valid:true},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:null,revision:31,valid:true},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:4,revision:null,valid:true},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:'4',revision:31,valid:true},
+    {branchId:' yongam ',mode:'v1',generationId:'',epoch:4,revision:31,valid:true},
+    {branchId:'yongam',mode:' v1 ',generationId:'',epoch:4,revision:31,valid:true},
+    {branchId:'yongam',mode:'v2-read',generationId:' gen_1 ',epoch:4,revision:31,valid:true},
+    {branchId:'yongam',mode:'v2-read',generationId:'bad/gen',epoch:4,revision:31,valid:true},
+    {branchId:'yongam',mode:'v2-read',generationId:'g'.repeat(129),epoch:4,revision:31,valid:true},
   ];
   for(const candidate of invalidConfigs){
     const env=createEnvironment('v1',{configSequence:[candidate]});

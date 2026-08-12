@@ -4,6 +4,7 @@
   const MAX_DIAGNOSTICS=80;
   const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
   const V1_AUTHORITY_MODES=new Set(['v1','shadow','verify']);
+  const GENERATION_ID_RE=/^[A-Za-z0-9_-]{1,128}$/;
   const AUTHORITY_MODES=new Set([...V1_AUTHORITY_MODES,...V2_AUTHORITY_MODES]);
   let operationSequence=0;
 
@@ -25,6 +26,7 @@
     error.code='stale-attendance-range';
     return error;
   }
+  function owns(value,key){ return Object.prototype.hasOwnProperty.call(value,key); }
   function pointerError(code){
     return Object.assign(new Error('출석 전환 설정과 운영 전환 설정이 일치하지 않아 저장을 중단했습니다.'),{
       code:code||'attendance-pointer-mismatch',
@@ -63,6 +65,7 @@
     let config=unknownConfig();
     let readyPromise=null;
     let confirmedV2=false;
+    let reloadRequired=false;
     const rangeVersions=new Map();
     const diagnosticRows=[];
 
@@ -88,18 +91,37 @@
     }
     function normalizeAuthority(value){
       if(!value||typeof value!=='object'||Array.isArray(value)) throw authorityError();
+      const required=['branchId','mode','generationId','epoch','revision','valid'];
+      if(required.some(key=>!owns(value,key))
+        ||typeof value.branchId!=='string'||typeof value.mode!=='string'
+        ||typeof value.generationId!=='string'
+        ||typeof value.epoch!=='number'||typeof value.revision!=='number'
+        ||typeof value.valid!=='boolean'
+        ||value.branchId!==text(value.branchId)||value.mode!==text(value.mode)
+        ||value.generationId!==text(value.generationId)
+        ||(value.generationId!==''&&!GENERATION_ID_RE.test(value.generationId))) throw authorityError();
       const next=clone(value);
       next.mode=text(next.mode);
       next.generationId=text(next.generationId);
       next.branchId=text(next.branchId);
-      next.epoch=Number(next.epoch);
-      next.revision=Number(next.revision);
+      next.epoch=value.epoch;
+      next.revision=value.revision;
       next.valid=next.valid===true;
       if(!next.valid||next.branchId!==branchId||!AUTHORITY_MODES.has(next.mode)
         ||!Number.isSafeInteger(next.epoch)||next.epoch<0
         ||!Number.isSafeInteger(next.revision)||next.revision<0
         ||(next.mode!=='v1'&&!next.generationId)) throw authorityError();
       return next;
+    }
+    function reloadError(cause){
+      return Object.assign(new Error('출석 운영 설정이 변경되어 화면을 새로고침해야 합니다.'),{
+        code:'attendance-reload-required',cause,
+      });
+    }
+    function requestReload(authority){
+      if(reloadRequired) return;
+      reloadRequired=true;
+      if(typeof options?.onReloadRequired==='function') options.onReloadRequired(clone(authority));
     }
     async function ready(){
       if(readyPromise) return readyPromise;
@@ -232,6 +254,7 @@
       });
     }
     async function updateMap(kind,mutator,input){
+      if(reloadRequired) throw reloadError();
       await ready();
       const started=nowDate().getTime();
       const before=clone(objectMap(input?.before));
@@ -289,6 +312,19 @@
         });
         if(Number.isSafeInteger(Number(response?.revision))) config.revision=Number(response.revision);
       }catch(error){
+        if(error?.code==='attendance-authority-changed'){
+          let next;
+          try{ next=normalizeAuthority(error.authority); }
+          catch(actual){
+            config=unknownConfig();
+            diagnostic({...base,outcome:'authority-unavailable',durationMs:nowDate().getTime()-started});
+            throw authorityError(actual);
+          }
+          config=next;
+          requestReload(next);
+          diagnostic({...base,outcome:'authority-changed',durationMs:nowDate().getTime()-started});
+          throw reloadError(error);
+        }
         diagnostic({...base,outcome:error?.code?.startsWith?.('attendance-pointer-')?'pointer-mismatch':'v2-error',durationMs:nowDate().getTime()-started});
         if(error?.code==='attendance-pointer-mismatch'||error?.code==='attendance-pointer-missing') throw error;
         throw Object.assign(new Error('V2 출석 데이터를 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.'),{

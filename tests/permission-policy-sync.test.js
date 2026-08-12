@@ -103,7 +103,10 @@ test("one manifest generates fail-closed V1 authority and activation-freeze fenc
   assert.ok(!policy.scheduleV2.trackedLegacyExactKeys.includes("swim_requests"));
   assert.ok(policy.scheduleV2.trackedLegacyPatterns.includes("^zz_swim_day_snapshot__(regular|bt_[A-Za-z0-9_-]+)__[0-9]{4}-[0-9]{2}-[0-9]{2}$"));
   assert.match(rules,/function isTrackedLegacyScheduleKey\(docId\)/);
-  assert.match(rules,/function hasLegacyScheduleAuthority\(branch\)[\s\S]*?exists\([\s\S]*?runtime\/operational[\s\S]*?\.data\.branchId == branch[\s\S]*?\.data\.mode in \["v1", "shadow", "verify"\]/);
+  assert.match(rules,/function hasLegacyScheduleAuthority\(branch\)[\s\S]*?exists\([\s\S]*?runtime\/operational[\s\S]*?authority\.branchId == branch[\s\S]*?authority\.mode in \["v1", "shadow", "verify"\]/);
+  assert.match(rules,/hasAll\(\["branchId", "mode", "generationId", "epoch", "revision"\]\)/);
+  assert.match(rules,/authority\.epoch is int[\s\S]*?authority\.revision is int/);
+  assert.match(rules,/authority\.generationId\.matches\("\^\[A-Za-z0-9_-\]\{1,128\}\$"\)/);
   assert.match(rules,/function activationFreezeAllowsLegacyWrites\(branch\)/);
   assert.match(rules,/function canWriteLegacyScheduleKey\(branch, docId\)/);
   assert.match(rules,/runtime\/activationFreeze \{[\s\S]*?allow read, write: if false;/);

@@ -150,6 +150,92 @@ test('missing runtime config fails closed to v1',async()=>{
   });
 });
 
+test('malformed operational authority cannot normalize to writable V1',async()=>{
+  const invalid=[
+    {},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:null,revision:0},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:0,revision:null},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:'0',revision:0},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:0},
+    {mode:'v1',generationId:'',branchId:' yongam ',epoch:0,revision:0},
+    {mode:' v1 ',generationId:'',branchId:'yongam',epoch:0,revision:0},
+    {mode:'v2',generationId:' gen_1 ',branchId:'yongam',epoch:0,revision:0},
+    {mode:'v2',generationId:'bad/gen',branchId:'yongam',epoch:0,revision:0},
+    {mode:'v2',generationId:'g'.repeat(129),branchId:'yongam',epoch:0,revision:0},
+  ];
+  for(const operational of invalid){
+    const db=createFakeFirestore({
+      [operationalConfigPath()]:operational,
+      [configPath()]:{mode:'v1',generationId:'',branchId:'yongam'},
+    });
+    const {store}=loadStore(db);
+    const result=await store.readConfig();
+    assert.equal(result.valid,false,JSON.stringify(operational));
+    assert.equal(result.compatibilityValid,false,JSON.stringify(operational));
+  }
+});
+
+test('ambiguous terminal attendance failure rereads authority and reports a changed revision',async()=>{
+  const visibleKey='4시/월/1/1/2026-08-03';
+  const db=createFakeFirestore({
+    [operationalConfigPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:8,revision:21},
+    [configPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam'},
+  });
+  let attempts=0;
+  const mutate=async()=>{
+    attempts+=1;
+    db.docs.set(operationalConfigPath(),{
+      mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:8,revision:22,
+    });
+    throw Object.assign(new Error('response lost'),{code:'unavailable'});
+  };
+  const {store}=loadStore(db,'yongam',{mutate,maxMutationAttempts:2});
+  await store.readConfig();
+
+  await assert.rejects(()=>store.mutateMap({
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[visibleKey]:{s:'absent'}},after:{[visibleKey]:{s:'present'}},
+    operationId:'attendance_lost_response',operationType:'attendance-update',
+  }),error=>error?.code==='attendance-authority-changed'
+    &&error?.authority?.revision===22
+    &&error?.authority?.epoch===8);
+
+  assert.equal(attempts,2);
+  assert.equal(store.currentConfig().revision,22);
+});
+
+test('a changed terminal error code still reconciles mode generation epoch and revision',async()=>{
+  const visibleKey='4시/월/1/1/2026-08-03';
+  const db=createFakeFirestore({
+    [operationalConfigPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:8,revision:21},
+    [configPath()]:{mode:'v2',generationId:'gen_1',branchId:'yongam'},
+  });
+  let attempts=0;
+  const mutate=async()=>{
+    attempts+=1;
+    if(attempts===1) throw Object.assign(new Error('response lost'),{code:'unavailable'});
+    db.docs.set(operationalConfigPath(),{
+      mode:'v2-read',generationId:'gen_2',branchId:'yongam',epoch:9,revision:22,
+    });
+    db.docs.set(configPath(),{mode:'v2-read',generationId:'gen_2',branchId:'yongam'});
+    throw Object.assign(new Error('terminal response unknown'),{code:'unknown'});
+  };
+  const {store}=loadStore(db,'yongam',{mutate,maxMutationAttempts:2});
+  await store.readConfig();
+
+  await assert.rejects(()=>store.mutateMap({
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[visibleKey]:{s:'absent'}},after:{[visibleKey]:{s:'present'}},
+    operationId:'attendance_changed_terminal',operationType:'attendance-update',
+  }),error=>error?.code==='attendance-authority-changed'
+    &&error?.authority?.mode==='v2-read'
+    &&error?.authority?.generationId==='gen_2'
+    &&error?.authority?.epoch===9
+    &&error?.authority?.revision===22);
+
+  assert.equal(attempts,2);
+});
+
 test('operational config is authoritative and reports a compatibility pointer mismatch',async()=>{
   const db=createFakeFirestore({
     [operationalConfigPath()]:{mode:'v2',generationId:'gen_operational',branchId:'yongam',epoch:8,revision:21},

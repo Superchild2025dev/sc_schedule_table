@@ -180,7 +180,10 @@ function getTeacherOperationalAttendanceRuntime(){
     updateAttendance(mutator,input){ return _updateLegacyTeacherAttendanceMapTx(mutator,input); },
     updateGuests(mutator,input){ return _updateLegacyTeacherAttGuestsMapTx(mutator,input); },
   };
-  const gateway=SCOperationalAttendance.create({branchId:branch.id,legacy,v2Store});
+  const gateway=SCOperationalAttendance.create({
+    branchId:branch.id,legacy,v2Store,
+    onReloadRequired:window.SC_REQUEST_OPERATIONAL_PAGE_RELOAD,
+  });
   _teacherAttendanceRuntime=SCMainAttendanceRuntime.create({
     branchId:branch.id,
     gateway,

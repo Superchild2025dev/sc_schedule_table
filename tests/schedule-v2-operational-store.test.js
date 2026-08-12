@@ -216,6 +216,28 @@ test('runtime config rejects branch mismatches and incomplete V2 pointers',async
   );
 });
 
+test('runtime config rejects missing null and coerced authority fields',()=>{
+  const invalid=[
+    {},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:null,revision:0},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:0,revision:null},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:'0',revision:0},
+    {branchId:'yongam',mode:'v1',generationId:'',epoch:0},
+    {branchId:'yongam',generationId:'',epoch:0,revision:0},
+    {branchId:' yongam ',mode:'v1',generationId:'',epoch:0,revision:0},
+    {branchId:'yongam',mode:' v1 ',generationId:'',epoch:0,revision:0},
+    {branchId:'yongam',mode:'v2',generationId:' gen_1 ',epoch:0,revision:0},
+    {branchId:'yongam',mode:'v2',generationId:'bad/gen',epoch:0,revision:0},
+    {branchId:'yongam',mode:'v2',generationId:'g'.repeat(129),epoch:0,revision:0},
+  ];
+
+  invalid.forEach(candidate=>assert.throws(
+    ()=>storeApi.normalizeConfig(candidate,'yongam'),
+    error=>error?.code==='invalid-operational-config',
+    JSON.stringify(candidate),
+  ));
+});
+
 test('selected roster and workflow reads exclude unrelated domains and placement references',async()=>{
   const firestore=createFirestore({collections:selectedFixture()});
   const store=storeApi.create({db:firestore.db,branchId:'yongam',model});

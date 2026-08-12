@@ -1312,6 +1312,7 @@
     }
     if(window.location&&typeof window.location.reload==='function') window.location.reload();
   }
+  window.SC_REQUEST_OPERATIONAL_PAGE_RELOAD=requestOperationalPageReload;
   function operationalAuthorityError(){
     return Object.assign(new Error('운영 저장 권한을 확인할 수 없어 읽기 전용으로 전환했습니다.'),{
       code:'operational-authority-unavailable',

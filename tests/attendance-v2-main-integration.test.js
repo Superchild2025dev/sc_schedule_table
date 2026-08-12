@@ -278,6 +278,8 @@ test('main gateway is created lazily for the authenticated selected branch',()=>
   assert.match(body,/firebase\.firestore\(\)/);
   assert.match(body,/SCV2AttendanceStore\.create/);
   assert.match(body,/SCOperationalAttendance\.create/);
+  assert.match(body,/onReloadRequired/);
+  assert.match(body,/SC_REQUEST_OPERATIONAL_PAGE_RELOAD/);
   assert.match(body,/SCMainAttendanceRuntime\.create/);
 });
 

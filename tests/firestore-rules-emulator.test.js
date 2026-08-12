@@ -167,6 +167,20 @@ if(emulatorEnabled){
 
     await setRuntime("operational",{branchId:"yongam",mode:"v1",generationId:"",epoch:3,revision:1});
     await assertFails(setDoc(kv(deskDb,"gagyeong","swim_students"),{value:"[]"}));
+
+    for(const malformed of [
+      {branchId:"gagyeong",mode:"v1"},
+      {branchId:"gagyeong",mode:"v1",generationId:"",epoch:null,revision:1},
+      {branchId:"gagyeong",mode:"v1",generationId:"",epoch:"1",revision:1},
+      {branchId:"gagyeong",mode:"shadow",generationId:"",epoch:1,revision:1},
+      {branchId:" gagyeong ",mode:"v1",generationId:"",epoch:1,revision:1},
+      {branchId:"gagyeong",mode:" v1 ",generationId:"",epoch:1,revision:1},
+      {branchId:"gagyeong",mode:"shadow",generationId:" gen_1 ",epoch:1,revision:1},
+    ]){
+      await setRuntime("operational",malformed);
+      await assertFails(setDoc(kv(deskDb,"gagyeong","swim_students"),{value:"[]"}));
+      await assertFails(setDoc(kv(teacherDb,"gagyeong","swim_attendance"),{value:"{}"}));
+    }
   });
 
   test("generic V2 monitor documents are server-write-only while owner and developer keep monitor reads", async () => {

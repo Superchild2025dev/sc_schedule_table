@@ -9,6 +9,7 @@
   const ROOT_COLLECTION='scheduleV2';
   const MODES=new Set(['v1','shadow','verify','v2-read','v2']);
   const V2_POINTER_MODES=new Set(['shadow','verify','v2-read','v2']);
+  const GENERATION_ID_RE=/^[A-Za-z0-9_-]{1,128}$/;
   const TAB_DOMAINS=new Set(['roster','workflow','attendance']);
   const MAX_ID_READS=30;
   const MAX_DIAGNOSTICS=80;
@@ -35,6 +36,7 @@
   function safeDocId(value){ return encodeURIComponent(text(value)).replace(/\./g,'%2E')||'missing'; }
   function fail(code,message){ throw Object.assign(new Error(message||code),{code}); }
   function safeInteger(value){ return Number.isSafeInteger(value)&&value>=0; }
+  function owns(value,key){ return Object.prototype.hasOwnProperty.call(value,key); }
   function snapshotRows(snapshot){
     const rows=[];
     snapshot?.forEach?.(doc=>{
@@ -53,11 +55,21 @@
   }
   function normalizeConfig(value,branchId){
     if(!object(value)) fail('invalid-operational-config','운영 전환 설정을 확인할 수 없습니다.');
-    const mode=text(value.mode)||'v1';
+    const required=['branchId','mode','generationId','epoch','revision'];
+    if(required.some(key=>!owns(value,key))
+      ||typeof value.branchId!=='string'||typeof value.mode!=='string'
+      ||typeof value.generationId!=='string'
+      ||typeof value.epoch!=='number'||typeof value.revision!=='number'
+      ||value.branchId!==text(value.branchId)||value.mode!==text(value.mode)
+      ||value.generationId!==text(value.generationId)
+      ||(value.generationId!==''&&!GENERATION_ID_RE.test(value.generationId))){
+      fail('invalid-operational-config','운영 전환 설정이 올바르지 않습니다.');
+    }
+    const mode=text(value.mode);
     const generationId=text(value.generationId);
-    const storedBranch=text(value.branchId)||branchId;
-    const epoch=Number(value.epoch??0);
-    const revision=Number(value.revision??0);
+    const storedBranch=text(value.branchId);
+    const epoch=value.epoch;
+    const revision=value.revision;
     if(!MODES.has(mode)||storedBranch!==branchId||!safeInteger(epoch)||!safeInteger(revision)){
       fail('invalid-operational-config','운영 전환 설정이 올바르지 않습니다.');
     }
