@@ -606,13 +606,34 @@ test('a newer selected tab invalidates an older pending selection response',asyn
   const gateKey='placements:tabId:==:"regular"';
   const firestore=createFirestore({collections:selectedFixture(),queryGates:{[gateKey]:regularGate}});
   const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
-  const oldLoad=store.loadSelection({tabIds:['regular'],domains:['roster']});
+  const oldLoad=store.loadSelection({tabIds:['regular'],domains:['roster'],owner:'schedule-main'});
   const oldRejected=assert.rejects(oldLoad,error=>error.code==='stale-operational-selection');
-  const current=await store.loadSelection({tabIds:['camp'],domains:['roster']});
+  const current=await store.loadSelection({tabIds:['camp'],domains:['roster'],owner:'schedule-main'});
   regularGate.resolve();
 
   assert.equal(JSON.parse(current.root.swim_bt_camp_stu).length,1);
   await oldRejected;
+});
+
+test('independent selection owners do not cancel each other',async()=>{
+  const regularGate=deferred();
+  const gateKey='placements:tabId:==:"regular"';
+  const firestore=createFirestore({collections:selectedFixture(),queryGates:{[gateKey]:regularGate}});
+  const store=storeApi.create({db:firestore.db,branchId:'yongam',model});
+
+  const main=store.loadSelection({
+    tabIds:['regular'],domains:['roster'],owner:'schedule-main',
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  const modal=store.loadSelection({
+    tabIds:['camp'],domains:['roster'],owner:'schedule-modal:student',
+  });
+  const modalResult=await modal;
+  regularGate.resolve();
+  const mainResult=await main;
+
+  assert.equal(JSON.parse(modalResult.root.swim_bt_camp_stu).length,1);
+  assert.equal(JSON.parse(mainResult.root.swim_students).length,35);
 });
 
 test('runtime subscriptions report only validated config changes',async()=>{

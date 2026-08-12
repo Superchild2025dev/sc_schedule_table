@@ -123,6 +123,7 @@
     let disposed=false;
     let cache={};
     let currentSelection=null;
+    const selectionOwners=new Map();
     let lastConfigNotification='';
     const pendingMutations=new Map();
     let pendingRuntimeConfig=null;
@@ -218,6 +219,7 @@
       activeSelectionSignature='';
       cache={};
       currentSelection=null;
+      selectionOwners.clear();
       pendingMutations.clear();
       pendingRuntimeConfig=null;
       [...activeControllers].forEach(controller=>controller.stop(true));
@@ -304,6 +306,7 @@
     function normalizedSelection(input={}){
       return {
         tabIds:unique(input.tabIds),domains:unique(input.domains),keys:unique(input.keys),
+        owner:text(input.owner)||'schedule-main',
         ...(object(input.dateRange)?{dateRange:clone(input.dateRange)}:{}),
       };
     }
@@ -313,11 +316,29 @@
         keys:selection.keys.slice().sort(),dateRange:selection.dateRange||null,
       });
     }
-    function capture(selection){
+    function beginSelection(selection){
+      const owner=text(selection?.owner)||'schedule-main';
+      const state=selectionOwners.get(owner)||{version:0,signature:''};
+      const next={version:state.version+1,signature:selectionSignature(selection)};
+      selectionOwners.set(owner,next);
+      return {owner,version:next.version,signature:next.signature};
+    }
+    function cancelSelection(owner){
+      const key=text(owner)||'schedule-main';
+      const state=selectionOwners.get(key)||{version:0,signature:''};
+      selectionOwners.set(key,{...state,version:state.version+1});
+    }
+    function selectionIsCurrent(token){
+      const state=selectionOwners.get(token.owner);
+      return !!state&&state.version===token.version&&state.signature===token.signature;
+    }
+    function capture(selection,token){
+      token=token||beginSelection(selection);
       return {
         branchId:text(getBranchId()),generationId:text(config.generationId),
         epoch:Number(config.epoch),revision:Number(config.revision),
-        sessionVersion,selectionGeneration,activeSelectionSignature,
+        sessionVersion,selectionOwner:token.owner,selectionVersion:token.version,
+        activeSelectionSignature:token.signature,
         selectionSignature:selectionSignature(selection),
       };
     }
@@ -328,8 +349,10 @@
         ||Number(config.epoch)!==context.epoch
         ||Number(config.revision)!==context.revision
         ||sessionVersion!==context.sessionVersion
-        ||selectionGeneration!==context.selectionGeneration
-        ||activeSelectionSignature!==context.activeSelectionSignature
+        ||!selectionIsCurrent({
+          owner:context.selectionOwner,version:context.selectionVersion,
+          signature:context.activeSelectionSignature,
+        })
         ||selectionSignature(selection)!==context.selectionSignature){
         fail(code,'이전 지점 또는 탭의 운영 결과는 사용하지 않습니다.');
       }
@@ -359,16 +382,14 @@
       assertReadableAuthority();
       if(reloadRequired) fail('operational-reload-required','운영 설정이 변경되어 화면을 새로고침해야 합니다.');
       const selection=normalizedSelection(input);
-      const token=++loadVersion;
-      selectionGeneration+=1;
-      activeSelectionSignature=selectionSignature(selection);
-      const context=capture(selection);
+      const token=beginSelection(selection);
+      const context=capture(selection,token);
       const started=nowDate().getTime();
-      currentSelection=clone(selection);
+      if(selection.owner==='schedule-main') currentSelection=clone(selection);
       if(V2_MODES.has(config.mode)){
         try{
           const result=await v2Store.loadSelection({...selection,config:clone(config)});
-          if(token!==loadVersion) fail('stale-operational-response');
+          if(!selectionIsCurrent(token)) fail('stale-operational-response');
           assertCurrent(context,selection);
           if(!object(result?.root)) fail('invalid-operational-response');
           mergeCache(result.root,result.loadedKeys);
@@ -384,12 +405,12 @@
         }
       }
       const snapshot=await legacyRoot.once('value');
-      if(token!==loadVersion) fail('stale-operational-response');
+      if(!selectionIsCurrent(token)) fail('stale-operational-response');
       assertCurrent(context,selection);
       const root=object(snapshot?.val?.())?snapshot.val():{};
       const verifyKeys=selection.keys.length?selection.keys:selectedKeysForRoot(root,selection);
       await verify(root,selection,verifyKeys);
-      if(token!==loadVersion) fail('stale-operational-response');
+      if(!selectionIsCurrent(token)) fail('stale-operational-response');
       assertCurrent(context,selection);
       mergeCache(root,verifyKeys.length?verifyKeys:Object.keys(root));
       record('read','ok',{tabCount:selection.tabIds.length});
@@ -462,7 +483,12 @@
 
       let originalBefore=null;
       let originalAfter=null;
-      const attemptMeta={...meta,rebaseConflict:true};
+      const stableOperationId=text(meta.operationId)||text(makeOperationId());
+      const attemptMeta={
+        ...meta,operationId:stableOperationId,
+        owner:text(meta.owner)||`schedule-mutation:${stableOperationId}`,
+        rebaseConflict:true,
+      };
       const captureIntent=async root=>{
         originalBefore=clone(root);
         const returned=await mutator(root);
@@ -655,9 +681,10 @@
       let revision=0;
       let activeKeys=[];
       const auxiliary=new Map();
+      const subscriptionOwner=text(subscriber.owner)||'schedule-main';
       function allKeys(base){ return unique([...(base||[]),...activeKeys,...[...auxiliary.values()].flat()]); }
       function selectionForSubscription(keys){
-        return selectionForKeys(keys,subscriber);
+        return selectionForKeys(keys,{...subscriber,owner:subscriptionOwner});
       }
       async function readBatch(keys){
         if(stopped||disposed||reloadRequired) return {stale:true};
@@ -723,8 +750,8 @@
         waitForActive:withDelegate('waitForActive',async keys=>emit(unique(keys),false)),
         stop(skipInvalidation){
           if(stopped) return;
-          stopped=true;loadVersion+=1;selectionGeneration+=1;
-          if(!skipInvalidation&&typeof v2Store.invalidate==='function') v2Store.invalidate();
+          stopped=true;cancelSelection(subscriptionOwner);
+          if(!skipInvalidation&&typeof v2Store.invalidate==='function') v2Store.invalidate(subscriptionOwner);
           if(delegate?.stop) delegate.stop();
           delegate=null;activeControllers.delete(controller);
         },
@@ -743,6 +770,7 @@
     function dispose(){
       if(disposed) return;
       disposed=true;sessionVersion+=1;loadVersion+=1;selectionGeneration+=1;
+      selectionOwners.clear();
       if(typeof v2Store.invalidate==='function') v2Store.invalidate();
       [...activeControllers].forEach(controller=>controller.stop());
       activeControllers.clear();

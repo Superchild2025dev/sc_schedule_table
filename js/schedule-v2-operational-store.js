@@ -101,7 +101,7 @@
     const dateRange=object(value?.dateRange)?{
       start:text(value.dateRange.start),end:text(value.dateRange.end),dates:unique(value.dateRange.dates),
     }:null;
-    return {tabIds,domains,dateRange,keys};
+    return {tabIds,domains,dateRange,keys,owner:text(value?.owner)||'schedule-main'};
   }
   function appendRows(target,name,rows){
     const byId=new Map((target[name]||[]).map(row=>[text(row.id),row]));
@@ -202,7 +202,8 @@
     const verifyPollMs=Math.max(1,Number(options.verifyPollMs)||25);
     const verifyTimeoutMs=Math.max(verifyPollMs,Number(options.verifyTimeoutMs)||2000);
     const sleep=typeof options.sleep==='function'?options.sleep:milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
-    let selectionVersion=0;
+    let authorityVersion=0;
+    const selectionVersions=new Map();
     const diagnosticRows=[];
 
     function record(kind,outcome,details){
@@ -323,12 +324,22 @@
         appendRows(collections,name,snapshotRows(await ref.collection(name).get()));
       }));
     }
+    function beginSelection(owner){
+      const key=text(owner)||'schedule-main';
+      const version=(selectionVersions.get(key)||0)+1;
+      selectionVersions.set(key,version);
+      return {key,version,authorityVersion};
+    }
     function assertCurrent(token,started,latest){
-      if(token!==selectionVersion||!sameContext(started,latest)) fail('stale-operational-selection','이전 운영 데이터 조회 결과는 사용할 수 없습니다.');
+      if(token.authorityVersion!==authorityVersion
+        ||selectionVersions.get(token.key)!==token.version
+        ||!sameContext(started,latest)){
+        fail('stale-operational-selection','이전 운영 데이터 조회 결과는 사용할 수 없습니다.');
+      }
     }
     async function load(input={},mutation=false){
       const selection=normalizeSelection(input,model);
-      const token=++selectionVersion;
+      const token=beginSelection(selection.owner);
       const started=input.config?normalizeConfig(input.config,branchId):await readConfig();
       if(!started.generationId) fail('invalid-operational-config','조회할 운영 V2 버전이 없습니다.');
       const ref=generationRef(started.generationId);
@@ -455,7 +466,14 @@
         await sleep(verifyPollMs);
       }
     }
-    function invalidate(){ selectionVersion+=1; }
+    function invalidate(owner){
+      const key=text(owner);
+      if(key){
+        selectionVersions.set(key,(selectionVersions.get(key)||0)+1);
+        return;
+      }
+      authorityVersion+=1;
+    }
     function diagnostics(limit){
       const count=Math.max(0,Math.min(MAX_DIAGNOSTICS,Number(limit)||MAX_DIAGNOSTICS));
       return clone(diagnosticRows.slice(-count));

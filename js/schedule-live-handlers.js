@@ -224,7 +224,7 @@
       return contextTransaction(input.keys,input,input.mutateContext);
     }
     async function prepareExportView(input){
-      const loaded=await gateway.loadSelection(clone(input.selection));
+      const loaded=await gateway.loadSelection({...clone(input.selection),owner:'schedule-export'});
       const tabId=text(input.tabId);
       const tabs=parse(loaded.root?.swim_tab_list,[]);
       return {...loaded,tabId,exportTab:clone(tabs.find(tab=>text(tab?.id)===tabId)||null),preparedFor:'schedule-export'};

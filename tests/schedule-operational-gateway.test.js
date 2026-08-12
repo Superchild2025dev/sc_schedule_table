@@ -454,6 +454,32 @@ test('overlapping selected-tab loads surface a controlled stale result without p
   await assert.rejects(old,error=>error.code==='stale-operational-response');
 });
 
+test('independent gateway selection owners can finish without cancelling each other',async()=>{
+  const regularGate=deferred();
+  const env=createEnvironment('v2-read',{
+    async loadSelection(selection,config){
+      if(selection.tabIds.includes('regular')) await regularGate.promise;
+      const root=selection.tabIds.includes('camp')
+        ?{swim_bt_camp_stu:JSON.stringify([{id:'camp-current'}])}
+        :{swim_students:JSON.stringify([{id:'regular-current'}])};
+      return {root,loadedKeys:Object.keys(root),collections:{},config,context:{...config},selection};
+    },
+  });
+
+  const main=env.root.loadSelection({
+    tabIds:['regular'],domains:['roster'],keys:['swim_students'],owner:'schedule-main',
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  const modal=await env.root.loadSelection({
+    tabIds:['camp'],domains:['roster'],keys:['swim_bt_camp_stu'],owner:'schedule-modal:student',
+  });
+  regularGate.resolve();
+  const mainResult=await main;
+
+  assert.equal(JSON.parse(modal.root.swim_bt_camp_stu)[0].id,'camp-current');
+  assert.equal(JSON.parse(mainResult.root.swim_students)[0].id,'regular-current');
+});
+
 test('cache changes only after an accepted matching server revision',async()=>{
   const env=createEnvironment('v2',{responseRevision:99});
   await env.root.ready();
