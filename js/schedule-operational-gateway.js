@@ -357,6 +357,19 @@
         fail(code,'이전 지점 또는 탭의 운영 결과는 사용하지 않습니다.');
       }
     }
+    function assertMutationAuthority(context){
+      assertActive();
+      if(text(getBranchId())!==context.branchId||context.branchId!==branchId
+        ||text(config.generationId)!==context.generationId
+        ||Number(config.epoch)!==context.epoch
+        ||sessionVersion!==context.sessionVersion){
+        fail('stale-operational-response','이전 지점 또는 운영 세대의 저장 결과는 현재 화면에 반영하지 않습니다.');
+      }
+    }
+    function selectionMatchesVisibleTab(selection){
+      if(!currentSelection?.tabIds?.length||!selection?.tabIds?.length) return true;
+      return selection.tabIds.some(tabId=>currentSelection.tabIds.includes(tabId));
+    }
     function mergeCache(values,loadedKeys){
       const allowed=unique(Array.isArray(loadedKeys)?loadedKeys:Object.keys(values||{}));
       allowed.forEach(key=>{
@@ -451,11 +464,14 @@
     }
     function selectionForKeys(keys,meta={}){
       if(typeof meta.selectionForKeys==='function'){
-        const selection=normalizedSelection(meta.selectionForKeys(keys.slice()));
+        const supplied=meta.selectionForKeys(keys.slice())||{};
+        const selection=normalizedSelection({...supplied,owner:supplied.owner||meta.owner});
         return {...selection,keys:unique(selection.keys.length?selection.keys:keys)};
       }
       const domains=unique(keys.map(key=>model.domainForLegacyKey(key)));
-      return normalizedSelection({tabIds:inferTabIds(keys,meta),domains,keys,dateRange:meta.dateRange});
+      return normalizedSelection({
+        tabIds:inferTabIds(keys,meta),domains,keys,dateRange:meta.dateRange,owner:meta.owner,
+      });
     }
     async function runMutation(request,context,selection){
       let lastError;
@@ -587,13 +603,14 @@
       try{
         const response=await runMutation(request,context,selection);
         responseReceived=true;
-        assertCurrent(context,selection);
         if(!acceptedResponse(response,request)) fail('invalid-operational-response','서버 저장 결과의 버전을 확인할 수 없습니다.');
-        assertCurrent(context,selection);
-        changed.forEach(key=>{
-          if(removedKeys.includes(key)) delete cache[key];
-          else cache[key]=clone(nextValues[key]);
-        });
+        assertMutationAuthority(context);
+        if(selectionMatchesVisibleTab(selection)){
+          changed.forEach(key=>{
+            if(removedKeys.includes(key)) delete cache[key];
+            else cache[key]=clone(nextValues[key]);
+          });
+        }else changed.forEach(key=>delete cache[key]);
         config={...config,revision:Number(response.revision)};
         pendingRuntimeConfig=null;
         pendingMutations.delete(operationId);

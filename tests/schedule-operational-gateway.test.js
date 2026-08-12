@@ -518,7 +518,7 @@ test('tab and config changes fence pending responses and request one controlled 
   assert.equal(env.root.currentConfig().epoch,5);
 });
 
-test('a tab switch while the callable is pending cannot update cache or revision',async()=>{
+test('a committed save remains successful after a tab switch and invalidates the old tab cache',async()=>{
   const mutation=deferred();
   const env=createEnvironment('v2-read',{mutationPromise:mutation.promise});
   const pending=env.root.transactionKeys(['swim_students'],draft=>{
@@ -529,10 +529,14 @@ test('a tab switch while the callable is pending cannot update cache or revision
   await env.root.loadSelection({tabIds:['camp'],domains:['roster'],keys:['swim_bt_camp_stu']});
   mutation.resolve({operationId:'op_1',committed:true,revision:32,recoveryState:'applied'});
 
-  await assert.rejects(pending,error=>error.code==='stale-operational-response');
-  assert.equal(env.root.currentConfig().revision,31);
-  const regular=await env.root.child('swim_students').once('value');
-  assert.equal(JSON.parse(regular.val())[0].name,'기존 이름');
+  const result=await pending;
+  assert.equal(result.committed,true);
+  assert.equal(env.root.currentConfig().revision,32);
+  const readsBefore=env.calls.v2Reads;
+  env.setLoaded('regular',{swim_students:JSON.stringify([{id:'student-1',name:'서버 저장 이름'}])});
+  const regular=await env.root.child('swim_students').once('value',{owner:'schedule-modal:verify-save'});
+  assert.equal(env.calls.v2Reads,readsBefore+1);
+  assert.equal(JSON.parse(regular.val())[0].name,'서버 저장 이름');
 });
 
 test('a branch change while the callable is pending cannot update cache or revision',async()=>{
