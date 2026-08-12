@@ -90,7 +90,11 @@ function createEnvironment(mode,overrides={}){
       return plain(configured);
     },
     subscribeConfig(next,error){
-      configListener=next;next(plain(config));
+      const initial=Array.isArray(overrides.configSequence)?overrides.configSequence[0]:config;
+      configListener=next;
+      if(overrides.configSubscriptionError){
+        error(Object.assign(new Error('config subscription unavailable'),{code:'unavailable'}));
+      }else next(plain(initial));
       configErrorListener=error;
       return ()=>{calls.configUnsubscribes+=1;configListener=null;configErrorListener=null;};
     },
@@ -225,7 +229,7 @@ test('a confirmed V2 session never falls back to V1 after a V2 read error',async
 });
 
 test('an unreadable startup authority permits legacy reads but keeps schedule writes read only',async()=>{
-  const env=createEnvironment('v1',{configError:true});
+  const env=createEnvironment('v1',{configError:true,configSubscriptionError:true});
 
   const loaded=await env.root.loadSelection(selection);
   assert.equal(loaded.primary,'v1');
@@ -236,6 +240,19 @@ test('an unreadable startup authority permits legacy reads but keeps schedule wr
   assert.equal(env.calls.legacyReads,1);
   assert.equal(env.calls.legacyWrites,0);
   assert.equal(env.root.currentConfig().valid,false);
+});
+
+test('a transient startup config read failure recovers from the live authority subscription',async()=>{
+  const env=createEnvironment('v2-read',{configError:true});
+
+  const authority=await env.root.ready();
+  const loaded=await env.root.loadSelection(selection);
+
+  assert.equal(authority.valid,true);
+  assert.equal(authority.mode,'v2-read');
+  assert.equal(loaded.primary,'v2');
+  assert.equal(env.calls.configReads,1);
+  assert.equal(env.calls.configUnsubscribes,0);
 });
 
 test('malformed runtime authority never becomes an implicit writable V1 pointer',async()=>{
@@ -312,7 +329,7 @@ test('functions-prefixed transient callable codes retry with the same operation 
   assert.equal(env.mutationRequests[1].operationId,'stable_prefixed_op');
 });
 
-test('a committed write with every callable response lost re-reads authority and requires one controlled reload',async()=>{
+test('a committed write with every callable response lost re-reads revision without locking the page',async()=>{
   const env=createEnvironment('v2-read',{
     commitThenLoseResponse:true,
     operationId:'committed_lost_response',
@@ -328,16 +345,14 @@ test('a committed write with every callable response lost re-reads authority and
 
   assert.equal(env.calls.mutations,2);
   assert.equal(env.calls.configReads,2);
-  assert.equal(env.calls.reloads,1);
-  assert.equal(env.calls.invalidations,1);
+  assert.equal(env.calls.reloads,0);
+  assert.equal(env.calls.invalidations,0);
   assert.equal(env.root.currentConfig().revision,32);
   assert.deepEqual(env.mutationRequests[0],env.mutationRequests[1]);
-  await assert.rejects(
-    env.root.transactionKeys(['swim_students'],draft=>draft,{
-      operationType:'update-student',tabIds:['regular'],
-    }),
-    error=>error?.code==='operational-reload-required',
-  );
+  const next=await env.root.transactionKeys(['swim_students'],draft=>draft,{
+    operationType:'update-student',tabIds:['regular'],
+  });
+  assert.equal(next.committed,true);
 });
 
 test('transaction preparation uses complete authoritative values for shared and global keys',async()=>{
@@ -700,11 +715,10 @@ test('a V1 to V2 authority change stops the live delegate and blocks its late ba
   assert.deepEqual(await controller.setActiveKeys(['swim_students']),{stale:true});
 });
 
-test('external generation epoch or revision changes request one idempotent controlled reload',async()=>{
+test('external generation or epoch changes request one idempotent controlled reload',async()=>{
   const scenarios=[
     {generationId:'gen_2',epoch:4,revision:31},
     {generationId:'gen_1',epoch:5,revision:31},
-    {generationId:'gen_1',epoch:4,revision:32},
   ];
   for(const next of scenarios){
     const env=createEnvironment('v2-read');
@@ -720,6 +734,19 @@ test('external generation epoch or revision changes request one idempotent contr
       epoch:next.epoch,revision:next.revision,
     }]);
   }
+});
+
+test('an external revision-only update refreshes the runtime revision without reloading the page',async()=>{
+  const env=createEnvironment('v2-read');
+  await env.root.ready();
+
+  env.emitConfig({
+    branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:32,valid:true,
+  });
+
+  assert.equal(env.calls.reloads,0);
+  assert.equal(env.calls.configUnsubscribes,0);
+  assert.equal(env.root.currentConfig().revision,32);
 });
 
 test('dispose cancels listeners and config subscription once',async()=>{

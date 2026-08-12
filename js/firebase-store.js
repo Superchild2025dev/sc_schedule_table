@@ -1299,7 +1299,7 @@
   function requestOperationalPageReload(details){
     const fingerprint=[
       String(details?.branchId||''),String(details?.mode||''),String(details?.generationId||''),
-      Math.max(0,Number(details?.epoch)||0),Math.max(0,Number(details?.revision)||0),
+      Math.max(0,Number(details?.epoch)||0),
     ].join('|');
     const storageKey='sc_operational_reload_fingerprint';
     try{

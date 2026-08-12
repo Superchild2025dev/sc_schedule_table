@@ -26,6 +26,10 @@ function fixture(mode,overrides={}){
   let legacyGuests=plain(overrides.legacyGuests||{});
   let v2Attendance=plain(overrides.v2Attendance||legacyAttendance);
   let v2Guests=plain(overrides.v2Guests||legacyGuests);
+  let configSubscriber=null;
+  let configErrorSubscriber=null;
+  let configReads=0;
+  let configSubscriptions=0;
   const modelContext={window:{},console};
   vm.createContext(modelContext);
   for(const file of ['schedule-time.js','schedule-schema-v2.js','attendance-v2-model.js']){
@@ -73,6 +77,7 @@ function fixture(mode,overrides={}){
   };
   const v2Store={
     async readConfig(){
+      configReads+=1;
       if(overrides.configError) throw new Error('config failed');
       if(Object.prototype.hasOwnProperty.call(overrides,'configValue')) return plain(overrides.configValue);
       return {
@@ -81,6 +86,20 @@ function fixture(mode,overrides={}){
         compatibilityValid:overrides.compatibilityValid!==false,
         compatibilityCode:overrides.compatibilityValid===false?'attendance-pointer-mismatch':'',
       };
+    },
+    subscribeConfig(next,error){
+      configSubscriptions+=1;
+      configSubscriber=next;
+      configErrorSubscriber=error;
+      if(!overrides.configSubscriptionError){
+        next({
+          mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',
+          epoch:7,revision:12,valid:true,compatibilityValid:true,compatibilityCode:'',
+        });
+      }else{
+        error(Object.assign(new Error('config subscription failed'),{code:'unavailable'}));
+      }
+      return ()=>{configSubscriber=null;configErrorSubscriber=null;};
     },
     async readRange(input){
       calls.v2Reads+=1;calls.order.push('v2-read');
@@ -146,6 +165,10 @@ function fixture(mode,overrides={}){
   });
   return {
     gateway,calls,
+    configReads:()=>configReads,
+    configSubscriptions:()=>configSubscriptions,
+    emitConfig:value=>configSubscriber?.(plain(value)),
+    emitConfigError:error=>configErrorSubscriber?.(error),
     legacyAttendance:()=>plain(legacyAttendance),
     legacyGuests:()=>plain(legacyGuests),
     v2Attendance:()=>plain(v2Attendance),
@@ -170,7 +193,7 @@ test('v1 mode reads and writes only the legacy attendance map',async()=>{
 });
 
 test('an unreadable attendance authority remains readable from V1 but rejects every V1 write',async()=>{
-  const env=fixture('v1',{configError:true});
+  const env=fixture('v1',{configError:true,configSubscriptionError:true});
   const loaded=await env.gateway.loadRange(range);
 
   assert.equal(loaded.primary,'v1');
@@ -179,6 +202,19 @@ test('an unreadable attendance authority remains readable from V1 but rejects ev
   }),error=>error?.code==='operational-authority-unavailable');
   assert.equal(env.calls.legacyLoads,1);
   assert.equal(env.calls.legacyAttendanceWrites,0);
+});
+
+test('attendance recovers from a transient startup config read failure through the live subscription',async()=>{
+  const env=fixture('v2-read',{configError:true});
+
+  const authority=await env.gateway.ready();
+  const loaded=await env.gateway.loadRange(range);
+
+  assert.equal(authority.valid,true);
+  assert.equal(authority.mode,'v2-read');
+  assert.equal(loaded.primary,'v2');
+  assert.equal(env.configReads(),1);
+  assert.equal(env.configSubscriptions(),1);
 });
 
 test('malformed attendance authority never grants an implicit V1 write',async()=>{

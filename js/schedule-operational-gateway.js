@@ -68,8 +68,8 @@
   function rebaseRoot(before,after,fresh){
     return rebaseValue(before,after,fresh);
   }
-  function configFingerprint(config){
-    return [text(config?.branchId),text(config?.mode),text(config?.generationId),Number(config?.epoch)||0,Number(config?.revision)||0].join('|');
+  function authorityFingerprint(config){
+    return [text(config?.branchId),text(config?.mode),text(config?.generationId),Number(config?.epoch)||0].join('|');
   }
   function callableCode(error){
     return text(error?.code).toLowerCase().replace(/^firebase\/functions\//,'').replace(/^functions\//,'');
@@ -208,7 +208,7 @@
       }
     }
     function requestReload(next){
-      const fingerprint=configFingerprint(next);
+      const fingerprint=authorityFingerprint(next);
       if(reloadRequired||fingerprint===lastConfigNotification) return;
       lastConfigNotification=fingerprint;
       reloadRequired=true;
@@ -238,10 +238,10 @@
     function acceptConfig(value,fromSubscription){
       assertActive();
       const next=normalizeConfig(value);
-      const before=configFingerprint(config);
-      const after=configFingerprint(next);
+      const before=authorityFingerprint(config);
+      const after=authorityFingerprint(next);
       const hadConfig=config.valid===true;
-      if(hadConfig&&fromSubscription&&before!==after){
+      if(hadConfig&&fromSubscription){
         const expected=[...pendingMutations.values()].some(request=>
           next.branchId===request.branchId
           &&next.mode===request.mode
@@ -253,7 +253,13 @@
           pendingRuntimeConfig=next;
           return clone(config);
         }
-        requestReload(next);
+        if(before!==after){
+          config=next;
+          if(V2_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+          requestReload(next);
+          return clone(config);
+        }
+        if(Number(config.revision)!==Number(next.revision)) cache={};
       }
       config=next;
       if(V2_MODES.has(config.mode)&&config.valid) confirmedV2=true;
@@ -271,23 +277,29 @@
     }
     async function ready(){
       assertActive();
+      if(config.valid) return clone(config);
       if(readyPromise) return readyPromise;
       readyPromise=(async()=>{
         try{
+          startConfigSubscription();
           const next=await v2Store.readConfig();
           assertActive();
           acceptConfig(next,false);
-          startConfigSubscription();
           return clone(config);
         }catch(error){
           if(error?.code==='operational-disposed') throw error;
+          if(config.valid) return clone(config);
           if(confirmedV2) throw Object.assign(new Error('V2 운영 설정을 확인할 수 없어 작업을 중단했습니다.'),{code:'v2-operational-config-failed'});
           config=unknownConfig();
           record('config','read-only-fallback',{},error);
           return clone(config);
         }
       })();
-      try{return await readyPromise;}catch(error){readyPromise=null;throw error;}
+      try{
+        const result=await readyPromise;
+        if(!result?.valid) readyPromise=null;
+        return result;
+      }catch(error){readyPromise=null;throw error;}
     }
     function normalizedSelection(input={}){
       return {
@@ -576,7 +588,7 @@
           try{
             const next=normalizeConfig(await v2Store.readConfig());
             pendingRuntimeConfig=null;
-            const authorityChanged=configFingerprint(next)!==configFingerprint({
+            const authorityChanged=authorityFingerprint(next)!==authorityFingerprint({
               branchId:pendingRequest.branchId,
               mode:pendingRequest.mode,
               generationId:pendingRequest.generationId,

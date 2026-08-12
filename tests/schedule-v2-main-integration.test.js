@@ -108,7 +108,7 @@ test('createBranchRef keeps V1 before auth and creates the operational root afte
   assert.equal(gatewayCall.options.functions,after.functions);
 });
 
-test('createBranchRef wires a one-shot controlled reload for each runtime authority fingerprint',()=>{
+test('createBranchRef reloads only when the runtime authority fingerprint changes',()=>{
   const env=loadFirebaseStore(true);
   env.context.SCFirebaseStore.createBranchRef({id:'gagyeong',fbPath:'schedule'});
   const onReloadRequired=env.calls.find(call=>call.type==='gateway').options.onReloadRequired;
@@ -118,6 +118,7 @@ test('createBranchRef wires a one-shot controlled reload for each runtime author
   onReloadRequired(revision);
   onReloadRequired(revision);
   onReloadRequired({...revision,revision:14});
+  onReloadRequired({...revision,generationId:'gen_5',revision:14});
 
   assert.equal(env.reloads.length,2);
 });

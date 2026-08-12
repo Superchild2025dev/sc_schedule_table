@@ -50,6 +50,9 @@
       code:'operational-authority-unavailable',cause,
     });
   }
+  function authorityFingerprint(value){
+    return [text(value?.branchId),text(value?.mode),text(value?.generationId),Number(value?.epoch)||0].join('|');
+  }
 
   function create(options){
     const branchId=text(options?.branchId);
@@ -64,6 +67,7 @@
     const unknownConfig=()=>({mode:'unknown',generationId:'',branchId,epoch:0,revision:0,valid:false,compatibilityValid:false});
     let config=unknownConfig();
     let readyPromise=null;
+    let configUnsubscribe=null;
     let confirmedV2=false;
     let reloadRequired=false;
     const rangeVersions=new Map();
@@ -123,15 +127,45 @@
       reloadRequired=true;
       if(typeof options?.onReloadRequired==='function') options.onReloadRequired(clone(authority));
     }
+    function acceptAuthority(value,fromSubscription){
+      const next=normalizeAuthority(value);
+      const hadAuthority=config.valid===true;
+      if(hadAuthority&&fromSubscription&&authorityFingerprint(config)!==authorityFingerprint(next)){
+        requestReload(next);
+        return clone(config);
+      }
+      config=next;
+      if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+      return clone(config);
+    }
+    function revokeAuthority(error){
+      const hadAuthority=config.valid===true;
+      config=unknownConfig();
+      readyPromise=null;
+      if(hadAuthority) requestReload(config);
+      return error;
+    }
+    function startConfigSubscription(){
+      if(configUnsubscribe||typeof v2Store.subscribeConfig!=='function') return;
+      configUnsubscribe=v2Store.subscribeConfig(
+        value=>{
+          try{ acceptAuthority(value,true); }
+          catch(error){ revokeAuthority(error); }
+        },
+        error=>revokeAuthority(error),
+      );
+    }
     async function ready(){
+      if(config.valid) return clone(config);
       if(readyPromise) return readyPromise;
       readyPromise=(async()=>{
         try{
-          const next=normalizeAuthority(await v2Store.readConfig());
-          config=next;
-          if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+          startConfigSubscription();
+          const next=await v2Store.readConfig();
+          acceptAuthority(next,false);
           return clone(config);
         }catch(error){
+          if(config.valid) return clone(config);
           if(confirmedV2) throw Object.assign(new Error('V2 출석 전환 설정을 확인하지 못해 작업을 중단했습니다.'),{
             code:'v2-operational-config-failed',cause:error,
           });
@@ -139,7 +173,11 @@
           return clone(config);
         }
       })();
-      try{return await readyPromise;}catch(error){readyPromise=null;throw error;}
+      try{
+        const result=await readyPromise;
+        if(!result?.valid) readyPromise=null;
+        return result;
+      }catch(error){readyPromise=null;throw error;}
     }
     function mode(){ return config.mode; }
     function context(input={}){
