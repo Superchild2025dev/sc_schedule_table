@@ -98,6 +98,11 @@
     const makeOperationId=typeof options.makeOperationId==='function'?options.makeOperationId:defaultOperationId;
     const getBranchId=typeof options.getBranchId==='function'?options.getBranchId:()=>branchId;
     const maxMutationAttempts=Math.max(1,Math.min(3,Number(options.maxMutationAttempts||2)||2));
+    const maxConflictAttempts=Math.max(1,Math.min(3,Number(options.maxConflictAttempts||3)||3));
+    const conflictRetryDelayMs=Math.max(0,Math.min(250,Number(options.conflictRetryDelayMs??30)||0));
+    const sleep=typeof options.sleep==='function'
+      ?options.sleep
+      :milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
     if(!branchId) throw new TypeError('branchId is required');
     if(!legacyRoot||typeof legacyRoot.once!=='function'||typeof legacyRoot.transactionKeys!=='function'){
       throw new TypeError('legacyRoot is required');
@@ -512,20 +517,40 @@
         originalAfter=object(returned)?clone(returned):clone(root);
         return returned;
       };
-      try{
-        return await transactionKeysOnce(keys,captureIntent,attemptMeta);
-      }catch(error){
-        const code=callableCode(error);
-        if(code!=='aborted'||originalBefore===null||originalAfter===null) throw error;
-        const next=await v2Store.readConfig();
-        if(!sameRebaseAuthority(config,next)){
-          requestReload(next);
-          fail('operational-reload-required','Operational authority changed before retry.');
+      let applyIntent=captureIntent;
+      let previousRevision=Number(config.revision)||0;
+      for(let attempt=0;attempt<maxConflictAttempts;attempt+=1){
+        try{
+          return await transactionKeysOnce(keys,applyIntent,attemptMeta);
+        }catch(error){
+          const code=callableCode(error);
+          if(!['aborted','failed-precondition','stale-operational-selection'].includes(code)
+            ||attempt+1>=maxConflictAttempts) throw error;
+          let next=normalizeConfig(await v2Store.readConfig());
+          if(!sameRebaseAuthority(config,next)){
+            config=next;
+            requestReload(next);
+            fail('operational-reload-required','Operational authority changed before retry.');
+          }
+          if(code==='aborted'&&Number(next.revision)<=previousRevision){
+            await sleep(conflictRetryDelayMs*(attempt+1));
+            next=normalizeConfig(await v2Store.readConfig());
+            if(!sameRebaseAuthority(config,next)){
+              config=next;
+              requestReload(next);
+              fail('operational-reload-required','Operational authority changed before retry.');
+            }
+          }
+          if(code==='failed-precondition'&&Number(next.revision)<=previousRevision) throw error;
+          previousRevision=Math.max(previousRevision,Number(next.revision));
+          pendingRuntimeConfig=null;
+          acceptConfig(next,false);
+          applyIntent=originalBefore===null||originalAfter===null
+            ?captureIntent
+            :root=>rebaseRoot(originalBefore,originalAfter,root);
         }
-        pendingRuntimeConfig=null;
-        acceptConfig(next,false);
-        return transactionKeysOnce(keys,root=>rebaseRoot(originalBefore,originalAfter,root),attemptMeta);
       }
+      fail('aborted','The operational edit could not be rebased safely.');
     }
     async function transactionKeysOnce(keys,mutator,meta={}){
       keys=unique(keys);
@@ -565,7 +590,6 @@
       try{
         loaded=await v2Store.loadMutation({...selection,keys,config:clone(config)});
       }catch(error){
-        if(error?.code==='stale-operational-selection') fail('stale-operational-response','이전 탭의 운영 결과는 사용하지 않습니다.');
         throw error;
       }
       assertCurrent(context,selection);

@@ -17,6 +17,15 @@ function updateStudent(gateway,key,sid,name,operationId){
   },{operationId,operationType:"update-student",tabIds:[key==="swim_students"?"regular":"summer"]});
 }
 
+function updateTeacher(gateway,slot,name,operationId){
+  return gateway.transactionKeys(['swim_inst'],root=>{
+    const teachers=parse(root,'swim_inst',{});
+    teachers[slot]=name;
+    root.swim_inst=JSON.stringify(teachers);
+    return root;
+  },{operationId,operationType:'update-teacher',tabIds:['regular']});
+}
+
 function studentName(value){return String(value).replace(/^\*/,"");}
 
 for(const branchId of ["gagyeong","yongam"]){
@@ -60,3 +69,32 @@ for(const branchId of ["gagyeong","yongam"]){
     });
   }
 }
+
+test('three concurrent independent schedule edits all survive bounded intent rebasing',async()=>{
+  const system=createOperationalSystem({branches:['yongam'],mode:'v2-read',deriveBarrierCount:3});
+  const gateways=[system.gateway('yongam'),system.gateway('yongam'),system.gateway('yongam')];
+  await Promise.all(gateways.map(gateway=>gateway.ready()));
+
+  const results=await Promise.allSettled([
+    updateStudent(gateways[0],'swim_students','Y_r1','Y Three One','three_y_1'),
+    updateStudent(gateways[1],'swim_students','Y_r2','Y Three Two','three_y_2'),
+    updateTeacher(gateways[2],'4PM/Mon/1','Y Three Teacher','three_y_3'),
+  ]);
+
+  const outcomes=results.map(result=>result.status==='fulfilled'
+    ?{status:'fulfilled'}
+    :{status:'rejected',code:result.reason?.code,message:result.reason?.message});
+  const evidence={
+    outcomes,
+    runtime:system.runtime('yongam'),
+    manifests:['three_y_1','three_y_2','three_y_3'].map(id=>system.manifest('yongam',id)),
+    diagnostics:gateways.map(gateway=>gateway.diagnostics()),
+  };
+  assert.deepEqual(results.map(result=>result.status),['fulfilled','fulfilled','fulfilled'],JSON.stringify(evidence));
+  const root=system.reconstructV2('yongam');
+  const students=parse(root,'swim_students',[]);
+  const teachers=parse(root,'swim_inst',{});
+  assert.equal(studentName(students.find(student=>student.sid==='Y_r1').n),'Y Three One');
+  assert.equal(studentName(students.find(student=>student.sid==='Y_r2').n),'Y Three Two');
+  assert.equal(teachers['4PM/Mon/1'],'Y Three Teacher');
+});

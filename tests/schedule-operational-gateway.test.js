@@ -165,6 +165,7 @@ function createEnvironment(mode,overrides={}){
     branchId:'yongam',legacyRoot,v2Store,model,mutate,
     makeOperationId:()=>overrides.operationId||'op_1',
     now:()=>new Date('2026-08-11T03:00:00.000Z'),
+    sleep:typeof overrides.sleep==='function'?overrides.sleep:async()=>{},
     getBranchId:typeof overrides.getBranchId==='function'?overrides.getBranchId:()=>overrides.currentBranchId||'yongam',
     onReloadRequired(details){ calls.reloads+=1;calls.reloadDetails.push(plain(details)); },
   });
@@ -831,6 +832,38 @@ test('an aborted retry awaits an async mutator and preserves unrelated fresh dat
     {id:'student-1',name:'local async'},
     {id:'student-2',name:'fresh remote'},
   ]);
+});
+
+test('a stale mutation read retries without running the user mutator twice',async()=>{
+  let load=0;
+  let mutatorRuns=0;
+  const env=createEnvironment('v2-read',{
+    configSequence:[
+      {branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:31,valid:true},
+      {branchId:'yongam',mode:'v2-read',generationId:'gen_1',epoch:4,revision:32,valid:true},
+    ],
+    loadMutation(selection,config){
+      load+=1;
+      if(load===1) throw Object.assign(new Error('revision advanced during read'),{code:'stale-operational-selection'});
+      return {
+        root:{swim_students:JSON.stringify([{id:'student-1',name:'fresh'}])},collections:{},
+        config,context:{...config},selection,
+      };
+    },
+  });
+
+  const result=await env.root.transactionKeys(['swim_students'],draft=>{
+    mutatorRuns+=1;
+    const students=JSON.parse(draft.swim_students);
+    students[0].name='saved';
+    draft.swim_students=JSON.stringify(students);
+    return draft;
+  },{operationId:'stale_read_retry',operationType:'update-student',tabIds:['regular']});
+
+  assert.equal(result.committed,true);
+  assert.equal(load,2);
+  assert.equal(mutatorRuns,1);
+  assert.equal(env.calls.mutations,1);
 });
 
 test('an aborted retry fails closed when operational authority changes',async()=>{
