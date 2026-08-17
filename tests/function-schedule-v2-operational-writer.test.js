@@ -32,6 +32,7 @@ class QueryRef{
   limit(maximum){return new QueryRef(this.collection,this.filters,this.order,maximum,this.after);}
   startAfter(snapshot){return new QueryRef(this.collection,this.filters,this.order,this.maximum,snapshot);}
   async get(){
+    this.collection.db.collectionReads.push(this.collection.path);
     let docs=this.collection.directDocs().filter(doc=>this.filters.every(([field,operator,want])=>{
       const actual=doc.data()?.[field];
       if(operator==="==") return actual===want;
@@ -73,6 +74,7 @@ class CollectionRef extends QueryRef{
 class FakeFirestore{
   constructor(initial={}){
     this.docs=new Map(Object.entries(initial).map(([key,value])=>[key,clone(value)]));
+    this.collectionReads=[];
     for(const [key,value] of this.docs){
       const attendanceKey=key.replace(/\/runtime\/operational$/,"/runtime/attendance");
       if(attendanceKey!==key&&!this.docs.has(attendanceKey)) this.docs.set(attendanceKey,clone(value));
@@ -1087,6 +1089,76 @@ test("an unrelated mutation preserves archived regular attendance ownership and 
 
   assert.equal(plan.changes.some(change=>change.collection.startsWith("attendance")),false);
   assert.deepEqual(plan.changes.map(change=>change.collection),["teacherProfiles"]);
+});
+
+test("a teacher profile mutation ignores an unrelated corrupt attendance snapshot",async()=>{
+  const model=globalThis.SCV2OperationalModel;
+  const schema=globalThis.SCScheduleSchemaV2;
+  const emptyCollections={};
+  Object.values(model.DOMAIN_COLLECTIONS).flat().forEach(name=>{emptyCollections[name]=[];});
+  const emptyRoot=model.legacyRootFromCollections({
+    branchId:BRANCH,generationId:GENERATION,collections:emptyCollections,
+  });
+  const baseline=schema.diagnoseLegacyRoot(BRANCH,emptyRoot).conversion;
+  const initial={
+    [runtimePath()]:runtime(),
+    [generationPath("attendanceSnapshotStudents","orphan-student")]:{
+      id:"orphan-student",snapshotId:"missing-snapshot",date:"2026-05-04",
+      tabId:"regular",courseType:"regular",payload:{n:"Historical"},
+      branchId:BRANCH,generationId:GENERATION,operationalRevision:31,lastOperationId:"baseline",
+    },
+  };
+  Object.entries(baseline).filter(([,rows])=>Array.isArray(rows)).forEach(([collection,rows])=>{
+    rows.forEach(row=>{
+      initial[generationPath(collection,row.id)]={
+        ...clone(row),branchId:BRANCH,generationId:GENERATION,
+        operationalRevision:31,lastOperationId:"baseline",
+      };
+    });
+  });
+  const db=new FakeFirestore(initial);
+  const mutation=policy.validateMutationRequest(request({
+    operationId:"op_teacher_projection",operationType:"sort-teachers",keys:["swim_teachers"],
+    nextValues:{swim_teachers:[{name:"Teacher One"}]},
+  }).data);
+
+  const plan=await operational.deriveChanges({db,request:mutation});
+
+  assert.deepEqual(plan.changes.map(change=>change.collection),["teacherProfiles"]);
+  assert.equal(db.collectionReads.some(path=>path.endsWith("/attendanceSnapshotStudents")),false);
+});
+
+test("a roster mutation still rejects a placement with a broken enrollment reference",async()=>{
+  const schema=globalThis.SCScheduleSchemaV2;
+  const root={
+    swim_tab_list:JSON.stringify([{id:"regular",type:"regular"}]),
+    swim_students:JSON.stringify([{
+      sid:"student-1",n:"Student",p:"01012345678",t:"4PM",d:"Mon",l:1,r:1,
+    }]),
+    swim_inst:"{}",
+  };
+  const conversion=schema.diagnoseLegacyRoot(BRANCH,root).conversion;
+  conversion.placements[0].enrollmentId="missing-enrollment";
+  const initial={[runtimePath()]:runtime()};
+  Object.entries(conversion).filter(([,rows])=>Array.isArray(rows)).forEach(([collection,rows])=>{
+    rows.forEach(row=>{
+      initial[generationPath(collection,row.id)]={
+        ...clone(row),branchId:BRANCH,generationId:GENERATION,
+        operationalRevision:31,lastOperationId:"baseline",
+      };
+    });
+  });
+  const db=new FakeFirestore(initial);
+  const mutation=policy.validateMutationRequest(request({
+    operationId:"op_broken_roster",operationType:"move-student",keys:["swim_students"],
+    nextValues:{swim_students:JSON.parse(root.swim_students)},
+  }).data);
+
+  await assert.rejects(
+    ()=>operational.deriveChanges({db,request:mutation}),
+    error=>error.code==="failed-precondition",
+  );
+  assert.equal(db.collectionReads.some(path=>path.endsWith("/attendanceSnapshotStudents")),false);
 });
 
 test("absence and makeup operations cannot relabel cross-semantic mark changes",async()=>{

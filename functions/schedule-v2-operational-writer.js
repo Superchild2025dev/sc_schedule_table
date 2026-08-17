@@ -672,19 +672,19 @@ async function resolveAttendanceRecoveryValues(input){
   return {[key]:JSON.stringify(guests)};
 }
 
-async function readGenerationCollections(db,branchId,generationId,heartbeat=async()=>{}){
+async function readGenerationCollections(db,branchId,generationId,heartbeat=async()=>{},names=COLLECTIONS){
   const ref=generationRef(db,branchId,generationId);
   const collections={};
-  for(const collection of COLLECTIONS){
+  for(const collection of names){
     await heartbeat();
     collections[collection]=snapshotRows(await ref.collection(collection).get());
   }
   return collections;
 }
 
-function modelCollections(storedCollections){
+function modelCollections(storedCollections,names=COLLECTIONS){
   const collections={};
-  COLLECTIONS.forEach(name=>{
+  names.forEach(name=>{
     collections[name]=(storedCollections[name]||[]).map(row=>{
       const value=clone(row);
       delete value.branchId;
@@ -699,10 +699,13 @@ function modelCollections(storedCollections){
 }
 
 async function deriveChangesDefault(input){
+  const projection=model.collectionsForMutationKeys(input.request.keys);
+  if(!projection.writeCollections.length) fail("invalid-argument");
   const storedCollections=await readGenerationCollections(
     input.db,input.request.branchId,input.request.generationId,
+    async()=>{},projection.readCollections,
   );
-  const collections=modelCollections(storedCollections);
+  const collections=modelCollections(storedCollections,projection.readCollections);
   const beforeRoot=model.legacyRootFromCollections({
     branchId:input.request.branchId,generationId:input.request.generationId,collections,
   });
@@ -721,7 +724,13 @@ async function deriveChangesDefault(input){
   if(changedKeys.some(key=>!input.request.keys.includes(key))) fail("invalid-argument");
   const report=schema.diagnoseLegacyRoot(input.request.branchId,afterRoot);
   if(!report?.checks?.ready||!report.conversion) fail("failed-precondition");
-  const planned=model.collectionChanges({before:collections,after:report.conversion});
+  const validation=model.validateMutationProjection({
+    keys:input.request.keys,beforeCollections:collections,afterCollections:report.conversion,
+  });
+  if(validation.issues.length) fail("failed-precondition");
+  const planned=model.collectionChanges({
+    before:collections,after:report.conversion,collections:projection.writeCollections,
+  });
   if(planned.issues.length) fail("failed-precondition");
   const attendanceRelated=input.request.keys.some(key=>
     ["attendance","roster","workflow"].includes(model.domainForLegacyKey(key))
@@ -731,7 +740,7 @@ async function deriveChangesDefault(input){
     change.collection!=="attendanceRecords"&&change.collection!=="attendanceGuests"
   );
   const beforeByCollection={};
-  COLLECTIONS.forEach(name=>{
+  projection.writeCollections.forEach(name=>{
     beforeByCollection[name]=new Map((storedCollections[name]||[]).map(row=>[text(row.id),row]));
   });
   const changes=plannedChanges.map(change=>{

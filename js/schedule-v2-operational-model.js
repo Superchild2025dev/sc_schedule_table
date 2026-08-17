@@ -9,6 +9,14 @@
     administration:["teacherProfiles","tabFolders","archivedTabs","systemMetadata"],
     history:["retirementRecords","deskStudentRecords"],
   });
+  const MUTATION_DOMAIN_DEPENDENCIES=Object.freeze({
+    roster:["roster"],
+    workflow:["roster","workflow"],
+    attendance:["roster","workflow","attendance","administration"],
+    calendar:["calendar"],
+    administration:["administration"],
+    history:["history"],
+  });
   const COLLECTION_NAMES=Object.freeze(Object.values(DOMAIN_COLLECTIONS).flat());
   const FIXED_LEGACY_DOMAINS=Object.freeze({
     swim_tab_list:"roster",swim_students:"roster",swim_inst:"roster",
@@ -72,6 +80,15 @@
     if(FIXED_LEGACY_DOMAINS[normalized]) return FIXED_LEGACY_DOMAINS[normalized];
     const match=DYNAMIC_LEGACY_DOMAINS.find(([pattern])=>pattern.test(normalized));
     return match?match[1]:"";
+  }
+  function collectionsForMutationKeys(keys){
+    const domains=[...new Set((Array.isArray(keys)?keys:[]).map(domainForLegacyKey).filter(Boolean))];
+    const readDomains=[...new Set(domains.flatMap(domain=>MUTATION_DOMAIN_DEPENDENCIES[domain]||[domain]))];
+    return {
+      domains,
+      readCollections:[...new Set(readDomains.flatMap(domain=>DOMAIN_COLLECTIONS[domain]||[]))],
+      writeCollections:[...new Set(domains.flatMap(domain=>DOMAIN_COLLECTIONS[domain]||[]))],
+    };
   }
   function parseLegacyValue(value){
     if(typeof value!=="string") return clone(value);
@@ -415,7 +432,8 @@
     const issues=[...collectionIssues(before),...collectionIssues(after)];
     if(issues.length) return {issues,changes:[]};
     const changes=[];
-    COLLECTION_NAMES.forEach(name=>{
+    const names=Array.isArray(input?.collections)?input.collections:COLLECTION_NAMES;
+    names.forEach(name=>{
       const beforeById=new Map(collection(before,name).map(row=>[text(row.id),row]));
       const afterById=new Map(collection(after,name).map(row=>[text(row.id),row]));
       [...new Set([...beforeById.keys(),...afterById.keys()])].sort().forEach(id=>{
@@ -427,10 +445,25 @@
     });
     return {issues:[],changes};
   }
+  function validateMutationProjection(input){
+    const projection=collectionsForMutationKeys(input?.keys);
+    const selected=collections=>{
+      const result={};
+      projection.readCollections.forEach(name=>{ result[name]=collection(collections,name); });
+      return result;
+    };
+    const issues=[
+      ...collectionIssues(selected(input?.beforeCollections)),
+      ...collectionIssues(selected(input?.afterCollections)),
+    ];
+    return {...projection,issues};
+  }
 
   global.SCV2OperationalModel=Object.freeze({
     DOMAIN_COLLECTIONS,
     domainForLegacyKey,
+    collectionsForMutationKeys,
+    validateMutationProjection,
     trackedLegacyView,
     legacyRootFromCollections,
     collectionChanges,
