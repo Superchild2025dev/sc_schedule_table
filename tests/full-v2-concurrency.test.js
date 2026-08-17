@@ -26,6 +26,17 @@ function updateTeacher(gateway,slot,name,operationId){
   },{operationId,operationType:'update-teacher',tabIds:['regular']});
 }
 
+function checkAttendance(handlers,legacyKey,status,operationId){
+  return handlers.updateAttendance({
+    mutator:attendance=>({...attendance,[legacyKey]:{s:status}}),
+    context:{
+      owner:`attendance-${operationId}`,
+      tabId:'regular',courseType:'regular',dates:[legacyKey.split('/').pop()],
+      operationId,operationType:'attendance-update',tabIds:['regular'],
+    },
+  });
+}
+
 function studentName(value){return String(value).replace(/^\*/,"");}
 
 for(const branchId of ["gagyeong","yongam"]){
@@ -97,4 +108,45 @@ test('three concurrent independent schedule edits all survive bounded intent reb
   assert.equal(studentName(students.find(student=>student.sid==='Y_r1').n),'Y Three One');
   assert.equal(studentName(students.find(student=>student.sid==='Y_r2').n),'Y Three Two');
   assert.equal(teachers['4PM/Mon/1'],'Y Three Teacher');
+});
+
+test('two simultaneous attendance edits to different records both commit',async()=>{
+  const system=createOperationalSystem({branches:['yongam'],mode:'v2-read',deriveBarrierCount:2});
+  const first=system.liveHandlers('yongam');
+  const second=system.liveHandlers('yongam');
+  const firstKey='4PM/Mon/1/1/2026-08-11';
+  const secondKey='5PM/Tue/1/1/2026-08-11';
+
+  const results=await Promise.allSettled([
+    checkAttendance(first,firstKey,'present','attendance_a'),
+    checkAttendance(second,secondKey,'present','attendance_b'),
+  ]);
+
+  assert.deepEqual(
+    results.map(result=>result.status),
+    ['fulfilled','fulfilled'],
+    JSON.stringify(results.map(result=>result.status==='fulfilled'
+      ?{status:'fulfilled'}
+      :{status:'rejected',code:result.reason?.code,message:result.reason?.message})),
+  );
+  const attendance=parse(system.reconstructV2('yongam'),'swim_attendance',{});
+  assert.equal(attendance[firstKey]?.s,'present');
+  assert.equal(attendance[secondKey]?.s,'present');
+});
+
+test('two simultaneous attendance edits to the same record preserve one winner',async()=>{
+  const system=createOperationalSystem({branches:['yongam'],mode:'v2-read',deriveBarrierCount:2});
+  const first=system.liveHandlers('yongam');
+  const second=system.liveHandlers('yongam');
+  const key='4PM/Mon/1/1/2026-08-11';
+
+  const results=await Promise.allSettled([
+    checkAttendance(first,key,'present','attendance_same_a'),
+    checkAttendance(second,key,'absent','attendance_same_b'),
+  ]);
+
+  assert.deepEqual(results.map(result=>result.status).sort(),['fulfilled','rejected']);
+  assert.equal(results.find(result=>result.status==='rejected')?.reason?.code,'aborted');
+  const attendance=parse(system.reconstructV2('yongam'),'swim_attendance',{});
+  assert.equal(attendance[key]?.s,'present');
 });

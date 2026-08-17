@@ -149,6 +149,24 @@ test('attendance and guest mutations keep the existing update contract',async()=
   assert.equal(env.calls.guestWrites,1);
 });
 
+test('a committed attendance save remains valid when an unrelated revision finishes afterward',async()=>{
+  const write=deferred();
+  const env=fixture('v2',{attendanceWrite:()=>write.promise});
+  const pending=env.runtime.updateAttendance(map=>({...map,newRecord:{s:'present'}}),{
+    owner:'attendance-main',tabId:'regular',courseType:'regular',dates:['2026-08-03'],
+  });
+  env.setConfig({revision:11});
+  write.resolve({
+    attendance:{newRecord:{s:'present'}},primary:'v2',context:{
+      owner:'attendance-main',tabId:'regular',dateRange:['2026-08-03'],
+      branchId:'yongam',generationId:'gen_1',epoch:3,revision:10,
+    },
+  });
+
+  const attendance=await pending;
+  assert.equal(attendance.newRecord.s,'present');
+});
+
 test('a late attendance success cannot replace a newer date and tab context',async()=>{
   const write=deferred();
   const env=fixture('v2',{attendanceWrite:()=>write.promise,loadRange:input=>({

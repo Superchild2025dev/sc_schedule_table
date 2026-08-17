@@ -249,7 +249,7 @@ test('operational config is authoritative and reports a compatibility pointer mi
   });
 });
 
-test('attendance mutation uses the strict callable, preserves unseen dates, and retries one stable request',async()=>{
+test('attendance mutation sends only record changes, preserves unseen dates, and retries one stable request',async()=>{
   const visibleKey='4시/월/1/1/2026-08-03';
   const unseenKey='4시/월/1/1/2026-08-04';
   const requests=[];
@@ -277,14 +277,22 @@ test('attendance mutation uses the strict callable, preserves unseen dates, and 
   assert.equal(result.revision,22);
   assert.equal(requests.length,2);
   assert.deepEqual(requests[1],requests[0]);
-  assert.deepEqual(requests[0],{
+  assert.deepEqual(requests[0],plain({
     branchId:'yongam',generationId:'gen_1',expectedEpoch:8,
     operationId:'attendance_op_1',operationType:'attendance-update',
     keys:['swim_attendance'],beforeRevision:21,
-    nextValues:{swim_attendance:JSON.stringify({
-      [visibleKey]:{s:'present'},[unseenKey]:{s:'present'},
-    })},removedKeys:[],
-  });
+    recordChanges:[{
+      collection:'attendanceRecords',id:model.recordId('regular',visibleKey),type:'set',
+      value:model.recordFromLegacy({
+        tabId:'regular',courseType:'regular',legacyKey:visibleKey,raw:{s:'present'},
+      }),
+      beforeExists:true,
+      beforeDigest:model.recordDigest(model.recordFromLegacy({
+        tabId:'regular',courseType:'regular',legacyKey:visibleKey,raw:{s:'absent'},
+      })),
+    }],
+  }));
+  assert.equal(db.queryLog.some(entry=>entry.collectionPath.endsWith('/attendanceRecords')),false);
   assert.equal(db.transactions.length,0);
   assert.equal(db.commits.length,0);
 });
@@ -337,16 +345,14 @@ test('regular mutations preserve current and archived regular rows while excludi
   });
 
   assert.equal(requests.length,2);
-  assert.deepEqual(JSON.parse(requests[0].nextValues.swim_attendance),{
-    [currentKey]:{s:'present'},
-    [archivedKey]:{s:'present',by:'archive'},
-  });
-  assert.equal(JSON.parse(requests[0].nextValues.swim_attendance)[bangteukKey],undefined);
-  assert.deepEqual(JSON.parse(requests[1].nextValues.swim_att_guests),{
-    [currentGuestKey]:[{gid:'current',n:'Current',s:'present'}],
-    [archivedGuestKey]:[{gid:'archive',n:'Archive'}],
-  });
-  assert.equal(JSON.parse(requests[1].nextValues.swim_att_guests)[bangteukGuestKey],undefined);
+  assert.equal(requests[0].recordChanges.length,1);
+  assert.equal(requests[0].recordChanges[0].value.legacyKey,currentKey);
+  assert.equal(requests[0].recordChanges.some(change=>change.value?.legacyKey===archivedKey),false);
+  assert.equal(requests[0].recordChanges.some(change=>change.value?.legacyKey===bangteukKey),false);
+  assert.equal(requests[1].recordChanges.length,1);
+  assert.equal(requests[1].recordChanges[0].value.legacyKey,currentGuestKey);
+  assert.equal(requests[1].recordChanges.some(change=>change.value?.legacyKey===archivedGuestKey),false);
+  assert.equal(requests[1].recordChanges.some(change=>change.value?.legacyKey===bangteukGuestKey),false);
 });
 
 test('operational generation stays authoritative when compatibility metadata becomes invalid',async()=>{

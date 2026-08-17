@@ -32,6 +32,12 @@
     if(expectedRevision===undefined) return left.revision===right.revision;
     return right.revision===left.revision||right.revision===expectedRevision;
   }
+  function sameScope(left,right){
+    return left.owner===right.owner&&left.tabId===right.tabId
+      &&JSON.stringify(left.dateRange)===JSON.stringify(right.dateRange)
+      &&left.branchId===right.branchId&&left.generationId===right.generationId
+      &&left.epoch===right.epoch;
+  }
   function staleContextError(){
     return Object.assign(new Error('이전 출석 화면의 저장 결과는 현재 화면에 적용하지 않습니다.'),{
       code:'stale-attendance-context',
@@ -176,11 +182,14 @@
       const response=writeContext(result?.context||{},input);
       const expectedRevision=response.branchId?response.revision:undefined;
       const responseValid=!response.branchId||(
-        samePointer(started,response,response.revision)
-        &&(response.revision===started.revision||response.revision===started.revision+1)
+        sameScope(started,response)
+        &&response.revision>=started.revision
       );
       const latest=captureWriteContext({...input,owner});
-      if(!current(token)||!responseValid||!samePointer(started,latest,expectedRevision)){
+      const latestValid=response.branchId
+        ?sameScope(started,latest)&&latest.revision>=expectedRevision
+        :samePointer(started,latest,expectedRevision);
+      if(!current(token)||!responseValid||!latestValid){
         await refreshLatestOwner(owner);
         throw staleContextError();
       }

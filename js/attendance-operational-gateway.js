@@ -299,10 +299,12 @@
       const legacyMethod=kind==='attendance'?'updateAttendance':'updateGuests';
       const outputField=kind==='attendance'?'attendance':'guests';
       const base={tabId:text(input?.tabId),dates:input?.dates||[],kind:`write-${kind}`};
+      let writeAuthority=null;
 
       try{
         const latest=normalizeAuthority(await v2Store.readConfig());
         config=latest;
+        writeAuthority=clone(latest);
         if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
       }catch(error){
         config=unknownConfig();
@@ -349,6 +351,9 @@
           ),
         });
         if(Number.isSafeInteger(Number(response?.revision))) config.revision=Number(response.revision);
+        writeAuthority={
+          ...(writeAuthority||config),revision:Number(response?.revision),
+        };
       }catch(error){
         if(error?.code==='attendance-authority-changed'){
           let next;
@@ -370,7 +375,15 @@
         });
       }
       diagnostic({...base,outcome:'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-      return {[outputField]:after,primary:'v2',degraded:false,changed,context:context(input)};
+      return {
+        [outputField]:after,primary:'v2',degraded:false,changed,
+        context:{
+          owner:text(input?.owner)||'attendance-main',tabId:text(input?.tabId),
+          dateRange:(Array.isArray(input?.dates)?input.dates:[]).map(text).filter(Boolean).sort(),
+          branchId:text(writeAuthority?.branchId),generationId:text(writeAuthority?.generationId),
+          epoch:Number(writeAuthority?.epoch)||0,revision:Number(writeAuthority?.revision)||0,
+        },
+      };
     }
     function updateAttendance(mutator,input){ return updateMap('attendance',mutator,input); }
     function updateGuests(mutator,input){ return updateMap('guests',mutator,input); }

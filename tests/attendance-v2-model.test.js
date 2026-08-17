@@ -178,6 +178,61 @@ test('map diff reports only changed and deleted legacy keys',()=>{
   });
 });
 
+test('attendance legacy diff becomes independent record changes with semantic preconditions',()=>{
+  const {model}=loadRuntime();
+  const changedKey='4시/월/1/1/2026-08-11';
+  const addedKey='5시/화/1/1/2026-08-11';
+  const changes=model.recordChangesFromLegacyDiff({
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[changedKey]:{s:'absent'}},
+    after:{[changedKey]:{s:'present'},[addedKey]:{s:'present'}},
+  });
+
+  assert.equal(changes.length,2);
+  const changed=changes.find(change=>change.value?.legacyKey===changedKey);
+  const added=changes.find(change=>change.value?.legacyKey===addedKey);
+  assert.equal(changed.collection,'attendanceRecords');
+  assert.equal(changed.type,'set');
+  assert.equal(changed.beforeExists,true);
+  assert.match(changed.beforeDigest,/^attendance_/);
+  assert.equal(added.beforeExists,false);
+  assert.equal(added.beforeDigest,'');
+});
+
+test('guest group replacement emits only changed guest records and preserves server metadata independence',()=>{
+  const {model}=loadRuntime();
+  const key='4시/월/1/2026-08-11';
+  const before={
+    [key]:[
+      {gid:'g1',n:'첫째',s:'present'},
+      {gid:'g2',n:'둘째',s:'absent'},
+    ],
+  };
+  const after={
+    [key]:[
+      {gid:'g1',n:'첫째',s:'present'},
+      {gid:'g2',n:'둘째',s:'present'},
+      {gid:'g3',n:'셋째',s:'present'},
+    ],
+  };
+  const changes=model.recordChangesFromLegacyDiff({
+    kind:'guests',tabId:'regular',courseType:'regular',before,after,
+  });
+
+  assert.equal(changes.length,2);
+  assert.deepEqual(plain(changes.map(change=>change.value?.guestId).sort()),['g2','g3']);
+  assert.equal(changes.find(change=>change.value?.guestId==='g2').beforeExists,true);
+  assert.equal(changes.find(change=>change.value?.guestId==='g3').beforeExists,false);
+
+  const row=model.guestFromLegacy({
+    tabId:'regular',courseType:'regular',legacyKey:key,index:1,raw:before[key][1],
+  });
+  const withServerMetadata={
+    ...row,branchId:'yongam',generationId:'gen_1',operationalRevision:77,lastOperationId:'other',
+  };
+  assert.equal(model.recordDigest(row),model.recordDigest(withServerMetadata));
+});
+
 test('parity comparison blocks malformed or mismatched rows instead of dropping them',()=>{
   const {model}=loadRuntime();
   const legacyKey='4시/목/1/1/2026-08-13';

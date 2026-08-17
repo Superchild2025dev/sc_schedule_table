@@ -5,6 +5,7 @@ const assert=require("node:assert/strict");
 const crypto=require("node:crypto");
 const policy=require("../functions/schedule-v2-operational-policy.js");
 const operational=require("../functions/schedule-v2-operational-writer.js");
+require("../js/attendance-v2-model.js");
 
 function clone(value){
   return value===undefined?undefined:JSON.parse(JSON.stringify(value));
@@ -177,6 +178,26 @@ function request(overrides={}){
     },
   };
 }
+function attendanceRecordRequest(overrides={}){
+  const data=request({
+    operationId:'attendance_record_1',operationType:'attendance-update',
+    keys:['swim_attendance'],nextValues:{swim_attendance:{}},
+  }).data;
+  delete data.nextValues;
+  delete data.removedKeys;
+  data.recordChanges=[{
+    collection:'attendanceRecords',id:'att_record_1',type:'set',
+    value:{
+      id:'att_record_1',legacyKey:'4시/월/1/1/2026-08-11',tabId:'regular',
+      courseType:'regular',recordType:'scheduled-student',slotKey:'4시/월/1/1',
+      time:'4시',day:'월',lane:1,seat:1,date:'2026-08-11',personId:'',
+      enrollmentId:'',classMarkId:'',status:'present',checkedAt:'',checkedBy:'',
+      payload:{s:'present'},schemaVersion:2,
+    },
+    beforeExists:false,beforeDigest:'',
+  }];
+  return {...auth(),data:{...data,...overrides}};
+}
 function requestRecoveryCommand(action="stage",overrides={}){
   const base=action==="stage"?{
     version:1,action,branchId:BRANCH,operationId:operationUuid(1),operationType:"absence-cancel",
@@ -269,6 +290,68 @@ test("strict request schema rejects unknown fields operations keys and unverifie
   delete missingVerification.token.email_verified;
   assert.throws(()=>policy.authorizeMutation(missingVerification,request().data),error=>error.code==="permission-denied");
   assert.equal(policy.authorizeMutation(auth().auth,request().data).role,"developer");
+});
+
+test('strict attendance record requests accept only attendance document changes',()=>{
+  const validated=policy.validateMutationRequest(attendanceRecordRequest().data);
+  assert.equal(validated.recordChanges.length,1);
+  assert.equal(validated.recordChanges[0].collection,'attendanceRecords');
+  assert.equal(policy.authorizeMutation(
+    auth('gagyeong.son@scswim.local').auth,validated,
+  ).role,'teacher');
+
+  for(const recordChanges of [
+    [{...attendanceRecordRequest().data.recordChanges[0],collection:'placements'}],
+    [{...attendanceRecordRequest().data.recordChanges[0],id:'bad/id'}],
+    [{...attendanceRecordRequest().data.recordChanges[0],beforeExists:true,beforeDigest:''}],
+    [{...attendanceRecordRequest().data.recordChanges[0],unknown:'field'}],
+  ]){
+    assert.throws(()=>policy.validateMutationRequest(
+      attendanceRecordRequest({recordChanges}).data,
+    ),error=>error.code==='invalid-argument');
+  }
+  for(const overrides of [
+    {keys:['swim_day_snapshot']},
+    {operationType:'attendance-snapshot'},
+    {keys:['swim_att_guests'],recordChanges:attendanceRecordRequest().data.recordChanges},
+  ]){
+    assert.throws(()=>policy.validateMutationRequest(
+      attendanceRecordRequest(overrides).data,
+    ),error=>error.code==='invalid-argument');
+  }
+});
+
+test('attendance record mutations bypass full generation planning and validate deterministic IDs',async()=>{
+  const attendanceModel=globalThis.SCV2AttendanceModel;
+  const legacyKey='4시/월/1/1/2026-08-11';
+  const row=attendanceModel.recordFromLegacy({
+    tabId:'august',courseType:'regular',legacyKey,raw:{s:'present'},
+  });
+  const db=new FakeFirestore({[runtimePath()]:runtime({mode:'v2'})});
+  let planningCalls=0;
+  const writer=operational.createOperationalWriter({
+    db,now:()=>NOW,serverTimestamp:()=>"server-time",
+    deriveChanges:async()=>{planningCalls+=1;throw new Error('full planning must not run');},
+  });
+  const recordChanges=[{
+    collection:'attendanceRecords',id:row.id,type:'set',value:row,
+    beforeExists:false,beforeDigest:'',
+  }];
+
+  const result=await writer.mutate(attendanceRecordRequest({recordChanges}));
+  assert.equal(result.committed,true);
+  assert.equal(planningCalls,0);
+  assert.equal(db.value(generationPath('attendanceRecords',row.id)).payload.s,'present');
+
+  const invalidRow={...row,id:'att_wrong'};
+  await assert.rejects(()=>writer.mutate(attendanceRecordRequest({
+    operationId:'attendance_record_bad',beforeRevision:32,
+    recordChanges:[{
+      collection:'attendanceRecords',id:invalidRow.id,type:'set',value:invalidRow,
+      beforeExists:false,beforeDigest:'',
+    }],
+  })),error=>error.code==='invalid-argument');
+  assert.equal(db.value(generationPath('attendanceRecords','att_wrong')),undefined);
 });
 
 test("request recovery commands use an exact non-PII versioned schema",()=>{

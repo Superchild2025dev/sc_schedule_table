@@ -10,6 +10,11 @@ const REQUEST_KEYS=Object.freeze([
   "keys","beforeRevision","nextValues","removedKeys",
 ]);
 const REQUEST_KEY_SET=new Set(REQUEST_KEYS);
+const RECORD_REQUEST_KEYS=Object.freeze([
+  "branchId","generationId","expectedEpoch","operationId","operationType",
+  "keys","beforeRevision","recordChanges",
+]);
+const RECORD_REQUEST_KEY_SET=new Set(RECORD_REQUEST_KEYS);
 const BRANCH_IDS=new Set((permissionManifest.branches||[]).map(branch=>String(branch.id||"")));
 const ACCOUNT_BY_EMAIL=new Map((permissionManifest.accounts||[]).map(account=>[
   String(account.email||"").trim().toLowerCase(),account,
@@ -26,6 +31,11 @@ const MAX_KEYS=64;
 const MAX_DOCUMENT_ID_BYTES=1500;
 const MAX_REQUEST_BYTES=8*1024*1024;
 const MAX_VALUE_BYTES=6*1024*1024;
+const MAX_RECORD_CHANGES=400;
+const ATTENDANCE_RECORD_COLLECTIONS=new Set(["attendanceRecords","attendanceGuests"]);
+const ATTENDANCE_RECORD_OPERATION_TYPES=new Set([
+  "attendance","attendance-update","attendance-batch","attendance-guest","mark-attendance",
+]);
 const TERMINAL_RECOVERY_STATES=Object.freeze({
   mirror:new Set(["error"]),
   request:new Set(["error","conflict","cancelled","rejected"]),
@@ -283,8 +293,11 @@ function normalizeString(value,pattern){
 function validateMutationRequest(input){
   if(!plainObject(input)) fail("invalid-argument");
   const actualKeys=Object.keys(input);
-  if(actualKeys.length!==REQUEST_KEYS.length||actualKeys.some(key=>!REQUEST_KEY_SET.has(key))) fail("invalid-argument");
-  if(REQUEST_KEYS.some(key=>!Object.prototype.hasOwnProperty.call(input,key))) fail("invalid-argument");
+  const recordRequest=Object.prototype.hasOwnProperty.call(input,"recordChanges");
+  const expectedKeys=recordRequest?RECORD_REQUEST_KEYS:REQUEST_KEYS;
+  const expectedKeySet=recordRequest?RECORD_REQUEST_KEY_SET:REQUEST_KEY_SET;
+  if(actualKeys.length!==expectedKeys.length||actualKeys.some(key=>!expectedKeySet.has(key))) fail("invalid-argument");
+  if(expectedKeys.some(key=>!Object.prototype.hasOwnProperty.call(input,key))) fail("invalid-argument");
 
   const branchId=normalizeString(input.branchId,/^[A-Za-z0-9_-]{1,64}$/);
   if(!BRANCH_IDS.has(branchId)) fail("invalid-argument");
@@ -295,13 +308,56 @@ function validateMutationRequest(input){
   if(!operationRule) fail("invalid-argument");
   if(!safeInteger(input.expectedEpoch)||!safeInteger(input.beforeRevision)) fail("invalid-argument");
   if(!Array.isArray(input.keys)||!input.keys.length||input.keys.length>MAX_KEYS) fail("invalid-argument");
-  if(!Array.isArray(input.removedKeys)||!plainObject(input.nextValues)) fail("invalid-argument");
+  if(!recordRequest&&(!Array.isArray(input.removedKeys)||!plainObject(input.nextValues))) fail("invalid-argument");
 
   const keys=input.keys.map(key=>text(key));
   const keySet=new Set(keys);
   if(keySet.size!==keys.length||keys.some(key=>!key||!model.domainForLegacyKey(key))) fail("invalid-argument");
   if(keys.some(key=>encodedDocumentIdBytes(key)>MAX_DOCUMENT_ID_BYTES)) fail("invalid-argument");
   if(keys.some(key=>!operationRule.families.has(keyFamily(key)))) fail("invalid-argument");
+  if(recordRequest){
+    const attendanceKey=/^swim_attendance$/.test(keys[0])
+      ||/^swim_bt_attendance_[A-Za-z0-9_-]+$/.test(keys[0]);
+    const guestKey=/^swim_att_guests$/.test(keys[0])
+      ||/^swim_bt_att_guests_[A-Za-z0-9_-]+$/.test(keys[0]);
+    if(keys.length!==1||!ATTENDANCE_RECORD_OPERATION_TYPES.has(operationType)
+      ||(!attendanceKey&&!guestKey)||!operationRule.families.has("attendance")
+      ||!Array.isArray(input.recordChanges)||!input.recordChanges.length
+      ||input.recordChanges.length>MAX_RECORD_CHANGES) fail("invalid-argument");
+    const expectedCollection=guestKey?"attendanceGuests":"attendanceRecords";
+    const seen=new Set();
+    const recordChanges=input.recordChanges.map(change=>{
+      if(!plainObject(change)) fail("invalid-argument");
+      const type=text(change.type);
+      const required=type==="set"
+        ?["collection","id","type","value","beforeExists","beforeDigest"]
+        :["collection","id","type","beforeExists","beforeDigest"];
+      if(!["set","delete"].includes(type)||!exactKeys(change,required)) fail("invalid-argument");
+      const collection=text(change.collection);
+      const id=text(change.id);
+      const beforeExists=change.beforeExists===true;
+      const beforeDigest=text(change.beforeDigest);
+      if(!ATTENDANCE_RECORD_COLLECTIONS.has(collection)||collection!==expectedCollection
+        ||!/^[^/]{1,512}$/.test(id)||seen.has(`${collection}/${id}`)
+        ||(beforeExists?!/^attendance_[a-z0-9]{14}$/.test(beforeDigest):beforeDigest!=="")){
+        fail("invalid-argument");
+      }
+      if(type==="set"&&(!plainObject(change.value)||jsonBytes(change.value)>MAX_VALUE_BYTES)) fail("invalid-argument");
+      seen.add(`${collection}/${id}`);
+      return Object.freeze({
+        collection,id,type,
+        ...(type==="set"?{value:Object.freeze({...change.value})}:{}),
+        beforeExists,beforeDigest,
+      });
+    });
+    if(jsonBytes(input)>MAX_REQUEST_BYTES) fail("invalid-argument");
+    return {
+      branchId,generationId,expectedEpoch:input.expectedEpoch,operationId,operationType,
+      keys:Object.freeze(keys.slice()),beforeRevision:input.beforeRevision,
+      nextValues:Object.freeze({}),removedKeys:Object.freeze([]),
+      recordChanges:Object.freeze(recordChanges),
+    };
+  }
   const removedKeys=input.removedKeys.map(key=>text(key));
   if(new Set(removedKeys).size!==removedKeys.length||removedKeys.some(key=>!keySet.has(key))) fail("invalid-argument");
   const nextValueKeys=Object.keys(input.nextValues);

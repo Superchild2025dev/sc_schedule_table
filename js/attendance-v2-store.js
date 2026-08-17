@@ -131,6 +131,11 @@
     let operationalConfig=defaultConfig(branchId);
     let activeConfig=defaultConfig(branchId);
     const maxMutationAttempts=Math.max(1,Math.min(3,Number(options?.maxMutationAttempts||2)||2));
+    const maxConflictAttempts=Math.max(1,Math.min(3,Number(options?.maxConflictAttempts||3)||3));
+    const conflictRetryDelayMs=Math.max(0,Math.min(250,Number(options?.conflictRetryDelayMs??30)||0));
+    const sleep=typeof options?.sleep==='function'
+      ?options.sleep
+      :milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
     const mutateCallable=createMutateCallable(options);
 
     function createMutateCallable(input){
@@ -250,22 +255,6 @@
       const guests=snapshotRows(guestSnapshot).filter(row=>selected.has(text(row.date)));
       return {branchId,generationId,tabId,dates:dates.slice(),records,guests,maps:model().mapsFromRows(records,guests)};
     }
-    async function readWholeMap(kind,tabId,courseType,generationId){
-      const collection=kind==='attendance'?'attendanceRecords':'attendanceGuests';
-      const rows=snapshotRows(await attendanceOwnerQuery(
-        collectionRef(generationId,collection),tabId,courseType,
-      ).get());
-      const maps=model().mapsFromRows(kind==='attendance'?rows:[],kind==='guests'?rows:[]);
-      if(maps.issues?.length) throw Object.assign(new Error('V2 출석 데이터 형식을 확인할 수 없습니다.'),{code:'invalid-attendance-data'});
-      return clone(kind==='attendance'?maps.attendance:maps.guests);
-    }
-    function applyVisibleChanges(current,before,after){
-      const next=clone(current||{});
-      const diff=model().diffLegacyMaps(before||{},after||{});
-      diff.upserts.forEach(change=>{next[change.legacyKey]=clone(change.raw);});
-      diff.deletes.forEach(key=>{delete next[key];});
-      return next;
-    }
     function storageKey(kind,tabId,courseType){
       const bangteuk=text(courseType)==='bangteuk';
       if(kind==='attendance') return bangteuk?`swim_bt_attendance_${tabId}`:'swim_attendance';
@@ -307,7 +296,7 @@
       throw lastError;
     }
     async function mutateMap(input){
-      const latest=await readConfig();
+      let latest=await readConfig();
       if(!latest.valid||!V2_AUTHORITY_MODES.has(latest.mode)){
         throw Object.assign(new Error('V2 운영 출석 저장이 활성화되지 않았습니다.'),{code:'v2-attendance-inactive'});
       }
@@ -320,25 +309,56 @@
       const tabId=text(input?.tabId);
       const courseType=text(input?.courseType);
       const key=storageKey(kind,tabId,courseType);
-      const fullMap=await readWholeMap(kind,tabId,courseType,latest.generationId);
-      const nextMap=applyVisibleChanges(fullMap,input?.before,input?.after);
       const id=text(input?.operationId)||defaultOperationId();
       const operationType=text(input?.operationType)||(
         kind==='guests'?'attendance-guest':'attendance-update'
       );
-      const request={
-        branchId,generationId:latest.generationId,expectedEpoch:latest.epoch,
-        operationId:id,operationType,keys:[key],beforeRevision:latest.revision,
-        nextValues:{[key]:JSON.stringify(nextMap)},removedKeys:[],
-      };
-      const response=await invokeMutation(request,latest);
-      if(!response||response.committed!==true||text(response.operationId)!==id
-        ||Number(response.revision)!==latest.revision+1){
-        throw Object.assign(new Error('Invalid V2 operational response.'),{code:'invalid-operational-response'});
+      const recordChanges=model().recordChangesFromLegacyDiff({
+        kind,tabId,courseType,before:input?.before,after:input?.after,
+      });
+      const startedAuthority=clone(latest);
+      let lastError;
+      for(let attempt=0;attempt<maxConflictAttempts;attempt+=1){
+        const request={
+          branchId,generationId:latest.generationId,expectedEpoch:latest.epoch,
+          operationId:id,operationType,keys:[key],beforeRevision:latest.revision,
+          recordChanges:clone(recordChanges),
+        };
+        try{
+          const response=await invokeMutation(request,latest);
+          if(!response||response.committed!==true||text(response.operationId)!==id
+            ||Number(response.revision)!==latest.revision+1){
+            throw Object.assign(new Error('Invalid V2 operational response.'),{code:'invalid-operational-response'});
+          }
+          operationalConfig={...operationalConfig,revision:Number(response.revision)};
+          activeConfig={...activeConfig,revision:Number(response.revision)};
+          return clone(response);
+        }catch(error){
+          lastError=error;
+          const code=callableCode(error);
+          if(!['aborted','failed-precondition'].includes(code)||attempt+1>=maxConflictAttempts) throw error;
+          const next=await readConfig();
+          const structural=value=>[
+            text(value?.branchId),text(value?.mode),text(value?.generationId),Number(value?.epoch)||0,
+          ].join('|');
+          if(!next.valid||structural(next)!==structural(startedAuthority)){
+            throw Object.assign(new Error('Attendance authority changed during conflict recovery.'),{
+              code:'attendance-authority-changed',cause:error,authority:clone(next),
+            });
+          }
+          if(Number(next.revision)<Number(latest.revision)
+            ||(code==='failed-precondition'&&Number(next.revision)===Number(latest.revision))){
+            throw error;
+          }
+          if(code==='aborted'&&Number(next.revision)===Number(latest.revision)){
+            await sleep(conflictRetryDelayMs*(attempt+1));
+            latest=await readConfig();
+          }else{
+            latest=next;
+          }
+        }
       }
-      operationalConfig={...operationalConfig,revision:Number(response.revision)};
-      activeConfig={...activeConfig,revision:Number(response.revision)};
-      return clone(response);
+      throw lastError;
     }
     async function directWriteDisabled(){
       throw Object.assign(new Error('V2 attendance writes require the operational callable.'),{

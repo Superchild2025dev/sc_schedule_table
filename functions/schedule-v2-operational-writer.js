@@ -90,6 +90,7 @@ function requestFingerprint(request){
     operationType:request.operationType,keys:request.keys.slice().sort(),
     beforeRevision:request.beforeRevision,nextValues:request.nextValues,
     removedKeys:request.removedKeys.slice().sort(),
+    ...(Array.isArray(request.recordChanges)?{recordChanges:request.recordChanges}:{}),
   });
 }
 
@@ -186,6 +187,83 @@ function normalizeChange(change){
   };
 }
 
+function semanticAttendanceRow(value){
+  const semantic=clone(value);
+  if(plainObject(semantic)){
+    delete semantic.branchId;
+    delete semantic.generationId;
+    delete semantic.operationalRevision;
+    delete semantic.lastOperationId;
+  }
+  return semantic;
+}
+
+function attendanceDigest(value){
+  const semantic=semanticAttendanceRow(value);
+  return semantic==null?"":"attendance_"+schema.stableHash(JSON.stringify(canonical(semantic)));
+}
+
+function expectedAttendanceOwner(key){
+  if(key==="swim_attendance"||key==="swim_att_guests"){
+    return {courseType:"regular",tabId:""};
+  }
+  let match=key.match(/^swim_bt_attendance_([A-Za-z0-9_-]+)$/);
+  if(!match) match=key.match(/^swim_bt_att_guests_([A-Za-z0-9_-]+)$/);
+  return match?{courseType:"bangteuk",tabId:match[1]}:null;
+}
+
+function validateAttendanceRow(request,change,value){
+  if(!plainObject(value)||text(value.id)!==change.id) fail("invalid-argument");
+  const owner=expectedAttendanceOwner(request.keys[0]);
+  if(!owner||text(value.courseType)!==owner.courseType
+    ||(owner.tabId&&text(value.tabId)!==owner.tabId)){
+    fail("invalid-argument");
+  }
+  const legacyKey=text(value.legacyKey);
+  const payload=plainObject(value.payload)?value.payload:null;
+  if(!payload) fail("invalid-argument");
+  if(change.collection==="attendanceRecords"){
+    const isSub=legacyKey.endsWith("#sub");
+    const parts=(isSub?legacyKey.slice(0,-4):legacyKey).split("/");
+    if(parts.length!==5) fail("invalid-argument");
+    const [time,day,laneRaw,seatRaw,date]=parts;
+    const lane=Number(laneRaw)||0;
+    const seat=Number(seatRaw)||0;
+    const expectedId="att_"+schema.stableHash(`${text(value.tabId)}|${legacyKey}`);
+    if(!time||!day||!lane||!seat||!/^\d{4}-\d{2}-\d{2}$/.test(date)
+      ||change.id!==expectedId||text(value.time)!==time||text(value.day)!==day
+      ||Number(value.lane)!==lane||Number(value.seat)!==seat||text(value.date)!==date
+      ||text(value.slotKey)!==[time,day,lane,seat].join("/")
+      ||text(value.recordType)!==(isSub?"marked-student":"scheduled-student")){
+      fail("invalid-argument");
+    }
+  }else if(change.collection==="attendanceGuests"){
+    const parts=legacyKey.split("/");
+    if(parts.length!==4) fail("invalid-argument");
+    const [time,day,laneRaw,date]=parts;
+    const lane=Number(laneRaw)||0;
+    const identity=text(payload.gid)||Number(value.order)||0;
+    const expectedId="guest_"+schema.stableHash(`${text(value.tabId)}|${legacyKey}|${identity}`);
+    if(!time||!day||!lane||!/^\d{4}-\d{2}-\d{2}$/.test(date)
+      ||change.id!==expectedId||text(value.time)!==time||text(value.day)!==day
+      ||text(value.date)!==date||text(value.slotGroupKey)!==[time,day,lane].join("/")){
+      fail("invalid-argument");
+    }
+  }else{
+    fail("invalid-argument");
+  }
+}
+
+function attendanceRecordChanges(request){
+  if(!Array.isArray(request.recordChanges)) return null;
+  return request.recordChanges.map(raw=>{
+    const change=normalizeChange(raw);
+    if(!["attendanceRecords","attendanceGuests"].includes(change.collection)) fail("invalid-argument");
+    if(change.type==="set") validateAttendanceRow(request,change,change.value);
+    return change;
+  });
+}
+
 function changeCounts(changes){
   return {
     changeCount:changes.length,
@@ -204,6 +282,7 @@ function baseManifest(input,counts,chunkCount){
     beforeRevision:request.beforeRevision,
     resultingRevision:request.beforeRevision+1,
     operationType:request.operationType,
+    recordMutation:Array.isArray(request.recordChanges),
     keys:request.keys.slice(),
     removedKeys:request.removedKeys.slice(),
     requestFingerprint:input.fingerprint,
@@ -300,7 +379,14 @@ async function commitChangeChunk(input,changes,chunkIndex,chunkCount,counts){
       if(currentRevision>request.beforeRevision&&!sameOperation) fail("failed-precondition");
       if(Object.prototype.hasOwnProperty.call(change,"beforeExists")&&!sameOperation){
         if(change.beforeExists!==snapshot.exists) fail("aborted");
-        if(change.beforeDigest&&digest(current)!==change.beforeDigest) fail("aborted");
+        if(change.beforeDigest){
+          const currentDigest=change.beforeDigest.startsWith("attendance_")
+            ?attendanceDigest(current):digest(current);
+          if(currentDigest!==change.beforeDigest) fail("aborted");
+        }
+      }
+      if(Array.isArray(request.recordChanges)&&snapshot.exists){
+        validateAttendanceRow(request,change,current);
       }
     });
 
@@ -547,6 +633,45 @@ function snapshotRows(snapshot){
   return rows;
 }
 
+async function resolveAttendanceRecoveryValues(input){
+  const keys=input.manifest?.keys||input.request?.keys||[];
+  if(keys.length!==1) fail("failed-precondition");
+  const key=text(keys[0]);
+  const owner=expectedAttendanceOwner(key);
+  if(!owner) fail("failed-precondition");
+  const collection=/att_guests/.test(key)?"attendanceGuests":"attendanceRecords";
+  const generationId=text(input.manifest?.generationId||input.request?.generationId);
+  let query=generationRef(input.db,input.branchId||input.request?.branchId,generationId)
+    .collection(collection);
+  query=owner.courseType==="regular"
+    ?query.where("courseType","==","regular")
+    :query.where("tabId","==",owner.tabId);
+  const rows=snapshotRows(await query.get()).map(semanticAttendanceRow);
+  if(collection==="attendanceRecords"){
+    const attendance={};
+    rows.forEach(row=>{
+      if(!text(row?.legacyKey)||!plainObject(row?.payload)) fail("failed-precondition");
+      attendance[row.legacyKey]=clone(row.payload);
+    });
+    return {[key]:JSON.stringify(attendance)};
+  }
+  const grouped={};
+  rows.forEach(row=>{
+    if(!text(row?.legacyKey)||!plainObject(row?.payload)) fail("failed-precondition");
+    if(!grouped[row.legacyKey]) grouped[row.legacyKey]=[];
+    grouped[row.legacyKey].push(row);
+  });
+  const guests={};
+  Object.keys(grouped).sort().forEach(legacyKey=>{
+    guests[legacyKey]=grouped[legacyKey]
+      .slice()
+      .sort((left,right)=>(Number(left?.order)||0)-(Number(right?.order)||0)
+        ||text(left?.id).localeCompare(text(right?.id)))
+      .map(row=>clone(row.payload));
+  });
+  return {[key]:JSON.stringify(guests)};
+}
+
 async function readGenerationCollections(db,branchId,generationId,heartbeat=async()=>{}){
   const ref=generationRef(db,branchId,generationId);
   const collections={};
@@ -676,6 +801,9 @@ async function resolveRecoveryValuesDefault(input){
   const runtimeSnapshot=await runtimeRef(input.db,input.branchId).get();
   const runtime=runtimeSnapshot.data()||{};
   assertRecoveryRevision(runtime,input.manifest);
+  if(input.manifest?.recordMutation===true){
+    return resolveAttendanceRecoveryValues(input);
+  }
   const collections=modelCollections(await readGenerationCollections(
     input.db,input.branchId,input.manifest.generationId,input.heartbeat,
   ));
@@ -1397,12 +1525,19 @@ function createOperationalWriter(options={}){
       if(manifest.status==="committed") return resultFromManifest(manifest);
     }
 
-    const plan=await deriveChanges({db:options.db,request,actor});
+    const directChanges=attendanceRecordChanges(request);
+    const plan=directChanges?{changes:directChanges,legacyValues:null}:
+      await deriveChanges({db:options.db,request,actor});
     const commitResult=await commitV2Mutation({
       db:options.db,request,actor,changes:plan.changes,
       fingerprint,now:now(),serverTimestamp,
     });
     if(commitResult.recoveryState!=="pending") return commitResult;
+    if(directChanges){
+      plan.legacyValues=await resolveAttendanceRecoveryValues({
+        db:options.db,branchId:request.branchId,request,
+      });
+    }
     const recovery=await applyV1Recovery({
       db:options.db,branchId:request.branchId,operationId:request.operationId,
       legacyValues:plan.legacyValues,resolveRecoveryValues,clock:now,now:now(),serverTimestamp,
