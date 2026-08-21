@@ -276,6 +276,18 @@ test("browser policy gates controls and refuses unsafe transitions",()=>{
   assert.equal(policy.canView({role:"superAdmin"}),false);
   assert.equal(policy.canView({role:"desk"}),false);
   assert.equal(policy.evaluate({profile:{role:"superAdmin"},action:"status",status:{}}).allowed,true);
+  assert.equal(policy.evaluate({
+    profile:{role:"superAdmin"},action:"pause",status:{mode:"verify",pointerConsistent:true},
+  }).allowed,true);
+  assert.equal(policy.evaluate({
+    profile:{role:"developer"},action:"pause",status:{mode:"shadow",pointerConsistent:true},
+  }).allowed,true);
+  assert.equal(policy.evaluate({
+    profile:{role:"superAdmin"},action:"pause",status:{mode:"v2-read",pointerConsistent:true},
+  }).allowed,false);
+  assert.equal(policy.evaluate({
+    profile:{role:"desk"},action:"pause",status:{mode:"verify",pointerConsistent:true},
+  }).allowed,false);
   assert.equal(policy.evaluate({profile:{role:"superAdmin"},action:"rollback",status:{}}).allowed,false);
   assert.equal(policy.evaluate({
     profile:{role:"developer"},action:"prepare",
@@ -383,6 +395,8 @@ test("settings integrates compact schedule controls into the existing V2 panel",
   assert.match(SETTINGS_HTML,/id="v2-schedule-v2-read"[^>]*>V2 읽기 전환</);
   assert.match(SETTINGS_HTML,/id="v2-schedule-v2"[^>]*>V2 단독 전환</);
   assert.match(SETTINGS_HTML,/id="v2-schedule-rollback"[^>]*>V1으로 복귀</);
+  assert.match(SETTINGS_HTML,/id="v2-schedule-pause-controls"[^>]*hidden/);
+  assert.match(SETTINGS_HTML,/id="v2-schedule-pause"[^>]*>V2 일시중단</);
   assert.match(SETTINGS_HTML,/id="v2-schedule-epoch"/);
   assert.match(SETTINGS_HTML,/id="v2-schedule-revision"/);
   assert.match(SETTINGS_HTML,/id="v2-schedule-recovery-pending"/);
@@ -403,7 +417,7 @@ test("settings integrates compact schedule controls into the existing V2 panel",
   assert.doesNotMatch(SETTINGS_SOURCE,/attendanceControlStore\.setConfig\(/);
 });
 
-test("callable permits owner status but only the dedicated developer may mutate",async()=>{
+test("callable permits owner status and safe pause but only the dedicated developer may perform other mutations",async()=>{
   const fixture=loadFunctions();
   const callable=fixture.exports.manageScheduleV2Shadow;
   assert.equal(typeof callable,"function");
@@ -415,6 +429,66 @@ test("callable permits owner status but only the dedicated developer may mutate"
   await assert.rejects(()=>callable(request("prepare","gagyeong","gagyeong.desk@scswim.local",expectedStatus())),error=>error.code==="permission-denied");
   await assert.rejects(()=>callable(request("status","unknown")),error=>error.code==="invalid-argument");
   await assert.rejects(()=>callable({data:{action:"status",branchId:"gagyeong"}}),error=>error.code==="unauthenticated");
+});
+
+test("owner pause stops shadow work atomically without parity reads or deleting the V2 generation",async()=>{
+  const branchId="gagyeong";
+  const generationId="gen_keep";
+  const fixture=loadFunctions({initial:cutoverState(branchId,{
+    generationId,
+    scheduleRevision:5,
+    schedule:{mode:"verify"},operational:{mode:"verify"},attendance:{mode:"verify"},
+    sync:{
+      pendingKeys:["swim_mark"],inFlightKeys:["swim_students"],
+      requestedRevision:7,appliedRevision:5,mismatchCount:1,status:"processing",
+      leaseId:"active-shadow",leaseUntil:"2999-01-01T00:00:00.000Z",
+      processingStartedAt:"2026-08-21T01:00:00.000Z",
+    },
+    generation:{sentinel:"preserve"},
+  })});
+
+  const status=await fixture.exports.manageScheduleV2Shadow(request(
+    "pause",branchId,"2025superchild@gmail.com",expectedStatus({
+      expectedMode:"verify",expectedGenerationId:generationId,
+    }),
+  ));
+
+  assert.equal(status.mode,"v1");
+  assert.equal(status.generationId,generationId);
+  assert.equal(status.epoch,4);
+  assert.equal(fixture.runnerCalls.length,0);
+  assert.equal(fixture.parityCalls.length,0);
+  for(const path of [schedulePath(branchId),operationalPath(branchId),attendancePath(branchId)]){
+    assert.equal(fixture.db.value(path).mode,"v1",path);
+  }
+  const sync=fixture.db.value(syncPath(branchId));
+  assert.deepEqual(sync.pendingKeys,[]);
+  assert.deepEqual(sync.inFlightKeys,[]);
+  assert.equal(sync.status,"paused");
+  assert.equal(Object.prototype.hasOwnProperty.call(sync,"leaseId"),false);
+  assert.equal(Object.prototype.hasOwnProperty.call(sync,"leaseUntil"),false);
+  assert.equal(fixture.db.value(generationPath(branchId,generationId)).sentinel,"preserve");
+
+  await fixture.exports.queueScheduleV2Shadow(sourceEvent(branchId,"swim_inst","after-pause-1"));
+  await fixture.exports.processScheduleV2Shadow({params:{branchId}});
+  assert.equal(fixture.runnerCalls.length,0);
+});
+
+test("pause refuses V2-authoritative modes and leaves every pointer unchanged",async()=>{
+  for(const mode of ["v2-read","v2"]){
+    const fixture=loadFunctions({initial:cutoverState("yongam",{
+      schedule:{mode},operational:{mode,recoverySafeRevision:7},attendance:{mode},
+    })});
+    await assert.rejects(
+      ()=>fixture.exports.manageScheduleV2Shadow(request(
+        "pause","yongam","2025superchild@gmail.com",expectedStatus({expectedMode:mode}),
+      )),
+      error=>error.code==="failed-precondition",
+    );
+    for(const path of [schedulePath("yongam"),operationalPath("yongam"),attendancePath("yongam")]){
+      assert.equal(fixture.db.value(path).mode,mode,path);
+    }
+  }
 });
 
 test("callable rejects crafted schemas branches and non-manifest authorization",async()=>{

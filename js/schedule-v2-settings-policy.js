@@ -2,7 +2,7 @@
   'use strict';
 
   const ACTIONS=Object.freeze([
-    'prepare','set-shadow','set-verify','set-v2-read','set-v2','rollback','status',
+    'prepare','set-shadow','set-verify','set-v2-read','set-v2','rollback','pause','status',
   ]);
   const MUTATIONS=new Set(ACTIONS.filter(action=>action!=='status'));
 
@@ -53,6 +53,17 @@
       return role==='developer'||role==='superAdmin'
         ?result(true,'Schedule V2 상태를 확인할 수 있습니다.')
         :result(false,'Schedule V2 상태를 확인할 권한이 없습니다.');
+    }
+    if(action==='pause'){
+      if(!['developer','superAdmin'].includes(role)){
+        return result(false,'최고관리자 또는 개발자만 V2 동시운영을 중단할 수 있습니다.');
+      }
+      if(!['shadow','verify'].includes(text(status.mode))){
+        return result(false,'V1이 운영 기준인 그림자 복사 또는 검증 모드에서만 일시중단할 수 있습니다.');
+      }
+      return status.pointerConsistent===true
+        ?result(true,'V1 운영을 유지하고 V2 복사와 검증만 중단합니다.')
+        :result(false,'시간표와 출석 운영 포인터가 일치하지 않아 중단할 수 없습니다.');
     }
     if(MUTATIONS.has(action)&&role!=='developer'){
       return result(false,'개발자 계정만 Schedule V2 설정을 변경할 수 있습니다.');

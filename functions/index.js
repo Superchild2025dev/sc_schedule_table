@@ -32,7 +32,7 @@ const SCHEDULE_V2_PREPARATION_LEASE_MS = 15 * 60 * 1000;
 const SCHEDULE_V2_LEASE_HEARTBEAT_MS = 20 * 1000;
 const SCHEDULE_V2_RECENT_EVENT_LIMIT = 256;
 const SCHEDULE_V2_ACTIONS = new Set([
-  "prepare", "set-shadow", "set-verify", "set-v2-read", "set-v2", "rollback", "status",
+  "prepare", "set-shadow", "set-verify", "set-v2-read", "set-v2", "rollback", "pause", "status",
 ]);
 const SCHEDULE_V2_MIRROR_BLOCKING_STATES = ["pending", "processing", "error"];
 const SCHEDULE_V2_REQUEST_BLOCKING_STATES = [
@@ -416,6 +416,7 @@ function authorizeScheduleV2Action(request, action, branchId) {
   const active = account && account.active !== false;
   const branchAllowed = branches.includes(branchId);
   if (active && branchAllowed && action === "status" && ["developer", "superAdmin"].includes(role)) return email;
+  if (active && branchAllowed && action === "pause" && ["developer", "superAdmin"].includes(role)) return email;
   if (active && branchAllowed && action !== "status" && role === "developer") return email;
   throw new HttpsError("permission-denied", "Schedule V2 작업 권한이 없습니다");
 }
@@ -1531,6 +1532,93 @@ async function transitionScheduleV2Authority(branchId, targetMode, expectation, 
 async function rollbackScheduleV2(branchId, expectation, updatedBy) {
   const drain = ["shadow", "verify"].includes(expectation.mode);
   return frozenScheduleV2CanonicalTransition(branchId, "v1", expectation, updatedBy, "rollback", drain);
+}
+
+async function pauseScheduleV2Shadow(branchId, expectation, updatedBy) {
+  const configRef = scheduleV2RuntimeRef(branchId, "schedule");
+  const syncRef = scheduleV2RuntimeRef(branchId, "scheduleSync");
+  const operationalRef = scheduleV2RuntimeRef(branchId, "operational");
+  const attendanceRef = scheduleV2RuntimeRef(branchId, "attendance");
+  await db.runTransaction(async tx => {
+    const [configSnapshot, syncSnapshot, operationalSnapshot, attendanceSnapshot] = await Promise.all([
+      tx.get(configRef), tx.get(syncRef), tx.get(operationalRef), tx.get(attendanceRef),
+    ]);
+    const config = configSnapshot.data() || {};
+    const sync = syncSnapshot.data() || {};
+    const operational = operationalSnapshot.data() || {};
+    const attendance = attendanceSnapshot.data() || {};
+    const mode = String(operational.mode || config.mode || "v1");
+    const generationId = String(operational.generationId || config.generationId || "");
+    const epoch = scheduleV2NonnegativeInteger(operational.epoch);
+    const revision = scheduleV2NonnegativeInteger(operational.revision);
+    const attendanceEpoch = scheduleV2NonnegativeInteger(attendance.epoch);
+    const attendanceRevision = scheduleV2NonnegativeInteger(attendance.revision);
+    if (!expectation || expectation.mode !== mode || expectation.generationId !== generationId ||
+        expectation.epoch !== epoch || expectation.revision !== revision) {
+      throw new HttpsError("aborted", "Schedule V2 상태가 변경되었습니다. 다시 확인해 주세요");
+    }
+    if (!["shadow", "verify"].includes(mode) || String(config.mode || "") !== mode) {
+      throw new HttpsError("failed-precondition", "V1이 운영 기준인 동시운영 상태에서만 일시중단할 수 있습니다");
+    }
+    const pointerConsistent = operationalSnapshot.exists && attendanceSnapshot.exists &&
+      String(config.branchId || branchId) === branchId && String(config.generationId || "") === generationId &&
+      scheduleV2PointerMatches(operational, branchId, mode, generationId) &&
+      scheduleV2PointerMatches(attendance, branchId, mode, generationId) &&
+      attendanceEpoch === epoch && attendanceRevision === revision;
+    if (!pointerConsistent || epoch === null || revision === null || epoch >= Number.MAX_SAFE_INTEGER) {
+      throw new HttpsError("failed-precondition", "Schedule V2 운영 포인터가 일치하지 않습니다");
+    }
+    const nowIso = new Date().toISOString();
+    const nextEpoch = epoch + 1;
+    const nextSync = {
+      ...sync,
+      pendingKeys: [],
+      inFlightKeys: [],
+      status: "paused",
+      pausedAt: nowIso,
+      pausedBy: updatedBy,
+    };
+    delete nextSync.leaseId;
+    delete nextSync.leaseUntil;
+    delete nextSync.processingStartedAt;
+    delete nextSync.leaseHeartbeatAt;
+    tx.set(configRef, {
+      ...config,
+      branchId,
+      mode: "v1",
+      generationId,
+      requiresPrepare: true,
+      preparationStatus: "paused",
+      pausedAt: nowIso,
+      updatedAt: nowIso,
+      updatedBy,
+    }, {merge: false});
+    tx.set(syncRef, nextSync, {merge: false});
+    tx.set(operationalRef, {
+      ...operational,
+      branchId,
+      mode: "v1",
+      generationId,
+      epoch: nextEpoch,
+      revision,
+      recoverySafeRevision: revision,
+      pausedAt: nowIso,
+      updatedAt: nowIso,
+      updatedBy,
+    }, {merge: false});
+    tx.set(attendanceRef, {
+      ...attendance,
+      branchId,
+      mode: "v1",
+      generationId,
+      epoch: nextEpoch,
+      revision,
+      pausedAt: nowIso,
+      updatedAt: nowIso,
+      updatedBy,
+    }, {merge: false});
+  });
+  return readScheduleV2Status(branchId);
 }
 
 async function frozenScheduleV2CanonicalTransition(
@@ -2984,6 +3072,7 @@ exports.manageScheduleV2Shadow = onCall({
       branchId, "v2", expectation, actorEmail, "v2-promotion",
     );
   }
+  if (action === "pause") return pauseScheduleV2Shadow(branchId, expectation, actorEmail);
   return rollbackScheduleV2(branchId, expectation, actorEmail);
 });
 

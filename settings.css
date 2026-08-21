@@ -263,6 +263,8 @@ button,input,textarea,select{font-family:inherit}
 .v2-schedule-controls[hidden]{display:none}
 .v2-schedule-controls button{min-height:34px;padding:0 11px;font-size:11px}
 .v2-schedule-controls button:disabled{opacity:.55;cursor:wait}
+.v2-schedule-controls .v2-pause-btn{border-color:#F59E0B;background:#FFFBEB;color:#92400E}
+.v2-schedule-controls .v2-pause-btn:hover:not(:disabled){background:#FEF3C7}
 #v2-schedule-control-status{margin-bottom:0}
 .v2-attendance-cutover{margin-top:18px;padding-top:16px;border-top:1px solid #DDE3EC}
 .v2-developer-badge{display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;font-size:11px;font-weight:900;white-space:nowrap}

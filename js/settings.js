@@ -1154,6 +1154,10 @@
     const policy=window.SCScheduleV2SettingsPolicy;
     return !!(policy&&policy.evaluate({profile,action:'status',status:{}}).allowed);
   }
+  function scheduleV2PauseOperator(){
+    const role=window.SCAuth&&typeof SCAuth.profile==='function'?String(SCAuth.profile().role||''):'';
+    return role==='developer'||role==='superAdmin';
+  }
   function scheduleV2ControlStatus(message,type){
     const el=$('v2-schedule-control-status');
     if(!el) return;
@@ -1169,6 +1173,7 @@
     const status=scheduleV2StatusByBranch[activeBranch]||{};
     const developer=scheduleV2Developer();
     const controls=$('v2-schedule-controls');
+    const pauseControls=$('v2-schedule-pause-controls');
     const badge=$('v2-schedule-developer-badge');
     if(controls) controls.hidden=!developer;
     if(badge) badge.hidden=!developer;
@@ -1185,6 +1190,10 @@
     const busy=!!busyAction;
     const policy=window.SCScheduleV2SettingsPolicy;
     const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    const pauseDecision=policy?.evaluate({profile,action:'pause',status});
+    const pauseVisible=scheduleV2PauseOperator()&&['shadow','verify'].includes(String(status.mode||''));
+    if(pauseControls) pauseControls.hidden=!pauseVisible;
+    if($('v2-schedule-pause')) $('v2-schedule-pause').disabled=busy||!pauseDecision?.allowed;
     [
       ['v2-schedule-prepare','prepare'],['v2-schedule-shadow','set-shadow'],
       ['v2-schedule-verify','set-verify'],['v2-schedule-v2-read','set-v2-read'],
@@ -1254,6 +1263,7 @@
     const targetModes={
       prepare:'새 기준점 준비','set-shadow':'그림자 복사','set-verify':'검증 모드',
       'set-v2-read':'V2 읽기 + V1 복구','set-v2':'V2 단독 운영',rollback:'V1 운영',
+      pause:'V1 운영 유지 · V2 동시운영 중단',
     };
     const targetEpoch=action==='prepare'?Number(current.epoch||0):Number(current.epoch||0)+1;
     const branchName=BRANCHES[branchId]?.name||branchId;
@@ -1293,7 +1303,11 @@
       delete scheduleV2BusyByBranch[branchId];
       if(activeBranch===branchId){
         renderScheduleV2Status();
-        scheduleV2ControlStatus(action==='rollback'?'V1으로 복귀했습니다.':'시간표 서버 설정을 적용했습니다.','ok');
+        scheduleV2ControlStatus(
+          action==='pause'?'V1 운영을 유지하고 V2 복사와 검증을 중단했습니다.':
+            action==='rollback'?'V1으로 복귀했습니다.':'시간표 서버 설정을 적용했습니다.',
+          'ok',
+        );
       }
     }catch(error){
       responseGate.finish(branchId,responseSequence);
@@ -3638,6 +3652,7 @@ th{background:#D9EAD3;font-weight:700}
     $('v2-schedule-v2-read')?.addEventListener('click',()=>runScheduleV2Action('set-v2-read'));
     $('v2-schedule-v2')?.addEventListener('click',()=>runScheduleV2Action('set-v2'));
     $('v2-schedule-rollback')?.addEventListener('click',()=>runScheduleV2Action('rollback'));
+    $('v2-schedule-pause')?.addEventListener('click',()=>runScheduleV2Action('pause'));
     $('v2-attendance-apply')?.addEventListener('click',()=>applyAttendanceCutover());
     $('v2-attendance-rollback')?.addEventListener('click',()=>applyAttendanceCutover('v1'));
     $('summer-layout-check')?.addEventListener('click',e=>checkSummerLayout(e.currentTarget));
