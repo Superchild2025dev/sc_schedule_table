@@ -69,8 +69,9 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .category-grid .safety-choice input:checked+span{border-color:#fda29b;background:#fff1f0;color:var(--danger)}
 .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .field{display:block;min-width:0}
-.field input,.field select,.field textarea{width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:var(--ink);font-size:13px}
+.field input,.field select,.field textarea{width:100%;min-width:0;max-width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:var(--ink);font-size:13px}
 .field input,.field select{height:42px;padding:0 11px}
+#visit-date{display:block;inline-size:100%;min-width:0;max-width:100%}
 .field textarea{padding:12px;line-height:1.65;resize:vertical}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--focus);outline:0}
 .message-field{margin-top:16px}

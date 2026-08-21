@@ -9,6 +9,7 @@ function read(relativePath) {
 }
 
 const html = read(path.join("voice", "index.html"));
+const css = read(path.join("voice", "voice.css"));
 const app = read(path.join("voice", "voice.js"));
 const functions = read(path.join("functions", "index.js"));
 const submitCustomerVoiceSource = functions.slice(
@@ -28,6 +29,10 @@ assert.match(html, /익명 의견 접수/);
 assert.match(html, /답변이 필요한 의견 접수/);
 assert.match(html, /개인정보 수집·이용 안내/);
 assert.match(html, /처리 완료 후 90일 이내 파기/);
+assert.match(css, /\.field input,.field select,.field textarea\{[^}]*min-width:0[^}]*max-width:100%[^}]*\}/,
+  "mobile form controls must be allowed to shrink inside the one-column grid");
+assert.match(css, /#visit-date\{[^}]*display:block[^}]*inline-size:100%[^}]*min-width:0[^}]*max-width:100%[^}]*\}/,
+  "the native mobile date control must not overflow its field");
 
 const remoteScripts = [...html.matchAll(/<script\s+src="https:\/\/[^\"]+"[\s\S]*?<\/script>/g)];
 assert.equal(remoteScripts.length, 2, "only the two pinned Firebase scripts should be remote");
