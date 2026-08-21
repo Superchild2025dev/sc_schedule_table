@@ -48,3 +48,67 @@ test("teacher write policy contains attendance keys but no schedule rosters", ()
   assert.ok(!policy.teacherWritableExactKeys.includes("swim_students"));
   assert.ok(!policy.teacherWritableExactKeys.includes("swim_inst"));
 });
+
+test("one manifest grants cross-branch staff V2 reads and keeps every browser V2 write server-only", () => {
+  const generator = require(generatorPath);
+  const policy = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const rules = generator.renderRulesBlock(policy);
+
+  assert.equal(policy.teacherCrossBranchAccess, true);
+  assert.deepEqual(policy.scheduleV2.staffReadableRuntimeDocuments, [
+    "operational",
+    "attendance",
+    "scheduleSync",
+  ]);
+  assert.deepEqual(policy.scheduleV2.staffReadableGenerationCollections, [
+    "tabs",
+    "people",
+    "enrollments",
+    "placements",
+    "teacherAssignments",
+    "reservations",
+    "waitlistEntries",
+    "classMarks",
+    "attendanceRecords",
+    "attendanceGuests",
+    "attendanceSnapshots",
+    "attendanceSnapshotStudents",
+    "attendanceSnapshotTeachers",
+    "disabledSlots",
+    "calendarClosures",
+    "schedulePeriods",
+    "scheduleSettings",
+    "teacherProfiles",
+    "tabFolders",
+    "archivedTabs",
+    "systemMetadata",
+    "retirementRecords",
+    "deskStudentRecords",
+  ]);
+  assert.equal(policy.scheduleV2.developerMonitorRead, true);
+  assert.equal(policy.scheduleV2.browserWritePolicy, "trusted-server-only");
+  assert.match(rules, /function canReadScheduleV2Runtime\(documentId\)/);
+  assert.match(rules, /function canReadScheduleV2GenerationCollection\(collection\)/);
+  assert.match(rules, /allow read: if canReadSchedule\(branch\)/);
+  assert.doesNotMatch(rules, /allow write: if (?!false)/);
+});
+
+test("one manifest generates fail-closed V1 authority and activation-freeze fencing",()=>{
+  const generator=require(generatorPath);
+  const policy=JSON.parse(fs.readFileSync(manifestPath,"utf8"));
+  const rules=generator.renderRulesBlock(policy);
+
+  assert.ok(policy.scheduleV2.trackedLegacyExactKeys.includes("swim_students"));
+  assert.ok(policy.scheduleV2.trackedLegacyExactKeys.includes("swim_attendance"));
+  assert.ok(!policy.scheduleV2.trackedLegacyExactKeys.includes("swim_requests"));
+  assert.ok(policy.scheduleV2.trackedLegacyPatterns.includes("^zz_swim_day_snapshot__(regular|bt_[A-Za-z0-9_-]+)__[0-9]{4}-[0-9]{2}-[0-9]{2}$"));
+  assert.match(rules,/function isTrackedLegacyScheduleKey\(docId\)/);
+  assert.match(rules,/function hasLegacyScheduleAuthority\(branch\)[\s\S]*?exists\([\s\S]*?runtime\/operational[\s\S]*?authority\.branchId == branch[\s\S]*?authority\.mode in \["v1", "shadow", "verify"\]/);
+  assert.match(rules,/hasAll\(\["branchId", "mode", "generationId", "epoch", "revision"\]\)/);
+  assert.match(rules,/authority\.epoch is int[\s\S]*?authority\.revision is int/);
+  assert.match(rules,/authority\.generationId\.matches\("\^\[A-Za-z0-9_-\]\{1,128\}\$"\)/);
+  assert.match(rules,/function activationFreezeAllowsLegacyWrites\(branch\)/);
+  assert.match(rules,/function canWriteLegacyScheduleKey\(branch, docId\)/);
+  assert.match(rules,/runtime\/activationFreeze \{[\s\S]*?allow read, write: if false;/);
+  assert.match(rules,/runtime\/canonicalParity \{[\s\S]*?allow read, write: if false;/);
+});

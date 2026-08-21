@@ -4,7 +4,8 @@ const ALL_COLLECTIONS=Object.freeze([
   "tabs","people","enrollments","placements","teacherAssignments","reservations",
   "waitlistEntries","classMarks","disabledSlots","calendarClosures","schedulePeriods",
   "scheduleSettings","teacherProfiles","tabFolders","archivedTabs","systemMetadata",
-  "retirementRecords","deskStudentRecords"
+  "retirementRecords","deskStudentRecords","attendanceRecords","attendanceGuests",
+  "attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers"
 ]);
 const LEASE_MS=60_000;
 const COLLECTIONS=new Set(ALL_COLLECTIONS);
@@ -56,6 +57,16 @@ function collectionsForKey(key){
   }
   if(key==="swim_retire_history") return ["retirementRecords"];
   if(key==="swim_desk_notes") return ["deskStudentRecords"];
+  if(key==="swim_attendance"||/^swim_bt_attendance_[A-Za-z0-9_-]+$/.test(key)){
+    return ["attendanceRecords"];
+  }
+  if(key==="swim_att_guests"||/^swim_bt_att_guests_[A-Za-z0-9_-]+$/.test(key)){
+    return ["attendanceGuests"];
+  }
+  if(key==="swim_day_snapshot"||/^swim_bt_day_snapshot_[A-Za-z0-9_-]+$/.test(key)
+    ||/^zz_swim_day_snapshot__(regular|bt_[A-Za-z0-9_-]+)__\d{4}-\d{2}-\d{2}$/.test(key)){
+    return ["attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers"];
+  }
   return [];
 }
 
@@ -220,7 +231,14 @@ function diagnosticKeyFamily(key){
     swim_reserve:"waitlist",swim_mark:"class-marks",swim_disabled:"disabled-slots",
     swim_closed:"calendar-closures",swim_periods:"schedule-periods",
     swim_retire_history:"retirement-history",swim_desk_notes:"desk-history",
+    swim_attendance:"attendance-records",swim_att_guests:"attendance-guests",
+    swim_day_snapshot:"attendance-snapshots",
   };
+  if(/^swim_bt_attendance_/.test(key)) return "attendance-records-tab";
+  if(/^swim_bt_att_guests_/.test(key)) return "attendance-guests-tab";
+  if(/^swim_bt_day_snapshot_/.test(key)||/^zz_swim_day_snapshot__/.test(key)){
+    return "attendance-snapshots-tab";
+  }
   return fixed[key]||"schedule-key";
 }
 

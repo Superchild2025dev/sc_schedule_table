@@ -24,8 +24,21 @@ test("decodes stored legacy keys and classifies only timetable-owned keys",()=>{
     "reservations","waitlistEntries","classMarks","schedulePeriods",
     "retirementRecords","deskStudentRecords",
   ]);
-  assert.equal(policy.isTrackedKey("swim_attendance"),false);
-  assert.equal(policy.isTrackedKey("swim_day_snapshot"),false);
+  assert.deepEqual(policy.collectionsForKey("swim_attendance"),["attendanceRecords"]);
+  assert.deepEqual(policy.collectionsForKey("swim_att_guests"),["attendanceGuests"]);
+  assert.deepEqual(policy.collectionsForKey("swim_day_snapshot"),[
+    "attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers",
+  ]);
+  assert.deepEqual(policy.collectionsForKey("swim_bt_attendance_summer"),["attendanceRecords"]);
+  assert.deepEqual(policy.collectionsForKey("swim_bt_att_guests_summer"),["attendanceGuests"]);
+  assert.deepEqual(policy.collectionsForKey("swim_bt_day_snapshot_summer"),[
+    "attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers",
+  ]);
+  assert.deepEqual(policy.collectionsForKey("zz_swim_day_snapshot__regular__2026-08-07"),[
+    "attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers",
+  ]);
+  assert.equal(policy.isTrackedKey("swim_attendance"),true);
+  assert.equal(policy.isTrackedKey("swim_day_snapshot"),true);
   assert.equal(policy.isTrackedKey("swim_audit_log"),false);
   assert.equal(policy.isTrackedKey("swim_restore_points"),false);
   assert.equal(policy.isTrackedKey("zz_swim_student_delete_index"),false);

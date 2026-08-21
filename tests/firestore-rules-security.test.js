@@ -87,21 +87,73 @@ assert.match(
   "public summary writes must stay blocked"
 );
 
+const v2Rules = source.slice(source.indexOf("match /scheduleV2/"), source.indexOf("match /scheduleStores/"));
+assert.ok(v2Rules, "Schedule V2 rules must exist before scheduleStores");
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/runtime\/\{documentId\} \{[\s\S]*?allow read: if canReadSchedule\(branch\)[\s\S]*?canReadScheduleV2Runtime\(documentId\);[\s\S]*?allow write: if false;/,
+  "staff may read only allowlisted V2 runtime status documents"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\} \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if false;/,
+  "staff may read an allowed generation header"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?canReadScheduleV2GenerationCollection\(collection\)[\s\S]*?allow write: if false;/,
+  "staff may read only allowlisted operational generation collections"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/requestRecoveries\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "request recovery documents must remain server-only"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/operationalMutations\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "operational mutation manifests must remain server-only"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/recoveryResolutions\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/,
+  "terminal recovery resolutions must remain server-only"
+);
+assert.match(
+  v2Rules,
+  /match \/scheduleV2\/\{branch\}\/runtime\/operationalRecovery \{[\s\S]*?allow read, write: if false;/,
+  "mirror recovery queues must remain server-only"
+);
+assert.doesNotMatch(v2Rules, /allow write: if (?!false)/, "no Schedule V2 browser write may be authorized");
+
 assert.match(
   source,
-  /match \/scheduleV2\/\{document=\*\*\} \{[\s\S]*?allow read: if isOwner\(\) \|\| isDeveloper\(\);[\s\S]*?allow write: if false;[\s\S]*?\}/,
-  "generic Schedule V2 documents must be server-written only"
+  /function hasLegacyScheduleAuthority\(branch\)[\s\S]*?runtime\/operational[\s\S]*?authority\.branchId == branch[\s\S]*?authority\.mode in \["v1", "shadow", "verify"\]/,
+  "tracked V1 writes require an explicit branch-scoped V1-family authority pointer"
+);
+assert.match(source,/hasAll\(\["branchId", "mode", "generationId", "epoch", "revision"\]\)/);
+assert.match(source,/authority\.branchId is string/);
+assert.match(source,/authority\.generationId is string/);
+assert.match(source,/authority\.generationId\.matches\("\^\[A-Za-z0-9_-\]\{1,128\}\$"\)/);
+assert.match(source,/authority\.epoch is int[\s\S]*?authority\.epoch >= 0/);
+assert.match(source,/authority\.revision is int[\s\S]*?authority\.revision >= 0/);
+assert.match(
+  source,
+  /function canWriteLegacyScheduleKey\(branch, docId\)[\s\S]*?!isTrackedLegacyScheduleKey\(docId\)[\s\S]*?hasLegacyScheduleAuthority\(branch\)[\s\S]*?activationFreezeAllowsLegacyWrites\(branch\)/,
+  "tracked V1 writes must be fenced by authority and activation freeze"
 );
 assert.match(
   source,
-  /match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow read: if canReadSchedule\(branch\);[\s\S]*?allow write: if isDeveloper\(\);[\s\S]*?\}/,
-  "staff may read an allowed attendance runtime config while developers control writes"
+  /match \/scheduleStores\/\{branch\}\/\{document=\*\*\} \{[\s\S]*?allow write: if false;/,
+  "the recursive scheduleStores rule must not bypass the tracked-key fence"
 );
 assert.match(
   source,
-  /match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?collection in \["attendanceRecords", "attendanceGuests"\][\s\S]*?canManageSchedule\(branch\) \|\| isTeacherForBranch\(branch\)[\s\S]*?\}/,
-  "desks stay branch-scoped while teachers may access attendance at either branch"
+  /match \/scheduleStores\/\{branch\}\/kv\/\{docId\} \{[\s\S]*?canWriteLegacyScheduleKey\(branch, docId\)[\s\S]*?match \/chunks\/\{chunkId\} \{[\s\S]*?canWriteLegacyScheduleKey\(branch, docId\)/,
+  "parent and chunk writes must use the same V1 fence"
 );
+assert.match(source,/runtime\/activationFreeze \{[\s\S]*?allow read, write: if false;/);
+assert.match(source,/runtime\/canonicalParity \{[\s\S]*?allow read, write: if false;/);
 
 assert.equal(firebaseConfig.firestore.rules, "firestore.rules");
 assert.equal(firebaseConfig.firestore.indexes, "firestore.indexes.json");

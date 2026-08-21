@@ -133,6 +133,7 @@
   let voiceTicketBranch='';
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
+  let settingsLoadSeqByBranch={};
   let studentDirectoryByBranch={};
   let studentDirectoryLoadingByBranch={};
   let dataV2ReportByBranch={};
@@ -145,6 +146,7 @@
   let v2MonitorAlertsByBranch={};
   let scheduleV2StatusByBranch={};
   let scheduleV2Callable=null;
+  let scheduleV2ResponseGate=null;
   let scheduleV2BusyByBranch={};
   let scheduleV2ActionSeqByBranch={};
   let attendanceControlStore=null;
@@ -1137,7 +1139,10 @@
     })[mode]||'V1 운영';
   }
   function scheduleV2ModeLabel(mode){
-    return ({v1:'V1 운영',preparing:'준비 중',ready:'준비 완료',shadow:'그림자 복사',verify:'검증 모드'})[mode]||String(mode||'V1 운영');
+    return ({
+      v1:'V1 운영',preparing:'준비 중',ready:'준비 완료',shadow:'그림자 복사',verify:'검증 모드',
+      'v2-read':'V2 읽기 + V1 복구',v2:'V2 단독 운영',
+    })[mode]||String(mode||'V1 운영');
   }
   function scheduleV2Developer(){
     const developer=!!(window.SCAuth&&typeof SCAuth.profile==='function'&&SCAuth.profile().role==='developer');
@@ -1169,21 +1174,35 @@
     if(badge) badge.hidden=!developer;
     if($('v2-schedule-mode')) $('v2-schedule-mode').textContent=scheduleV2ModeLabel(status.mode);
     if($('v2-schedule-generation')) $('v2-schedule-generation').textContent=status.generationId||'-';
+    if($('v2-schedule-epoch')) $('v2-schedule-epoch').textContent=String(Number(status.epoch||0));
+    if($('v2-schedule-revision')) $('v2-schedule-revision').textContent=String(Number(status.revision||0));
     if($('v2-schedule-pending')) $('v2-schedule-pending').textContent=`${Number(status.pendingCount||0)+Number(status.inFlightCount||0)}개`;
+    if($('v2-schedule-recovery-pending')) $('v2-schedule-recovery-pending').textContent=`${Number(status.recoveryPendingCount||0)}건`;
+    if($('v2-schedule-recovery-error')) $('v2-schedule-recovery-error').textContent=`${Number(status.recoveryErrorCount||0)}건`;
     if($('v2-schedule-last-sync')) $('v2-schedule-last-sync').textContent=v2MonitorDate(status.lastSuccessfulSync);
     if($('v2-schedule-mismatch')) $('v2-schedule-mismatch').textContent=`${Number(status.unresolvedMismatchCount||0)}건`;
     const busyAction=scheduleV2BusyByBranch[activeBranch]||'';
     const busy=!!busyAction;
-    ['v2-schedule-prepare','v2-schedule-shadow','v2-schedule-verify'].forEach(id=>{
-      if($(id)) $(id).disabled=busy;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
+    [
+      ['v2-schedule-prepare','prepare'],['v2-schedule-shadow','set-shadow'],
+      ['v2-schedule-verify','set-verify'],['v2-schedule-v2-read','set-v2-read'],
+      ['v2-schedule-v2','set-v2'],['v2-schedule-rollback','rollback'],
+    ].forEach(([id,action])=>{
+      if($(id)) $(id).disabled=busy||!developer||!policy?.evaluate({profile,action,status}).allowed;
     });
-    if($('v2-schedule-rollback')) $('v2-schedule-rollback').disabled=!developer;
     if(busy){
       scheduleV2ControlStatus(busyAction==='prepare'?'새 기준점을 만들고 변경분을 따라잡는 중입니다.':'시간표 서버 모드를 변경하고 있습니다.');
+    }else if(Number(status.recoveryErrorCount||0)>0){
+      scheduleV2ControlStatus(`V1 복구 오류 ${Number(status.recoveryErrorCount||0)}건을 먼저 해결해야 합니다.`,'err');
     }else if(status.generationStatus!=='ready'){
       scheduleV2ControlStatus('준비 완료된 시간표 V2 세대가 없습니다. V1 운영은 그대로 유지됩니다.','err');
     }else{
-      scheduleV2ControlStatus(`세대 ${status.generationId} · 대기 ${Number(status.pendingCount||0)}개 · 처리 중 ${Number(status.inFlightCount||0)}개`,'ok');
+      scheduleV2ControlStatus(
+        `세대 ${status.generationId} · epoch ${Number(status.epoch||0)} · V2 리비전 ${Number(status.revision||0)} · V1 복구 대기 ${Number(status.recoveryPendingCount||0)}건`,
+        'ok',
+      );
     }
   }
   function getScheduleV2Callable(){
@@ -1194,53 +1213,90 @@
     scheduleV2Callable=service.httpsCallable('manageScheduleV2Shadow');
     return scheduleV2Callable;
   }
+  function getScheduleV2ResponseGate(){
+    if(scheduleV2ResponseGate) return scheduleV2ResponseGate;
+    const policy=window.SCScheduleV2SettingsPolicy;
+    if(!policy||typeof policy.createResponseGate!=='function') throw new Error('Schedule V2 응답 정책이 없습니다.');
+    scheduleV2ResponseGate=policy.createResponseGate();
+    return scheduleV2ResponseGate;
+  }
   async function loadScheduleV2Status(branchId,silent){
     if(!scheduleV2StatusAllowed()){
       renderScheduleV2Status();
       return;
     }
+    const gate=getScheduleV2ResponseGate();
+    const sequence=gate.begin(branchId);
     try{
       const response=await getScheduleV2Callable()({action:'status',branchId});
-      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      if(!scheduleV2ResponseGate.accept(branchId,sequence,response?.data||{})) return null;
+      scheduleV2StatusByBranch[branchId]=scheduleV2ResponseGate.status(branchId);
       if(activeBranch===branchId){
         renderScheduleV2Status();
         if(!silent) scheduleV2ControlStatus('시간표 서버 상태를 새로 확인했습니다.','ok');
       }
+      return scheduleV2StatusByBranch[branchId];
     }catch(error){
       if(activeBranch===branchId) scheduleV2ControlStatus('시간표 서버 상태 조회 실패 · '+(error.message||String(error)),'err');
+      return null;
     }
   }
   async function runScheduleV2Action(action){
     const branchId=activeBranch;
     const policy=window.SCScheduleV2SettingsPolicy;
     const profile=window.SCAuth&&typeof SCAuth.profile==='function'?SCAuth.profile():null;
-    const current=scheduleV2StatusByBranch[branchId]||{};
+    const current=await loadScheduleV2Status(branchId,true);
     const decision=policy&&policy.evaluate({profile,action,status:current});
     if(!decision?.allowed){
       scheduleV2ControlStatus(decision?.reason||'실행할 수 없는 작업입니다.','err');
       return;
     }
-    const labels={
-      prepare:'새 시간표 V2 기준점을 만들까요?',
-      'set-shadow':'그림자 복사를 시작할까요?',
-      'set-verify':'검증 모드로 변경할까요?',
-      rollback:'V1으로 즉시 복귀할까요?',
+    const targetModes={
+      prepare:'새 기준점 준비','set-shadow':'그림자 복사','set-verify':'검증 모드',
+      'set-v2-read':'V2 읽기 + V1 복구','set-v2':'V2 단독 운영',rollback:'V1 운영',
     };
-    if(!window.confirm(labels[action]||'시간표 서버 설정을 변경할까요?')) return;
+    const targetEpoch=action==='prepare'?Number(current.epoch||0):Number(current.epoch||0)+1;
+    const branchName=BRANCHES[branchId]?.name||branchId;
+    const confirmation=[
+      '코드 배포만으로 운영 모드는 전환되지 않습니다.',
+      `대상 지점: ${branchName} (${branchId})`,
+      `대상 모드: ${targetModes[action]||action}`,
+      `대상 epoch: ${targetEpoch}`,
+      '이 상태 변경을 계속할까요?',
+    ].join('\n');
+    if(!window.confirm(confirmation)) return;
     const sequence=(scheduleV2ActionSeqByBranch[branchId]||0)+1;
     scheduleV2ActionSeqByBranch[branchId]=sequence;
     scheduleV2BusyByBranch[branchId]=action;
     renderScheduleV2Status();
+    const responseGate=getScheduleV2ResponseGate();
+    const responseSequence=responseGate.begin(branchId,'action');
     try{
-      const response=await getScheduleV2Callable()({action,branchId});
-      if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
-      scheduleV2StatusByBranch[branchId]=response?.data||{};
+      const payload={
+        action,branchId,
+        expectedMode:String(current.mode||''),
+        expectedGenerationId:String(current.generationId||''),
+        expectedEpoch:Number(current.epoch||0),
+        expectedRevision:Number(current.revision||0),
+      };
+      const response=await getScheduleV2Callable()(payload);
+      if(scheduleV2ActionSeqByBranch[branchId]!==sequence){
+        responseGate.finish(branchId,responseSequence);
+        return;
+      }
+      if(!responseGate.accept(branchId,responseSequence,response?.data||{})){
+        delete scheduleV2BusyByBranch[branchId];
+        if(activeBranch===branchId) renderScheduleV2Status();
+        return;
+      }
+      scheduleV2StatusByBranch[branchId]=responseGate.status(branchId);
       delete scheduleV2BusyByBranch[branchId];
       if(activeBranch===branchId){
         renderScheduleV2Status();
         scheduleV2ControlStatus(action==='rollback'?'V1으로 복귀했습니다.':'시간표 서버 설정을 적용했습니다.','ok');
       }
     }catch(error){
+      responseGate.finish(branchId,responseSequence);
       if(scheduleV2ActionSeqByBranch[branchId]!==sequence) return;
       delete scheduleV2BusyByBranch[branchId];
       if(activeBranch===branchId){
@@ -1361,19 +1417,11 @@
       attendanceControlStatus(decision.reason,'err');
       return;
     }
-    const label=attendanceModeLabel(mode);
-    if(!window.confirm(`출석 데이터 운영 모드를 "${label}"(으)로 변경할까요?`)) return;
-    attendanceControlBusy=true;
-    renderAttendanceCutover();
-    try{
-      await attendanceControlStore.setConfig({mode,generationId:mode==='v1'?'':readyId});
-      attendanceControlStatus(`${label} 모드로 변경했습니다.`,'ok');
-    }catch(error){
-      attendanceControlStatus('출석 운영 모드 저장 실패 · '+(error.message||String(error)),'err');
-    }finally{
-      attendanceControlBusy=false;
-      renderAttendanceCutover();
-    }
+    const action={
+      v1:'rollback',shadow:'set-shadow',verify:'set-verify','v2-read':'set-v2-read',v2:'set-v2',
+    }[mode];
+    if(!action) return;
+    await runScheduleV2Action(action);
   }
   function renderV2Monitor(){
     const data=v2MonitorDataByBranch[activeBranch]||{};
@@ -2275,22 +2323,28 @@
   }
   async function loadBranchBundle(branchId){
     const base=defaultSettings(branchId);
+    const sequence=(settingsLoadSeqByBranch[branchId]||0)+1;
+    settingsLoadSeqByBranch[branchId]=sequence;
     try{
       const [settingsSnap,teachersSnap]=await Promise.all([
         branchRoot(branchId).child(SETTINGS_KEY).once('value'),
         branchRoot(branchId).child(TEACHERS_KEY).once('value'),
       ]);
+      if(settingsLoadSeqByBranch[branchId]!==sequence) return;
       settingsByBranch[branchId]=mergeSettings(base,parseStored(settingsSnap.val()));
       teacherNamesByBranch[branchId]=normalizeTeacherNames(parseStored(teachersSnap.val()),branchId);
       settingsLoadFailedByBranch[branchId]=false;
       try{
         const feedbackSnap=await branchRoot(branchId).child(FEEDBACK_KEY).once('value');
+        if(settingsLoadSeqByBranch[branchId]!==sequence) return;
         feedbackByBranch[branchId]=normalizeFeedbackList(parseStored(feedbackSnap.val()));
       }catch(feedbackError){
+        if(settingsLoadSeqByBranch[branchId]!==sequence) return;
         console.warn('feedback load failed',feedbackError);
         feedbackByBranch[branchId]=[];
       }
     }catch(e){
+      if(settingsLoadSeqByBranch[branchId]!==sequence) return;
       console.error(e);
       settingsByBranch[branchId]=base;
       teacherNamesByBranch[branchId]=clone(DEFAULT_TEACHERS[branchId]||[]);
@@ -2298,7 +2352,7 @@
       settingsLoadFailedByBranch[branchId]=true;
       toast('설정 로드 실패 — 저장은 차단됩니다','err');
     }
-    renderAll();
+    if(activeBranch===branchId) renderAll();
   }
   async function saveSettings(kind){
     if(window.SCAuth && !SCAuth.requirePermission('manageSettings','설정 저장')) return;
@@ -2376,6 +2430,7 @@
   function setBranch(branchId){
     if(!BRANCHES[branchId]||!canAccessBranch(branchId)) return;
     activeBranch=branchId;
+    try{window.SC_SELECTED_BRANCH=branchId;}catch(e){}
     try{localStorage.setItem('selected_branch',branchId);}catch(e){}
     document.querySelectorAll('[data-sc-branch-select]').forEach(select=>{
       select.value=activeBranch;
@@ -3580,6 +3635,8 @@ th{background:#D9EAD3;font-weight:700}
     $('v2-schedule-prepare')?.addEventListener('click',()=>runScheduleV2Action('prepare'));
     $('v2-schedule-shadow')?.addEventListener('click',()=>runScheduleV2Action('set-shadow'));
     $('v2-schedule-verify')?.addEventListener('click',()=>runScheduleV2Action('set-verify'));
+    $('v2-schedule-v2-read')?.addEventListener('click',()=>runScheduleV2Action('set-v2-read'));
+    $('v2-schedule-v2')?.addEventListener('click',()=>runScheduleV2Action('set-v2'));
     $('v2-schedule-rollback')?.addEventListener('click',()=>runScheduleV2Action('rollback'));
     $('v2-attendance-apply')?.addEventListener('click',()=>applyAttendanceCutover());
     $('v2-attendance-rollback')?.addEventListener('click',()=>applyAttendanceCutover('v1'));

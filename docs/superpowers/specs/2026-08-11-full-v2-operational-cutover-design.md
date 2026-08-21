@@ -208,3 +208,29 @@ UI 함수는 V2 경로, 컬렉션 이름, 세대 ID를 직접 사용하지 않�
 - 학부모 페이지와 공개 페이지의 기존 동작에는 변경이 없다.
 - 운영 전환은 별도 배포와 검증을 마친 뒤 개발자 제어로 수행하며 코드 배포만으로 자동 전환하지 않는다.
 
+## Local Task 7 Rollback Evidence (2026-08-11)
+
+- Tested branches: `gagyeong` and `yongam`; each ran regular and bangteuk V2-read workflows.
+- Mode sequence: `verify -> v2-read -> v1` for the rollback scenario. No deployment, production access, push, or mode switch was performed.
+- Workflow count: 17 committed V2 operations per branch (34 total): registration, replacement, move, teacher change, retirement/enrollment/leave reservations, waitlist, all absence/makeup mark transitions, attendance/guests, snapshots, calendar, periods, tabs, and manual records.
+- Concurrency evidence: each branch/course pair proved a fenced retry preserves different-document edits; stale same-slot writes returned `aborted` and did not overwrite the committed value.
+- Recovery evidence: a forced V1 mirror failure left the V2 commit at revision 2, blocked rollback, then `recoverOperationalMirrors` applied one recovery and restored V1/V2 values for both changed rosters.
+- Pointer parity: each committed V2 mutation advances both `runtime/operational.revision` and `runtime/attendance.revision` in the same finalization transaction.
+- Rollback outcome: after recovery and parity, rollback reached `v1`; a newly constructed gateway session loaded the complete legacy staff view as V1 and matched the recovered legacy data.
+
+## Local Task 7 Fix Round 1 Evidence (2026-08-11)
+
+- Both runtime pointers are preflight-validated before a V2 document, manifest, or active-operation write; a mismatched attendance pointer produces zero writes.
+- `gagyeong` and `yongam` each run 20 V2 operations through the production operational workflow adapter: regular and Bangteuk registration, replacement, move, teacher, reservations, waitlist, absence, bogang, sample, mandatory makeup, both cancellations, attendance/guests, two immutable snapshots, calendar, periods, tabs, manual records, and export.
+- The operational gateway rebases non-overlapping stale leaf edits onto a fresh V2 read. Four branch/course different-student races retain both original requests without a third replay; four same-slot races remain `aborted` and retain the winner.
+- Ordered roster, tab, waitlist, period, and export views are compared without recursive array sorting. Placement conversion persists source order and V2 reconstruction preserves it.
+- For each branch, a forced Bangteuk V1 mirror failure blocks rollback at revision 2. Recovery returns `{applied:1,error:0,skipped:0}`, complete tracked V1/V2 staff views match, and a newly constructed V1 gateway session independently reconstructs the same complete view after rollback.
+
+## Local Task 7 Fix Round 2 Evidence (2026-08-11)
+
+- Resumed snapshot header completion validates both runtime pointers before changing snapshot completion or its manifest.
+- Operational rebase awaits async mutator intent and fails closed before a retry when mode, generation, or epoch changes.
+- Tab conversion stores `sourceOrder`; reconstruction restores it despite deliberately reordered collection retrieval while older rows without that field keep stable retrieval order.
+- The staff page uses `SCScheduleLiveHandlers` for snapshot, V2 mark, scheduled replacement/future-state cleanup, and export preparation. The two-branch scenario drives that same production adapter through the real operational gateway.
+- The round-two focused suite passed 123 tests and the full suite passed 601 of 603 tests with no failures. The remaining two tests are explicit emulator-environment skips.
+

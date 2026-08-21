@@ -2726,6 +2726,21 @@ function _updateDeskNotesTx(mutator,meta,silent){
     return Promise.resolve(DESK_NOTES);
   };
   if(typeof updateScheduleTx!=='function') return applyLocal();
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    return handlers.updateManualRecords({
+      keys:[STORAGE_KEYS.DESK_NOTES],operationType:'update-records',tabIds:[String(_activeTab||'regular')],transactionMetadata:meta||{},
+      mutateContext:ctx=>{
+        const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
+        const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
+        if(next===undefined) return;
+        const normalized=_normalizeDeskNotesList(next);
+        ctx.set(STORAGE_KEYS.DESK_NOTES,normalized);
+        DESK_NOTES=normalized;
+        return true;
+      },
+    }).then(()=>DESK_NOTES);
+  }
   return updateScheduleTx([STORAGE_KEYS.DESK_NOTES],ctx=>{
     const list=_normalizeDeskNotesList(ctx.get(STORAGE_KEYS.DESK_NOTES,[]));
     const next=mutator(list,reason=>ctx.abort(reason||'기록 저장이 취소되었습니다'));
@@ -3676,9 +3691,25 @@ function retireHistoryEntryForSlot(slotKey,fallback){
 /* ════════════════════════════════════════════════════════════════
  * SECTION: 퇴원 기록 모달 (조회/검색/CSV)
  * ════════════════════════════════════════════════════════════════ */
-function openRetireHistoryModal(){
+async function openRetireHistoryModal(){
   document.getElementById('retire-history-modal').style.display='flex';
   renderRetireHistoryList();
+  if(typeof ensureScheduleAuxiliaryKeysLoaded!=='function') return;
+  try{
+    const result=await ensureScheduleAuxiliaryKeysLoaded('history-records',[
+      STORAGE_KEYS.RETIRE_HISTORY,
+      STORAGE_KEYS.DESK_NOTES,
+    ]);
+    if(result&&result.stale) return;
+    RETIRE_HISTORY=loadJSON(STORAGE_KEYS.RETIRE_HISTORY,[]);
+    DESK_NOTES=loadJSON(STORAGE_KEYS.DESK_NOTES,[]);
+    if(!Array.isArray(RETIRE_HISTORY)) RETIRE_HISTORY=[];
+    if(!Array.isArray(DESK_NOTES)) DESK_NOTES=[];
+    renderRetireHistoryList();
+  }catch(error){
+    console.error('history load failed',error);
+    if(typeof toast==='function') toast('퇴원 기록을 불러오지 못했습니다','err');
+  }
 }
 function closeRetireHistoryModal(){
   document.getElementById('retire-history-modal').style.display='none';
@@ -3775,7 +3806,48 @@ function saveMove()     { saveJSON(STORAGE_KEYS.MOVE,     MOVE_MAP); }
 function saveRequests() { saveJSON(STORAGE_KEYS.REQUESTS, REQUESTS); }
 function saveAttendance(){ saveJSON(_attendanceStorageKey('attendance'), ATTENDANCE); }
 function saveAttGuests(){ saveJSON(_attendanceStorageKey('attGuests'), ATT_GUESTS); }
-function saveDaySnapshot(ds,tabId,snapshotValue){
+let _mainAttendanceSnapshotWriter=null;
+let _mainAttendanceSnapshotWriterBranch='';
+let _mainScheduleLiveHandlers=null;
+let _mainScheduleLiveHandlersBranch='';
+function getMainAttendanceSnapshotWriter(){
+  const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
+  if(!branch||!window.SCAttendanceSnapshotWriter||!_scheduleWrites||!_fb) return null;
+  if(_mainAttendanceSnapshotWriter&&_mainAttendanceSnapshotWriterBranch===branch.id){
+    return _mainAttendanceSnapshotWriter;
+  }
+  _mainAttendanceSnapshotWriter=SCAttendanceSnapshotWriter.create({
+    branchId:branch.id,
+    async read(key){
+      const snapshot=await _fb.child(key).once('value');
+      return snapshot?.val?.()??null;
+    },
+    write(key,value,meta){ return _scheduleWrites.set(key,value,{...meta,originalKey:key}); },
+    normalize(value,key){ return normalizeStoredScheduleValue(key,value); },
+    cache(date,value,input){
+      if(typeof cacheAttendanceDaySnapshot==='function'){
+        cacheAttendanceDaySnapshot(input?.tabId,date,value);
+      }
+    },
+  });
+  _mainAttendanceSnapshotWriterBranch=branch.id;
+  return _mainAttendanceSnapshotWriter;
+}
+function getMainScheduleLiveHandlers(){
+  const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
+  if(!branch||!window.SCScheduleLiveHandlers||!_fb) return null;
+  if(_mainScheduleLiveHandlers&&_mainScheduleLiveHandlersBranch===branch.id) return _mainScheduleLiveHandlers;
+  const snapshotWriter=getMainAttendanceSnapshotWriter();
+  _mainScheduleLiveHandlers=SCScheduleLiveHandlers.create({
+    gateway:_fb,snapshotWriter,
+    transactionContext:(keys,mutator,meta)=>updateScheduleTx(keys,mutator,meta),
+    getAttendanceRuntime:()=>typeof getOperationalAttendanceRuntime==='function'
+      ?getOperationalAttendanceRuntime():null,
+  });
+  _mainScheduleLiveHandlersBranch=branch.id;
+  return _mainScheduleLiveHandlers;
+}
+async function saveDaySnapshot(ds,tabId,snapshotValue){
   const date=String(ds||'');
   const snapshot=snapshotValue||DAY_SNAPSHOT[date];
   if(!date||!snapshot) return false;
@@ -3783,11 +3855,15 @@ function saveDaySnapshot(ds,tabId,snapshotValue){
     ? (typeof _tabById==='function'?_tabById(tabId):null)
     : (typeof getAttendanceBasisTabForDate==='function'?getAttendanceBasisTabForDate(date):null);
   const targetTabId=basisTab?.id||tabId||_activeTab;
-  if(typeof cacheAttendanceDaySnapshot==='function') cacheAttendanceDaySnapshot(targetTabId,date,snapshot);
-  const key=typeof getAttendanceDaySnapshotStorageKey==='function'
-    ? getAttendanceDaySnapshotStorageKey(targetTabId,date)
-    : _attendanceStorageKey('daySnapshot',targetTabId);
-  return saveJSON(key,snapshot);
+  const writer=getMainAttendanceSnapshotWriter();
+  if(!writer) throw new Error('출석부 스냅샷 저장 연결을 준비하지 못했습니다.');
+  const scope=typeof _attendanceDaySnapshotScope==='function'
+    ?_attendanceDaySnapshotScope(targetTabId)
+    :(basisTab?.type==='bangteuk'?'bt_'+targetTabId:'regular');
+  const handlers=getMainScheduleLiveHandlers();
+  return (handlers||{createSnapshot:input=>writer.createOnly(input)}).createSnapshot({
+    scope,date,snapshot,tabId:targetTabId,
+  });
 }
 
 function _cacheJSONOnly(key,val){
@@ -4028,21 +4104,107 @@ function updateDisabledMapTx(mutator){
   return _txJSONMap(STORAGE_KEYS.DISABLED,DISABLED_MAP,next=>{DISABLED_MAP=next;},mutator);
 }
 function updateReserveMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    let next=RESERVE_MAP;
+    return handlers.setReservations({
+      keys:[STORAGE_KEYS.RESERVE],operationType:'update-reservation',tabIds:[String(_activeTab||'regular')],
+      mutateContext:ctx=>{
+        const value=ctx.get(STORAGE_KEYS.RESERVE,{});
+        const result=mutator(value);
+        if(result===undefined) return;
+        next=result;
+        ctx.set(STORAGE_KEYS.RESERVE,result);
+        return true;
+      },
+    }).then(()=>{RESERVE_MAP=next||{};return RESERVE_MAP;});
+  }
   return _txJSONMap(STORAGE_KEYS.RESERVE,RESERVE_MAP,next=>{RESERVE_MAP=next;},mutator);
 }
 function updateHyuwonMapTx(mutator){
   return _txJSONMap(STORAGE_KEYS.休원,HYUWON_MAP,next=>{HYUWON_MAP=next;},mutator);
 }
-function updateMarkMapTx(mutator){
-  return _txJSONMap(STORAGE_KEYS.MARK,MARK_MAP,next=>{MARK_MAP=next;},mutator);
+let _mainMarkMapTransaction=null;
+function getMainMarkMapTransaction(){
+  if(_mainMarkMapTransaction) return _mainMarkMapTransaction;
+  if(!window.SCMarkMapTransaction) throw new Error('마크 저장 연결을 준비하지 못했습니다.');
+  _mainMarkMapTransaction=SCMarkMapTransaction.create({
+    read(){ return MARK_MAP; },
+    transact(mutator,meta){
+      return _txJSONMap(STORAGE_KEYS.MARK,MARK_MAP,()=>{},mutator,{
+        operationType:meta?.operationType||'makeup-update',...(meta||{}),
+      });
+    },
+    apply(next){ MARK_MAP=next||{}; },
+    refresh(error,meta){
+      if(typeof _refreshFailedScheduleWrites==='function'){
+        return _refreshFailedScheduleWrites([STORAGE_KEYS.MARK],meta||{},error);
+      }
+    },
+  });
+  return _mainMarkMapTransaction;
 }
-function setMarkEntryTx(markKey,val){
-  MARK_MAP[markKey]=val;
-  return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; });
+function updateMarkMapTx(mutator,meta){
+  return getMainMarkMapTransaction().mutate(mutator,meta);
 }
-function clearMarkEntryTx(markKey){
-  delete MARK_MAP[markKey];
-  return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; });
+function setMarkEntryTx(markKey,val,meta){
+  const handlers=getMainScheduleLiveHandlers();
+  const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
+  if(handlers&&(mode==='v2-read'||mode==='v2')){
+    return handlers.setClassMark({
+      key:STORAGE_KEYS.MARK,markKey,mark:val,
+      operationId:meta?.operationId,operationType:meta?.operationType,
+      tabIds:Array.isArray(meta?.tabIds)?meta.tabIds:[],
+      requireOperationManifest:meta?.requireOperationManifest===true,
+      transactionMetadata:meta||{},
+      mutateContext:ctx=>{
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        marks[markKey]=val;
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        return true;
+      },
+    }).then(()=>{
+      MARK_MAP={...(MARK_MAP||{}),[markKey]:val};
+      return MARK_MAP;
+    });
+  }
+  return updateMarkMapTx(marks=>{ marks[markKey]=val; return marks; },meta);
+}
+function clearMarkEntryTx(markKey,meta){
+  const handlers=getMainScheduleLiveHandlers();
+  const mode=typeof _fb?.currentConfig==='function'?_fb.currentConfig().mode:'';
+  if(handlers&&(mode==='v2-read'||mode==='v2')){
+    return handlers.clearClassMark({
+      key:STORAGE_KEYS.MARK,markKey,
+      operationId:meta?.operationId,operationType:meta?.operationType,
+      tabIds:Array.isArray(meta?.tabIds)?meta.tabIds:[],
+      requireOperationManifest:meta?.requireOperationManifest===true,
+      transactionMetadata:meta||{},
+      mutateContext:ctx=>{
+        const marks=ctx.get(STORAGE_KEYS.MARK,{});
+        delete marks[markKey];
+        ctx.set(STORAGE_KEYS.MARK,marks);
+        return true;
+      },
+    }).then(()=>{
+      const next={...(MARK_MAP||{})};delete next[markKey];MARK_MAP=next;
+      return MARK_MAP;
+    });
+  }
+  return updateMarkMapTx(marks=>{ delete marks[markKey]; return marks; },meta);
+}
+function prepareLiveScheduleExportView(){
+  const handlers=getMainScheduleLiveHandlers();
+  if(!handlers) return Promise.resolve(null);
+  const tabId=String(_activeTab||'regular');
+  return handlers.prepareExportView({tabId,selection:{
+    tabIds:[tabId],domains:['roster','workflow','attendance','calendar','administration','history'],keys:[],
+  }});
+}
+function renderLiveScheduleExportView(view,source){
+  const handlers=getMainScheduleLiveHandlers();
+  if(!handlers) return {table:source,tab:null,root:null,primary:'v1'};
+  return handlers.renderExportTable({view,source});
 }
 const ATTENDANCE_TX_META={skipAudit:true,skipUndo:true,skipDeleteSafety:true};
 function _attendanceLegacyEntryDate(key){
@@ -4080,6 +4242,7 @@ function _attendanceOperationContext(){
     ?_attendanceSnapshotDatesForView()
     :(ds?[ds]:[]);
   return {
+    owner:'attendance-main',
     tabId:String(tab?.id||_activeTab||'regular'),
     courseType:tab?.type==='bangteuk'?'bangteuk':'regular',
     dates:[...new Set((dates||[]).filter(Boolean))],
@@ -4108,8 +4271,12 @@ function _updateLegacyAttendanceMapTx(mutator,input){
   return _txJSONMap(key,current,next=>{ATTENDANCE=next;},mutator,ATTENDANCE_TX_META);
 }
 function updateAttendanceMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers) return handlers.updateAttendance({mutator,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
-  if(!runtime) return _updateLegacyAttendanceMapTx(mutator,_attendanceOperationContext());
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateAttendance(mutator,_attendanceOperationContext());
 }
 function setAttendanceEntryTx(attKey,val){
@@ -4125,8 +4292,12 @@ function _updateLegacyAttGuestsMapTx(mutator,input){
   return _txJSONMap(key,current,next=>{ATT_GUESTS=next;},mutator,ATTENDANCE_TX_META);
 }
 function updateAttGuestsMapTx(mutator){
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers) return handlers.updateAttendance({mutator,guests:true,context:_attendanceOperationContext()});
   const runtime=typeof getOperationalAttendanceRuntime==='function'?getOperationalAttendanceRuntime():null;
-  if(!runtime) return _updateLegacyAttGuestsMapTx(mutator,_attendanceOperationContext());
+  if(!runtime) return Promise.reject(Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없습니다.'),{
+    code:'operational-authority-unavailable',
+  }));
   return runtime.updateGuests(mutator,_attendanceOperationContext());
 }
 function setAttGuestsEntryTx(guestKey,list){
@@ -4226,6 +4397,20 @@ function addReserve(instKey,name,phone,memo,date,teacher){
   if(date) obj.d=date;
   if(teacher) obj.teacher=teacher;
   RESERVE_MAP[instKey].push(obj);
+  const handlers=getMainScheduleLiveHandlers();
+  if(handlers){
+    return handlers.addWaitlistEntry({
+      key:STORAGE_KEYS.RESERVE,slotKey:instKey,entry:obj,
+      operationType:'update-waitlist',tabIds:[String(_activeTab||'regular')],
+      mutateContext:ctx=>{
+        const reserve=ctx.get(STORAGE_KEYS.RESERVE,{});
+        if(!reserve[instKey]) reserve[instKey]=[];
+        reserve[instKey].push(obj);
+        ctx.set(STORAGE_KEYS.RESERVE,reserve);
+        return true;
+      },
+    }).catch(e=>{toast('예약 저장 실패','err');console.error(e);});
+  }
   return updateReserveMapTx(reserve=>{
     if(!reserve[instKey]) reserve[instKey]=[];
     reserve[instKey].push(obj);
@@ -4276,8 +4461,8 @@ function absentMarkLabel(mark){
 function absentMarkBadgeText(mark,dl){
   return isParentAbsentRequestMark(mark)?`⏳신청 ${dl}`:dl;
 }
-function setMark(slotKey,ds,val){ setMarkEntryTx(slotKey+'/'+ds,val).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
-function clearMark(slotKey,ds){ clearMarkEntryTx(slotKey+'/'+ds).catch(e=>{toast('마크 저장 실패','err');console.error(e);}); }
+function setMark(slotKey,ds,val,meta){ return setMarkEntryTx(slotKey+'/'+ds,val,meta); }
+function clearMark(slotKey,ds,meta){ return clearMarkEntryTx(slotKey+'/'+ds,meta); }
 
 /* ──── Cross-file shared state ──── */
 let _pendingSync=false;

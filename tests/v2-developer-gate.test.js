@@ -27,12 +27,14 @@ test('the developer account has a separate full-access staff profile',()=>{
   assert.match(auth,/if\(role === 'developer'\) return '개발자'/);
 });
 
-test('Firestore blocks generic client V2 writes while retaining attendance paths',()=>{
+test('Firestore grants manifest-owned staff V2 reads and blocks every browser V2 write',()=>{
   const rules=source('firestore.rules');
+  const v2Rules=rules.slice(rules.indexOf('match /scheduleV2/'),rules.indexOf('match /scheduleStores/'));
   assert.match(rules,/function isDeveloper\(\)/);
   assert.match(rules,/"developer@scswim\.local"/);
-  assert.match(rules,/allow read: if isOwner\(\) \|\| isDeveloper\(\)/);
-  assert.match(rules,/match \/scheduleV2\/\{document=\*\*\} \{[\s\S]*?allow write: if false;/);
-  assert.match(rules,/match \/scheduleV2\/\{branch\}\/runtime\/attendance \{[\s\S]*?allow write: if isDeveloper\(\);/);
-  assert.match(rules,/collection in \["attendanceRecords", "attendanceGuests"\]/);
+  assert.match(rules,/function canReadScheduleV2Runtime\(documentId\)/);
+  assert.match(v2Rules,/match \/scheduleV2\/\{branch\}\/runtime\/\{documentId\} \{[\s\S]*?canReadSchedule\(branch\)[\s\S]*?allow write: if false;/);
+  assert.match(v2Rules,/match \/scheduleV2\/\{branch\}\/generations\/\{generationId\}\/\{collection\}\/\{recordId\} \{[\s\S]*?canReadScheduleV2GenerationCollection\(collection\)[\s\S]*?allow write: if false;/);
+  assert.match(v2Rules,/match \/scheduleV2\/\{branch\}\/requestRecoveries\/\{document=\*\*\} \{[\s\S]*?allow read, write: if false;/);
+  assert.doesNotMatch(v2Rules,/allow write: if (?!false)/);
 });

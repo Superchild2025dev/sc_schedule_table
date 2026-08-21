@@ -195,11 +195,17 @@ test("exports both shadow triggers on the exact source and queue paths",()=>{
   assert.equal(fixture.exports.processScheduleV2Shadow.__options.memory,"1GiB");
 });
 
-test("source writes queue tracked keys only for known branches in preparing ready shadow or verify mode",async()=>{
+test("source writes queue tracked keys only for a preparing candidate or active shadow and verify modes",async()=>{
   for(const branchId of ["gagyeong","yongam"]){
-    for(const mode of ["preparing","ready","shadow","verify"]){
+    for(const config of [
+      {mode:"v1",generationId:"gen_old",preparationStatus:"preparing",preparationGenerationId:"gen_1"},
+      {mode:"v1",generationId:"gen_old",preparationStatus:"ready",
+        preparationGenerationId:"gen_1",preparedGenerationId:"gen_1"},
+      {mode:"shadow",generationId:"gen_1"},
+      {mode:"verify",generationId:"gen_1"},
+    ]){
       const fixture=loadFunctions({initial:{
-        [schedulePath(branchId)]:{mode,generationId:"gen_1"},
+        [schedulePath(branchId)]:{...config,branchId},
         [generationPath(branchId,"gen_1")]:readyGeneration(branchId,"gen_1"),
       }});
       await fixture.exports.queueScheduleV2Shadow(sourceEvent(branchId,"swim_students"));
@@ -218,20 +224,24 @@ test("source writes queue tracked keys only for known branches in preparing read
   assert.equal(unknown.db.value(syncPath("other")),undefined);
 });
 
-test("source writes never queue attendance audit restore or delete-source keys",async()=>{
+test("source writes queue attendance but never queue audit restore or delete-source keys",async()=>{
+  const attendance=[
+    "swim_attendance","swim_att_guests","swim_day_snapshot",
+    "swim_bt_attendance_summer","swim_bt_att_guests_summer","swim_bt_day_snapshot_summer",
+    "zz_swim_day_snapshot__regular__2026-08-07",
+  ];
   const excluded=[
-    "swim_attendance","swim_bt_attendance_summer","swim_day_snapshot",
     "swim_audit_log","zz_swim_audit_entry__123","swim_restore_points",
     "swim_restore_point_123","zz_swim_student_delete_index","zz_swim_student_delete__123",
   ];
   const fixture=loadFunctions({initial:{[schedulePath("yongam")]:{mode:"shadow",generationId:"gen_1"}}});
   await fixture.exports.queueScheduleV2Shadow(sourceEvent("yongam","swim_students"));
-  for(const key of excluded){
+  for(const key of [...attendance,...excluded]){
     await fixture.exports.queueScheduleV2Shadow(sourceEvent("yongam",encodeURIComponent(key)));
   }
   const queued=fixture.db.value(syncPath("yongam"));
-  assert.deepEqual(queued.pendingKeys,["swim_students"]);
-  assert.equal(queued.requestedRevision,1);
+  assert.deepEqual(queued.pendingKeys,["swim_students",...attendance]);
+  assert.equal(queued.requestedRevision,1+attendance.length);
 });
 
 test("concurrent source writes transactionally merge both tracked keys",async()=>{
@@ -253,11 +263,12 @@ test("a post-ready source write invalidates the ready revision without auto-acti
   const sync=syncPath(branchId);
   const initial={
     [config]:{
-      mode:"ready",generationId:"gen_ready",branchId,
+      mode:"v1",generationId:"gen_old",branchId,
+      preparationStatus:"ready",preparationGenerationId:"gen_ready",preparedGenerationId:"gen_ready",
       preparationStartedAt:"2026-08-07T02:00:00.000Z",
       readyAt:"2026-08-07T02:00:10.000Z",
     },
-    [sync]:{pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
+    [sync]:{generationId:"gen_ready",pendingKeys:[],requestedRevision:3,appliedRevision:3,status:"idle"},
     [generationPath(branchId,"gen_ready")]:readyGeneration(branchId,"gen_ready",3),
   };
   const fixture=loadFunctions({initial});
@@ -269,8 +280,9 @@ test("a post-ready source write invalidates the ready revision without auto-acti
   const invalidated=fixture.db.value(config);
   const invalidatedSync=fixture.db.value(sync);
   const generation=fixture.db.value(generationPath(branchId,"gen_ready"));
-  assert.equal(invalidated.mode,"ready");
-  assert.equal(invalidated.generationId,"gen_ready");
+  assert.equal(invalidated.mode,"v1");
+  assert.equal(invalidated.generationId,"gen_old");
+  assert.equal(invalidated.preparationStatus,"syncing");
   assert.equal(fixture.runnerCalls.length,0);
   assert.equal(invalidatedSync.requestedRevision,4);
   assert.equal(invalidatedSync.appliedRevision,3);
@@ -341,6 +353,37 @@ test("processor passes the claimed scheduleSync fence and chunk-safe legacy read
   assert.equal(typeof completed.lastSyncedAt,"string");
   assert.equal(completed.inFlightKeys,undefined);
   assert.equal(completed.leaseId,undefined);
+});
+
+test("snapshot processing expands a bundled claim to every tracked per-day snapshot key",async()=>{
+  const sync=syncPath("yongam");
+  const initial={
+    [schedulePath("yongam")]:{mode:"shadow",generationId:"gen_snapshots"},
+    [sync]:{pendingKeys:["swim_day_snapshot"],requestedRevision:5,status:"pending"},
+    "scheduleStores/yongam/kv/swim_day_snapshot":{value:{}},
+    "scheduleStores/yongam/kv/zz_swim_day_snapshot__regular__2026-08-01":{value:{}},
+    "scheduleStores/yongam/kv/swim_bt_day_snapshot_summer":{value:{}},
+    "scheduleStores/yongam/kv/swim_audit_log":{value:{}},
+  };
+  const fixture=loadFunctions({initial,runShadowSync:async input=>{
+    assert.equal(input.fullGeneration,false);
+    return {
+      collections:["attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers"],
+      writes:0,deletes:0,
+      counts:{attendanceSnapshots:0,attendanceSnapshotStudents:0,attendanceSnapshotTeachers:0},
+      digests:{attendanceSnapshots:"a",attendanceSnapshotStudents:"b",attendanceSnapshotTeachers:"c"},
+    };
+  }});
+
+  await fixture.exports.processScheduleV2Shadow({params:{branchId:"yongam"}});
+
+  assert.equal(fixture.runnerCalls.length,1);
+  assert.deepEqual(new Set(fixture.runnerCalls[0].keys),new Set([
+    "swim_day_snapshot",
+    "zz_swim_day_snapshot__regular__2026-08-01",
+    "swim_bt_day_snapshot_summer",
+  ]));
+  assert.equal(fixture.db.value(sync).status,"idle");
 });
 
 test("processor heartbeat renews ownership across a deterministic long operation",async()=>{
@@ -473,8 +516,8 @@ test("processor ignores unknown branches disallowed modes and excluded pending k
   const excluded=loadFunctions({initial:{
     [schedulePath("gagyeong")]:{mode:"shadow",generationId:"gen_1"},
     [syncPath("gagyeong")]:{
-      pendingKeys:["swim_attendance","swim_audit_log","swim_restore_points","zz_swim_student_delete_index"],
-      requestedRevision:4,
+      pendingKeys:["swim_audit_log","swim_restore_points","zz_swim_student_delete_index"],
+      requestedRevision:3,
     },
   }});
   await excluded.exports.processScheduleV2Shadow({params:{branchId:"gagyeong"}});

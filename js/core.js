@@ -108,7 +108,10 @@ function getOperationalAttendanceRuntime(){
       return _updateLegacyAttGuestsMapTx(mutator,input);
     },
   };
-  const gateway=SCOperationalAttendance.create({branchId:branch.id,legacy,v2Store});
+  const gateway=SCOperationalAttendance.create({
+    branchId:branch.id,legacy,v2Store,
+    onReloadRequired:window.SC_REQUEST_OPERATIONAL_PAGE_RELOAD,
+  });
   _operationalAttendanceRuntime=SCMainAttendanceRuntime.create({
     branchId:branch.id,
     gateway,
@@ -252,8 +255,7 @@ async function _refreshFailedScheduleWrites(keys,meta){
       }
       if(typeof _queueRemoteScheduleRefresh==='function') _queueRemoteScheduleRefresh(originalKey);
     }catch(refreshError){
-      delete _dbCache[originalKey];
-      try{localStorage.removeItem(_lsKey(originalKey));}catch(e){}
+      // The authoritative state is unknown; retain the last visible, successfully read value.
     }
   }));
 }
@@ -263,7 +265,6 @@ function dbSet(key,val,meta){
     return false;
   }
   const json=typeof val==='string'?val:JSON.stringify(val);
-  _cacheScheduleRaw(key,json);
   if(_fbReady&&_scheduleWrites){
     // Firebase SDK가 자체 큐잉을 지원 — _fbConnected 무관하게 시도
     // (오프라인이면 SDK가 큐에 쌓아뒀다가 재연결시 자동 push)
@@ -271,13 +272,21 @@ function dbSet(key,val,meta){
     if(typeof _isDeferredStorageKey!=='function'||!_isDeferredStorageKey(sk)){
       (_localWriteQueue[sk]=_localWriteQueue[sk]||[]).push(json);
     }
+    _pendingScheduleCacheWrites.set(sk,json);
     const write=_scheduleWrites.set(sk,json,{...(meta||{}),originalKey:key,label:meta?.label||key});
+    write.then(()=>{
+      if(_pendingScheduleCacheWrites.get(sk)!==json) return;
+      _pendingScheduleCacheWrites.delete(sk);
+      _cacheScheduleRaw(key,json);
+    },()=>{});
     write.catch(e=>{
+      if(_pendingScheduleCacheWrites.get(sk)===json) _pendingScheduleCacheWrites.delete(sk);
       _removeQueuedLocalEcho(sk,json);
       console.error('[FB SAVE FAIL]',key,e);
     });
     return _trackWritePromise(write);
   }
+  _cacheScheduleRaw(key,json);
   return true;
 }
 
@@ -381,18 +390,31 @@ function dbGet(key){
   try{return localStorage.getItem(_lsKey(key));}catch(e){return null;}
 }
 function dbRemove(key){
+  if(_fbReady&&_scheduleWrites){
+    const sk=key.replace(/[.#$/\[\]]/g,'_');
+    const marker={removed:true};
+    _pendingScheduleCacheWrites.set(sk,marker);
+    const write=_scheduleWrites.remove(sk,{originalKey:key,label:key});
+    write.then(()=>{
+      if(_pendingScheduleCacheWrites.get(sk)!==marker) return;
+      _pendingScheduleCacheWrites.delete(sk);
+      _dropParsedSnapshotCache(key);
+      delete _dbCache[key];
+      try{localStorage.removeItem(_lsKey(key));}catch(e){}
+    },()=>{
+      if(_pendingScheduleCacheWrites.get(sk)===marker) _pendingScheduleCacheWrites.delete(sk);
+    });
+    return _trackWritePromise(write);
+  }
   _dropParsedSnapshotCache(key);
   delete _dbCache[key];
   try{localStorage.removeItem(_lsKey(key));}catch(e){}
-  if(_fbReady&&_scheduleWrites){
-    const sk=key.replace(/[.#$/\[\]]/g,'_');
-    return _trackWritePromise(_scheduleWrites.remove(sk,{originalKey:key,label:key}));
-  }
   return true;
 }
 
 // [FIX] 자기 echo 식별용 큐. key별로 보낸 순서대로 쌓고, echo가 head와 일치하면 shift.
 const _localWriteQueue={};
+const _pendingScheduleCacheWrites=new Map();
 
 function _isDeferredStorageKey(key){
   return _isAuditStorageKey(key)
@@ -615,6 +637,7 @@ const _remoteSyncKeys=new Set();
 let _remoteSyncTimer=null;
 let _remoteSyncBeforeCount=0;
 let _firebaseDataListenersAttached=false;
+let _scheduleLegacyRequestAttached=false;
 let _scheduleReadCoordinator=null;
 let _scheduleSelectedController=null;
 let _scheduleReadUsesSelectedKeys=false;
@@ -698,7 +721,11 @@ function _consumeScheduleReadLocalEchoes(batch){
     if(!queue||!queue.length||queue[0]!==raw) return;
     queue.shift();
     if(!queue.length) delete _localWriteQueue[key];
+    if(_pendingScheduleCacheWrites.has(key)) delete values[key];
   });
+  if(batch&&Array.isArray(batch.removedKeys)){
+    batch.removedKeys=batch.removedKeys.filter(key=>!_pendingScheduleCacheWrites.has(String(key||'')));
+  }
 }
 function _handleScheduleReadError(error){
   _firebaseUsingLocalFallback=true;
@@ -974,6 +1001,20 @@ function _attachLegacyFirebaseDataListeners(){
     if(existed) _queueRemoteScheduleRefresh(snap.key);
   });
 }
+function _attachLegacyRequestListener(){
+  if(_scheduleLegacyRequestAttached||!_fb||typeof _fb.child!=='function') return;
+  const ref=_fb.child(STORAGE_KEYS.REQUESTS);
+  if(!ref||typeof ref.on!=='function') return;
+  _scheduleLegacyRequestAttached=true;
+  ref.on('value',snap=>{
+    const value=snap&&typeof snap.val==='function'?snap.val():null;
+    const raw=value===null||value===undefined?null:(typeof value==='string'?value:JSON.stringify(value));
+    const previous=Object.prototype.hasOwnProperty.call(_dbCache,STORAGE_KEYS.REQUESTS)?_dbCache[STORAGE_KEYS.REQUESTS]:null;
+    if(raw===null) _removeScheduleReadBatchValue(STORAGE_KEYS.REQUESTS);
+    else _applyScheduleReadBatchValue(STORAGE_KEYS.REQUESTS,raw);
+    if(_firebaseLoaded&&previous!==raw) _queueRemoteScheduleRefresh(STORAGE_KEYS.REQUESTS);
+  },_handleScheduleReadError);
+}
 function _attachFirebaseDataListeners(){
   if(_firebaseDataListenersAttached||!_fbReady||!_fb) return;
   if(!_canUseScheduleReadCoordinator()){
@@ -984,9 +1025,13 @@ function _attachFirebaseDataListeners(){
   _ensureScheduleReadCoordinator();
   _firebaseDataListenersAttached=true;
   _scheduleReadUsesSelectedKeys=true;
+  _attachLegacyRequestListener();
   _scheduleReadCoordinator.start(handlers=>{
     const selected=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
       baseKeys:SCScheduleKeySelection.initialBaseKeys(),
+      selectionForKeys:keys=>SCScheduleKeySelection.selectionForKeys(keys,{
+        tabIds:[_scheduleSelectedActiveTabId||(typeof _activeTab!=='undefined'?_activeTab:'regular')],
+      }),
       resolveInitialActiveKeys:baseValues=>{
         const tab=SCScheduleKeySelection.resolveMainTab(
           baseValues,

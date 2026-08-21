@@ -15,6 +15,7 @@ test("function V2 shared files match browser sources",()=>{
   for(const name of ["schedule-time.js","schedule-schema-v2.js"]){
     assert.equal(read(`functions/shared/${name}`),read(`js/${name}`));
   }
+  assert.equal(read("functions/schedule-v2-operational-model.js"),read("js/schedule-v2-operational-model.js"));
 });
 
 test("function V2 shared files expose the converter in Node",()=>{
@@ -30,4 +31,16 @@ test("function V2 shared files expose the converter in Node",()=>{
 
   assert.equal(typeof globalThis.SCScheduleSchemaV2.diagnoseLegacyRoot,"function");
   assert.equal(typeof globalThis.SCScheduleSchemaV2.convertLegacySchedule,"function");
+});
+
+test("function V2 operational model exposes the pure round-trip API in Node",()=>{
+  delete globalThis.SCV2OperationalModel;
+  delete globalThis.window;
+
+  const file=path.join(root,"functions","schedule-v2-operational-model.js");
+  delete require.cache[require.resolve(file)];
+  require(file);
+
+  assert.equal(typeof globalThis.SCV2OperationalModel.legacyRootFromCollections,"function");
+  assert.equal(typeof globalThis.SCV2OperationalModel.collectionChanges,"function");
 });

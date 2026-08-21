@@ -230,9 +230,11 @@ test("full tab context includes course keys but excludes non-timetable data",()=
   for(const key of [
     "swim_students","swim_inst","swim_stu_july","swim_inst_july",
     "swim_bt_summer_stu","swim_bt_summer_inst","swim_teachers","swim_desk_notes",
+    "swim_attendance","swim_att_guests","swim_day_snapshot",
+    "swim_bt_attendance_summer","swim_bt_att_guests_summer","swim_bt_day_snapshot_summer",
   ]) assert.ok(required.includes(key),key);
   for(const key of [
-    "swim_attendance","swim_audit_log","swim_restore_points","zz_swim_student_delete_index",
+    "swim_audit_log","swim_restore_points","zz_swim_student_delete_index",
   ]) assert.equal(required.includes(key),false,key);
 });
 
@@ -762,12 +764,40 @@ test("commit failures are sanitized at the runner boundary",async()=>{
   });
 });
 
+test("attendance reconciliation removes only the changed canonical owner scope",async()=>{
+  const db=new FakeFirestore();
+  const root={
+    swim_tab_list:[META[0],META[2]],swim_main_tab:{tabId:"regular"},
+    swim_students:[{sid:"regular_student",n:"Regular",t:"16:00",d:"mon",l:1,r:1}],
+    swim_bt_summer_stu:[{sid:"summer_student",n:"Summer",t:"10:00",d:"tue",l:1,r:1}],
+    swim_attendance:{"16:00/mon/1/1/2026-08-07":{s:"present"}},
+    swim_bt_attendance_summer:{"10:00/tue/1/1/2026-08-07":{s:"present"}},
+  };
+
+  await runFenced({
+    db,branchId:"yongam",generationId:"gen_attendance_scope",
+    keys:["swim_attendance","swim_bt_attendance_summer"],
+    readLegacyKey:legacyReader(root),
+  });
+  assert.equal(generationRows(db,"gen_attendance_scope","attendanceRecords").length,2);
+
+  root.swim_attendance={};
+  await runFenced({
+    db,branchId:"yongam",generationId:"gen_attendance_scope",
+    keys:["swim_attendance"],readLegacyKey:legacyReader(root),
+  });
+  const rows=generationRows(db,"gen_attendance_scope","attendanceRecords");
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].courseType,"bangteuk");
+  assert.equal(rows[0].tabId,"summer");
+});
+
 test("excluded source keys do not trigger legacy reads or V2 writes",async()=>{
   const db=new FakeFirestore();
   const calls=[];
   const result=await runner.runShadowSync({
     db,branchId:"yongam",generationId:"gen_excluded",
-    keys:["swim_attendance","swim_audit_log","swim_restore_points","zz_swim_student_delete_index"],
+    keys:["swim_audit_log","swim_restore_points","zz_swim_student_delete_index"],
     readLegacyKey:legacyReader({},calls),now:new Date("2026-08-07T02:00:00.000Z"),
   });
   assert.deepEqual(result,{collections:[],writes:0,deletes:0,counts:{},digests:{}});

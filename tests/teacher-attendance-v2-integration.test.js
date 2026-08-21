@@ -2,6 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
+const vm=require('node:vm');
 
 const root=path.join(__dirname,'..');
 const teacher=fs.readFileSync(path.join(root,'js','teacher.js'),'utf8');
@@ -46,6 +47,8 @@ test('teacher attendance runtime is created only after branch Firebase setup',()
   assert.match(runtime,/firebase\.firestore\(\)/);
   assert.match(runtime,/SCV2AttendanceStore\.create/);
   assert.match(runtime,/SCOperationalAttendance\.create/);
+  assert.match(runtime,/onReloadRequired/);
+  assert.match(runtime,/SC_REQUEST_OPERATIONAL_PAGE_RELOAD/);
   assert.match(runtime,/SCMainAttendanceRuntime\.create/);
 });
 
@@ -90,6 +93,26 @@ test('teacher attendance and guest transactions delegate through the runtime',()
   assert.match(guests,/runtime\.updateGuests/);
   assert.match(teacher,/function _updateLegacyTeacherAttendanceMapTx/);
   assert.match(teacher,/function _updateLegacyTeacherAttGuestsMapTx/);
+});
+
+test('missing attendance operational dependencies keep teacher writes read only',async()=>{
+  let legacyWrites=0;
+  const context={
+    _canWriteTeacherKey:()=>true,
+    teacherAttendanceStorageKeys:()=>({attendance:'swim_attendance',attGuests:'swim_att_guests'}),
+    getTeacherOperationalAttendanceRuntime:()=>null,
+    teacherAttendanceOperationContext:()=>({tabId:'regular',courseType:'regular'}),
+    _updateLegacyTeacherAttendanceMapTx:async()=>{legacyWrites+=1;return {};},
+    _updateLegacyTeacherAttGuestsMapTx:async()=>{legacyWrites+=1;return {};},
+  };
+  vm.createContext(context);
+  vm.runInContext(`${body('updateAttendanceMapTx','_updateLegacyTeacherAttGuestsMapTx')}\n${body('updateAttGuestsMapTx','updateMarkTx')}`,context);
+
+  await assert.rejects(()=>context.updateAttendanceMapTx(map=>map),
+    error=>error?.code==='operational-authority-unavailable');
+  await assert.rejects(()=>context.updateAttGuestsMapTx(map=>map),
+    error=>error?.code==='operational-authority-unavailable');
+  assert.equal(legacyWrites,0);
 });
 
 test('teacher write permission checks use the active regular or vacation key',()=>{

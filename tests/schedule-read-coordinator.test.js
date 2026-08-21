@@ -103,6 +103,40 @@ test('a stale revision is ignored', async () => {
   assert.equal(h.renders.length,0);
 });
 
+test('a response outside the current branch tab and epoch preserves the visible cache', async () => {
+  const current={branchId:'gagyeong',tabId:'regular',epoch:4};
+  const h=createHarness({
+    isCurrent:batch=>{
+      const context=batch&&batch.context||{};
+      return context.branchId===current.branchId
+        &&context.tabId===current.tabId
+        &&context.epoch===current.epoch;
+    },
+  });
+  h.coordinator.start(h.subscribe);
+  h.emit({
+    initial:true,
+    revision:1,
+    context:{branchId:'gagyeong',tabId:'regular',epoch:4},
+    values:{swim_students:'[{"n":"현재"}]'},
+    removedKeys:[],
+  });
+  await h.coordinator.ready();
+
+  current.tabId='summer';
+  h.emit({
+    initial:false,
+    revision:2,
+    context:{branchId:'gagyeong',tabId:'regular',epoch:4},
+    values:{swim_students:'[{"n":"이전 탭"}]'},
+    removedKeys:[],
+  });
+
+  assert.equal(h.cache.swim_students,'[{"n":"현재"}]');
+  assert.equal(h.renders.length,0);
+  assert.match(h.coordinator.diagnostics(1)[0].type,/stale-context/);
+});
+
 test('invalid student data preserves the previous value while valid siblings apply', async () => {
   const h=createHarness();
   h.coordinator.start(h.subscribe);

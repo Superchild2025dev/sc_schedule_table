@@ -1764,7 +1764,14 @@ async function handleSave(e, ctx){
     if(replaceMode){
       const stuKey=getTabConfig().stuKey;
       const attKey=typeof _attendanceStorageKey==='function'?_attendanceStorageKey('attendance'):STORAGE_KEYS.ATTENDANCE;
-      await updateScheduleTx([
+      const handlers=typeof getMainScheduleLiveHandlers==='function'?getMainScheduleLiveHandlers():null;
+      const replaceTransaction=(keys,mutateContext,meta)=>handlers
+        ?handlers.replaceScheduledStudents({
+          keys,operationType:'replace-student',tabIds:[String(_activeTab||'regular')],
+          transactionMetadata:meta,mutateContext,
+        })
+        :updateScheduleTx(keys,mutateContext,meta);
+      await replaceTransaction([
         stuKey,STORAGE_KEYS.RETIRE,STORAGE_KEYS.ENROLL,STORAGE_KEYS.MARK,
         STORAGE_KEYS.休원,STORAGE_KEYS.DISABLED,STORAGE_KEYS.REQUESTS,attKey,
       ],ctx=>{
@@ -1797,11 +1804,16 @@ async function handleSave(e, ctx){
         const disabled=ctx.get(STORAGE_KEYS.DISABLED,{});
         const requests=ctx.get(STORAGE_KEYS.REQUESTS,{});
         const attendance=ctx.get(attKey,{});
-        _clearReplacementFutureState(
+        const clearFutureState=window.SCScheduleLiveHandlers?.clearReplacementFutureState||_clearReplacementFutureState;
+        clearFutureState(
           {retire,enroll,marks,hyuwon,disabled,requests,attendance},
           groupSlots,
           todayStr,
-          {preserveRetire:true},
+          {
+            preserveRetire:true,
+            shouldPreserveRetire:_replacementRetireShouldStay,
+            isActiveFutureRequest:_isActiveFutureRequestForSlot,
+          },
         );
         ctx.set(stuKey,students);
         ctx.set(STORAGE_KEYS.RETIRE,retire);
@@ -2034,19 +2046,25 @@ async function handleDateBoxClick(dateBox, ctx, clickTarget){
 
 /* ── 마크(결석/보강/샘플) 핸들러 ── */
 
-function handleMarkAbsent(e, ctx){
+async function handleMarkAbsent(e, ctx){
   if(!requireStuPopupAbsenceEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const cur=getMark(slotKey,ds);
-  if(cur?.type==='absent'){
-    // 결석 해제: sub가 있으면 sub를 최상위로 복원
-    if(cur.sub) setMark(slotKey,ds,cur.sub);
-    else clearMark(slotKey,ds);
-  } else {
-    // 결석 설정: 기존 bogang/sample이면 sub로 보존
-    if(cur?.type==='bogang'||cur?.type==='sample') setMark(slotKey,ds,{type:'absent',sub:cur});
-    else setMark(slotKey,ds,{type:'absent'});
+  try{
+    if(cur?.type==='absent'){
+      // 결석 해제: sub가 있으면 sub를 최상위로 복원
+      if(cur.sub) await setMark(slotKey,ds,cur.sub,{operationType:'absence-cancel'});
+      else await clearMark(slotKey,ds,{operationType:'absence-cancel'});
+    } else {
+      // 결석 설정: 기존 bogang/sample이면 sub로 보존
+      if(cur?.type==='bogang'||cur?.type==='sample') await setMark(slotKey,ds,{type:'absent',sub:cur},{operationType:'absence-confirmation'});
+      else await setMark(slotKey,ds,{type:'absent'},{operationType:'absence-confirmation'});
+    }
+  }catch(error){
+    toast('마크 저장 실패','err');
+    console.error(error);
+    return;
   }
   _stuPopup.showBogang=false;
   _stuPopup.showSample=false;
@@ -2074,7 +2092,7 @@ function handleBogangShow(e, ctx){
   },30);
 }
 
-function handleBogangSet(e, ctx){
+async function handleBogangSet(e, ctx){
   if(!requireStuPopupBogangEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
@@ -2098,8 +2116,15 @@ function handleBogangSet(e, ctx){
     if(selected.sourceTabId) subObj.studentSourceTabId=selected.sourceTabId;
     if(selected.sourceTabName) subObj.studentSourceTabName=selected.sourceTabName;
   }
-  if(cur?.type==='absent') setMark(slotKey,ds,{type:'absent',sub:subObj});
-  else setMark(slotKey,ds,subObj);
+  try{
+    const meta={operationType:subObj.mandatoryMakeup?'mandatory-makeup':'makeup-update'};
+    if(cur?.type==='absent') await setMark(slotKey,ds,{type:'absent',sub:subObj},meta);
+    else await setMark(slotKey,ds,subObj,meta);
+  }catch(error){
+    toast('마크 저장 실패','err');
+    console.error(error);
+    return;
+  }
   const hasBo=cur?.type==='bogang'||(cur?.type==='absent'&&cur?.sub?.type==='bogang');
   _stuPopup.showBogang=false;
   _flashKey=slotKey;
@@ -2108,13 +2133,19 @@ function handleBogangSet(e, ctx){
   toast(n+' 보강 '+(hasBo?'수정':'등록'),'ok');
 }
 
-function handleBogangDel(e, ctx){
+async function handleBogangDel(e, ctx){
   if(!requireStuPopupBogangEdit()) return;
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const cur=getMark(slotKey,ds);
-  if(cur?.type==='absent'&&cur?.sub?.type==='bogang') setMark(slotKey,ds,{type:'absent'});
-  else if(cur?.type==='bogang') clearMark(slotKey,ds);
+  try{
+    if(cur?.type==='absent'&&cur?.sub?.type==='bogang') await setMark(slotKey,ds,{type:'absent'},{operationType:'makeup-cancel'});
+    else if(cur?.type==='bogang') await clearMark(slotKey,ds,{operationType:'makeup-cancel'});
+  }catch(error){
+    toast('마크 저장 실패','err');
+    console.error(error);
+    return;
+  }
   _stuPopup.showBogang=false;
   _flashKey=slotKey;
   renderStuPopup();
@@ -2137,7 +2168,7 @@ function handleSampleShow(e, ctx){
   setTimeout(()=>document.getElementById('sp-sample-name')?.focus(),30);
 }
 
-function handleSampleSet(e, ctx){
+async function handleSampleSet(e, ctx){
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const n=document.getElementById('sp-sample-name')?.value.trim();
@@ -2147,8 +2178,14 @@ function handleSampleSet(e, ctx){
   if(!n){toast('이름을 입력하세요','err');return;}
   const cur=getMark(slotKey,ds);
   const subObj={type:'sample',n,a,p:p||undefined,memo};
-  if(cur?.type==='absent') setMark(slotKey,ds,{type:'absent',sub:subObj});
-  else setMark(slotKey,ds,subObj);
+  try{
+    if(cur?.type==='absent') await setMark(slotKey,ds,{type:'absent',sub:subObj},{operationType:'sample-makeup'});
+    else await setMark(slotKey,ds,subObj,{operationType:'sample-makeup'});
+  }catch(error){
+    toast('마크 저장 실패','err');
+    console.error(error);
+    return;
+  }
   const hasSa=cur?.type==='sample'||(cur?.type==='absent'&&cur?.sub?.type==='sample');
   _stuPopup.showSample=false;
   _flashKey=slotKey;
@@ -2157,12 +2194,18 @@ function handleSampleSet(e, ctx){
   toast(n+' 샘플 '+(hasSa?'수정':'등록'),'ok');
 }
 
-function handleSampleDel(e, ctx){
+async function handleSampleDel(e, ctx){
   const {slotKey} = ctx;
   const ds=_stuPopup.selDate;
   const cur=getMark(slotKey,ds);
-  if(cur?.type==='absent'&&cur?.sub?.type==='sample') setMark(slotKey,ds,{type:'absent'});
-  else if(cur?.type==='sample') clearMark(slotKey,ds);
+  try{
+    if(cur?.type==='absent'&&cur?.sub?.type==='sample') await setMark(slotKey,ds,{type:'absent'},{operationType:'makeup-cancel'});
+    else if(cur?.type==='sample') await clearMark(slotKey,ds,{operationType:'makeup-cancel'});
+  }catch(error){
+    toast('마크 저장 실패','err');
+    console.error(error);
+    return;
+  }
   _stuPopup.showSample=false;
   _flashKey=slotKey;
   renderStuPopup();

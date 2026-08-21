@@ -101,6 +101,136 @@ service cloud.firestore {
       return isTeacherForBranch(branch)
         && isTeacherWritableScheduleKey(docId);
     }
+
+    function isTrackedLegacyScheduleKey(docId) {
+      return docId == "swim_tab_list"
+        || docId == "swim_students"
+        || docId == "swim_inst"
+        || docId == "swim_retire"
+        || docId == "swim_enroll"
+        || docId == "swim_hyuwon"
+        || docId == "swim_move"
+        || docId == "swim_reserve"
+        || docId == "swim_mark"
+        || docId == "swim_attendance"
+        || docId == "swim_att_guests"
+        || docId == "swim_day_snapshot"
+        || docId == "swim_disabled"
+        || docId == "swim_closed"
+        || docId == "swim_periods"
+        || docId == "swim_main_tab"
+        || docId == "swim_parent_tab"
+        || docId == "swim_teachers"
+        || docId == "swim_tab_folders"
+        || docId == "swim_archived_tabs"
+        || docId == "swim_age_year"
+        || docId == "swim_student_id_version"
+        || docId == "swim_ver"
+        || docId == "swim_retire_history"
+        || docId == "swim_desk_notes"
+        || docId.matches("^swim_stu_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_inst_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_[A-Za-z0-9_-]+_(stu|inst)$")
+        || docId.matches("^swim_bt_attendance_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_att_guests_[A-Za-z0-9_-]+$")
+        || docId.matches("^swim_bt_day_snapshot_[A-Za-z0-9_-]+$")
+        || docId.matches("^zz_swim_day_snapshot__(regular|bt_[A-Za-z0-9_-]+)__[0-9]{4}-[0-9]{2}-[0-9]{2}$");
+    }
+
+    function hasLegacyScheduleAuthority(branch) {
+      let authority = get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational).data;
+      return exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/operational)
+        && authority.keys().hasAll(["branchId", "mode", "generationId", "epoch", "revision"])
+        && authority.branchId is string
+        && authority.branchId == branch
+        && authority.mode is string
+        && authority.mode in ["v1", "shadow", "verify"]
+        && authority.generationId is string
+        && (authority.generationId == "" || authority.generationId.matches("^[A-Za-z0-9_-]{1,128}$"))
+        && (authority.mode == "v1" || authority.generationId.matches("^[A-Za-z0-9_-]{1,128}$"))
+        && authority.epoch is int
+        && authority.epoch >= 0
+        && authority.revision is int
+        && authority.revision >= 0;
+    }
+
+    function activationFreezeAllowsLegacyWrites(branch) {
+      return !exists(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze)
+        || get(/databases/$(database)/documents/scheduleV2/$(branch)/runtime/activationFreeze).data.active == false;
+    }
+
+    function canWriteLegacyScheduleKey(branch, docId) {
+      return !isTrackedLegacyScheduleKey(docId)
+        || (hasLegacyScheduleAuthority(branch)
+          && activationFreezeAllowsLegacyWrites(branch));
+    }
+
+    function canReadScheduleV2Runtime(documentId) {
+      return documentId in ["operational","attendance","scheduleSync"];
+    }
+
+    function canReadScheduleV2GenerationCollection(collection) {
+      return collection in ["tabs","people","enrollments","placements","teacherAssignments","reservations","waitlistEntries","classMarks","attendanceRecords","attendanceGuests","attendanceSnapshots","attendanceSnapshotStudents","attendanceSnapshotTeachers","disabledSlots","calendarClosures","schedulePeriods","scheduleSettings","teacherProfiles","tabFolders","archivedTabs","systemMetadata","retirementRecords","deskStudentRecords"];
+    }
+
+    function canReadScheduleV2Monitor() {
+      return isOwner() || isDeveloper();
+    }
+
+    match /scheduleV2/{branch} {
+      allow read: if canReadScheduleV2Monitor();
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/alerts/{alertId} {
+      allow read: if canReadScheduleV2Monitor();
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/operationalRecovery {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/activationFreeze {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/canonicalParity {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/runtime/{documentId} {
+      allow read: if canReadSchedule(branch)
+        && canReadScheduleV2Runtime(documentId);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/generations/{generationId} {
+      allow read: if canReadSchedule(branch);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
+      allow read: if canReadSchedule(branch)
+        && canReadScheduleV2GenerationCollection(collection);
+      allow write: if false;
+    }
+
+    match /scheduleV2/{branch}/operationalMutations/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/requestRecoveries/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{branch}/recoveryResolutions/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scheduleV2/{document=**} {
+      allow read, write: if false;
+    }
     // PERMISSION_POLICY_END
 
     function canManageReferrals(branch) {
@@ -114,35 +244,22 @@ service cloud.firestore {
           && request.auth.token.email == "yongam.desk@scswim.local");
     }
 
-    match /scheduleV2/{document=**} {
-      allow read: if isOwner() || isDeveloper();
-      allow write: if false;
-    }
-
-    match /scheduleV2/{branch}/runtime/attendance {
-      allow read: if canReadSchedule(branch);
-      allow write: if isDeveloper();
-    }
-
-    match /scheduleV2/{branch}/generations/{generationId}/{collection}/{recordId} {
-      allow read, write: if collection in ["attendanceRecords", "attendanceGuests"]
-        && (canManageSchedule(branch) || isTeacherForBranch(branch));
-    }
-
     match /scheduleStores/{branch}/{document=**} {
       allow read: if canReadSchedule(branch);
-      allow write: if canManageSchedule(branch);
+      allow write: if false;
     }
 
     match /scheduleStores/{branch}/kv/{docId} {
       allow read: if canReadSchedule(branch);
-      allow write: if canManageSchedule(branch)
-        || canTeacherWriteScheduleKey(branch, docId);
+      allow write: if (canManageSchedule(branch)
+          || canTeacherWriteScheduleKey(branch, docId))
+        && canWriteLegacyScheduleKey(branch, docId);
 
       match /chunks/{chunkId} {
         allow read: if canReadSchedule(branch);
-        allow write: if canManageSchedule(branch)
-          || canTeacherWriteScheduleKey(branch, docId);
+        allow write: if (canManageSchedule(branch)
+            || canTeacherWriteScheduleKey(branch, docId))
+          && canWriteLegacyScheduleKey(branch, docId);
       }
     }
 

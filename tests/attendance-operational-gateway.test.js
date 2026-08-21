@@ -21,11 +21,15 @@ function loadGateway(options){
 }
 
 function fixture(mode,overrides={}){
-  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,compares:0,order:[]};
+  const calls={legacyLoads:0,legacyAttendanceWrites:0,legacyGuestWrites:0,v2Reads:0,v2ReadInputs:[],v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:[]};
   let legacyAttendance=plain(overrides.legacyAttendance||{'4시/월/1/1/2026-08-03':{s:'absent'}});
   let legacyGuests=plain(overrides.legacyGuests||{});
   let v2Attendance=plain(overrides.v2Attendance||legacyAttendance);
   let v2Guests=plain(overrides.v2Guests||legacyGuests);
+  let configSubscriber=null;
+  let configErrorSubscriber=null;
+  let configReads=0;
+  let configSubscriptions=0;
   const modelContext={window:{},console};
   vm.createContext(modelContext);
   for(const file of ['schedule-time.js','schedule-schema-v2.js','attendance-v2-model.js']){
@@ -73,13 +77,36 @@ function fixture(mode,overrides={}){
   };
   const v2Store={
     async readConfig(){
+      configReads+=1;
       if(overrides.configError) throw new Error('config failed');
-      return {mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',valid:true};
+      if(Object.prototype.hasOwnProperty.call(overrides,'configValue')) return plain(overrides.configValue);
+      return {
+        mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',
+        epoch:7,revision:12,valid:true,
+        compatibilityValid:overrides.compatibilityValid!==false,
+        compatibilityCode:overrides.compatibilityValid===false?'attendance-pointer-mismatch':'',
+      };
     },
-    async readRange(){
+    subscribeConfig(next,error){
+      configSubscriptions+=1;
+      configSubscriber=next;
+      configErrorSubscriber=error;
+      if(!overrides.configSubscriptionError){
+        next({
+          mode,generationId:mode==='v1'?'':'gen_1',branchId:'yongam',
+          epoch:7,revision:12,valid:true,compatibilityValid:true,compatibilityCode:'',
+        });
+      }else{
+        error(Object.assign(new Error('config subscription failed'),{code:'unavailable'}));
+      }
+      return ()=>{configSubscriber=null;configErrorSubscriber=null;};
+    },
+    async readRange(input){
       calls.v2Reads+=1;calls.order.push('v2-read');
+      calls.v2ReadInputs.push(plain(input));
       if(overrides.v2ReadPromise) return overrides.v2ReadPromise;
       if(overrides.v2ReadError) throw new Error('v2 read failed');
+      if(overrides.v2ReadRange) return overrides.v2ReadRange(plain(input));
       const rows=rowsFromMaps();
       return {...rows,maps:{attendance:plain(v2Attendance),guests:plain(v2Guests),issues:[]}};
     },
@@ -101,6 +128,30 @@ function fixture(mode,overrides={}){
       if(key) v2Guests[key]=input.rows.map(row=>plain(row.payload));
       return {written:input.rows.length};
     },
+    async mutateMap(input){
+      calls.operationalMutations.push(plain(input));calls.order.push('operational-mutation');
+      if(overrides.operationalWriteError){
+        throw overrides.operationalWriteError===true
+          ?Object.assign(new Error('operational failed'),{code:'failed-precondition'})
+          :overrides.operationalWriteError;
+      }
+      if(overrides.v2WriteError) throw Object.assign(new Error('operational failed'),{code:'failed-precondition'});
+      const diff=model.diffLegacyMaps(input.before,input.after);
+      const apply=current=>{
+        const next=plain(current);
+        diff.upserts.forEach(change=>{next[change.legacyKey]=plain(change.raw);});
+        diff.deletes.forEach(legacyKey=>{delete next[legacyKey];});
+        return next;
+      };
+      if(input.kind==='attendance'){
+        v2Attendance=apply(v2Attendance);
+        if(mode==='v2-read') legacyAttendance=apply(legacyAttendance);
+      }else{
+        v2Guests=apply(v2Guests);
+        if(mode==='v2-read') legacyGuests=apply(legacyGuests);
+      }
+      return {operationId:input.operationId,committed:true,revision:13,changeCount:Object.keys(input.after||{}).length,recoveryState:'applied'};
+    },
     compareRange(input){
       calls.compares+=1;calls.order.push('compare');
       if(overrides.compareMismatch) return {ready:false,mismatchCount:1,issues:[{type:'attendance-payload-mismatch'}],diagnostic:{ready:false,mismatchCount:1}};
@@ -110,9 +161,14 @@ function fixture(mode,overrides={}){
   const gateway=loadGateway({
     branchId:'yongam',legacy,v2Store,model,
     now:()=>new Date('2026-08-07T03:00:00.000Z'),
+    onReloadRequired:overrides.onReloadRequired,
   });
   return {
     gateway,calls,
+    configReads:()=>configReads,
+    configSubscriptions:()=>configSubscriptions,
+    emitConfig:value=>configSubscriber?.(plain(value)),
+    emitConfigError:error=>configErrorSubscriber?.(error),
     legacyAttendance:()=>plain(legacyAttendance),
     legacyGuests:()=>plain(legacyGuests),
     v2Attendance:()=>plain(v2Attendance),
@@ -133,10 +189,82 @@ test('v1 mode reads and writes only the legacy attendance map',async()=>{
   assert.equal(loaded.primary,'v1');
   assert.equal(saved.primary,'v1');
   assert.equal(saved.attendance[key].s,'present');
-  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2Batches:0,v2GuestReplaces:0,compares:0,order:['legacy-read','legacy-write']});
+  assert.deepEqual(env.calls,{legacyLoads:1,legacyAttendanceWrites:1,legacyGuestWrites:0,v2Reads:0,v2ReadInputs:[],v2Batches:0,v2GuestReplaces:0,operationalMutations:[],compares:0,order:['legacy-read','legacy-write']});
 });
 
-test('shadow keeps V1 authoritative when V2 mirroring fails',async()=>{
+test('an unreadable attendance authority remains readable from V1 but rejects every V1 write',async()=>{
+  const env=fixture('v1',{configError:true,configSubscriptionError:true});
+  const loaded=await env.gateway.loadRange(range);
+
+  assert.equal(loaded.primary,'v1');
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:loaded.attendance,
+  }),error=>error?.code==='operational-authority-unavailable');
+  assert.equal(env.calls.legacyLoads,1);
+  assert.equal(env.calls.legacyAttendanceWrites,0);
+});
+
+test('attendance recovers from a transient startup config read failure through the live subscription',async()=>{
+  const env=fixture('v2-read',{configError:true});
+
+  const authority=await env.gateway.ready();
+  const loaded=await env.gateway.loadRange(range);
+
+  assert.equal(authority.valid,true);
+  assert.equal(authority.mode,'v2-read');
+  assert.equal(loaded.primary,'v2');
+  assert.equal(env.configReads(),1);
+  assert.equal(env.configSubscriptions(),1);
+});
+
+test('malformed attendance authority never grants an implicit V1 write',async()=>{
+  const invalidConfigs=[
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:7,revision:12,valid:false,compatibilityValid:true},
+    {mode:'unknown',generationId:'',branchId:'yongam',epoch:7,revision:12,valid:true,compatibilityValid:true},
+    {mode:'v1',generationId:'',branchId:'gagyeong',epoch:7,revision:12,valid:true,compatibilityValid:true},
+    {mode:'v1',generationId:'',branchId:'yongam',epoch:7,revision:-1,valid:true,compatibilityValid:true},
+  ];
+  for(const candidate of invalidConfigs){
+    const env=fixture('v1',{configValue:candidate});
+    await env.gateway.ready();
+    await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+      ...range,before:{[key]:{s:'absent'}},
+    }),error=>error?.code==='operational-authority-unavailable',JSON.stringify(candidate));
+    assert.equal(env.calls.legacyAttendanceWrites,0,JSON.stringify(candidate));
+  }
+});
+
+test('a compatibility pointer mismatch blocks a confirmed V2 save with redacted diagnostics',async()=>{
+  const env=fixture('v2',{compatibilityValid:false});
+  await env.gateway.ready();
+
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present',n:'private'}}),{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-pointer-mismatch');
+
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,0);
+  assert.doesNotMatch(JSON.stringify(env.gateway.diagnostics()),/private/);
+});
+
+test('confirmed V2 attendance uses one idempotent operational mutation request',async()=>{
+  const env=fixture('v2');
+  await env.gateway.ready();
+  const result=await env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:{[key]:{s:'absent'}},operationId:'attendance_regular_1',
+  });
+
+  assert.equal(result.primary,'v2');
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,1);
+  assert.deepEqual(env.calls.operationalMutations[0],{
+    kind:'attendance',tabId:'regular',courseType:'regular',
+    before:{[key]:{s:'absent'}},after:{[key]:{s:'present'}},
+    operationId:'attendance_regular_1',operationType:'attendance-update',
+  });
+});
+
+test('shadow keeps V1 authoritative without direct browser V2 mirroring',async()=>{
   const env=fixture('shadow',{v2WriteError:true});
   await env.gateway.ready();
   const result=await env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
@@ -144,10 +272,11 @@ test('shadow keeps V1 authoritative when V2 mirroring fails',async()=>{
   });
 
   assert.equal(result.attendance[key].s,'present');
-  assert.equal(result.degraded,true);
+  assert.equal(result.degraded,false);
   assert.equal(result.primary,'v1');
   assert.equal(env.calls.legacyAttendanceWrites,1);
-  assert.equal(env.calls.v2Batches,1);
+  assert.equal(env.calls.v2Batches,0);
+  assert.equal(env.calls.operationalMutations.length,0);
 });
 
 test('verify writes V1 first then awaits V2 and parity comparison',async()=>{
@@ -159,8 +288,86 @@ test('verify writes V1 first then awaits V2 and parity comparison',async()=>{
 
   assert.equal(result.primary,'v1');
   assert.equal(result.degraded,false);
-  assert.deepEqual(env.calls.order,['legacy-write','v2-write','v2-read','compare']);
+  assert.deepEqual(env.calls.order,['legacy-write','v2-read','compare']);
+  assert.deepEqual(env.calls.v2ReadInputs,[{
+    generationId:'gen_1',tabId:'regular',courseType:'regular',dates:['2026-08-03'],
+  }]);
   assert.equal(env.calls.compares,1);
+});
+
+test('named current and archived regular tabs read one canonical regular map without bangteuk',async()=>{
+  const currentKey='4시/월/1/1/2026-08-03';
+  const archivedKey='5시/화/1/1/2026-08-04';
+  const bangteukKey='10시/월/1/1/2026-08-03';
+  const currentGuestKey='4시/월/1/2026-08-03';
+  const archivedGuestKey='5시/화/1/2026-08-04';
+  const bangteukGuestKey='10시/월/1/2026-08-03';
+  const env=fixture('v2',{
+    v2ReadRange(input){
+      assert.equal(input.courseType,'regular');
+      return {records:[],guests:[],maps:{
+        attendance:{
+          [currentKey]:{s:'present'},
+          [archivedKey]:{s:'absent'},
+        },
+        guests:{
+          [currentGuestKey]:[{gid:'current'}],
+          [archivedGuestKey]:[{gid:'archive'}],
+        },
+        issues:[],
+      }};
+    },
+  });
+
+  const current=await env.gateway.loadRange({
+    owner:'attendance-current',tabId:'august',courseType:'regular',
+    dates:['2026-08-03','2026-08-04'],
+  });
+  const archived=await env.gateway.loadRange({
+    owner:'attendance-archive',tabId:'july-archive',courseType:'regular',
+    dates:['2026-08-03','2026-08-04'],
+  });
+
+  for(const result of [current,archived]){
+    assert.deepEqual(plain(result.attendance),{
+      [currentKey]:{s:'present'},
+      [archivedKey]:{s:'absent'},
+    });
+    assert.deepEqual(plain(result.guests),{
+      [currentGuestKey]:[{gid:'current'}],
+      [archivedGuestKey]:[{gid:'archive'}],
+    });
+    assert.equal(result.attendance[bangteukKey],undefined);
+    assert.equal(result.guests[bangteukGuestKey],undefined);
+  }
+  assert.deepEqual(env.calls.v2ReadInputs.map(input=>({tabId:input.tabId,courseType:input.courseType})),[
+    {tabId:'august',courseType:'regular'},
+    {tabId:'july-archive',courseType:'regular'},
+  ]);
+});
+
+test('shadow and verify comparison reads retain the requested course type',async()=>{
+  for(const mode of ['shadow','verify']){
+    const env=fixture(mode);
+    await env.gateway.loadRange({
+      owner:`attendance-${mode}`,tabId:'august',courseType:'regular',dates:['2026-08-03'],
+    });
+    assert.deepEqual(env.calls.v2ReadInputs,[{
+      generationId:'gen_1',tabId:'august',courseType:'regular',dates:['2026-08-03'],
+    }]);
+  }
+});
+
+test('literal regular ownership is safely inferred but an ambiguous named tab is rejected',async()=>{
+  const safe=fixture('v2');
+  await safe.gateway.loadRange({owner:'attendance-safe',tabId:'regular',dates:['2026-08-03']});
+  assert.equal(safe.calls.v2ReadInputs[0].courseType,'regular');
+
+  const ambiguous=fixture('v2');
+  await assert.rejects(()=>ambiguous.gateway.loadRange({
+    owner:'attendance-ambiguous',tabId:'august',dates:['2026-08-03'],
+  }),error=>error?.code==='ambiguous-attendance-owner');
+  assert.equal(ambiguous.calls.v2Reads,0);
 });
 
 test('v2-read loads V2 and never mixes a failed range with V1',async()=>{
@@ -171,14 +378,15 @@ test('v2-read loads V2 and never mixes a failed range with V1',async()=>{
   assert.equal(env.calls.legacyLoads,0);
 });
 
-test('v2-read writes V2 before its V1 backup and blocks backup after V2 failure',async()=>{
+test('v2-read uses the callable recovery path and blocks recovery after V2 failure',async()=>{
   const success=fixture('v2-read');
   await success.gateway.ready();
   const result=await success.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
     ...range,before:{[key]:{s:'absent'}},
   });
   assert.equal(result.primary,'v2');
-  assert.deepEqual(success.calls.order,['v2-write','legacy-write']);
+  assert.deepEqual(success.calls.order,['operational-mutation']);
+  assert.equal(success.calls.legacyAttendanceWrites,0);
 
   const failed=fixture('v2-read',{v2WriteError:true});
   await failed.gateway.ready();
@@ -186,6 +394,31 @@ test('v2-read writes V2 before its V1 backup and blocks backup after V2 failure'
     ...range,before:{[key]:{s:'absent'}},
   }),/V2 출석 데이터를 저장하지 못했습니다/);
   assert.equal(failed.calls.legacyAttendanceWrites,0);
+});
+
+test('a lost attendance response with changed authority requests one controlled reload',async()=>{
+  const reloads=[];
+  const authority={
+    mode:'v2',generationId:'gen_1',branchId:'yongam',epoch:7,revision:13,
+    valid:true,compatibilityValid:true,compatibilityCode:'',
+  };
+  const env=fixture('v2',{
+    onReloadRequired:value=>reloads.push(plain(value)),
+    operationalWriteError:Object.assign(new Error('response lost'),{
+      code:'attendance-authority-changed',authority,
+    }),
+  });
+  await env.gateway.ready();
+
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>({...map,[key]:{s:'present'}}),{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-reload-required');
+
+  assert.deepEqual(reloads,[authority]);
+  await assert.rejects(()=>env.gateway.updateAttendance(map=>map,{
+    ...range,before:{[key]:{s:'absent'}},
+  }),error=>error?.code==='attendance-reload-required');
+  assert.equal(reloads.length,1);
 });
 
 test('v2-read backup patches attendance without deleting legacy dates outside the loaded range',async()=>{
@@ -236,7 +469,7 @@ test('v2 mode does not read or write the V1 attendance map',async()=>{
   });
 
   assert.equal(env.calls.v2Reads,1);
-  assert.equal(env.calls.v2Batches,1);
+  assert.equal(env.calls.operationalMutations.length,1);
   assert.equal(env.calls.legacyLoads,0);
   assert.equal(env.calls.legacyAttendanceWrites,0);
 });

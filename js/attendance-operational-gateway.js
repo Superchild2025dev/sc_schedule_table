@@ -3,6 +3,10 @@
 
   const MAX_DIAGNOSTICS=80;
   const V2_AUTHORITY_MODES=new Set(['v2-read','v2']);
+  const V1_AUTHORITY_MODES=new Set(['v1','shadow','verify']);
+  const GENERATION_ID_RE=/^[A-Za-z0-9_-]{1,128}$/;
+  const AUTHORITY_MODES=new Set([...V1_AUTHORITY_MODES,...V2_AUTHORITY_MODES]);
+  let operationSequence=0;
 
   function text(value){ return String(value==null?'':value).trim(); }
   function clone(value){
@@ -22,6 +26,33 @@
     error.code='stale-attendance-range';
     return error;
   }
+  function owns(value,key){ return Object.prototype.hasOwnProperty.call(value,key); }
+  function pointerError(code){
+    return Object.assign(new Error('출석 전환 설정과 운영 전환 설정이 일치하지 않아 저장을 중단했습니다.'),{
+      code:code||'attendance-pointer-mismatch',
+    });
+  }
+  function readCourseType(input){
+    const courseType=text(input?.courseType);
+    if(courseType==='regular'||courseType==='bangteuk') return courseType;
+    if(!courseType&&text(input?.tabId)==='regular') return 'regular';
+    throw Object.assign(new Error('출석 시간표의 수업 구분을 확인할 수 없어 조회를 중단했습니다.'),{
+      code:'ambiguous-attendance-owner',
+    });
+  }
+  function operationId(){
+    if(global.crypto&&typeof global.crypto.randomUUID==='function') return global.crypto.randomUUID();
+    operationSequence=(operationSequence+1)%1000000;
+    return `attendance_${Date.now().toString(36)}_${operationSequence.toString(36)}`;
+  }
+  function authorityError(cause){
+    return Object.assign(new Error('출석 운영 저장 권한을 확인할 수 없어 읽기 전용으로 전환했습니다.'),{
+      code:'operational-authority-unavailable',cause,
+    });
+  }
+  function authorityFingerprint(value){
+    return [text(value?.branchId),text(value?.mode),text(value?.generationId),Number(value?.epoch)||0].join('|');
+  }
 
   function create(options){
     const branchId=text(options?.branchId);
@@ -33,9 +64,12 @@
     if(!legacy||typeof legacy.loadRange!=='function') throw new Error('V1 출석 저장소가 필요합니다.');
     if(!v2Store||typeof v2Store.readConfig!=='function') throw new Error('V2 출석 저장소가 필요합니다.');
 
-    let config={mode:'v1',generationId:'',branchId,valid:false};
+    const unknownConfig=()=>({mode:'unknown',generationId:'',branchId,epoch:0,revision:0,valid:false,compatibilityValid:false});
+    let config=unknownConfig();
     let readyPromise=null;
+    let configUnsubscribe=null;
     let confirmedV2=false;
+    let reloadRequired=false;
     const rangeVersions=new Map();
     const diagnosticRows=[];
 
@@ -59,23 +93,101 @@
       if(diagnosticRows.length>MAX_DIAGNOSTICS) diagnosticRows.splice(0,diagnosticRows.length-MAX_DIAGNOSTICS);
       return row;
     }
+    function normalizeAuthority(value){
+      if(!value||typeof value!=='object'||Array.isArray(value)) throw authorityError();
+      const required=['branchId','mode','generationId','epoch','revision','valid'];
+      if(required.some(key=>!owns(value,key))
+        ||typeof value.branchId!=='string'||typeof value.mode!=='string'
+        ||typeof value.generationId!=='string'
+        ||typeof value.epoch!=='number'||typeof value.revision!=='number'
+        ||typeof value.valid!=='boolean'
+        ||value.branchId!==text(value.branchId)||value.mode!==text(value.mode)
+        ||value.generationId!==text(value.generationId)
+        ||(value.generationId!==''&&!GENERATION_ID_RE.test(value.generationId))) throw authorityError();
+      const next=clone(value);
+      next.mode=text(next.mode);
+      next.generationId=text(next.generationId);
+      next.branchId=text(next.branchId);
+      next.epoch=value.epoch;
+      next.revision=value.revision;
+      next.valid=next.valid===true;
+      if(!next.valid||next.branchId!==branchId||!AUTHORITY_MODES.has(next.mode)
+        ||!Number.isSafeInteger(next.epoch)||next.epoch<0
+        ||!Number.isSafeInteger(next.revision)||next.revision<0
+        ||(next.mode!=='v1'&&!next.generationId)) throw authorityError();
+      return next;
+    }
+    function reloadError(cause){
+      return Object.assign(new Error('출석 운영 설정이 변경되어 화면을 새로고침해야 합니다.'),{
+        code:'attendance-reload-required',cause,
+      });
+    }
+    function requestReload(authority){
+      if(reloadRequired) return;
+      reloadRequired=true;
+      if(typeof options?.onReloadRequired==='function') options.onReloadRequired(clone(authority));
+    }
+    function acceptAuthority(value,fromSubscription){
+      const next=normalizeAuthority(value);
+      const hadAuthority=config.valid===true;
+      if(hadAuthority&&fromSubscription&&authorityFingerprint(config)!==authorityFingerprint(next)){
+        requestReload(next);
+        return clone(config);
+      }
+      config=next;
+      if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+      return clone(config);
+    }
+    function revokeAuthority(error){
+      const hadAuthority=config.valid===true;
+      config=unknownConfig();
+      readyPromise=null;
+      if(hadAuthority) requestReload(config);
+      return error;
+    }
+    function startConfigSubscription(){
+      if(configUnsubscribe||typeof v2Store.subscribeConfig!=='function') return;
+      configUnsubscribe=v2Store.subscribeConfig(
+        value=>{
+          try{ acceptAuthority(value,true); }
+          catch(error){ revokeAuthority(error); }
+        },
+        error=>revokeAuthority(error),
+      );
+    }
     async function ready(){
+      if(config.valid) return clone(config);
       if(readyPromise) return readyPromise;
       readyPromise=(async()=>{
         try{
+          startConfigSubscription();
           const next=await v2Store.readConfig();
-          config=next&&typeof next==='object'?clone(next):config;
-          if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+          acceptAuthority(next,false);
           return clone(config);
         }catch(error){
-          if(confirmedV2) throw new Error('V2 출석 전환 설정을 확인하지 못해 작업을 중단했습니다.');
-          config={mode:'v1',generationId:'',branchId,valid:false};
+          if(config.valid) return clone(config);
+          if(confirmedV2) throw Object.assign(new Error('V2 출석 전환 설정을 확인하지 못해 작업을 중단했습니다.'),{
+            code:'v2-operational-config-failed',cause:error,
+          });
+          config=unknownConfig();
           return clone(config);
         }
       })();
-      try{return await readyPromise;}catch(error){readyPromise=null;throw error;}
+      try{
+        const result=await readyPromise;
+        if(!result?.valid) readyPromise=null;
+        return result;
+      }catch(error){readyPromise=null;throw error;}
     }
     function mode(){ return config.mode; }
+    function context(input={}){
+      return {
+        owner:text(input.owner)||'attendance-main',tabId:text(input.tabId),
+        dateRange:(Array.isArray(input.dates)?input.dates:[]).map(text).filter(Boolean).sort(),
+        branchId,generationId:text(config.generationId),epoch:Number(config.epoch)||0,
+        revision:Number(config.revision)||0,
+      };
+    }
     function beginRange(owner){
       const key=text(owner)||'attendance';
       const version=(rangeVersions.get(key)||0)+1;
@@ -111,10 +223,14 @@
       assertCurrentRange(token);
       const started=nowDate().getTime();
       const base={tabId:text(input?.tabId),dates:clone(input?.dates||[])};
+      const needsV2Read=V2_AUTHORITY_MODES.has(config.mode)||(
+        (config.mode==='shadow'||config.mode==='verify')&&config.generationId
+      );
+      const courseType=needsV2Read?readCourseType(input):'';
       if(V2_AUTHORITY_MODES.has(config.mode)){
         try{
           const result=await v2Store.readRange({
-            generationId:config.generationId,tabId:base.tabId,dates:base.dates,
+            generationId:config.generationId,tabId:base.tabId,courseType,dates:base.dates,
           });
           assertCurrentRange(token);
           const maps=v2Maps(result);
@@ -134,7 +250,7 @@
       if((config.mode==='shadow'||config.mode==='verify')&&config.generationId){
         try{
           const v2Result=await v2Store.readRange({
-            generationId:config.generationId,tabId:base.tabId,dates:base.dates,
+            generationId:config.generationId,tabId:base.tabId,courseType,dates:base.dates,
           });
           assertCurrentRange(token);
           const comparison=v2Store.compareRange({
@@ -163,73 +279,11 @@
       const returned=await mutator(draft);
       return clone(objectMap(returned&&typeof returned==='object'?returned:draft));
     }
-    function applyChangedKeys(current,before,after){
-      const draft=clone(objectMap(current));
-      const diff=model.diffLegacyMaps(before,after);
-      diff.upserts.forEach(change=>{ draft[change.legacyKey]=clone(change.raw); });
-      diff.deletes.forEach(legacyKey=>{ delete draft[legacyKey]; });
-      return draft;
-    }
-    function recordMeta(input,legacyKey,raw){
-      if(typeof input?.recordMeta==='function') return input.recordMeta(legacyKey,raw)||{};
-      return input?.recordMetaByKey?.[legacyKey]||{};
-    }
-    async function writeV2Attendance(before,after,input){
-      const diff=model.diffLegacyMaps(before,after);
-      const changes=[];
-      diff.upserts.forEach(change=>{
-        const meta=recordMeta(input,change.legacyKey,change.raw);
-        const row=model.recordFromLegacy({
-          tabId:text(input?.tabId),
-          courseType:text(input?.courseType),
-          legacyKey:change.legacyKey,
-          raw:change.raw,
-          ...meta,
-        });
-        if(row?.ok===false) throw new Error('출석 V2 변환 오류가 있어 저장을 중단했습니다.');
-        changes.push({type:'set',collection:'attendanceRecords',id:row.id,legacyKey:change.legacyKey,row});
-      });
-      diff.deletes.forEach(legacyKey=>changes.push({
-        type:'delete',collection:'attendanceRecords',
-        id:model.recordId(text(input?.tabId),legacyKey),legacyKey,
-      }));
-      if(changes.length) await v2Store.writeRecordBatch(changes,config.generationId);
-      return {changed:changes.length,diff};
-    }
-    function existingGuestRows(input,legacyKey,beforeList){
-      const supplied=(Array.isArray(input?.v2GuestRows)?input.v2GuestRows:[])
-        .filter(row=>text(row?.legacyKey)===legacyKey);
-      if(supplied.length) return supplied;
-      return (Array.isArray(beforeList)?beforeList:[]).map((raw,index)=>model.guestFromLegacy({
-        tabId:text(input?.tabId),courseType:text(input?.courseType),legacyKey,raw,index,
-      })).filter(row=>row&&row.ok!==false);
-    }
-    async function writeV2Guests(before,after,input){
-      const diff=model.diffLegacyMaps(before,after);
-      const groups=[
-        ...diff.upserts.map(change=>({legacyKey:change.legacyKey,list:change.raw})),
-        ...diff.deletes.map(legacyKey=>({legacyKey,list:[]})),
-      ];
-      for(const group of groups){
-        if(!Array.isArray(group.list)) throw new Error('추가 원생 출석 목록 형식이 올바르지 않습니다.');
-        const rows=group.list.map((raw,index)=>model.guestFromLegacy({
-          tabId:text(input?.tabId),courseType:text(input?.courseType),
-          legacyKey:group.legacyKey,raw,index,
-        }));
-        if(rows.some(row=>row?.ok===false)) throw new Error('추가 원생 V2 변환 오류가 있어 저장을 중단했습니다.');
-        await v2Store.replaceGuestGroup({
-          generationId:config.generationId,
-          legacyKey:group.legacyKey,
-          rows,
-          existingRows:existingGuestRows(input,group.legacyKey,objectMap(before)[group.legacyKey]),
-        });
-      }
-      return {changed:groups.length,diff};
-    }
     async function verifyAfterWrite(after,input,kind){
       if(config.mode!=='verify') return {ready:true};
       const result=await v2Store.readRange({
-        generationId:config.generationId,tabId:text(input?.tabId),dates:input?.dates||[],
+        generationId:config.generationId,tabId:text(input?.tabId),
+        courseType:readCourseType(input),dates:input?.dates||[],
       });
       return v2Store.compareRange({
         legacyAttendance:kind==='attendance'?after:objectMap(input?.attendance),
@@ -238,23 +292,39 @@
       });
     }
     async function updateMap(kind,mutator,input){
+      if(reloadRequired) throw reloadError();
       await ready();
       const started=nowDate().getTime();
       const before=clone(objectMap(input?.before));
       const legacyMethod=kind==='attendance'?'updateAttendance':'updateGuests';
-      const writeV2=kind==='attendance'?writeV2Attendance:writeV2Guests;
       const outputField=kind==='attendance'?'attendance':'guests';
       const base={tabId:text(input?.tabId),dates:input?.dates||[],kind:`write-${kind}`};
+      let writeAuthority=null;
 
-      if(!V2_AUTHORITY_MODES.has(config.mode)){
+      try{
+        const latest=normalizeAuthority(await v2Store.readConfig());
+        config=latest;
+        writeAuthority=clone(latest);
+        if(V2_AUTHORITY_MODES.has(config.mode)&&config.valid) confirmedV2=true;
+      }catch(error){
+        config=unknownConfig();
+        diagnostic({...base,outcome:'authority-unavailable',durationMs:nowDate().getTime()-started});
+        throw authorityError(error);
+      }
+      if(!config.valid||!AUTHORITY_MODES.has(config.mode)) throw authorityError();
+      if(config.compatibilityValid===false){
+        diagnostic({...base,outcome:'pointer-mismatch',durationMs:nowDate().getTime()-started});
+        throw pointerError(config.compatibilityCode);
+      }
+
+      if(V1_AUTHORITY_MODES.has(config.mode)){
         const legacyResult=await legacy[legacyMethod](mutator,input);
         const after=resultMap(legacyResult,outputField);
         let degraded=false;
-        let changed=0;
+        const diff=model.diffLegacyMaps(before,after);
+        const changed=diff.upserts.length+diff.deletes.length;
         if((config.mode==='shadow'||config.mode==='verify')&&config.generationId){
           try{
-            const write=await writeV2(before,after,input);
-            changed=write.changed;
             const comparison=await verifyAfterWrite(after,input,kind);
             degraded=!comparison?.ready;
           }catch(error){
@@ -262,33 +332,65 @@
           }
         }
         diagnostic({...base,outcome:degraded?'degraded':'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-        return {[outputField]:after,primary:'v1',degraded,changed};
+        return {[outputField]:after,primary:'v1',degraded,changed,context:context(input)};
       }
 
       const after=await applyMutator(before,mutator);
-      let changed=0;
+      const diff=model.diffLegacyMaps(before,after);
+      const changed=diff.upserts.length+diff.deletes.length;
+      if(!changed){
+        diagnostic({...base,outcome:'ok',recordCount:0,durationMs:nowDate().getTime()-started});
+        return {[outputField]:after,primary:'v2',degraded:false,changed:0,context:context(input)};
+      }
       try{
-        const write=await writeV2(before,after,input);
-        changed=write.changed;
+        const response=await v2Store.mutateMap({
+          kind,tabId:text(input?.tabId),courseType:text(input?.courseType),before,after,
+          operationId:text(input?.operationId)||operationId(),
+          operationType:text(input?.operationType)||(
+            kind==='guests'?'attendance-guest':(changed>1?'attendance-batch':'attendance-update')
+          ),
+        });
+        if(Number.isSafeInteger(Number(response?.revision))) config.revision=Number(response.revision);
+        writeAuthority={
+          ...(writeAuthority||config),revision:Number(response?.revision),
+        };
       }catch(error){
-        diagnostic({...base,outcome:'v2-error',durationMs:nowDate().getTime()-started});
-        throw new Error('V2 출석 데이터를 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.');
-      }
-      let degraded=false;
-      if(config.mode==='v2-read'){
-        try{
-          await legacy[legacyMethod](current=>applyChangedKeys(current,before,after),input);
-        }catch(error){
-          degraded=true;
+        if(error?.code==='attendance-authority-changed'){
+          let next;
+          try{ next=normalizeAuthority(error.authority); }
+          catch(actual){
+            config=unknownConfig();
+            diagnostic({...base,outcome:'authority-unavailable',durationMs:nowDate().getTime()-started});
+            throw authorityError(actual);
+          }
+          config=next;
+          requestReload(next);
+          diagnostic({...base,outcome:'authority-changed',durationMs:nowDate().getTime()-started});
+          throw reloadError(error);
         }
+        diagnostic({...base,outcome:error?.code?.startsWith?.('attendance-pointer-')?'pointer-mismatch':'v2-error',durationMs:nowDate().getTime()-started});
+        if(error?.code==='attendance-pointer-mismatch'||error?.code==='attendance-pointer-missing') throw error;
+        throw Object.assign(new Error('V2 출석 데이터를 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해주세요.'),{
+          code:error?.code||'v2-attendance-write-failed',cause:error,
+        });
       }
-      diagnostic({...base,outcome:degraded?'backup-error':'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
-      return {[outputField]:after,primary:'v2',degraded,changed};
+      diagnostic({...base,outcome:'ok',recordCount:changed,durationMs:nowDate().getTime()-started});
+      return {
+        [outputField]:after,primary:'v2',degraded:false,changed,
+        context:{
+          owner:text(input?.owner)||'attendance-main',tabId:text(input?.tabId),
+          dateRange:(Array.isArray(input?.dates)?input.dates:[]).map(text).filter(Boolean).sort(),
+          branchId:text(writeAuthority?.branchId),generationId:text(writeAuthority?.generationId),
+          epoch:Number(writeAuthority?.epoch)||0,revision:Number(writeAuthority?.revision)||0,
+        },
+      };
     }
     function updateAttendance(mutator,input){ return updateMap('attendance',mutator,input); }
     function updateGuests(mutator,input){ return updateMap('guests',mutator,input); }
     function setManyAttendance(input){
-      return updateAttendance(()=>clone(objectMap(input?.after)),input);
+      return updateAttendance(()=>clone(objectMap(input?.after)),{
+        ...(input||{}),operationType:text(input?.operationType)||'attendance-batch',
+      });
     }
     function diagnostics(limit){
       const count=Math.max(0,Math.min(MAX_DIAGNOSTICS,Number(limit)||MAX_DIAGNOSTICS));
@@ -298,6 +400,7 @@
     return Object.freeze({
       ready,
       mode,
+      context,
       loadRange,
       updateAttendance,
       updateGuests,

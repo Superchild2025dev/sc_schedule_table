@@ -13,6 +13,7 @@
   let _selectedBranch=null;
   let _fb=null;
   let _fbReady=false;
+  let _deskSelectedController=null;
   const _deskWrites=SCScheduleWriteGateway.create({
     getRoot:()=>_fb,
     canWrite:()=>_fbReady&&!!_fb,
@@ -187,7 +188,7 @@
     }
     return true;
   }
-  function updateDeskKeysTx(keys,mutator){
+  function updateDeskKeysTx(keys,mutator,meta){
     if(!_fbReady) return Promise.reject(new Error('not ready'));
     keys=[...new Set((keys||[]).filter(Boolean))];
     let abortReason='';
@@ -206,7 +207,7 @@
       const result=mutator(makeCtx(root));
       if(result===undefined) return;
       return root;
-    },{label:'데스크 요청 처리'}).then(res=>{
+    },{...(meta||{}),label:'데스크 요청 처리'}).then(res=>{
       if(!res.committed) throw new Error(abortReason||'transaction aborted');
       const root=res.snapshot.val()||{};
       keys.forEach(key=>applyChangedKey(key,root[key]));
@@ -262,7 +263,7 @@
       ctx.set('swim_mark',marks);
       ctx.set('swim_requests',reqs);
       return true;
-    }).then(()=>{
+    },{operationType:'absence-cancel'}).then(()=>{
       saved=true;
       render();
       return notifyAbsentCancelAccepted(req);
@@ -295,6 +296,7 @@
       toast('이 지점 접근 권한이 없습니다','err');
       return false;
     }
+    try{window.SC_SELECTED_BRANCH=branch.id;}catch(e){}
     if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     _fb=window.SCFirebaseStore
       ? SCFirebaseStore.createBranchRef(branch)
@@ -307,14 +309,44 @@
 
   function loadAllData(){
     if(!_fbReady) return Promise.reject(new Error('not ready'));
-    return _fb.once('value').then(snap=>{
-      const data=snap.val()||{};
-      dataKeys(data);
-      STUDENTS=parseStoredJSON(_stuKey,data[_stuKey],[]);
-      INST_MAP=parseStoredJSON(_instKey,data[_instKey],{});
-      MARK_MAP=parseStoredJSON('swim_mark',data.swim_mark,{});
-      REQUESTS=parseStoredJSON('swim_requests',data.swim_requests,{});
+    if(!window.SCFirebaseStore||typeof SCFirebaseStore.subscribeSelectedRootBatches!=='function'){
+      return Promise.reject(new Error('선택 데이터 연결을 사용할 수 없습니다'));
+    }
+    const selectedReady=new Promise((resolve,reject)=>{
+      let controller=null;
+      controller=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
+        baseKeys:['swim_parent_tab','swim_mark'],
+        resolveInitialActiveKeys:baseValues=>{
+          dataKeys(baseValues||{});
+          return [_stuKey,_instKey];
+        },
+        next:batch=>{
+          const values=batch&&batch.values||{};
+          const removed=new Set(batch&&batch.removedKeys||[]);
+          const previousStuKey=_stuKey;
+          const previousInstKey=_instKey;
+          if(Object.prototype.hasOwnProperty.call(values,'swim_parent_tab')) dataKeys(values);
+          if(removed.has('swim_parent_tab')) dataKeys({});
+          if(Object.prototype.hasOwnProperty.call(values,_stuKey)) STUDENTS=parseStoredJSON(_stuKey,values[_stuKey],[]);
+          else if(removed.has(_stuKey)) STUDENTS=[];
+          if(Object.prototype.hasOwnProperty.call(values,_instKey)) INST_MAP=parseStoredJSON(_instKey,values[_instKey],{});
+          else if(removed.has(_instKey)) INST_MAP={};
+          if(Object.prototype.hasOwnProperty.call(values,'swim_mark')) MARK_MAP=parseStoredJSON('swim_mark',values.swim_mark,{});
+          else if(removed.has('swim_mark')) MARK_MAP={};
+          if(!batch.initial&&(previousStuKey!==_stuKey||previousInstKey!==_instKey)){
+            controller.setActiveKeys([_stuKey,_instKey]).catch(reject);
+          }
+          if(!batch.initial) render();
+        },
+        error:reject,
+      });
+      _deskSelectedController=controller;
+      Promise.resolve(controller.ready).then(resolve,reject);
     });
+    const requestsReady=_fb.child('swim_requests').once('value').then(snap=>{
+      REQUESTS=parseStoredJSON('swim_requests',snap.val(),{});
+    });
+    return Promise.all([selectedReady,requestsReady]).then(()=>undefined);
   }
 
   function applyChangedKey(key,value){
@@ -332,7 +364,7 @@
 
   function subscribeChanges(){
     if(!_fbReady) return;
-    _fb.on('child_changed',snap=>applyChangedKey(snap.key,snap.val()));
+    _fb.child('swim_requests').on('value',snap=>applyChangedKey('swim_requests',snap.val()));
   }
 
   function getAbsences(){

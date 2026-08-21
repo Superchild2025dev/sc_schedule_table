@@ -178,6 +178,14 @@
   function sameValue(left,right){
     return JSON.stringify(normalized(left))===JSON.stringify(normalized(right));
   }
+  function recordDigest(value){
+    if(value==null) return '';
+    const semantic=clone(value);
+    ['branchId','generationId','operationalRevision','lastOperationId'].forEach(key=>{
+      if(semantic&&typeof semantic==='object') delete semantic[key];
+    });
+    return 'attendance_'+schema().stableHash(JSON.stringify(normalized(semantic)));
+  }
   function map(value){
     return value&&typeof value==='object'&&!Array.isArray(value)?value:{};
   }
@@ -198,6 +206,62 @@
       }
     });
     return {upserts,deletes,unchanged};
+  }
+  function changeForRows(collection,beforeRow,afterRow){
+    const row=afterRow||beforeRow;
+    return {
+      collection,id:text(row?.id),type:afterRow?'set':'delete',
+      ...(afterRow?{value:clone(afterRow)}:{}),
+      beforeExists:!!beforeRow,
+      beforeDigest:beforeRow?recordDigest(beforeRow):'',
+    };
+  }
+  function attendanceRowsFromMap(input,value){
+    const rows=new Map();
+    Object.entries(map(value)).forEach(([legacyKey,raw])=>{
+      const row=recordFromLegacy({
+        tabId:text(input?.tabId),courseType:text(input?.courseType),legacyKey,raw,
+      });
+      if(row?.ok===false) throw Object.assign(new Error('Invalid attendance record.'),{code:row.issue?.type});
+      rows.set(row.id,row);
+    });
+    return rows;
+  }
+  function guestRowsFromMap(input,value){
+    const rows=new Map();
+    Object.entries(map(value)).forEach(([legacyKey,group])=>{
+      if(!Array.isArray(group)) throw Object.assign(new Error('Invalid attendance guest group.'),{
+        code:'invalid-attendance-guest-payload',
+      });
+      group.forEach((raw,index)=>{
+        const row=guestFromLegacy({
+          tabId:text(input?.tabId),courseType:text(input?.courseType),legacyKey,raw,index,
+        });
+        if(row?.ok===false) throw Object.assign(new Error('Invalid attendance guest record.'),{code:row.issue?.type});
+        rows.set(row.id,row);
+      });
+    });
+    return rows;
+  }
+  function recordChangesFromLegacyDiff(input){
+    const kind=text(input?.kind);
+    const collection=kind==='attendance'?'attendanceRecords':(
+      kind==='guests'?'attendanceGuests':''
+    );
+    if(!collection) throw Object.assign(new Error('Invalid attendance mutation kind.'),{
+      code:'invalid-attendance-kind',
+    });
+    const build=kind==='attendance'?attendanceRowsFromMap:guestRowsFromMap;
+    const beforeRows=build(input,input?.before);
+    const afterRows=build(input,input?.after);
+    const changes=[];
+    [...new Set([...beforeRows.keys(),...afterRows.keys()])].sort().forEach(id=>{
+      const beforeRow=beforeRows.get(id);
+      const afterRow=afterRows.get(id);
+      if(beforeRow&&afterRow&&sameValue(beforeRow,afterRow)) return;
+      changes.push(changeForRows(collection,beforeRow,afterRow));
+    });
+    return changes;
   }
   function compareMap(kind,legacy,recreated,parse,issues){
     const source=map(legacy);
@@ -244,6 +308,8 @@
     guestFromLegacy,
     mapsFromRows,
     diffLegacyMaps,
+    recordDigest,
+    recordChangesFromLegacyDiff,
     compareLegacyRows,
   });
 })(typeof window!=='undefined'?window:globalThis);
