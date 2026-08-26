@@ -2,6 +2,7 @@
  * SECTION: 초기 로드 (Firebase fetch → loadTabData → buildTable)
  * ════════════════════════════════════════════════════════════════ */
 function startScheduleApp(){
+  document.title='슈퍼차일드 수영장 시간표';
   showReadOnlyPreviewBanner();
   // [지점] 선택 안 됐으면 모달만 띄우고 init 중단
   if(!_selectedBranch){

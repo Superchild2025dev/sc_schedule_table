@@ -114,6 +114,12 @@
     return INST_MAP[[s.t,s.d,s.l].join('/')] || null;
   }
   function dataKeys(data){
+    if(window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.resolveTabPointer==='function'){
+      const resolved=SCScheduleKeySelection.resolveTabPointer(data||{},'swim_parent_tab','regular');
+      _stuKey=resolved.stuKey;
+      _instKey=resolved.instKey;
+      return;
+    }
     const setting=parseJSON(data&&data.swim_parent_tab,null);
     _stuKey=setting&&setting.stuKey ? setting.stuKey : 'swim_students';
     _instKey=setting&&setting.instKey ? setting.instKey : 'swim_inst';
@@ -319,7 +325,7 @@
 
   function applyChangedKey(key,value){
     const asStr=typeof value==='string'?value:JSON.stringify(value);
-    if(key==='swim_parent_tab'){
+    if(key==='swim_parent_tab'||key==='swim_tab_list'){
       loadAllData().then(render).catch(e=>console.warn('desk reload failed',e));
       return;
     }

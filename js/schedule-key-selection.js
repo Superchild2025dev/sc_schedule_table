@@ -103,19 +103,33 @@
   }
 
   function resolveMainTab(baseValues,fallbackTabId){
+    return resolveTabPointer(baseValues,'swim_main_tab',fallbackTabId);
+  }
+
+  function resolveTabPointer(baseValues,pointerKey,fallbackTabId){
     const source=baseValues&&typeof baseValues==='object'?baseValues:{};
     const parsedTabs=parseStored(source.swim_tab_list,[]);
     const tabs=Array.isArray(parsedTabs)
       ?parsedTabs.map(tab=>normalizeTab(tab)).filter(tab=>tab.type!=='snapshot')
       :[];
-    const parsedMain=parseStored(source.swim_main_tab,{});
-    const mainId=String(parsedMain&&parsedMain.tabId||'');
+    const parsedPointer=parseStored(source[String(pointerKey||'')],{});
+    const pointer=parsedPointer&&typeof parsedPointer==='object'?parsedPointer:{};
+    const pointerId=String(pointer.tabId||'');
     const fallbackId=String(fallbackTabId||'regular');
-    const selected=tabs.find(tab=>tab.id===mainId)
+    const selected=tabs.find(tab=>tab.id===pointerId)
       ||tabs.find(tab=>tab.id===fallbackId)
       ||tabs.find(tab=>tab.type==='regular')
       ||tabs[0];
-    return selected||normalizeTab({id:fallbackId,type:'regular'},'regular');
+    const tab=selected||normalizeTab({id:fallbackId,type:'regular'},'regular');
+    const keys=tabKeys(tab);
+    return Object.assign({},pointer,tab,{
+      id:tab.id,
+      tabId:tab.id,
+      tabName:String(tab.name||''),
+      tabType:tab.type,
+      stuKey:keys[0]||'',
+      instKey:keys[1]||'',
+    });
   }
 
   return Object.freeze({
@@ -125,6 +139,7 @@
     tabKeys,
     attendanceKeys,
     isTabOwnedKey,
+    resolveTabPointer,
     resolveMainTab,
   });
 });

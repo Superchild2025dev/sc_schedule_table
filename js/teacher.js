@@ -136,6 +136,10 @@ function parseStoredJSON(key,v,def){
 }
 
 function teacherDataKeys(data){
+  if(window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.resolveTabPointer==='function'){
+    const resolved=SCScheduleKeySelection.resolveTabPointer(data||{},'swim_parent_tab','regular');
+    return {stuKey:resolved.stuKey,instKey:resolved.instKey};
+  }
   const setting=parseJSON(data&&data.swim_parent_tab,null);
   const stuKey=setting&&setting.stuKey ? setting.stuKey : 'swim_students';
   const instKey=setting&&setting.instKey ? setting.instKey : 'swim_inst';
@@ -414,7 +418,7 @@ function subscribeChanges(){
   _fb.on('child_changed',snap=>{
     const asStr=typeof snap.val()==='string'?snap.val():JSON.stringify(snap.val());
     const attendanceKeys=teacherAttendanceStorageKeys();
-    if(snap.key==='swim_parent_tab'){
+    if(snap.key==='swim_parent_tab'||snap.key==='swim_tab_list'){
       loadAllData().then(()=>{
         if(_currentTeacher!==null) render();
         const selScreen = document.getElementById('teacher-select-screen');
