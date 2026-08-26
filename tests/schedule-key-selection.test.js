@@ -116,6 +116,39 @@ test('remote tab metadata selects a live main tab safely',()=>{
   assert.equal(invalid.type,'regular');
 });
 
+test('a stale parent pointer resolves its keys from the actual tab list',()=>{
+  const policy=require(policyPath);
+  const resolved=policy.resolveTabPointer({
+    swim_tab_list:JSON.stringify([
+      {id:'reg_aug',type:'regular',name:'8월 시간표'},
+      {id:'summer',type:'bangteuk',name:'여름방특'},
+    ]),
+    swim_parent_tab:JSON.stringify({
+      tabId:'reg_aug',tabName:'5월출석부',stuKey:'swim_students',instKey:'swim_inst',
+    }),
+  },'swim_parent_tab','regular');
+
+  assert.equal(resolved.tabId,'reg_aug');
+  assert.equal(resolved.tabName,'8월 시간표');
+  assert.equal(resolved.stuKey,'swim_stu_reg_aug');
+  assert.equal(resolved.instKey,'swim_inst_reg_aug');
+});
+
+test('teacher and desk pages use the shared canonical tab resolver',()=>{
+  const root=path.join(__dirname,'..');
+  for(const page of ['teacher','desk']){
+    const html=fs.readFileSync(path.join(root,page+'.html'),'utf8');
+    const source=fs.readFileSync(path.join(root,'js',page+'.js'),'utf8');
+    const policyIndex=html.indexOf("scJs('js/schedule-key-selection.js')");
+    const pageIndex=html.indexOf("scJs('js/"+page+".js')");
+    assert.ok(policyIndex>=0,page+' must load the shared tab resolver');
+    assert.ok(pageIndex>policyIndex,page+' must load after the shared tab resolver');
+    assert.match(source,/SCScheduleKeySelection\.resolveTabPointer/);
+    assert.match(source,/swim_tab_list/);
+    assert.match(source,/baseKeys:\s*\['swim_parent_tab','swim_tab_list'/);
+  }
+});
+
 test('main page loads key selection after Firebase store and before core',()=>{
   const html=fs.readFileSync(path.join(__dirname,'..','index.html'),'utf8');
   const store=html.indexOf("scJs('js/firebase-store.js')");

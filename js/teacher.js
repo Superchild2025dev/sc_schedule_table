@@ -17,6 +17,7 @@ const FIREBASE_CONFIG = window.SC_FIREBASE_CONFIG || {
 
 let _fb=null, _fbReady=false;
 let _teacherSelectedController=null;
+const _teacherTabMetadata={};
 const _teacherWrites=SCScheduleWriteGateway.create({
   getRoot:()=>_fb,
   canWrite:()=>_fbReady&&!!_fb,
@@ -137,6 +138,10 @@ function parseStoredJSON(key,v,def){
 }
 
 function teacherDataKeys(data){
+  if(window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.resolveTabPointer==='function'){
+    const resolved=SCScheduleKeySelection.resolveTabPointer(data||{},'swim_parent_tab','regular');
+    return {stuKey:resolved.stuKey,instKey:resolved.instKey};
+  }
   const setting=parseJSON(data&&data.swim_parent_tab,null);
   const stuKey=setting&&setting.stuKey ? setting.stuKey : 'swim_students';
   const instKey=setting&&setting.instKey ? setting.instKey : 'swim_inst';
@@ -406,9 +411,10 @@ function loadAllData(){
   const selectedReady=new Promise((resolve,reject)=>{
     let controller=null;
     controller=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
-      baseKeys:['swim_parent_tab','swim_mark','swim_teachers'],
+      baseKeys:['swim_parent_tab','swim_tab_list','swim_mark','swim_teachers'],
       resolveInitialActiveKeys:baseValues=>{
-        applyTeacherDataKeys(baseValues||{});
+        Object.assign(_teacherTabMetadata,baseValues||{});
+        applyTeacherDataKeys(_teacherTabMetadata);
         return [_teacherStuKey,_teacherInstKey];
       },
       next:batch=>{
@@ -416,8 +422,18 @@ function loadAllData(){
         const removed=new Set(batch&&batch.removedKeys||[]);
         const previousStuKey=_teacherStuKey;
         const previousInstKey=_teacherInstKey;
-        if(Object.prototype.hasOwnProperty.call(values,'swim_parent_tab')) applyTeacherDataKeys(values);
-        if(removed.has('swim_parent_tab')) applyTeacherDataKeys({});
+        let tabMetadataChanged=false;
+        ['swim_parent_tab','swim_tab_list'].forEach(key=>{
+          if(Object.prototype.hasOwnProperty.call(values,key)){
+            _teacherTabMetadata[key]=values[key];
+            tabMetadataChanged=true;
+          }
+          if(removed.has(key)){
+            delete _teacherTabMetadata[key];
+            tabMetadataChanged=true;
+          }
+        });
+        if(tabMetadataChanged) applyTeacherDataKeys(_teacherTabMetadata);
         if(Object.prototype.hasOwnProperty.call(values,_teacherStuKey)) STUDENTS=parseStoredJSON(_teacherStuKey,values[_teacherStuKey],[]);
         else if(removed.has(_teacherStuKey)) STUDENTS=[];
         if(Object.prototype.hasOwnProperty.call(values,_teacherInstKey)) INST_MAP=parseStoredJSON(_teacherInstKey,values[_teacherInstKey],{});

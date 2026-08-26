@@ -14,6 +14,7 @@
   let _fb=null;
   let _fbReady=false;
   let _deskSelectedController=null;
+  const _deskTabMetadata={};
   const _deskWrites=SCScheduleWriteGateway.create({
     getRoot:()=>_fb,
     canWrite:()=>_fbReady&&!!_fb,
@@ -115,6 +116,12 @@
     return INST_MAP[[s.t,s.d,s.l].join('/')] || null;
   }
   function dataKeys(data){
+    if(window.SCScheduleKeySelection&&typeof SCScheduleKeySelection.resolveTabPointer==='function'){
+      const resolved=SCScheduleKeySelection.resolveTabPointer(data||{},'swim_parent_tab','regular');
+      _stuKey=resolved.stuKey;
+      _instKey=resolved.instKey;
+      return;
+    }
     const setting=parseJSON(data&&data.swim_parent_tab,null);
     _stuKey=setting&&setting.stuKey ? setting.stuKey : 'swim_students';
     _instKey=setting&&setting.instKey ? setting.instKey : 'swim_inst';
@@ -315,9 +322,10 @@
     const selectedReady=new Promise((resolve,reject)=>{
       let controller=null;
       controller=SCFirebaseStore.subscribeSelectedRootBatches(_fb,{
-        baseKeys:['swim_parent_tab','swim_mark'],
+        baseKeys:['swim_parent_tab','swim_tab_list','swim_mark'],
         resolveInitialActiveKeys:baseValues=>{
-          dataKeys(baseValues||{});
+          Object.assign(_deskTabMetadata,baseValues||{});
+          dataKeys(_deskTabMetadata);
           return [_stuKey,_instKey];
         },
         next:batch=>{
@@ -325,8 +333,18 @@
           const removed=new Set(batch&&batch.removedKeys||[]);
           const previousStuKey=_stuKey;
           const previousInstKey=_instKey;
-          if(Object.prototype.hasOwnProperty.call(values,'swim_parent_tab')) dataKeys(values);
-          if(removed.has('swim_parent_tab')) dataKeys({});
+          let tabMetadataChanged=false;
+          ['swim_parent_tab','swim_tab_list'].forEach(key=>{
+            if(Object.prototype.hasOwnProperty.call(values,key)){
+              _deskTabMetadata[key]=values[key];
+              tabMetadataChanged=true;
+            }
+            if(removed.has(key)){
+              delete _deskTabMetadata[key];
+              tabMetadataChanged=true;
+            }
+          });
+          if(tabMetadataChanged) dataKeys(_deskTabMetadata);
           if(Object.prototype.hasOwnProperty.call(values,_stuKey)) STUDENTS=parseStoredJSON(_stuKey,values[_stuKey],[]);
           else if(removed.has(_stuKey)) STUDENTS=[];
           if(Object.prototype.hasOwnProperty.call(values,_instKey)) INST_MAP=parseStoredJSON(_instKey,values[_instKey],{});
@@ -351,7 +369,7 @@
 
   function applyChangedKey(key,value){
     const asStr=typeof value==='string'?value:JSON.stringify(value);
-    if(key==='swim_parent_tab'){
+    if(key==='swim_parent_tab'||key==='swim_tab_list'){
       loadAllData().then(render).catch(e=>console.warn('desk reload failed',e));
       return;
     }

@@ -73,7 +73,10 @@ if(!Array.isArray(_archivedTabList)) _archivedTabList=[];
 let _tabFolderList = loadJSON(STORAGE_KEYS.TAB_FOLDERS, []);
 if(!Array.isArray(_tabFolderList)) _tabFolderList=[];
 function _mainTabSetting(){
-  return loadJSON(STORAGE_KEYS.MAIN_TAB||'swim_main_tab', null)||{};
+  const saved=loadJSON(STORAGE_KEYS.MAIN_TAB||'swim_main_tab', null)||{};
+  return typeof _normalizeTabPointer==='function'
+    ? _normalizeTabPointer(saved,typeof _tabList==='undefined'?[]:_tabList)
+    : saved;
 }
 function _mainTabId(list){
   const tabs=Array.isArray(list)?list:_tabList;
@@ -117,7 +120,14 @@ function _periodMonthForDate(ds){
   return _monthKeyFromPeriod(p)||_normalizeMonthKey(ds);
 }
 function _defaultPeriodMonth(){
-  try{return _normalizeMonthKey(_periodMonthForDate(toDateStr(getToday())))||'2026-05';}catch(e){return '2026-05';}
+  try{
+    const today=getToday();
+    return _normalizeMonthKey(_periodMonthForDate(toDateStr(today)))
+      ||(today.getFullYear()+'-'+_pad2(today.getMonth()+1));
+  }catch(e){
+    const today=new Date();
+    return today.getFullYear()+'-'+_pad2(today.getMonth()+1);
+  }
 }
 function _addMonthsToMonthKey(monthKey,delta){
   const key=_normalizeMonthKey(monthKey)||_defaultPeriodMonth();
@@ -130,6 +140,24 @@ function _monthTabName(monthKey){
   const month=parseInt(String(key).slice(5,7),10)||1;
   return month+'월출석부';
 }
+function _regularScheduleTabName(monthKey){
+  const key=_normalizeMonthKey(monthKey)||_defaultPeriodMonth();
+  const month=parseInt(String(key).slice(5,7),10)||1;
+  return month+'월 시간표';
+}
+function _regularTabNameMonth(tab,referenceMonth){
+  const match=String(tab?.name||'').match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
+  if(!match) return '';
+  const reference=_normalizeMonthKey(referenceMonth)||_defaultPeriodMonth();
+  return (match[1]||String(reference).slice(0,4))+'-'+_pad2(match[2]);
+}
+function _isMismatchedRegularMonthMetadata(tab,targetMonth){
+  if(!tab||tab.type==='snapshot'||tab.type==='bangteuk') return false;
+  const target=_normalizeMonthKey(targetMonth);
+  const stored=_normalizeMonthKey(tab.periodMonth);
+  const named=_regularTabNameMonth(tab,target);
+  return !!(target&&stored&&stored!==target&&named===target);
+}
 function _tabPeriodMonth(tab){
   if(!tab) return '';
   if(tab.periodLocked&&tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
@@ -139,7 +167,7 @@ function _tabPeriodMonth(tab){
   }
   if(tab.periodMonth) return _normalizeMonthKey(tab.periodMonth)||String(tab.periodMonth);
   const m=String(tab.name||'').match(/(?:(20\d{2})\s*년?\s*)?(\d{1,2})\s*월/);
-  if(!m) return tab.id==='regular'?'2026-05':'';
+  if(!m) return tab.id==='regular'?_defaultPeriodMonth():'';
   const year=m[1]||String(_defaultPeriodMonth()).slice(0,4);
   return year+'-'+_pad2(m[2]);
 }
@@ -548,15 +576,34 @@ function _parseTabStored(raw,fallback){
 }
 function _normalizeTabList(list){
   list=Array.isArray(list)?list:[];
-  if(!list.length) list=[{id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'}];
+  const defaultMonth=_defaultPeriodMonth();
+  const defaultTab=()=>({
+    id:'regular',
+    name:_regularScheduleTabName(defaultMonth),
+    type:'regular',
+    periodMonth:defaultMonth,
+    periodLocked:true,
+  });
+  list=list.filter(tab=>{
+    if(!tab||typeof tab!=='object'||!String(tab.id||'').trim()) return false;
+    if(tab.id==='regular'||['regular','bangteuk','snapshot'].includes(tab.type)) return true;
+    if(tab.type!==undefined&&tab.type!==null&&tab.type!=='') return false;
+    const studentShaped=('n' in tab)||('studentId' in tab)||(
+      ('p' in tab||'phone' in tab)&&('d' in tab||'t' in tab||'l' in tab||'r' in tab)
+    );
+    return !studentShaped;
+  }).map(tab=>Object.assign({},tab));
+  if(!list.length) list=[defaultTab()];
   const hasRegular=list.some(t=>t&&t.type!=='snapshot'&&t.type!=='bangteuk');
   if(!hasRegular){
-    list.unshift({id:'regular',name:'5월출석부',type:'regular',periodMonth:'2026-05'});
+    list.unshift(defaultTab());
   }
-  return list.filter(tab=>tab&&tab.id).map(tab=>{
-    if(tab.id==='regular'){
-      if(!tab.periodMonth) tab.periodMonth='2026-05';
-      if(tab.name==='정규시간표') tab.name='5월출석부';
+  return list.map(tab=>{
+    if(tab.type!=='snapshot'&&tab.type!=='bangteuk'){
+      tab.type='regular';
+      if(!tab.periodMonth) tab.periodMonth=defaultMonth;
+      if(!tab.name||tab.name==='정규시간표') tab.name=_regularScheduleTabName(tab.periodMonth);
+      if(tab.periodLocked===undefined) tab.periodLocked=true;
     }
     return tab;
   });
@@ -584,12 +631,13 @@ function _cacheTabValue(key,val){
   try{localStorage.setItem(_lsKey(key),json);}catch(e){}
 }
 function _tabStateFromRoot(root){
+  const tabs=_normalizeTabList(_parseTabStored(root?.[STORAGE_KEYS.TAB_LIST], _tabList));
   return {
-    tabs:_normalizeTabList(_parseTabStored(root?.[STORAGE_KEYS.TAB_LIST], _tabList)),
+    tabs,
     archived:_normalizeArchivedTabs(_parseTabStored(root?.[STORAGE_KEYS.ARCHIVED_TABS], _archivedTabList)),
     folders:_normalizeTabFolders(_parseTabStored(root?.[STORAGE_KEYS.TAB_FOLDERS], _tabFolderList)),
-    parent:_parseTabStored(root?.[STORAGE_KEYS.PARENT_TAB], loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{}),
-    main:_parseTabStored(root?.[STORAGE_KEYS.MAIN_TAB], loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{}),
+    parent:_normalizeTabPointer(_parseTabStored(root?.[STORAGE_KEYS.PARENT_TAB], loadJSON(STORAGE_KEYS.PARENT_TAB, null)||{}),tabs),
+    main:_normalizeTabPointer(_parseTabStored(root?.[STORAGE_KEYS.MAIN_TAB], loadJSON(STORAGE_KEYS.MAIN_TAB, null)||{}),tabs),
   };
 }
 function _applyTabState(state,keys){
@@ -613,8 +661,16 @@ function _applyTabState(state,keys){
     _cacheTabValue(STORAGE_KEYS.MAIN_TAB,state.main||{});
   }
 }
+function _tabSettingsWriteKeys(keys){
+  const selected=[...new Set((keys||[]).filter(Boolean))];
+  if(selected.includes('swim_tab_list')){
+    if(!selected.includes('swim_main_tab')) selected.push('swim_main_tab');
+    if(!selected.includes('swim_parent_tab')) selected.push('swim_parent_tab');
+  }
+  return selected;
+}
 function updateTabSettingsTx(keys,mutator,meta){
-  keys=[...new Set((keys||[]).filter(Boolean))];
+  keys=_tabSettingsWriteKeys(keys);
   if(!keys.length) return Promise.resolve(false);
   if(typeof canPersistScheduleData==='function' && !canPersistScheduleData(keys[0],meta?.label||'시간표 탭 설정')){
     return Promise.reject(new Error('서버 데이터 로드 실패 상태라 저장이 차단되었습니다'));
@@ -632,6 +688,7 @@ function updateTabSettingsTx(keys,mutator,meta){
     };
     const result=mutator(state);
     if(result===undefined) return false;
+    _syncTabPointers(state);
     _applyTabState(state,keys);
     keys.forEach(key=>{
       if(key===STORAGE_KEYS.TAB_LIST) saveJSON(key,_tabList,true);
@@ -680,6 +737,7 @@ function updateTabSettingsTx(keys,mutator,meta){
     const state=_tabStateFromRoot(root);
     const result=mutator(state);
     if(result===undefined) return;
+    _syncTabPointers(state);
     if(keys.includes(STORAGE_KEYS.TAB_LIST)) root[STORAGE_KEYS.TAB_LIST]=JSON.stringify(_normalizeTabList(state.tabs));
     if(keys.includes(STORAGE_KEYS.ARCHIVED_TABS)) root[STORAGE_KEYS.ARCHIVED_TABS]=JSON.stringify(_normalizeArchivedTabs(state.archived));
     if(keys.includes(STORAGE_KEYS.TAB_FOLDERS)) root[STORAGE_KEYS.TAB_FOLDERS]=JSON.stringify(_normalizeTabFolders(state.folders));
@@ -973,8 +1031,27 @@ function _tabStorageKeys(tab){
     instKey:id==='regular'?'swim_inst':'swim_inst_'+id,
   };
 }
+function _normalizeTabPointer(pointer,tabs){
+  const saved=(pointer&&typeof pointer==='object')?Object.assign({},pointer):{};
+  const list=Array.isArray(tabs)?tabs:[];
+  const live=list.filter(item=>item&&item.type!=='snapshot');
+  const tab=live.find(item=>item.id===saved.tabId)
+    ||live.find(item=>item.id==='regular')
+    ||live.find(item=>!item.type||item.type==='regular')
+    ||live[0];
+  if(!tab) return saved;
+  return Object.assign(saved,_tabStorageKeys(tab));
+}
+function _syncTabPointers(state){
+  if(!state||typeof state!=='object') return state;
+  const tabs=Array.isArray(state.tabs)?state.tabs:[];
+  state.main=_normalizeTabPointer(state.main,tabs);
+  state.parent=_normalizeTabPointer(state.parent,tabs);
+  return state;
+}
 function _parentTabSetting(){
-  return loadJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', null)||{};
+  const saved=loadJSON(STORAGE_KEYS.PARENT_TAB||'swim_parent_tab', null)||{};
+  return _normalizeTabPointer(saved,_tabList);
 }
 function activateMainTabForStartup(){
   const next=_mainTabId(_tabList);
@@ -1499,7 +1576,8 @@ async function autoRolloverRegularScheduleIfNeeded(options){
   const currentMonth=storedMonth||targetMonth;
   if(!targetMonth || !currentMonth) return false;
 
-  const needsSnapshot=_compareMonthKey(currentMonth,targetMonth)<0;
+  const metadataMonthMismatch=_isMismatchedRegularMonthMetadata(srcTab,targetMonth);
+  const needsSnapshot=_compareMonthKey(currentMonth,targetMonth)<0&&!metadataMonthMismatch;
   const needsBind=!srcTab.periodLocked || _normalizeMonthKey(srcTab.periodMonth)!==targetMonth;
   if(!needsSnapshot && !needsBind) return false;
 
@@ -1524,7 +1602,8 @@ async function autoRolloverRegularScheduleIfNeeded(options){
       const live=state.tabs[idx];
       if(live.type==='snapshot'||live.type==='bangteuk') throw new Error('정규 운영 시간표만 자동 이월할 수 있습니다');
       const liveStored=_tabStoredPeriodMonth(live)||currentMonth;
-      const txNeedsSnapshot=_compareMonthKey(liveStored,targetMonth)<0;
+      const liveMetadataMonthMismatch=_isMismatchedRegularMonthMetadata(live,targetMonth);
+      const txNeedsSnapshot=_compareMonthKey(liveStored,targetMonth)<0&&!liveMetadataMonthMismatch;
       const txSnapId=_autoSnapshotId(live.id,liveStored);
       if(txNeedsSnapshot && !state.tabs.some(t=>t&&t.id===txSnapId)){
         const snapTab={

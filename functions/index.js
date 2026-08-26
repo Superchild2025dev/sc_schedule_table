@@ -9,6 +9,7 @@ const logger = require("firebase-functions/logger");
 const {initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} = require("firebase-admin/firestore");
 const {buildRegularAvailability} = require("./regular-availability");
+const {publicAvailabilityKeys} = require("./public-availability-source");
 const scheduleV2ShadowPolicy = require("./schedule-v2-shadow-policy.js");
 const {runShadowSync} = require("./schedule-v2-shadow-runner.js");
 const {readCanonicalParity} = require("./schedule-v2-cutover-parity.js");
@@ -70,6 +71,7 @@ const PUBLIC_AVAILABILITY_SOURCE_KEYS = new Set([
   "swim_enroll",
   "swim_disabled",
   "swim_periods",
+  "swim_tab_list",
   "swim_main_tab",
 ]);
 
@@ -1851,16 +1853,6 @@ function publicAvailabilityRef(branch) {
   return db.collection(PUBLIC_AVAILABILITY_COLLECTION).doc(branch.id);
 }
 
-function publicAvailabilityKeys(mainSetting) {
-  const setting = mainSetting && typeof mainSetting === "object" ? mainSetting : {};
-  const stuKey = String(setting.stuKey || "swim_students");
-  const instKey = String(setting.instKey || "swim_inst");
-  if (/^swim_bt_/.test(stuKey) || /^swim_bt_/.test(instKey)) {
-    return {stuKey: "swim_students", instKey: "swim_inst"};
-  }
-  return {stuKey, instKey};
-}
-
 function publicAvailabilityBasisDate(periods) {
   const list = Array.isArray(periods) && periods.length ? periods : DEFAULT_PERIODS;
   const exact = list.find(period => {
@@ -1885,11 +1877,12 @@ function publicAvailabilityPayload(branch, summary) {
 }
 
 async function computePublicAvailability(branch) {
-  const [mainSetting, periods] = await Promise.all([
+  const [mainSetting, tabs, periods] = await Promise.all([
     readJSON(branch, "swim_main_tab", null),
+    readJSON(branch, "swim_tab_list", []),
     readJSON(branch, "swim_periods", null),
   ]);
-  const keys = publicAvailabilityKeys(mainSetting);
+  const keys = publicAvailabilityKeys(mainSetting, tabs);
   const [students, inst, retire, enroll, disabled] = await Promise.all([
     readJSON(branch, keys.stuKey, []),
     readJSON(branch, keys.instKey, {}),
