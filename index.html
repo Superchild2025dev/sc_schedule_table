@@ -314,6 +314,16 @@
   <div id="scroll-proxy" class="tbl-scroll-proxy"><div class="tbl-scroll-proxy-inner" id="scroll-proxy-inner"></div></div>
 </main>
 
+<div id="mobile-student-info" class="modal-bg sc-modal-backdrop mobile-student-info-modal" style="display:none" data-sc-modal data-sc-close-function="closeMobileStudentInfo" aria-hidden="true" onclick="if(event.target===this)closeMobileStudentInfo()">
+  <div class="modal sc-modal-dialog sc-modal-sm mobile-student-info-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-student-info-title" tabindex="-1">
+    <div class="modal-hd sc-modal-header mobile-student-info-head">
+      <strong id="mobile-student-info-title" class="modal-title sc-modal-title">원생 정보</strong>
+      <button type="button" class="mobile-student-info-close" data-sc-modal-close aria-label="원생 정보 닫기" onclick="closeMobileStudentInfo()">×</button>
+    </div>
+    <div id="mobile-student-info-body" class="modal-body sc-modal-body mobile-student-info-body"></div>
+  </div>
+</div>
+
 <div id="move-bar" class="move-bar" style="display:none">
   <span id="move-msg"></span>
   <button onclick="_instSwapMode?cancelInstSwap():cancelMove()">취소</button>
