@@ -2527,6 +2527,60 @@ function _mobileStudentText(stu){
   if(!stu) return '';
   return `${_layoutStudentName(stu)}${stu.a||''}`.trim();
 }
+function _mobileStudentInfoModel(person,context){
+  const source=person||{};
+  const ctx=context||{};
+  const lane=Number(ctx.lane)||0;
+  const row=Number(ctx.row)||0;
+  const classTime=[ctx.day,ctx.time].map(v=>String(v||'').trim()).filter(Boolean).join(' ');
+  const seat=[lane?`${lane}레인`:'',row?`${row}번`:''].filter(Boolean).join(' ');
+  const genderRaw=String(source.g||source.gender||'').trim();
+  const gender=/^(?:m|male|남)$/i.test(genderRaw)?'남':/^(?:f|female|여)$/i.test(genderRaw)?'여':genderRaw;
+  return {
+    name:String(ctx.name||source.n||source.name||'').trim(),
+    age:String(source.a||source.age||'').trim(),
+    phone:String(source.p||source.phone||'').trim(),
+    gender,
+    teacher:String(ctx.teacher||'').trim(),
+    classTime,
+    lane:seat,
+    status:String(ctx.status||'재원').trim(),
+    transport:String(source.loc||(source.v?'차량 이용':'')).trim(),
+    memo:String(source.memo||'').trim(),
+  };
+}
+function _mobileStudentInfoMarkup(info){
+  const value=v=>esc(String(v||'').trim()||'-');
+  const row=(label,val,wide)=>`<div class="mobile-student-info-row${wide?' is-wide':''}"><dt>${esc(label)}</dt><dd>${value(val)}</dd></div>`;
+  return `<dl class="mobile-student-info-list">
+    ${row('원생명',info&&info.name)}
+    ${row('상태',info&&info.status)}
+    ${row('수업',info&&info.classTime)}
+    ${row('담당 선생님',info&&info.teacher)}
+    ${row('자리',info&&info.lane)}
+    ${row('나이',info&&info.age)}
+    ${row('성별',info&&info.gender)}
+    ${row('전화번호',info&&info.phone)}
+    ${row('승하차 정보',info&&info.transport,true)}
+    ${row('메모',info&&info.memo,true)}
+  </dl>`;
+}
+let _mobileStudentInfoItems=[];
+function openMobileStudentInfo(index){
+  const info=_mobileStudentInfoItems[Number(index)];
+  const modal=document.getElementById('mobile-student-info');
+  const body=document.getElementById('mobile-student-info-body');
+  if(!info||!modal||!body) return;
+  body.innerHTML=_mobileStudentInfoMarkup(info);
+  modal.style.display='flex';
+  if(window.SCModal&&typeof window.SCModal.sync==='function') window.SCModal.sync();
+}
+function closeMobileStudentInfo(){
+  const modal=document.getElementById('mobile-student-info');
+  if(!modal) return;
+  modal.style.display='none';
+  if(window.SCModal&&typeof window.SCModal.sync==='function') window.SCModal.sync();
+}
 function _mobileStudentType(stu,enroll,badges,todayStr){
     if(stu){
     const classes=[];
@@ -2564,31 +2618,63 @@ function _mobileCellItems(ctx,t,day,lane,row){
   const todayStr=toDateStr(getToday());
   if(stu){
     const chips=[...badges];
+    let separateRetire=null;
+    let separateEnroll=null;
     const retDs=(typeof retire==='string'?retire:retire?.ds)||'';
     if(retDs&&retDs>=todayStr){
       const belongsToStudent=_scheduleReservationMatchesStudent(retire,stu);
       const retireName=belongsToStudent?'':_scheduleReservationName(retire,null);
       const suffix=_retireReservationSuffix(retire,slotKey,belongsToStudent?stu:null);
-      chips.unshift({
-        type:'retire',
-        text:`${retireName?retireName+' ':''}~${_mobileShortDate(retDs)}${suffix}`,
-      });
+      if(belongsToStudent){
+        chips.unshift({type:'retire',text:`~${_mobileShortDate(retDs)}${suffix}`});
+      }else if(retireName){
+        separateRetire={
+          row,
+          label:retireName,
+          type:'retire',
+          chips:[{type:'retire',text:`~${_mobileShortDate(retDs)}${suffix}`}],
+          infoSource:typeof retire==='object'?retire:{name:retireName},
+          infoName:retireName,
+          infoStatus:suffix==='퇴원'?'퇴원 예정':'제외 예정',
+        };
+      }
     }
     const enrDs=enroll&&enroll.ds;
-    if(enrDs&&enrDs>todayStr) chips.unshift({type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enrDs)}부터`});
-    items.push({row,label:_mobileStudentText(stu),type:_mobileStudentType(stu,enroll,chips,todayStr),chips});
+    if(enrDs&&enrDs>todayStr){
+      const belongsToStudent=_scheduleReservationMatchesStudent(enroll,stu);
+      if(belongsToStudent){
+        chips.unshift({type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enrDs)}부터`});
+      }else{
+        const enrollName=_scheduleReservationName(enroll,null)||enroll.name||'등록 예정';
+        separateEnroll={
+          row,
+          label:`${enrollName}${enroll.age||''}`.trim(),
+          type:enroll.isNew?'enroll-new':'enroll',
+          chips:[{type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enrDs)}부터`}],
+          infoSource:enroll,
+          infoName:enrollName,
+          infoStatus:'등록 예정',
+        };
+      }
+    }
+    items.push({row,label:_mobileStudentText(stu),type:_mobileStudentType(stu,enroll,chips,todayStr),chips,infoSource:stu,infoName:_layoutStudentName(stu),infoStatus:'재원'});
+    if(separateRetire) items.push(separateRetire);
+    if(separateEnroll) items.push(separateEnroll);
   }else if(enroll&&enroll.ds>=todayStr){
     items.push({
       row,
       label:`${enroll.name||'등록'}${enroll.age||''}`.trim(),
       type:enroll.isNew?'enroll-new':'enroll',
-      chips:[{type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enroll.ds)}부터`},...badges]
+      chips:[{type:enroll.isNew?'enroll-new':'enroll',text:`${_mobileShortDate(enroll.ds)}부터`},...badges],
+      infoSource:enroll,
+      infoName:enroll.name||'등록 예정',
+      infoStatus:'등록 예정',
     });
   }else if(retire){
     const retDs=(typeof retire==='string'?retire:retire?.ds)||'';
     const nm=_scheduleReservationName(retire,null)||'제외';
     if(retDs>=todayStr){
-      items.push({row,label:nm,type:'retire',chips:[{type:'retire',text:`~${_mobileShortDate(retDs)}까지`},...badges]});
+      items.push({row,label:nm,type:'retire',chips:[{type:'retire',text:`~${_mobileShortDate(retDs)}까지`},...badges],infoSource:typeof retire==='object'?retire:{name:nm},infoName:nm,infoStatus:'제외 예정'});
     }
   }else if(badges.length){
     items.push({row,label:_mobileBadgeLabel(badges),type:_mobileStudentType(null,null,badges,todayStr),chips:badges});
@@ -2610,6 +2696,19 @@ function _mobileRenderTimeCard(ctx,t,day,lanes){
     const itemHtml=items.map(item=>{
       const chips=(item.chips||[]).map(chip=>`<span class="mobile-schedule-chip ${esc(chip.visualType||chip.type||'')}">${esc(chip.text||'')}</span>`).join('');
       const label=item.label?`<b>${esc(item.label)}</b>`:'';
+      if(item.infoSource){
+        const info=_mobileStudentInfoModel(item.infoSource,{
+          name:item.infoName,
+          status:item.infoStatus,
+          teacher,
+          day,
+          time:_mobileTimeLabel(day,t),
+          lane,
+          row:item.row,
+        });
+        const infoId=_mobileStudentInfoItems.push(info)-1;
+        return `<button type="button" class="mobile-schedule-student ${esc(item.type||'')} is-info" data-mobile-student-info="${infoId}" aria-label="${esc(info.name||'원생')} 정보 보기">${label}${chips}</button>`;
+      }
       return `<div class="mobile-schedule-student ${esc(item.type||'')}">${label}${chips}</div>`;
     }).join('');
     laneHtml.push(`<section class="mobile-schedule-lane">
@@ -2664,10 +2763,14 @@ function renderMobileScheduleView(ctx){
   }
   if(body){
     const renderCtx=ctx||{};
+    _mobileStudentInfoItems=[];
     const times=(typeof getTimes==='function'?getTimes():[]).map(v=>v&&v.t?v.t:String(v||'')).filter(Boolean);
     const lanes=typeof getLanes==='function'?getLanes():5;
     const html=times.map(t=>_mobileRenderTimeCard(renderCtx,t,day,lanes)).filter(Boolean).join('');
     body.innerHTML=html||'<div class="mobile-schedule-none">표시할 수업이 없습니다.</div>';
+    body.querySelectorAll('[data-mobile-student-info]').forEach(btn=>{
+      btn.onclick=()=>openMobileStudentInfo(btn.dataset.mobileStudentInfo);
+    });
   }
   _updateMobileTableButton();
 }
