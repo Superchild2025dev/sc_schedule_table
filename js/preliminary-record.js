@@ -337,7 +337,12 @@
     });
   }
 
-  async function patchTemplateArchive(archive,values,sheetName,options){
+  function prepareWorksheetForExport(sheetDoc,values){
+    Object.keys(values||{}).forEach(address=>setXmlCellText(sheetDoc,address,values[address]));
+    normalizeWorksheetRowHeights(sheetDoc,1,70,20);
+  }
+
+  async function patchTemplateArchive(archive,values,sheetName){
     const workbookEntry=archive.file('xl/workbook.xml');
     const relsEntry=archive.file('xl/_rels/workbook.xml.rels');
     if(!workbookEntry||!relsEntry) throw new Error('예선 기록지 통합문서 구조를 찾지 못했습니다');
@@ -352,10 +357,7 @@
     const worksheetEntry=archive.file(worksheetPath);
     if(!worksheetEntry) throw new Error('예선 기록지 시트 파일을 찾지 못했습니다');
     const sheetDoc=parseXml(await worksheetEntry.async('string'),'예선 기록지 시트');
-    Object.keys(values).forEach(address=>setXmlCellText(sheetDoc,address,values[address]));
-    if(options?.fixedRowHeight){
-      normalizeWorksheetRowHeights(sheetDoc,1,70,options.fixedRowHeight);
-    }
+    prepareWorksheetForExport(sheetDoc,values);
     sheet.setAttribute('name',safeSheetName(sheetName));
     archive.file('xl/workbook.xml',serializeXml(workbookDoc));
     archive.file(worksheetPath,serializeXml(sheetDoc));
@@ -397,12 +399,7 @@
     const values={};
     Object.keys(layout).forEach(time=>writeTime(values,time,info.sourceDay,ds,info.closed,layout));
     const archive=await loadTemplateArchive(templatePath);
-    await patchTemplateArchive(
-      archive,
-      values,
-      datedSheetName(info),
-      saturday?{fixedRowHeight:15.75}:undefined,
-    );
+    await patchTemplateArchive(archive,values,datedSheetName(info));
     return {archive,info};
   }
 
@@ -522,6 +519,7 @@
     ensureXmlDeclaration,
     normalizeZipPath,
     normalizeWorksheetRowHeights,
+    prepareWorksheetForExport,
     patchTemplateArchive,
     buildWorkbookForDate,
     openModal,

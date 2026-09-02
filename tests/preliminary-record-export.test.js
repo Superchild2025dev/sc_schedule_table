@@ -154,7 +154,7 @@ test('worksheet relationship paths support both relative and package-absolute ta
   assert.equal(runtime.normalizeZipPath('xl','/xl/worksheets/sheet1.xml'),'xl/worksheets/sheet1.xml');
 });
 
-test('Saturday export keeps every used worksheet row at one fixed height', () => {
+test('weekday and Saturday exports keep every used worksheet row at height 20', () => {
   const runtime=loadRuntime();
   const rows=[1,15,29,58,70].map(number=>{
     const attributes={r:String(number)};
@@ -168,10 +168,10 @@ test('Saturday export keeps every used worksheet row at one fixed height', () =>
     getElementsByTagNameNS:(_namespace,name)=>name==='row'?rows:[],
   };
 
-  runtime.normalizeWorksheetRowHeights(sheetDoc,1,70,15.75);
+  runtime.prepareWorksheetForExport(sheetDoc,{});
 
   rows.forEach(row=>{
-    assert.equal(row.attributes.ht,'15.75');
+    assert.equal(row.attributes.ht,'20');
     assert.equal(row.attributes.customHeight,'1');
   });
 });
