@@ -34,6 +34,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>scCss('ui-tokens.css')</script>
 <script>scCss('auth.css')</script>
 <script>scCss('style.css')</script>
@@ -94,6 +95,7 @@
     <button class="hbtn" id="tm-reset" onclick="resetTimeMachine()" style="display:none">🔄 현재</button>
     <button class="hbtn" id="attendance-toggle-btn" data-perm="attendanceCheck" onclick="toggleAttendanceMode()">📋 출석부</button>
     <button class="hbtn" id="schedule-excel-btn" data-perm="exportData" onclick="exportExcel()" title="현재 시간표 엑셀 저장">💾 엑셀 저장</button>
+    <button class="hbtn" id="preliminary-record-btn" data-perm="exportData" onclick="openPreliminaryRecordModal()" title="날짜별 예선 기록지 엑셀 저장">📄 예선 기록지</button>
     <button class="hbtn" id="schedule-print-btn" onclick="openSchedulePrintModal()" title="날짜별 등원 원생 인쇄">🖨️ 인쇄</button>
     <span class="staff-auth-role" data-auth-role></span>
     <span class="staff-auth-name" data-auth-name></span>
@@ -113,6 +115,7 @@
   <div class="mobile-tools-title">시간표 도구</div>
   <div class="mobile-tools-grid">
     <button type="button" data-mobile-action="excel" data-perm="exportData" onclick="SCMobileTools.run('excel',event)">엑셀 저장</button>
+    <button type="button" data-mobile-action="preliminary" data-perm="exportData" onclick="SCMobileTools.run('preliminary',event)">예선 기록지</button>
     <button type="button" data-mobile-action="print" onclick="SCMobileTools.run('print',event)">인쇄</button>
     <button type="button" data-mobile-action="zoomOut" aria-label="시간표 축소" onclick="SCMobileTools.run('zoomOut',event)">축소</button>
     <button type="button" data-mobile-action="zoomReset" onclick="SCMobileTools.run('zoomReset',event)">100%</button>
@@ -499,6 +502,7 @@
 <script>scJs('js/popup-stu.js')</script>
 <script>scJs('js/table.js')</script>
 <script>scJs('js/print.js')</script>
+<script>scJs('js/preliminary-record.js')</script>
 <script>scJs('js/defaults.js')</script>
 <script>scJs('js/init.js')</script>
 <script>scJs('js/mobile-toolbar.js')</script>

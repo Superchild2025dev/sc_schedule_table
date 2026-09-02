@@ -1841,6 +1841,7 @@ function recordAuditPoint(point,touchedKeys,metaOverride){
     tabName:point.tabName,
     tabType,
     bangteuk:tabType==='bangteuk',
+    operatingMonthsByDay:_scheduleAuditOperatingMonthsSnapshot(),
     user:point.user,
   };
   let restorePoint={
@@ -2061,6 +2062,14 @@ function _scheduleAuditMonthForDay(monthKeys,day,fallbackMonth){
     return String(monthKeys[day]||fallbackMonth||'');
   }
   return String(monthKeys||fallbackMonth||'');
+}
+function _scheduleAuditOperatingMonthsSnapshot(){
+  try{
+    const days=_scheduleAuditDays();
+    return _scheduleAuditMonthKeysByDay(days,_scheduleAuditMonthKey());
+  }catch(e){
+    return {};
+  }
 }
 function _scheduleAuditText(item){
   return [item?.label,item?.target,item?.detail,item?.tabName,item?.user].map(v=>String(v||'')).join(' ');
@@ -2311,7 +2320,6 @@ function _scheduleAuditRowsFromVisibleReservations(monthKeys,visibleDays,fallbac
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
       const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
-      if(targetMonth&&_scheduleAuditPeriodMonthFromDateKey(ds)!==targetMonth) return;
       if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
       const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
@@ -2328,6 +2336,8 @@ function _scheduleAuditRowsFromVisibleReservations(monthKeys,visibleDays,fallbac
         detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
         at:date.key?date.key+'T00:00:00':'',
         source:'visible-reservation',
+        monthKey:targetMonth,
+        recordMonthKey:targetMonth,
         tabId:scope.tabId,
         tabName:scope.tabName,
         tabType:scope.tabType,
@@ -2493,6 +2503,8 @@ function _deskNoteRecordDateKey(note,targetMonth){
   return '';
 }
 function _deskNoteRecordPeriodMonth(note,targetMonth){
+  const explicit=_scheduleAuditNormalizeMonthKey(note?.recordMonthKey);
+  if(explicit) return explicit;
   const key=_deskNoteRecordDateKey(note,targetMonth);
   return key?_scheduleAuditPeriodMonthFromDateKey(key):'';
 }
@@ -2535,7 +2547,8 @@ function _deskNoteFromScheduleRow(row){
   const tabName=scope.tabName||row.tabName||'전체 기록';
   const tabType=scope.tabType||row.tabType||'regular';
   const bangteuk=_scheduleAuditRecordIsBangteuk(row)||tabType==='bangteuk';
-  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _scheduleAuditPeriodMonthFromDateKey(written.key) : '';
+  const explicitMonth=_scheduleAuditNormalizeMonthKey(row?.recordMonthKey||row?.monthKey);
+  const recordMonthKey=explicitMonth||(/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _scheduleAuditPeriodMonthFromDateKey(written.key) : '');
   return {
     id:_deskNoteId(),
     sourceKey,
@@ -2563,7 +2576,7 @@ function _deskNoteFromScheduleRow(row){
     tabName,
     tabType,
     bangteuk,
-    monthKey:row.monthKey||_scheduleAuditMonthKey(),
+    monthKey:explicitMonth||row.monthKey||_scheduleAuditMonthKey(),
     day:row.day||'기타',
     effectiveDateKey:row.dateKey||'',
     teacher:row.teacher||'-',
@@ -2595,8 +2608,9 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
   if(scope.tabType==='bangteuk'||options?.bangteuk===true||_scheduleAuditRecordIsBangteuk(entry)){
     return Promise.resolve(false);
   }
-  const monthKey=_scheduleAuditMonthKey();
   const visibleDays=_scheduleAuditDays();
+  const fallbackMonth=_scheduleAuditMonthKey();
+  const monthKeys=_scheduleAuditMonthKeysByDay(visibleDays,fallbackMonth);
   const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
   if(!days.length) return Promise.resolve(false);
   const pairKey=entry&&typeof entry==='object'?entry.pairKey:'';
@@ -2607,6 +2621,7 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
   if(!target) return Promise.resolve(false);
   const additions=[];
   days.forEach(day=>{
+    const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
     if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
     if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
     const reason=_scheduleAuditVisibleReason(entry,slotKey,fromSlot,toSlot,fallback);
@@ -2621,7 +2636,8 @@ function ensureDeskNoteForRetireReservation(slotKey,entry,fallback,options){
       detail:`현재 시간표 표시: ${target} ${date.label} ${reason}`,
       at:date.key?date.key+'T00:00:00':'',
       source:'visible-reservation',
-      monthKey,
+      monthKey:targetMonth,
+      recordMonthKey:targetMonth,
       tabId:scope.tabId,
       tabName:scope.tabName,
       tabType:scope.tabType,
@@ -2648,10 +2664,13 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType,options){
     return Promise.resolve(false);
   }
   const visibleDays=_scheduleAuditDays();
+  const fallbackMonth=_scheduleAuditMonthKey();
+  const monthKeys=_scheduleAuditMonthKeysByDay(visibleDays,fallbackMonth);
   const todayKey=toDateStr(getToday());
   const date=_scheduleAuditDateLabel(todayKey);
   const additions=[];
   _scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day)).forEach(day=>{
+    const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
     if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
     if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
     const reason=_scheduleAuditVisibleReason({excludeReason:'move', moveType:moveType||'move'},srcKey,fromSlot,toSlot,sourceStu||stu);
@@ -2666,7 +2685,8 @@ function ensureDeskNoteForStudentMove(srcKey,dstKey,stu,moveType,options){
       detail:`즉시 이동: ${target} ${srcKey} → ${dstKey}`,
       at:new Date().toISOString(),
       source:'direct-move',
-      monthKey:_scheduleAuditMonthKey(),
+      monthKey:targetMonth,
+      recordMonthKey:targetMonth,
       tabId:scope.tabId,
       tabName:scope.tabName,
       tabType:scope.tabType,
@@ -2828,17 +2848,43 @@ function _queueDeskNotesAutoMerge(additions){
   };
   flush();
 }
+function _deskNoteNeedsGeneratedMonthRepair(existing,generated){
+  if(!existing||!generated||existing.manual||existing.deleted) return false;
+  const current=_scheduleAuditNormalizeMonthKey(existing.recordMonthKey);
+  const expected=_scheduleAuditNormalizeMonthKey(generated.recordMonthKey);
+  if(!expected||current===expected) return false;
+  const created=String(existing.createdAt||'');
+  const updated=String(existing.updatedAt||'');
+  if(created&&updated&&created!==updated) return false;
+  return true;
+}
 function _syncDeskNotesFromRows(rows){
   DESK_NOTES=_normalizeDeskNotesList(DESK_NOTES);
-  const sourceKeys=new Set(DESK_NOTES.map(note=>String(note?.sourceKey||'')).filter(Boolean));
+  const notesBySourceKey=new Map();
+  DESK_NOTES.forEach(note=>{
+    const key=String(note?.sourceKey||'');
+    if(key) notesBySourceKey.set(key,note);
+  });
   const additions=[];
   (rows||[]).forEach(row=>{
     if(_scheduleAuditRecordIsBangteuk(row)) return;
     const sourceKey=_deskNoteSourceKeyForRow(row);
     const legacyKey=_scheduleAuditRowKey(row);
-    if(!sourceKey||sourceKeys.has(sourceKey)||sourceKeys.has(legacyKey)) return;
-    sourceKeys.add(sourceKey);
-    additions.push(_deskNoteFromScheduleRow(row));
+    if(!sourceKey) return;
+    const existing=notesBySourceKey.get(sourceKey)||notesBySourceKey.get(legacyKey);
+    const generated=_deskNoteFromScheduleRow(row);
+    if(existing){
+      if(_deskNoteNeedsGeneratedMonthRepair(existing,generated)){
+        additions.push({
+          ...existing,
+          monthKey:generated.recordMonthKey,
+          recordMonthKey:generated.recordMonthKey,
+        });
+      }
+      return;
+    }
+    notesBySourceKey.set(sourceKey,generated);
+    additions.push(generated);
   });
   if(!additions.length) return DESK_NOTES;
   const canSave=_deskNoteCanSave(true);
@@ -3269,6 +3315,14 @@ function deleteDeskNoteModal(){
     if(typeof toast==='function') toast(err?.message||'기록 삭제 실패','err');
   });
 }
+function _scheduleAuditRecordMonthForDay(item,dateKey,day,targetMonth){
+  const captured=_scheduleAuditNormalizeMonthKey(item?.operatingMonthsByDay?.[day]||item?.recordMonthKey);
+  if(captured) return captured;
+  const normalizedTarget=_scheduleAuditNormalizeMonthKey(targetMonth);
+  const calendarMonth=/^20\d{2}-\d{2}-\d{2}$/.test(String(dateKey||'')) ? String(dateKey).slice(0,7) : '';
+  if(normalizedTarget&&calendarMonth===normalizedTarget) return normalizedTarget;
+  return _scheduleAuditPeriodMonthFromDateKey(dateKey);
+}
 function _scheduleAuditRowsForItem(item,monthKeys,visibleDays,fallbackMonth){
   const itemKeys=Array.isArray(item?.keys)?item.keys:[];
   const itemLabel=String(item?.label||'');
@@ -3313,7 +3367,8 @@ function _scheduleAuditRowsForItem(item,monthKeys,visibleDays,fallbackMonth){
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,['월','화','수','목','금','토','일']);
     days.forEach(day=>{
       const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
-      if(targetMonth&&_scheduleAuditPeriodMonthFromDateKey(date.key)!==targetMonth) return;
+      const recordMonth=_scheduleAuditRecordMonthForDay(item,date.key,day,targetMonth);
+      if(targetMonth&&recordMonth!==targetMonth) return;
       if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
       const reason=_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot);
@@ -3332,6 +3387,8 @@ function _scheduleAuditRowsForItem(item,monthKeys,visibleDays,fallbackMonth){
         deleteReason:item?.deleteReason||'',
         at:item?.at||'',
         source:item?._source||'audit',
+        monthKey:recordMonth||targetMonth,
+        recordMonthKey:recordMonth||targetMonth,
         tabId:scope.tabId||'global',
         tabName:scope.tabName||'전체 기록',
         tabType:scope.tabType||'regular',

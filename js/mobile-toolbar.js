@@ -14,6 +14,7 @@
     if(event) event.stopPropagation();
     setOpen(false);
     if(action==='excel'&&typeof exportExcel==='function') return exportExcel();
+    if(action==='preliminary'&&typeof openPreliminaryRecordModal==='function') return openPreliminaryRecordModal();
     if(action==='print'&&typeof openSchedulePrintModal==='function') return openSchedulePrintModal();
     if(action==='zoomOut'&&typeof tblZoomOut==='function') return tblZoomOut();
     if(action==='zoomReset'&&typeof tblZoomReset==='function') return tblZoomReset();

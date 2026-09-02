@@ -119,3 +119,133 @@ test('lower records use a different operating month for each weekday', () => {
   assert.equal(context._deskNoteVisible({day:'화', date:'9/1'}, monthKeys, ['월', '화', '수'], '2026-08'), true);
   assert.equal(context._deskNoteVisible({day:'수', date:'9/7'}, monthKeys, ['월', '화', '수'], '2026-08'), false);
 });
+
+test('an automatic row keeps its weekday operating month even when the clicked date belongs to the prior period', () => {
+  const context = {
+    _periodMonthForDate:ds => ds === '2026-09-02' ? '2026-08' : String(ds || '').slice(0, 7),
+    _scheduleAuditNormalizeMonthKey:value => String(value || ''),
+    _scheduleAuditRecordIsBangteuk:() => false,
+    getToday:() => new Date(2026, 8, 2),
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    sourceBetween(dataSource, '_scheduleAuditMonthFromTabName', '_scheduleAuditText')
+      + sourceBetween(dataSource, '_deskNoteMonthFromDateKey', '_deskNoteCanSave')
+      + sourceBetween(dataSource, '_deskNoteVisible', '_deskNoteIsRetireHistoryProjection'),
+    context,
+    {filename:'schedule-audit-explicit-period.js'},
+  );
+  const monthKeys={월:'2026-09', 화:'2026-08'};
+  const note={day:'월', date:'9/2', dateKey:'2026-09-02', recordMonthKey:'2026-09'};
+
+  assert.equal(context._deskNoteVisible(note, monthKeys, ['월', '화'], '2026-08'), true);
+});
+
+test('generated notes store the weekday operating month separately from the clicked date', () => {
+  const context = {
+    _deskNoteRecordedDate:() => ({key:'2026-09-02',label:'9/2'}),
+    _deskNoteSourceKeyForRow:() => 'regular|2026-08|row',
+    _scheduleAuditScopeFromItem:() => ({tabId:'regular',tabName:'운영 시간표',tabType:'regular'}),
+    _scheduleAuditRecordIsBangteuk:() => false,
+    _scheduleAuditPeriodMonthFromDateKey:() => '2026-08',
+    _scheduleAuditNormalizeMonthKey:value => String(value || ''),
+    _scheduleAuditMonthKey:() => '2026-08',
+    _deskNoteId:() => 'desk_test',
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    sourceBetween(dataSource, '_deskNoteFromScheduleRow', 'ensureDeskNoteForRetireReservation'),
+    context,
+    {filename:'schedule-audit-generated-period.js'},
+  );
+  const note=context._deskNoteFromScheduleRow({
+    day:'월',
+    teacher:'김선생',
+    target:'홍길동',
+    reason:'삭제',
+    date:'9/2',
+    dateKey:'2026-09-02',
+    time:'4시',
+    at:'2026-09-02T10:00:00',
+    source:'audit',
+    recordMonthKey:'2026-09',
+    monthKey:'2026-09',
+  });
+
+  assert.equal(note.date, '9/2');
+  assert.equal(note.recordMonthKey, '2026-09');
+});
+
+test('an untouched automatic note can repair a stale operating month', () => {
+  const context = {
+    _scheduleAuditNormalizeMonthKey:value => String(value || ''),
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    sourceBetween(dataSource, '_deskNoteNeedsGeneratedMonthRepair', '_syncDeskNotesFromRows'),
+    context,
+    {filename:'schedule-audit-month-repair.js'},
+  );
+
+  assert.equal(context._deskNoteNeedsGeneratedMonthRepair(
+    {recordMonthKey:'2026-08', source:'audit', createdAt:'same', updatedAt:'same'},
+    {recordMonthKey:'2026-09'},
+  ), true);
+});
+
+test('a desk-edited note never has its operating month repaired automatically', () => {
+  const context = {
+    _scheduleAuditNormalizeMonthKey:value => String(value || ''),
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    sourceBetween(dataSource, '_deskNoteNeedsGeneratedMonthRepair', '_syncDeskNotesFromRows'),
+    context,
+    {filename:'schedule-audit-month-repair-guard.js'},
+  );
+
+  assert.equal(context._deskNoteNeedsGeneratedMonthRepair(
+    {recordMonthKey:'2026-08', source:'audit', createdAt:'before', updatedAt:'after'},
+    {recordMonthKey:'2026-09'},
+  ), false);
+  assert.equal(context._deskNoteNeedsGeneratedMonthRepair(
+    {recordMonthKey:'2026-08', manual:true},
+    {recordMonthKey:'2026-09'},
+  ), false);
+});
+
+test('audit rows use their captured weekday month without pulling old history into the current month', () => {
+  const context = {
+    _scheduleAuditNormalizeMonthKey:value => String(value || ''),
+    _scheduleAuditPeriodMonthFromDateKey:key => ({
+      '2026-06-15':'2026-06',
+      '2026-08-31':'2026-08',
+      '2026-09-02':'2026-08',
+    })[key] || String(key || '').slice(0, 7),
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    sourceBetween(dataSource, '_scheduleAuditRecordMonthForDay', '_scheduleAuditRowsForItem'),
+    context,
+    {filename:'schedule-audit-row-month.js'},
+  );
+
+  assert.equal(context._scheduleAuditRecordMonthForDay(
+    {operatingMonthsByDay:{월:'2026-09'}},
+    '2026-08-31',
+    '월',
+    '2026-09',
+  ), '2026-09');
+  assert.equal(context._scheduleAuditRecordMonthForDay(
+    {},
+    '2026-09-02',
+    '월',
+    '2026-09',
+  ), '2026-09');
+  assert.equal(context._scheduleAuditRecordMonthForDay(
+    {},
+    '2026-06-15',
+    '월',
+    '2026-09',
+  ), '2026-06');
+});
