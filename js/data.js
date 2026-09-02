@@ -2004,14 +2004,15 @@ function _scheduleAuditMonthKey(){
     else if(tab){
       const stored=typeof _tabPeriodMonth==='function'?_tabPeriodMonth(tab):tab.periodMonth;
       let liveMonth='';
+      let isMainRegular=false;
       try{
         const main=typeof _mainTabSetting==='function'?_mainTabSetting():{};
-        const isMainRegular=(!tab.type||tab.type==='regular')&&(main.tabId===tab.id||(!main.tabId&&tab.id==='regular'));
+        isMainRegular=(!tab.type||tab.type==='regular')&&(main.tabId===tab.id||(!main.tabId&&tab.id==='regular'));
         if(isMainRegular&&typeof _defaultPeriodMonth==='function') liveMonth=_defaultPeriodMonth();
       }catch(e){}
-      // 사용자가 보고 있는 탭 이름과 숨은 periodMonth가 다르면 탭 이름을 따른다.
-      // 과거 이월/스냅샷에서 periodMonth가 복제된 경우에도 월별 기록이 섞이지 않는다.
-      month=_scheduleAuditMonthFromTabName(tab,liveMonth||stored)||liveMonth||stored;
+      const namedMonth=_scheduleAuditMonthFromTabName(tab,liveMonth||stored);
+      // 운영 정규 시간표는 자동 이월 기준월이 원본이다. 박제 탭만 화면 이름의 월을 따른다.
+      month=isMainRegular?(liveMonth||stored||namedMonth):(namedMonth||stored||liveMonth);
     }
   }catch(e){}
   try{ if(!month&&typeof _defaultPeriodMonth==='function') month=_defaultPeriodMonth(); }catch(e){}
@@ -2029,6 +2030,37 @@ function _scheduleAuditDays(){
   });
   if(!set.size) ['월','화','수','목','금','토'].forEach(d=>set.add(d));
   return order.filter(d=>set.has(d));
+}
+function _scheduleAuditMonthKeysByDay(visibleDays,fallbackMonth){
+  const fallback=_scheduleAuditNormalizeMonthKey(fallbackMonth)||String(fallbackMonth||'');
+  const result={};
+  let useDisplayedDates=true;
+  try{
+    const tab=typeof _tabById==='function'?_tabById(_activeTab):null;
+    if(tab?.type==='snapshot') useDisplayedDates=false;
+  }catch(e){}
+  let headers={};
+  if(useDisplayedDates){
+    try{ headers=typeof getDateHeaders==='function'?getDateHeaders():{}; }catch(e){ headers={}; }
+  }
+  (visibleDays||[]).forEach(day=>{
+    const ds=String(headers?.[day]?.ds||'');
+    let month='';
+    if(ds){
+      try{
+        if(typeof _periodMonthForDate==='function') month=_periodMonthForDate(ds);
+      }catch(e){}
+      if(!month&&/^20\d{2}-\d{2}-\d{2}$/.test(ds)) month=ds.slice(0,7);
+    }
+    result[day]=_scheduleAuditNormalizeMonthKey(month)||fallback;
+  });
+  return result;
+}
+function _scheduleAuditMonthForDay(monthKeys,day,fallbackMonth){
+  if(monthKeys&&typeof monthKeys==='object'&&!Array.isArray(monthKeys)){
+    return String(monthKeys[day]||fallbackMonth||'');
+  }
+  return String(monthKeys||fallbackMonth||'');
 }
 function _scheduleAuditText(item){
   return [item?.label,item?.target,item?.detail,item?.tabName,item?.user].map(v=>String(v||'')).join(' ');
@@ -2260,7 +2292,7 @@ function _scheduleAuditDisplayTime(slot,day){
   }catch(e){}
   return slot?.time||'-';
 }
-function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
+function _scheduleAuditRowsFromVisibleReservations(monthKeys,visibleDays,fallbackMonth){
   const rows=[];
   const scope=_scheduleAuditActiveScope();
   if(scope.tabType==='bangteuk') return rows;
@@ -2268,8 +2300,6 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     if(_scheduleAuditRecordIsBangteuk(entry)) return;
     const ds=_scheduleAuditEntryDate(entry);
     if(!ds) return;
-    // 하단 기록의 월 구분은 수업 운영기간이 아니라 날짜의 달력 월을 따른다.
-    if(monthKey&&_deskNoteMonthFromDateKey(ds)!==String(monthKey)) return;
     const fromSlot=_scheduleAuditSlotFromKey(slotKey);
     if(!fromSlot) return;
     const fallback=_scheduleAuditStudentFromSlot(fromSlot,slotKey);
@@ -2280,6 +2310,8 @@ function _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays){
     const date=_scheduleAuditDateLabel(ds);
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,visibleDays).filter(day=>visibleDays.includes(day));
     days.forEach(day=>{
+      const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
+      if(targetMonth&&_scheduleAuditPeriodMonthFromDateKey(ds)!==targetMonth) return;
       if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,{user:''})) return;
       const target=_scheduleAuditEntryNameFromSlot(entry,fromSlot,slotKey,fallback);
@@ -2401,6 +2433,15 @@ function _deskNoteMonthFromDateKey(key){
   if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw.slice(0,7);
   return '';
 }
+function _scheduleAuditPeriodMonthFromDateKey(key){
+  const calendarMonth=_deskNoteMonthFromDateKey(key);
+  if(!calendarMonth) return '';
+  let periodMonth='';
+  try{
+    if(typeof _periodMonthForDate==='function') periodMonth=_periodMonthForDate(String(key));
+  }catch(e){}
+  return _scheduleAuditNormalizeMonthKey(periodMonth)||calendarMonth;
+}
 function _deskNoteMonthFromDateText(text,monthKey){
   const raw=String(text||'').trim();
   if(!raw||raw==='-') return '';
@@ -2453,7 +2494,7 @@ function _deskNoteRecordDateKey(note,targetMonth){
 }
 function _deskNoteRecordPeriodMonth(note,targetMonth){
   const key=_deskNoteRecordDateKey(note,targetMonth);
-  return key?_deskNoteMonthFromDateKey(key):'';
+  return key?_scheduleAuditPeriodMonthFromDateKey(key):'';
 }
 function _deskNoteCanSave(silent){
   if(window.SCAuth && typeof SCAuth.canWriteKey==='function' && !SCAuth.canWriteKey(STORAGE_KEYS.DESK_NOTES)){
@@ -2494,7 +2535,7 @@ function _deskNoteFromScheduleRow(row){
   const tabName=scope.tabName||row.tabName||'전체 기록';
   const tabType=scope.tabType||row.tabType||'regular';
   const bangteuk=_scheduleAuditRecordIsBangteuk(row)||tabType==='bangteuk';
-  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _deskNoteMonthFromDateKey(written.key) : '';
+  const recordMonthKey=/^\d{4}-\d{2}-\d{2}$/.test(String(written.key||'')) ? _scheduleAuditPeriodMonthFromDateKey(written.key) : '';
   return {
     id:_deskNoteId(),
     sourceKey,
@@ -2812,16 +2853,16 @@ function _deskNoteSourceKeyForRow(row){
   if(!row) return '';
   const scope=_scheduleAuditScopeFromItem(row);
   const tabId=scope.tabId||row.tabId||'global';
-  const monthKey=_deskNoteMonthFromDateKey(row.dateKey)||_deskNoteMonthFromDateKey(_recordLocalDateKey(row.at))||row.recordMonthKey||row.monthKey||'all';
+  const monthKey=_scheduleAuditPeriodMonthFromDateKey(row.dateKey)||_scheduleAuditPeriodMonthFromDateKey(_recordLocalDateKey(row.at))||row.recordMonthKey||row.monthKey||'all';
   const rowKey=_scheduleAuditRowKey(row);
   return [tabId,monthKey,rowKey].map(v=>String(v||'').trim()).join('|');
 }
-function _deskNoteVisible(note,monthKey,visibleDays){
+function _deskNoteVisible(note,monthKeys,visibleDays,fallbackMonth){
   if(!note||note.deleted) return false;
   if(_scheduleAuditRecordIsBangteuk(note)) return false;
   if(String(note.change||'').trim()==='휴원') return false;
   if(/휴원/.test(String(note.detail||'')+' '+String(note.original?.detail||''))) return false;
-  const targetMonth=String(monthKey||'');
+  const targetMonth=_scheduleAuditMonthForDay(monthKeys,note.day||'기타',fallbackMonth);
   if(!targetMonth) return true;
   const recordMonth=_deskNoteRecordPeriodMonth(note,targetMonth);
   return recordMonth===targetMonth;
@@ -3196,7 +3237,7 @@ function saveDeskNoteModal(){
   note.tabType=note.tabType||scope.tabType;
   note.dateKey=parsedDate.key;
   note.date=parsedDate.label||'-';
-  if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsedDate.key||''))) note.recordMonthKey=_deskNoteMonthFromDateKey(parsedDate.key);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(parsedDate.key||''))) note.recordMonthKey=_scheduleAuditPeriodMonthFromDateKey(parsedDate.key);
   else delete note.recordMonthKey;
   note.time=(document.getElementById('desk-note-time')?.value||'').trim()||'-';
   note.updatedAt=now;
@@ -3228,7 +3269,7 @@ function deleteDeskNoteModal(){
     if(typeof toast==='function') toast(err?.message||'기록 삭제 실패','err');
   });
 }
-function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
+function _scheduleAuditRowsForItem(item,monthKeys,visibleDays,fallbackMonth){
   const itemKeys=Array.isArray(item?.keys)?item.keys:[];
   const itemLabel=String(item?.label||'');
   // 퇴원 이력은 기록관리용 영구 원본이다. 시간표 하단에는 RETIRE_MAP에서
@@ -3269,9 +3310,10 @@ function _scheduleAuditRowsForItem(item,monthKey,visibleDays){
     // 이동 작업 중 일시적인 ID 불일치가 생겨도 삭제 조각만 하단 기록으로 남기지 않는다.
     if(_scheduleAuditIsFalseMoveDeleteSegment(item,text,toSlot)) return;
     const date=_scheduleAuditRecordedDateInfo(item);
-    if(monthKey&&_deskNoteMonthFromDateKey(date.key)!==String(monthKey)) return;
     const days=_scheduleAuditExpandDay(fromSlot.dayToken,['월','화','수','목','금','토','일']);
     days.forEach(day=>{
+      const targetMonth=_scheduleAuditMonthForDay(monthKeys,day,fallbackMonth);
+      if(targetMonth&&_scheduleAuditPeriodMonthFromDateKey(date.key)!==targetMonth) return;
       if(_scheduleAuditIsBangteukSlot(fromSlot,day)||_scheduleAuditIsBangteukSlot(toSlot,day)) return;
       if(_scheduleAuditIsSameTeacherClassMove(fromSlot,toSlot,day,item)) return;
       const reason=_scheduleAuditDisappearanceReason(item,text,fromSlot,toSlot);
@@ -3363,6 +3405,7 @@ function renderScheduleAuditSummary(){
     });
   }
   const visibleDays=_scheduleAuditDays();
+  const monthKeysByDay=_scheduleAuditMonthKeysByDay(visibleDays,monthKey);
   const perDay={};
   visibleDays.forEach(day=>{ perDay[day]=[]; });
   const seenRows=new Set();
@@ -3374,17 +3417,17 @@ function renderScheduleAuditSummary(){
     seenRows.add(key);
     sourceRows.push(row);
   };
-  _scheduleAuditRowsFromVisibleReservations(monthKey,visibleDays).forEach(addSourceRow);
+  _scheduleAuditRowsFromVisibleReservations(monthKeysByDay,visibleDays,monthKey).forEach(addSourceRow);
   const items=_recordItems(false).sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   items.forEach(item=>{
-    _scheduleAuditRowsForItem(item,monthKey,visibleDays).forEach(addSourceRow);
+    _scheduleAuditRowsForItem(item,monthKeysByDay,visibleDays,monthKey).forEach(addSourceRow);
   });
   const notes=_syncDeskNotesFromRows(sourceRows);
   const visibleNoteKeys=new Set();
   const visibleNotes=_deskNotesWithoutGenericDeletesFromSpecificOperations(
     _deskNotesWithoutAutomaticMovementDuplicates(
       _deskNotesWithoutRetireHistoryDuplicates(
-        notes.filter(note=>_deskNoteVisible(note,monthKey,visibleDays))
+        notes.filter(note=>_deskNoteVisible(note,monthKeysByDay,visibleDays,monthKey))
       )
     )
   );
