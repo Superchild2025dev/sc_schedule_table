@@ -2,6 +2,8 @@
   'use strict';
 
   const TEMPLATE_PATH='assets/templates/preliminary-record-template.xlsx';
+  const SATURDAY_TEMPLATE_PATH='assets/templates/preliminary-record-saturday-template.xlsx';
+  const YONGAM_SATURDAY_TEMPLATE_PATH='assets/templates/preliminary-record-saturday-yongam-template.xlsx';
   const MAIN_XML_NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
   const OFFICE_REL_NS='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const XML_NS='http://www.w3.org/XML/1998/namespace';
@@ -49,6 +51,40 @@
       {teacher:'V51',nameCol:'W',lastCol:'AC',start:51,end:68,large:true},
     ],
   };
+  const SATURDAY_LAYOUT={
+    '9시':[...TEMPLATE_LAYOUT['2시'],...TEMPLATE_LAYOUT['3시']],
+    '10시':TEMPLATE_LAYOUT['4시'],
+    '11시':TEMPLATE_LAYOUT['5시'],
+    '12시':[
+      {teacher:'L33',nameCol:'M',lastCol:'S',start:33,end:38},
+      {teacher:'L39',nameCol:'M',lastCol:'S',start:39,end:44},
+      {teacher:'L45',nameCol:'M',lastCol:'S',start:45,end:50},
+      {teacher:'L51',nameCol:'M',lastCol:'S',start:51,end:56},
+      {teacher:'L57',nameCol:'M',lastCol:'S',start:57,end:62},
+      {teacher:'L63',nameCol:'M',lastCol:'S',start:63,end:68},
+    ],
+    '1시':TEMPLATE_LAYOUT['7시'],
+    '2시':[
+      {teacher:'V33',nameCol:'W',lastCol:'AC',start:33,end:38},
+      {teacher:'V39',nameCol:'W',lastCol:'AC',start:39,end:44},
+      {teacher:'V45',nameCol:'W',lastCol:'AC',start:45,end:50},
+      {teacher:'V51',nameCol:'W',lastCol:'AC',start:51,end:56},
+      {teacher:'V57',nameCol:'W',lastCol:'AC',start:57,end:62},
+      {teacher:'V63',nameCol:'W',lastCol:'AC',start:63,end:68},
+    ],
+  };
+  const YONGAM_SATURDAY_LAYOUT={
+    ...SATURDAY_LAYOUT,
+    '12시':TEMPLATE_LAYOUT['6시'],
+  };
+  const SATURDAY_SOURCE_TIMES={
+    '9시':'1시',
+    '10시':'2시',
+    '11시':'3시',
+    '12시':'4시',
+    '1시':'5시',
+    '2시':'6시',
+  };
 
   function selectDisplayedOccupant(items){
     const list=Array.isArray(items)?items.filter(Boolean):[];
@@ -58,14 +94,18 @@
   }
 
   function normalBlockValues(names){
-    const values=Array.isArray(names)?names.slice(0,5):[];
+    const values=Array.isArray(names)
+      ?names.filter(value=>String(value||'').trim()).slice(0,5)
+      :[];
     while(values.length<5) values.push('');
     values.push('');
     return values.map(value=>String(value||''));
   }
 
   function largeBlockValues(names){
-    const values=Array.isArray(names)?names.slice(0,18):[];
+    const values=Array.isArray(names)
+      ?names.filter(value=>String(value||'').trim()).slice(0,18)
+      :[];
     while(values.length<18) values.push('');
     return values.map(value=>String(value||''));
   }
@@ -112,27 +152,67 @@
         lane++;
       }
     }
-    return groups;
+    return groups.sort((left,right)=>(left.lanes[0]||0)-(right.lanes[0]||0));
+  }
+
+  function formatParticipantLabel(item){
+    if(!item) return '';
+    const name=String(item.n||'')
+      .replace(/^[*＊]+\s*/,'')
+      .replace(/\s*\(보강\)\s*$/,'')
+      .trim();
+    const ageMatch=String(item.a??'').match(/\d+/);
+    const age=ageMatch?ageMatch[0]:'';
+    const nameWithAge=age&&!name.endsWith(age)?`${name}${age}`:name;
+    const prefix=item.btWeek5?'*':'';
+    const suffix=item.type==='bogang'?'(보강)':'';
+    return `${prefix}${nameWithAge}${suffix}`;
   }
 
   function slotName(time,day,lane,row,ds,closed){
     if(typeof _printCellItems!=='function') return '';
     const item=selectDisplayedOccupant(_printCellItems(time,day,lane,row,ds,closed));
     if(!item) return '';
-    const prefix=item.btWeek5?'*':'';
-    return prefix+String(item.n||'').replace(/^[*＊]+\s*/,'');
+    return formatParticipantLabel(item);
+  }
+
+  function seatCoordinatesForGroup(group){
+    const lanes=Array.isArray(group?.lanes)?group.lanes:[];
+    if(group?.large){
+      const seats=[];
+      for(let row=1;row<=8;row++) lanes.forEach(lane=>seats.push({lane,row}));
+      return seats;
+    }
+    return Array.from({length:5},(_,index)=>({lane:lanes[0],row:index+1}));
   }
 
   function namesForGroup(group,time,day,ds,closed){
-    const names=[];
-    if(group.large){
-      group.lanes.forEach(lane=>{
-        for(let row=1;row<=8;row++) names.push(slotName(time,day,lane,row,ds,closed));
-      });
-      return largeBlockValues(names);
-    }
-    for(let row=1;row<=5;row++) names.push(slotName(time,day,group.lanes[0],row,ds,closed));
-    return normalBlockValues(names);
+    const names=seatCoordinatesForGroup(group)
+      .map(seat=>slotName(time,day,seat.lane,seat.row,ds,closed));
+    return group.large?largeBlockValues(names):normalBlockValues(names);
+  }
+
+  function sourceTimeForDay(displayTime,day){
+    if(day!=='토') return displayTime;
+    if(SATURDAY_SOURCE_TIMES[displayTime]) return SATURDAY_SOURCE_TIMES[displayTime];
+    try{
+      if(typeof SCScheduleTime!=='undefined'&&typeof SCScheduleTime.internalTimeForDay==='function'){
+        return SCScheduleTime.internalTimeForDay(day,displayTime);
+      }
+    }catch(e){}
+    return SATURDAY_SOURCE_TIMES[displayTime]||displayTime;
+  }
+
+  function branchId(value){
+    return String(typeof value==='string'?value:(value?.id||'')).trim().toLowerCase();
+  }
+
+  function saturdayLayoutForBranch(branch){
+    return branchId(branch)==='yongam'?YONGAM_SATURDAY_LAYOUT:SATURDAY_LAYOUT;
+  }
+
+  function saturdayTemplateForBranch(branch){
+    return branchId(branch)==='yongam'?YONGAM_SATURDAY_TEMPLATE_PATH:SATURDAY_TEMPLATE_PATH;
   }
 
   function decodeColumn(column){
@@ -174,22 +254,24 @@
     }
   }
 
-  function writeTime(values,time,day,ds,closed){
-    const blocks=TEMPLATE_LAYOUT[time]||[];
+  function writeTime(values,displayTime,day,ds,closed,layout){
+    const activeLayout=layout||TEMPLATE_LAYOUT;
+    const blocks=activeLayout[displayTime]||[];
+    const sourceTime=sourceTimeForDay(displayTime,day);
     blocks.forEach(block=>clearBlock(values,block));
-    const groups=groupsForTime(time,day);
+    const groups=groupsForTime(sourceTime,day);
     const normalGroups=groups.filter(group=>!group.large);
     const largeGroups=groups.filter(group=>group.large);
     const normalBlocks=blocks.filter(block=>!block.large);
     const largeBlocks=blocks.filter(block=>block.large);
     if(normalGroups.length>normalBlocks.length){
-      throw new Error(`${time} 일반반이 기록지 양식의 반 수보다 많습니다`);
+      throw new Error(`${displayTime} 일반반이 기록지 양식의 반 수보다 많습니다`);
     }
     if(largeGroups.length>largeBlocks.length){
-      throw new Error(`${time} 엘리트/마스터반이 기록지 양식의 큰 칸보다 많습니다`);
+      throw new Error(`${displayTime} 엘리트/마스터반이 기록지 양식의 큰 칸보다 많습니다`);
     }
-    normalGroups.forEach((group,index)=>writeBlock(values,normalBlocks[index],group,time,day,ds,closed));
-    largeGroups.forEach((group,index)=>writeBlock(values,largeBlocks[index],group,time,day,ds,closed));
+    normalGroups.forEach((group,index)=>writeBlock(values,normalBlocks[index],group,sourceTime,day,ds,closed));
+    largeGroups.forEach((group,index)=>writeBlock(values,largeBlocks[index],group,sourceTime,day,ds,closed));
   }
 
   function parseXml(xml,label){
@@ -231,7 +313,9 @@
   }
 
   function normalizeZipPath(base,target){
-    const parts=`${base}/${String(target||'')}`.replace(/\\/g,'/').split('/');
+    const normalizedTarget=String(target||'').replace(/\\/g,'/');
+    const source=normalizedTarget.startsWith('/')?normalizedTarget:`${base}/${normalizedTarget}`;
+    const parts=source.split('/');
     const normalized=[];
     parts.forEach(part=>{
       if(!part||part==='.') return;
@@ -241,7 +325,19 @@
     return normalized.join('/');
   }
 
-  async function patchTemplateArchive(archive,values,sheetName){
+  function normalizeWorksheetRowHeights(sheetDoc,startRow,endRow,height){
+    const first=Number(startRow);
+    const last=Number(endRow);
+    const fixedHeight=String(height);
+    Array.from(sheetDoc.getElementsByTagNameNS(MAIN_XML_NS,'row')).forEach(row=>{
+      const rowNumber=Number(row.getAttribute('r'));
+      if(rowNumber<first||rowNumber>last) return;
+      row.setAttribute('ht',fixedHeight);
+      row.setAttribute('customHeight','1');
+    });
+  }
+
+  async function patchTemplateArchive(archive,values,sheetName,options){
     const workbookEntry=archive.file('xl/workbook.xml');
     const relsEntry=archive.file('xl/_rels/workbook.xml.rels');
     if(!workbookEntry||!relsEntry) throw new Error('예선 기록지 통합문서 구조를 찾지 못했습니다');
@@ -257,6 +353,9 @@
     if(!worksheetEntry) throw new Error('예선 기록지 시트 파일을 찾지 못했습니다');
     const sheetDoc=parseXml(await worksheetEntry.async('string'),'예선 기록지 시트');
     Object.keys(values).forEach(address=>setXmlCellText(sheetDoc,address,values[address]));
+    if(options?.fixedRowHeight){
+      normalizeWorksheetRowHeights(sheetDoc,1,70,options.fixedRowHeight);
+    }
     sheet.setAttribute('name',safeSheetName(sheetName));
     archive.file('xl/workbook.xml',serializeXml(workbookDoc));
     archive.file(worksheetPath,serializeXml(sheetDoc));
@@ -275,9 +374,10 @@
     return safeSheetName(`${info.date.getMonth()+1}월 ${info.date.getDate()}일 ${info.dow}요일`);
   }
 
-  async function loadTemplateArchive(){
+  async function loadTemplateArchive(templatePath){
     if(typeof JSZip==='undefined') throw new Error('예선 기록지 압축 라이브러리를 불러오지 못했습니다');
-    const url=typeof scAsset==='function'?scAsset(TEMPLATE_PATH):TEMPLATE_PATH;
+    const path=templatePath||TEMPLATE_PATH;
+    const url=typeof scAsset==='function'?scAsset(path):path;
     const response=await fetch(url,{cache:'no-store'});
     if(!response.ok) throw new Error('예선 기록지 양식을 불러오지 못했습니다');
     return JSZip.loadAsync(await response.arrayBuffer());
@@ -289,12 +389,20 @@
     if(!isScheduleDataReady(students,inst)) throw new Error('시간표 데이터를 불러온 뒤 다시 시도해주세요');
     const info=typeof _printDateInfo==='function'?_printDateInfo(ds):null;
     if(!info||!info.hasClass) throw new Error('선택한 날짜에 수업이 없습니다');
-    if(info.sourceDay==='토') throw new Error('현재 예선 기록지 양식은 평일 수업용입니다');
     if(info.closed) throw new Error(`선택한 날짜는 ${info.closed}입니다`);
+    const saturday=info.sourceDay==='토';
+    const branch=typeof getBranchInfo==='function'?getBranchInfo():null;
+    const layout=saturday?saturdayLayoutForBranch(branch):TEMPLATE_LAYOUT;
+    const templatePath=saturday?saturdayTemplateForBranch(branch):TEMPLATE_PATH;
     const values={};
-    Object.keys(TEMPLATE_LAYOUT).forEach(time=>writeTime(values,time,info.sourceDay,ds,info.closed));
-    const archive=await loadTemplateArchive();
-    await patchTemplateArchive(archive,values,datedSheetName(info));
+    Object.keys(layout).forEach(time=>writeTime(values,time,info.sourceDay,ds,info.closed,layout));
+    const archive=await loadTemplateArchive(templatePath);
+    await patchTemplateArchive(
+      archive,
+      values,
+      datedSheetName(info),
+      saturday?{fixedRowHeight:15.75}:undefined,
+    );
     return {archive,info};
   }
 
@@ -341,11 +449,6 @@
     const info=typeof _printDateInfo==='function'?_printDateInfo(input.value):null;
     if(!info||!info.hasClass){
       note.textContent='선택한 날짜에 수업이 없습니다.';
-      note.className='schedule-print-note warn';
-      return;
-    }
-    if(info.sourceDay==='토'){
-      note.textContent='현재 양식은 평일 2시~8시 수업용입니다.';
       note.className='schedule-print-note warn';
       return;
     }
@@ -399,8 +502,17 @@
 
   root.SCPreliminaryRecord={
     TEMPLATE_PATH,
+    SATURDAY_TEMPLATE_PATH,
+    YONGAM_SATURDAY_TEMPLATE_PATH,
     TEMPLATE_LAYOUT,
+    SATURDAY_LAYOUT,
+    YONGAM_SATURDAY_LAYOUT,
     selectDisplayedOccupant,
+    formatParticipantLabel,
+    seatCoordinatesForGroup,
+    sourceTimeForDay,
+    saturdayLayoutForBranch,
+    saturdayTemplateForBranch,
     normalBlockValues,
     largeBlockValues,
     participantRow,
@@ -408,6 +520,8 @@
     decodeColumn,
     encodeColumn,
     ensureXmlDeclaration,
+    normalizeZipPath,
+    normalizeWorksheetRowHeights,
     patchTemplateArchive,
     buildWorkbookForDate,
     openModal,
