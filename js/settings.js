@@ -463,21 +463,12 @@
     const selected=[];
     if(regularMain) selected.push(regularMain);
     const today=currentIsoDate();
-    let hasBangteuk=false;
     tabs.filter(tab=>tab.type==='bangteuk').forEach(tab=>{
-      const isMainBangteuk=main.tabId&&tab.id===main.tabId;
       const inSeason=tab.seasonStart&&tab.seasonEnd&&tab.seasonStart<=today&&tab.seasonEnd>=today;
-      if((isMainBangteuk||inSeason)&&!selected.some(item=>item.id===tab.id)){
+      if(inSeason&&!selected.some(item=>item.id===tab.id)){
         selected.push(tab);
-        hasBangteuk=true;
       }
     });
-    if(!hasBangteuk){
-      const fallbackBangteuk=tabs
-        .filter(tab=>tab.type==='bangteuk')
-        .sort((a,b)=>String(b.seasonStart||'').localeCompare(String(a.seasonStart||''))||String(b.id||'').localeCompare(String(a.id||'')))[0];
-      if(fallbackBangteuk&&!selected.some(item=>item.id===fallbackBangteuk.id)) selected.push(fallbackBangteuk);
-    }
     return selected.length?selected:(regularMain?[regularMain]:tabs.slice(0,1));
   }
   function studentTabConfig(tab){
@@ -810,6 +801,7 @@
       studentRootValue(root,TAB_LIST_KEY,[]),
       studentRootValue(root,MAIN_TAB_KEY,{})||{}
     );
+    const bangteukActive=tabs.some(tab=>tab&&tab.type==='bangteuk');
     const enrollMap=studentRootValue(root,ENROLL_KEY,{})||{};
     const retireMap=studentRootValue(root,RETIRE_KEY,{})||{};
     const disabledMap=studentRootValue(root,DISABLED_KEY,{})||{};
@@ -882,6 +874,7 @@
       addStudentGroup(groups,studentRecord(entry,'숨김후보',tab||{id:'hidden',name:'숨김후보'},slotKey,reason||'시간표 밖',fallback,teacherByInstKey[instKey]||'',null));
     };
     const addBangteukPerson=(entry,tab,slotKey,fallback,teacherName,source)=>{
+      if(!bangteukActive) return;
       const key=studentEntryPersonKey(entry,fallback);
       if(key) bangteukPeople.add(key);
       if(slotKey) bangteukSlots.add(slotKey);
@@ -1044,7 +1037,7 @@
     const move=rows.reduce((sum,row)=>sum+(row.moveCount||0),0);
     const hidden=rows.reduce((sum,row)=>sum+(row.hiddenCount||0),0);
     const missingPhone=rows.reduce((sum,row)=>sum+(row.missingPhoneCount||0),0);
-    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,regularClassHours:classHours,bangteukClassHours:bangteukSlots.size,averageHours,retire,move,hidden,bangteuk:bangteukPeople.size,missingPhone,loadedAt:new Date().toISOString()};
+    return {rows,tabs:[...tabOptions,{id:'reservation',name:'예약'}],total,counted,classHours,regularClassHours:classHours,bangteukActive,bangteukClassHours:bangteukActive?bangteukSlots.size:0,averageHours,retire,move,hidden,bangteuk:bangteukActive?bangteukPeople.size:0,missingPhone,loadedAt:new Date().toISOString()};
   }
   async function loadStudentDirectory(force){
     const branchId=activeBranch;
@@ -1060,7 +1053,7 @@
       studentDirectoryByBranch[branchId]=studentDirectoryRowsFromRoot(root);
     }catch(e){
       console.error(e);
-      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0,error:e.message||String(e)};
+      studentDirectoryByBranch[branchId]={rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukActive:false,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0,error:e.message||String(e)};
       toast('원생목록 로드 실패','err');
     }finally{
       studentDirectoryLoadingByBranch[branchId]=false;
@@ -3107,7 +3100,7 @@
     if(body) body.innerHTML='<tr><td colspan="5" class="student-empty">원생목록을 불러오는 중입니다...</td></tr>';
   }
   function currentStudentDirectory(){
-    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0};
+    return studentDirectoryByBranch[activeBranch]||{rows:[],tabs:[],total:0,counted:0,classHours:0,regularClassHours:0,bangteukActive:false,bangteukClassHours:0,averageHours:0,retire:0,move:0,hidden:0,bangteuk:0,missingPhone:0};
   }
   function studentRowTeachers(row){
     return [...new Set((row.members||[]).flatMap(member=>(member.slots||[]).map(slot=>slot.teacher).filter(Boolean)))];
@@ -3314,6 +3307,11 @@
       }
     }
   }
+  function setStudentBangteukStatsVisible(active){
+    document.querySelectorAll('[data-students-bangteuk-stat]').forEach(card=>{
+      card.hidden=!active;
+    });
+  }
   function renderStudentDirectory(){
     const dir=currentStudentDirectory();
     renderStudentTeacherOptions(dir);
@@ -3333,6 +3331,7 @@
     if(retireEl) retireEl.textContent=String(dir.retire||0);
     if(netEl) netEl.textContent=String(dir.counted||0);
     if(bangteukEl) bangteukEl.textContent=String(dir.bangteuk||0);
+    setStudentBangteukStatsVisible(dir.bangteukActive===true);
     if(missingPhoneEl) missingPhoneEl.textContent=String(dir.missingPhone||0);
     const hiddenWarning=$('students-hidden-warning');
     if(hiddenWarning){

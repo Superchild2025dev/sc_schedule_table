@@ -3005,11 +3005,26 @@ function _summaryRowsFromMap(map){
     slotText:row.slots.map(slot=>slot.text).join(' / ')
   })).sort((a,b)=>String(a.n).localeCompare(String(b.n),'ko') || String(a.p).localeCompare(String(b.p),'ko'));
 }
+function _summaryBangteukStatsActive(){
+  let today='';
+  try{ today=toDateStr(getToday()); }catch(e){}
+  if(!today) return false;
+  let tabs=[];
+  try{ tabs=(Array.isArray(_tabList)?_tabList:[]).filter(tab=>tab&&tab.type==='bangteuk'); }catch(e){}
+  if(!tabs.length){
+    try{
+      const tab=typeof getActiveBangteukBasisTab==='function'?getActiveBangteukBasisTab():null;
+      if(tab) tabs=[tab];
+    }catch(e){}
+  }
+  return tabs.some(tab=>tab.seasonStart&&tab.seasonEnd&&tab.seasonStart<=today&&today<=tab.seasonEnd);
+}
 function getScheduleSummaryData(){
   const regularInstRowsByKey={};
   const bangteukInstRowsByKey={};
   let regularCapacity=0;
   let bangteukCapacity=0;
+  const bangteukActive=_summaryBangteukStatsActive();
   const bangteukTable=typeof isBangteuk==='function'&&isBangteuk();
   const days=typeof getDays==='function'?getDays():[];
   const lanes=typeof getLanes==='function'?getLanes():0;
@@ -3038,8 +3053,9 @@ function getScheduleSummaryData(){
         rowsByKey[instKey]=rows;
         for(let row=1;row<=rows;row++){
           if(DISABLED_MAP&&DISABLED_MAP[instKey+'/'+row]) continue;
-          if(isBangteukClass) bangteukCapacity++;
-          else regularCapacity++;
+          if(isBangteukClass){
+            if(bangteukActive) bangteukCapacity++;
+          }else regularCapacity++;
         }
       }
     });
@@ -3084,6 +3100,7 @@ function getScheduleSummaryData(){
   const bangteukPeople=new Map();
   const bangteukOccupiedSlots=new Set();
   const addBangteukPerson=(entry,slotKey,fallback,visible)=>{
+    if(!bangteukActive) return;
     _summaryAddPerson(bangteukPeople,_summaryRecord(entry,'방특',slotKey,'',fallback),true);
     if(visible) bangteukOccupiedSlots.add(slotKey);
   };
@@ -3156,18 +3173,19 @@ function getScheduleSummaryData(){
   const countedRows=_summaryRowsFromMap(countedPeople);
   const excludedRows=_summaryRowsFromMap(excludedPeople);
   const hiddenRows=_summaryRowsFromMap(hiddenPeople);
-  const bangteukRows=_summaryRowsFromMap(bangteukPeople);
+  const bangteukRows=bangteukActive?_summaryRowsFromMap(bangteukPeople):[];
   const countedKeys=new Set(countedRows.map(row=>row.key));
   const excludedOnlyRows=excludedRows.filter(row=>!countedKeys.has(row.key));
   const regularHours=occupiedSlots.size;
-  const bangteukHours=bangteukOccupiedSlots.size;
+  const bangteukHours=bangteukActive?bangteukOccupiedSlots.size:0;
   return {
     hours:regularHours,
     capacity:regularCapacity,
     regularHours,
     regularCapacity,
+    bangteukActive,
     bangteukHours,
-    bangteukCapacity,
+    bangteukCapacity:bangteukActive?bangteukCapacity:0,
     countedRows,
     excludedRows,
     hiddenRows,
@@ -3187,6 +3205,9 @@ function updateScheduleSummary(){
   if(bangteukHoursEl) bangteukHoursEl.textContent=_summaryNumber(data.bangteukHours)+'/'+_summaryNumber(data.bangteukCapacity);
   if(studentsEl) studentsEl.textContent=_summaryNumber(data.countedRows.length);
   if(bangteukEl) bangteukEl.textContent=_summaryNumber((data.bangteukRows||[]).length);
+  document.querySelectorAll('[data-summary-bangteuk]').forEach(node=>{
+    node.hidden=!data.bangteukActive;
+  });
 }
 
 function _scheduleStudentRowsForModal(){
@@ -3338,7 +3359,19 @@ function renderScheduleStudentList(){
     return String(row.search||'').includes(q);
   });
   if(summary){
-    summary.textContent=`정규 원생 ${_summaryNumber(data.countedRows.length)}명 · 정규 시수 ${_summaryNumber(data.regularHours)} · 방특 원생 ${_summaryNumber((data.bangteukRows||[]).length)}명 · 방특 시수 ${_summaryNumber(data.bangteukHours)} · 정규 평균시수 ${Number(data.averageHours||0).toFixed(1)} · 제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명 · 숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명 · 표시 원생 ${_summaryNumber(filtered.length)}건`;
+    const parts=[
+      `정규 원생 ${_summaryNumber(data.countedRows.length)}명`,
+      `정규 시수 ${_summaryNumber(data.regularHours)}`,
+    ];
+    if(data.bangteukActive){
+      parts.push(`방특 원생 ${_summaryNumber((data.bangteukRows||[]).length)}명`);
+      parts.push(`방특 시수 ${_summaryNumber(data.bangteukHours)}`);
+    }
+    parts.push(`정규 평균시수 ${Number(data.averageHours||0).toFixed(1)}`);
+    parts.push(`제외예정 ${_summaryNumber((data.excludedOnlyRows||data.excludedRows||[]).length)}명`);
+    parts.push(`숨김후보 ${_summaryNumber((data.hiddenRows||[]).length)}명`);
+    parts.push(`표시 원생 ${_summaryNumber(filtered.length)}건`);
+    summary.textContent=parts.join(' · ');
   }
   body.innerHTML=filtered.map(row=>{
     const badges=[
