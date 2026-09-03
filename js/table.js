@@ -3134,7 +3134,6 @@ function getScheduleSummaryData(){
       const ds=typeof retire==='string'?retire:retire.ds;
       const isChange=enrollPersonKeys.has(_summaryEntryPersonKey(retire,stu));
       _summaryAddPerson(excludedPeople,_summaryRecord(retire,_summaryRetireStatus(retire,isChange),slotKey,_summaryDate(ds)+_retireReservationSuffix(retire,slotKey,stu),stu),false);
-      return;
     }
     occupiedSlots.add(slotKey);
     _summaryAddPerson(countedPeople,_summaryRecord(stu,'재원',slotKey,''),true);

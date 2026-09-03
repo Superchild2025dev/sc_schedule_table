@@ -16,12 +16,27 @@ const _BT_BASE={
   hasNum:['월수금','화목'],
   satTimeLabel:{},
 };
+function _tabEffectiveType(tab){
+  if(!tab) return 'regular';
+  if(tab.type==='snapshot') return tab.sourceTabType==='bangteuk'?'bangteuk':'regular';
+  return tab.type==='bangteuk'?'bangteuk':'regular';
+}
+function hydrateSnapshotSourceMetadata(tab,data){
+  if(!tab||tab.type!=='snapshot'||!data) return tab;
+  if(!tab.sourceTabId&&data.sourceTabId) tab.sourceTabId=data.sourceTabId;
+  if(!tab.sourceTabType&&(data.sourceTabType==='regular'||data.sourceTabType==='bangteuk')){
+    tab.sourceTabType=data.sourceTabType;
+  }
+  if(!tab.sourceTabName&&data.sourceTabName) tab.sourceTabName=data.sourceTabName;
+  return tab;
+}
 function _tabById(tabId){
   return (_tabList||[]).find(t=>t&&t.id===tabId)||null;
 }
 function _tabConfigFor(tab){
-  if(!tab||tab.type==='regular'){
-    const id=tab?.id||'regular';
+  const effectiveType=_tabEffectiveType(tab);
+  const id=(tab?.type==='snapshot'?tab.sourceTabId:tab?.id)||'regular';
+  if(effectiveType==='regular'){
     const isDefault=(!tab||id==='regular');
     return {
       ..._REG_BASE,
@@ -29,11 +44,11 @@ function _tabConfigFor(tab){
       instKey:isDefault?'swim_inst':'swim_inst_'+id,
     };
   }
-  if(tab.type==='bangteuk'){
+  if(effectiveType==='bangteuk'){
     return {
       ..._BT_BASE,
-      stuKey:'swim_bt_'+tab.id+'_stu',
-      instKey:'swim_bt_'+tab.id+'_inst',
+      stuKey:'swim_bt_'+id+'_stu',
+      instKey:'swim_bt_'+id+'_inst',
     };
   }
   return {..._REG_BASE, stuKey:'swim_students', instKey:'swim_inst'};
@@ -45,7 +60,7 @@ function getTabConfig(){
   const tab=_tabList.find(t=>t.id===_activeTab);
   return _tabConfigFor(tab);
 }
-function isBangteuk(){ return _tabList.find(t=>t.id===_activeTab)?.type==='bangteuk'; }
+function isBangteuk(){ return _tabEffectiveType(_tabList.find(t=>t.id===_activeTab))==='bangteuk'; }
 function isSnapshotTab(){ return _tabList.find(t=>t.id===_activeTab)?.type==='snapshot'; }
 function getSnapshotCapturedAt(){
   const tab=_tabList.find(t=>t.id===_activeTab);
@@ -2020,6 +2035,7 @@ async function switchTabView(){
       await requestTabSwitch(_snapshotFallbackTabId());
       return;
     }
+    hydrateSnapshotSourceMetadata(tab,snapData);
     // 구버전 월 스냅샷에 들어 있던 중복 날짜 명단은 메모리에서도 즉시 제외한다.
     if(Object.prototype.hasOwnProperty.call(snapData,'daySnapshot')) delete snapData.daySnapshot;
     // 백업
