@@ -108,6 +108,14 @@ button,input,textarea,select{font-family:inherit}
 .voice-delete{height:32px;border:1px solid #DC2626;border-radius:6px;background:#fff;color:#B91C1C;padding:0 11px;font-size:11px;font-weight:900;cursor:pointer}
 .voice-delete:hover{background:#FEF2F2}
 .voice-delete:disabled{opacity:.55;cursor:wait}
+.voice-delete-modal{display:flex}
+.voice-delete-modal[hidden]{display:none!important}
+.voice-delete-field{display:grid;gap:6px;color:#374151;font-size:12px;font-weight:900}
+.voice-delete-field input{width:100%;min-height:42px;border:1px solid #CBD5E1;border-radius:7px;padding:9px 11px;color:#172033;background:#fff;font-size:14px}
+.voice-delete-field input:focus{outline:none;border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+.voice-delete-error{margin:10px 0 0;color:#B91C1C;font-size:12px;font-weight:800;line-height:1.5}
+.voice-delete-confirm{min-width:84px;border:1px solid #DC2626;border-radius:6px;background:#DC2626;color:#fff;padding:0 14px;font-size:12px;font-weight:900;cursor:pointer}
+.voice-delete-confirm:disabled{opacity:.55;cursor:wait}
 .voice-save{height:32px;border:1px solid #0F9D58;border-radius:6px;background:#0F9D58;color:#fff;padding:0 11px;font-size:11px;font-weight:900;cursor:pointer}
 .voice-save:disabled{opacity:.55;cursor:wait}
 .legacy-feedback{margin-top:18px;border-top:1px solid #DDE3EC;padding-top:12px}

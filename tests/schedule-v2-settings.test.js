@@ -37,6 +37,7 @@ class FakeDocument{
   constructor(db,documentPath){this.db=db;this.path=documentPath;this.id=documentPath.split("/").pop();}
   collection(name){return new FakeCollection(this.db,`${this.path}/${name}`);}
   async get(){return new FakeSnapshot(this,this.db.docs.get(this.path));}
+  async delete(){this.db.docs.delete(this.path);}
 }
 
 class FakeCollection{
@@ -152,6 +153,41 @@ function loadFunctions({initial={},runShadowSync=async()=>({
 function request(action,branchId,email="developer@scswim.local"){
   return {data:{action,branchId},auth:{uid:`uid-${email}`,token:{email}}};
 }
+
+test("customer voice deletion requires the matching branch desk and phone password",async()=>{
+  const ticketPath="customerVoice/gagyeong/tickets/sample-ticket";
+  const load=()=>loadFunctions({initial:{[ticketPath]:{message:"example"}}});
+
+  {
+    const {exports}=load();
+    await assert.rejects(()=>exports.customerVoice({
+      data:{action:"delete",branch:"gagyeong",ticketId:"sample-ticket",password:"0437152019"},
+    }),error=>error.code==="unauthenticated");
+  }
+  {
+    const {exports}=load();
+    await assert.rejects(()=>exports.customerVoice({
+      data:{action:"delete",branch:"gagyeong",ticketId:"sample-ticket",password:"0437152019"},
+      auth:{uid:"teacher",token:{email:"gagyeong.son@scswim.local"}},
+    }),error=>error.code==="permission-denied");
+  }
+  {
+    const {exports}=load();
+    await assert.rejects(()=>exports.customerVoice({
+      data:{action:"delete",branch:"gagyeong",ticketId:"sample-ticket",password:"0432882016"},
+      auth:{uid:"desk",token:{email:"gagyeong.desk@scswim.local"}},
+    }),error=>error.code==="permission-denied");
+  }
+  {
+    const {db,exports}=load();
+    const result=await exports.customerVoice({
+      data:{action:"delete",branch:"gagyeong",ticketId:"sample-ticket",password:"043-715-2019"},
+      auth:{uid:"desk",token:{email:"gagyeong.desk@scswim.local"}},
+    });
+    assert.deepEqual(result,{deleted:true});
+    assert.equal(db.value(ticketPath),undefined);
+  }
+});
 function schedulePath(branchId){return `scheduleV2/${branchId}/runtime/schedule`;}
 function syncPath(branchId){return `scheduleV2/${branchId}/runtime/scheduleSync`;}
 function generationPath(branchId,generationId){return `scheduleV2/${branchId}/generations/${generationId}`;}

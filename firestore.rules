@@ -152,8 +152,7 @@ service cloud.firestore {
 
     match /customerVoice/{branch}/tickets/{ticketId} {
       allow read, update: if canManageSchedule(branch);
-      allow delete: if canManageSchedule(branch);
-      allow create: if false;
+      allow create, delete: if false;
     }
 
     match /customerVoiceRateLimits/{document=**} {

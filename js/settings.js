@@ -131,6 +131,8 @@
   let voiceTicketsByBranch={};
   let voiceTicketUnsubscribe=null;
   let voiceTicketBranch='';
+  let customerVoiceCallable=null;
+  let voiceDeleteTicketId='';
   let rootByBranch={};
   let settingsLoadFailedByBranch={};
   let studentDirectoryByBranch={};
@@ -3063,21 +3065,58 @@
       console.error(error);toast('처리 내용 저장 실패','err');
     }finally{button.disabled=false;button.textContent=original;}
   }
-  async function deleteVoiceTicket(card,button){
+  function getCustomerVoiceCallable(){
+    if(customerVoiceCallable) return customerVoiceCallable;
+    const app=ensureFirebase();
+    if(!firebase.functions) throw new Error('Firebase Functions SDK가 로드되지 않았습니다.');
+    const service=app.functions?app.functions('asia-northeast3'):firebase.functions('asia-northeast3');
+    customerVoiceCallable=service.httpsCallable('customerVoice');
+    return customerVoiceCallable;
+  }
+  function openVoiceDeleteModal(card){
     if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','고객의 소리 삭제')) return;
     const ticketId=card?.dataset.voiceTicketId||'';
     if(!ticketId) return;
     const current=voiceTicketList(activeBranch).find(item=>item.id===ticketId);
-    const ticketNumber=current?.ticketNumber||ticketId;
-    if(!confirm(`고객의 소리 접수를 삭제할까요?\n\n${ticketNumber}\n삭제한 접수는 복구할 수 없습니다.`)) return;
+    voiceDeleteTicketId=ticketId;
+    $('voice-delete-ticket-number').textContent=current?.ticketNumber||ticketId;
+    $('voice-delete-password').value='';
+    $('voice-delete-error').hidden=true;
+    $('voice-delete-error').textContent='';
+    $('voice-delete-modal').hidden=false;
+    window.SCModal?.sync?.();
+  }
+  function closeVoiceDeleteModal(){
+    $('voice-delete-modal').hidden=true;
+    voiceDeleteTicketId='';
+    window.SCModal?.sync?.();
+  }
+  window.closeVoiceDeleteModal=closeVoiceDeleteModal;
+  async function deleteVoiceTicket(event){
+    event?.preventDefault?.();
+    if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','고객의 소리 삭제')) return;
+    const ticketId=voiceDeleteTicketId;
+    const password=String($('voice-delete-password')?.value||'').trim();
+    const button=$('voice-delete-confirm');
+    const errorEl=$('voice-delete-error');
+    if(!ticketId) return;
+    if(!password){
+      errorEl.textContent='지점 전화번호를 입력해주세요.';
+      errorEl.hidden=false;
+      return;
+    }
     const original=button.textContent;
     try{
       button.disabled=true;button.textContent='삭제 중';
-      const ref=firebase.firestore().collection('customerVoice').doc(activeBranch).collection('tickets').doc(ticketId);
-      await ref.delete();
+      errorEl.hidden=true;
+      const fn=getCustomerVoiceCallable();
+      await fn({action:'delete',branch:activeBranch,ticketId,password});
+      closeVoiceDeleteModal();
       toast('고객의 소리 접수를 삭제했습니다','ok');
     }catch(error){
-      console.error(error);toast('접수 삭제 실패','err');
+      console.error(error);
+      errorEl.textContent=error?.message||'접수 삭제에 실패했습니다.';
+      errorEl.hidden=false;
     }finally{button.disabled=false;button.textContent=original;}
   }
   function renderFeedback(){
@@ -3645,7 +3684,12 @@ th{background:#D9EAD3;font-weight:700}
       const save=event.target.closest('[data-voice-save]');
       if(save) saveVoiceTicket(save.closest('[data-voice-ticket-id]'),save);
       const remove=event.target.closest('[data-voice-delete]');
-      if(remove) deleteVoiceTicket(remove.closest('[data-voice-ticket-id]'),remove);
+      if(remove) openVoiceDeleteModal(remove.closest('[data-voice-ticket-id]'));
+    });
+    $('voice-delete-form')?.addEventListener('submit',deleteVoiceTicket);
+    $('voice-delete-cancel')?.addEventListener('click',closeVoiceDeleteModal);
+    $('voice-delete-modal')?.addEventListener('click',event=>{
+      if(event.target.id==='voice-delete-modal') closeVoiceDeleteModal();
     });
     $('feedback-list').addEventListener('click',e=>{
       const btn=e.target.closest('[data-feedback-action]');

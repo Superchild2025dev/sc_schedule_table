@@ -11,6 +11,7 @@ function read(relativePath) {
 const html = read(path.join("voice", "index.html"));
 const css = read(path.join("voice", "voice.css"));
 const app = read(path.join("voice", "voice.js"));
+const settingsHtml = read("settings.html");
 const settings = read(path.join("js", "settings.js"));
 const functions = read(path.join("functions", "index.js"));
 const submitCustomerVoiceSource = functions.slice(
@@ -64,17 +65,25 @@ assert.match(functions, /exports\.purgeCustomerVoiceContacts = onSchedule/,
 
 assert.match(rules, /match \/customerVoice\/\{branch\}\/tickets\/\{ticketId\}/);
 assert.match(rules, /allow read, update: if canManageSchedule\(branch\)/);
-assert.match(rules, /allow delete: if canManageSchedule\(branch\)/,
-  "desk and owner accounts must be able to delete test or invalid tickets");
-assert.match(rules, /allow create: if false/);
+assert.match(rules, /allow create, delete: if false/,
+  "customer voice creation and deletion must remain server-only");
 assert.match(rules, /match \/customerVoiceRateLimits\/\{document=\*\*\}[\s\S]*?allow read, write: if false/);
 
 assert.match(settings, /data-voice-delete/,
   "the customer voice manager needs an explicit delete action");
 assert.match(settings, /async function deleteVoiceTicket/);
-assert.match(settings, /고객의 소리 접수를 삭제할까요\?/);
-assert.match(settings, /\.collection\('customerVoice'\)\.doc\(activeBranch\)\.collection\('tickets'\)\.doc\(ticketId\)/);
-assert.match(settings, /await ref\.delete\(\)/);
+assert.match(settingsHtml, /id="voice-delete-password"/);
+assert.match(settings, /httpsCallable\('customerVoice'\)/);
+assert.match(settings, /action:'delete',branch:activeBranch,ticketId,password/);
+assert.doesNotMatch(settings, /await ref\.delete\(\)/,
+  "the browser must not delete customer voice documents directly");
+
+assert.match(functions, /async function deleteCustomerVoiceTicket/);
+assert.match(functions, /normalizePhone\(data\.password\)/);
+assert.match(functions, /normalizePhone\(branch\.phone\)/);
+assert.match(functions, /await ticketRef\.delete\(\)/);
+assert.match(customerVoiceCallableSource, /if \(action === "delete"\) return deleteCustomerVoiceTicket\(branch, data, request\)/);
+assert.match(customerVoiceCallableSource, /http:\/\/127\.0\.0\.1:8011/);
 
 assert.match(nginx, /location \^~ \/voice\//);
 assert.match(nginx, /Content-Security-Policy/);

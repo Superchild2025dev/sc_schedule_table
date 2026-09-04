@@ -65,8 +65,14 @@ function isPublicAvailabilitySourceKey(key) {
 }
 
 const BRANCHES = {
-  gagyeong: {id: "gagyeong", name: "가경점", aligoBranch: "가경동", phone: "043-715-2019"},
-  yongam: {id: "yongam", name: "용암점", aligoBranch: "용암점", phone: "043-288-2016"},
+  gagyeong: {
+    id: "gagyeong", name: "가경점", aligoBranch: "가경동", phone: "043-715-2019",
+    deskEmail: "gagyeong.desk@scswim.local",
+  },
+  yongam: {
+    id: "yongam", name: "용암점", aligoBranch: "용암점", phone: "043-288-2016",
+    deskEmail: "yongam.desk@scswim.local",
+  },
 };
 const ALIGO_PROXY_BASE = "https://adminsuperchild.cloud/aligo";
 const ALIGO_SEND_PATH = "/alimtalk/send/";
@@ -336,6 +342,27 @@ async function submitCustomerVoice(branch, data, request) {
     ok: true,
     ticketNumber,
   };
+}
+
+async function deleteCustomerVoiceTicket(branch, data, request) {
+  const auth = requireStaffAuth(request);
+  const email = String(auth.token && auth.token.email || "").trim().toLowerCase();
+  if (![SCHEDULE_V2_OWNER_EMAIL, SCHEDULE_V2_DEVELOPER_EMAIL, branch.deskEmail].includes(email)) {
+    throw new HttpsError("permission-denied", "해당 지점 고객 의견 삭제 권한이 없습니다");
+  }
+  const password = normalizePhone(data.password);
+  if (!password || password !== normalizePhone(branch.phone)) {
+    throw new HttpsError("permission-denied", "삭제 비밀번호가 올바르지 않습니다");
+  }
+  const ticketId = String(data.ticketId || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(ticketId)) {
+    throw new HttpsError("invalid-argument", "삭제할 접수 정보가 올바르지 않습니다");
+  }
+  const ticketRef = customerVoiceTicketCollection(branch).doc(ticketId);
+  const ticketSnap = await ticketRef.get();
+  if (!ticketSnap.exists) throw new HttpsError("not-found", "이미 삭제되었거나 존재하지 않는 접수입니다");
+  await ticketRef.delete();
+  return {deleted: true};
 }
 
 function kvDoc(branch, key) {
@@ -2227,12 +2254,15 @@ exports.customerVoice = onCall({
     "https://schedule.adminsuperchild.cloud",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
+    "http://127.0.0.1:8011",
+    "http://localhost:8011",
   ],
 }, async request => {
   const data = request.data || {};
   const branch = safeBranch(data.branch);
   const action = String(data.action || "submit");
   if (action === "submit") return submitCustomerVoice(branch, data, request);
+  if (action === "delete") return deleteCustomerVoiceTicket(branch, data, request);
   throw new HttpsError("invalid-argument", "지원하지 않는 요청입니다");
 });
 

@@ -647,6 +647,26 @@
 
 <div id="settings-toast" class="settings-toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
+<div id="voice-delete-modal" class="sc-modal-backdrop voice-delete-modal" data-sc-modal data-sc-close-function="closeVoiceDeleteModal" hidden>
+  <form id="voice-delete-form" class="sc-modal-dialog sc-modal-sm" novalidate>
+    <div class="sc-modal-header">
+      <h2 class="sc-modal-title">고객 의견 삭제</h2>
+    </div>
+    <div class="sc-modal-body">
+      <p class="sc-modal-description"><strong id="voice-delete-ticket-number"></strong> 접수를 삭제합니다. 삭제 후에는 복구할 수 없습니다.</p>
+      <label class="voice-delete-field" for="voice-delete-password">
+        <span>삭제 비밀번호</span>
+        <input id="voice-delete-password" type="password" inputmode="numeric" autocomplete="off" placeholder="지점 전화번호 입력" autofocus>
+      </label>
+      <p id="voice-delete-error" class="voice-delete-error" role="alert" hidden></p>
+    </div>
+    <div class="sc-modal-footer">
+      <button type="button" class="ghost-btn" id="voice-delete-cancel">취소</button>
+      <button type="submit" class="voice-delete-confirm" id="voice-delete-confirm">삭제</button>
+    </div>
+  </form>
+</div>
+
 <script>scJs('js/schedule-time.js')</script>
 <script>scJs('js/schedule-schema-v2.js')</script>
 <script>scJs('js/attendance-v2-model.js')</script>

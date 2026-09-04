@@ -112,17 +112,19 @@ if(emulatorEnabled){
     await assertFails(setDoc(kv(yongamDb, "gagyeong", "swim_students"), {value:"{}"}));
   });
 
-  test("only a branch desk or administrator can delete a customer voice ticket", async () => {
+  test("customer voice tickets cannot be deleted directly by any browser account", async () => {
     await env.withSecurityRulesDisabled(async context=>{
       await setDoc(voiceTicket(context.firestore(), "gagyeong", "sample"), {message:"sample"});
       await setDoc(voiceTicket(context.firestore(), "yongam", "other"), {message:"other"});
       await setDoc(voiceTicket(context.firestore(), "gagyeong", "teacher-blocked"), {message:"blocked"});
     });
     const deskDb=staffDb("gagyeong-desk", "gagyeong.desk@scswim.local");
+    const ownerDb=staffDb("owner", "2025superchild@gmail.com");
     const teacherDb=staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
     const publicDb=env.unauthenticatedContext().firestore();
 
-    await assertSucceeds(deleteDoc(voiceTicket(deskDb, "gagyeong", "sample")));
+    await assertFails(deleteDoc(voiceTicket(deskDb, "gagyeong", "sample")));
+    await assertFails(deleteDoc(voiceTicket(ownerDb, "gagyeong", "sample")));
     await assertFails(deleteDoc(voiceTicket(deskDb, "yongam", "other")));
     await assertFails(deleteDoc(voiceTicket(teacherDb, "gagyeong", "teacher-blocked")));
     await assertFails(deleteDoc(voiceTicket(publicDb, "gagyeong", "teacher-blocked")));
