@@ -3016,7 +3016,13 @@
             <label>내부 메모 (고객 미공개)<textarea data-voice-internal-note maxlength="1500" placeholder="확인 내용, 담당자, 후속 조치를 기록하세요.">${esc(item.internalNote||'')}</textarea></label>
             ${replyField}
           </div>
-          <div class="voice-ticket-footer"><small>마지막 수정 ${esc(formatVoiceDate(item.updatedAt))}</small><button type="button" class="voice-save" data-voice-save>상태와 메모 저장</button></div>
+          <div class="voice-ticket-footer">
+            <small>마지막 수정 ${esc(formatVoiceDate(item.updatedAt))}</small>
+            <div class="voice-ticket-actions">
+              <button type="button" class="voice-delete" data-voice-delete>접수 삭제</button>
+              <button type="button" class="voice-save" data-voice-save>상태와 메모 저장</button>
+            </div>
+          </div>
         </div>
       </article>`;
     }).join('');
@@ -3055,6 +3061,23 @@
       toast('고객의 소리 처리 내용을 저장했습니다','ok');
     }catch(error){
       console.error(error);toast('처리 내용 저장 실패','err');
+    }finally{button.disabled=false;button.textContent=original;}
+  }
+  async function deleteVoiceTicket(card,button){
+    if(window.SCAuth&&!SCAuth.requirePermission('manageSettings','고객의 소리 삭제')) return;
+    const ticketId=card?.dataset.voiceTicketId||'';
+    if(!ticketId) return;
+    const current=voiceTicketList(activeBranch).find(item=>item.id===ticketId);
+    const ticketNumber=current?.ticketNumber||ticketId;
+    if(!confirm(`고객의 소리 접수를 삭제할까요?\n\n${ticketNumber}\n삭제한 접수는 복구할 수 없습니다.`)) return;
+    const original=button.textContent;
+    try{
+      button.disabled=true;button.textContent='삭제 중';
+      const ref=firebase.firestore().collection('customerVoice').doc(activeBranch).collection('tickets').doc(ticketId);
+      await ref.delete();
+      toast('고객의 소리 접수를 삭제했습니다','ok');
+    }catch(error){
+      console.error(error);toast('접수 삭제 실패','err');
     }finally{button.disabled=false;button.textContent=original;}
   }
   function renderFeedback(){
@@ -3621,6 +3644,8 @@ th{background:#D9EAD3;font-weight:700}
       }
       const save=event.target.closest('[data-voice-save]');
       if(save) saveVoiceTicket(save.closest('[data-voice-ticket-id]'),save);
+      const remove=event.target.closest('[data-voice-delete]');
+      if(remove) deleteVoiceTicket(remove.closest('[data-voice-ticket-id]'),remove);
     });
     $('feedback-list').addEventListener('click',e=>{
       const btn=e.target.closest('[data-feedback-action]');

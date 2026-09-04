@@ -22,7 +22,7 @@ if(emulatorEnabled){
     assertSucceeds,
     assertFails,
   } = requireTestDependency("@firebase/rules-unit-testing");
-  const {doc, getDoc, setDoc, setLogLevel} = requireTestDependency("firebase/firestore");
+  const {deleteDoc, doc, getDoc, setDoc, setLogLevel} = requireTestDependency("firebase/firestore");
 
   setLogLevel("silent");
 
@@ -67,6 +67,10 @@ if(emulatorEnabled){
     return doc(db, "scheduleV2", branch, "generations", generationId, collection, recordId);
   }
 
+  function voiceTicket(db, branch, ticketId){
+    return doc(db, "customerVoice", branch, "tickets", ticketId);
+  }
+
   test("a teacher can write regular and vacation attendance documents", async () => {
     const db = staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
 
@@ -106,6 +110,22 @@ if(emulatorEnabled){
     await assertSucceeds(setDoc(kv(yongamDb, "yongam", "swim_students"), {value:"{}"}));
     await assertFails(setDoc(kv(gagyeongDb, "yongam", "swim_students"), {value:"{}"}));
     await assertFails(setDoc(kv(yongamDb, "gagyeong", "swim_students"), {value:"{}"}));
+  });
+
+  test("only a branch desk or administrator can delete a customer voice ticket", async () => {
+    await env.withSecurityRulesDisabled(async context=>{
+      await setDoc(voiceTicket(context.firestore(), "gagyeong", "sample"), {message:"sample"});
+      await setDoc(voiceTicket(context.firestore(), "yongam", "other"), {message:"other"});
+      await setDoc(voiceTicket(context.firestore(), "gagyeong", "teacher-blocked"), {message:"blocked"});
+    });
+    const deskDb=staffDb("gagyeong-desk", "gagyeong.desk@scswim.local");
+    const teacherDb=staffDb("gagyeong-teacher", "gagyeong.son@scswim.local");
+    const publicDb=env.unauthenticatedContext().firestore();
+
+    await assertSucceeds(deleteDoc(voiceTicket(deskDb, "gagyeong", "sample")));
+    await assertFails(deleteDoc(voiceTicket(deskDb, "yongam", "other")));
+    await assertFails(deleteDoc(voiceTicket(teacherDb, "gagyeong", "teacher-blocked")));
+    await assertFails(deleteDoc(voiceTicket(publicDb, "gagyeong", "teacher-blocked")));
   });
 
   test("chunk permissions follow their parent schedule key", async () => {

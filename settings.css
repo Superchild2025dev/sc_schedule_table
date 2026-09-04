@@ -104,6 +104,10 @@ button,input,textarea,select{font-family:inherit}
 .voice-ticket-fields textarea:focus{outline:none;border-color:#0F9D58;box-shadow:0 0 0 3px rgba(15,157,88,.12)}
 .voice-ticket-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}
 .voice-ticket-footer small{color:#94A3B8;font-size:10px;font-weight:800}
+.voice-ticket-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px}
+.voice-delete{height:32px;border:1px solid #DC2626;border-radius:6px;background:#fff;color:#B91C1C;padding:0 11px;font-size:11px;font-weight:900;cursor:pointer}
+.voice-delete:hover{background:#FEF2F2}
+.voice-delete:disabled{opacity:.55;cursor:wait}
 .voice-save{height:32px;border:1px solid #0F9D58;border-radius:6px;background:#0F9D58;color:#fff;padding:0 11px;font-size:11px;font-weight:900;cursor:pointer}
 .voice-save:disabled{opacity:.55;cursor:wait}
 .legacy-feedback{margin-top:18px;border-top:1px solid #DDE3EC;padding-top:12px}
@@ -387,7 +391,8 @@ button,input,textarea,select{font-family:inherit}
   .voice-ticket-state select{width:100%}
   .voice-ticket-fields{grid-template-columns:1fr}
   .voice-ticket-footer{align-items:flex-start;flex-direction:column}
-  .voice-save{width:100%}
+  .voice-ticket-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}
+  .voice-save,.voice-delete{width:100%}
   .feedback-card-head{flex-direction:column}
   .feedback-actions{width:100%}
   .feedback-actions .mini-btn{flex:1}
